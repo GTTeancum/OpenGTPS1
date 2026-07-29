@@ -95,16 +95,18 @@ world-space GTE origin are deliberately excluded instead of being guessed.
 The dominant track transform supplies the frame camera; its fixed-point
 inverse produces world coordinates in the native loader.
 
-Version 3 of the little-endian `OGTWCAP` format has a fixed 160-byte header,
-fixed 212-byte triangle records, and one complete 1 MiB VRAM snapshot. It is
+Version 4 of the little-endian `OGTWCAP` format has a fixed 160-byte header,
+fixed 224-byte triangle records, and one complete 1 MiB VRAM snapshot. It is
 hard-capped at 262,144 triangles. Every triangle records its GPU draw offset;
 every vertex records the exact GTE projection offset and projection plane that
-created it. This is necessary because GT2 renders the main view and mirror with
-different projection state in the same frame. The loader remains compatible
-with version 1 and 2 captures. It validates every bound into caller-owned
-storage, derives world coordinates, and rejects invalid camera transforms or
-vertices. The inspector preserves draw order while exporting a diagnostic OBJ
-grouped by stable object identity.
+created it plus a capture-stable authored identity interned from exact model
+provenance. This is necessary because GT2 renders the main view and mirror with
+different projection state in the same frame and repeats boundary vertices in
+different 4096-unit model sectors. The loader remains compatible with versions
+1 through 3. It validates every bound into caller-owned storage, derives world
+coordinates, and rejects invalid camera transforms or vertices. The inspector
+preserves draw order while exporting a diagnostic OBJ and optional topology
+CSV grouped by stable object identity.
 
 Capture and validate the deterministic race frame with:
 
@@ -166,15 +168,19 @@ the repeat images:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\validate_world_renderer.ps1 `
-  -Capture artifacts\modern-world-v3-vehicles\race-frame.ogtwcap
+  -Capture artifacts\modern-world-v4-topology-live\race-frame.ogtwcap
 ```
 
 The retained AI-driven fixture produces 3,657 main-view commands, including
-track and vehicle meshes, with dithering off. Two WARP runs produced identical
-GPU hash `299b4de4d2d03d2e`; the independent CPU compatibility oracle produced
-`17b87953231f3c05`. The no-depth comparison path measures 4.173142 RGB RMS
-(35.72 dB PSNR). A separate default-adapter run proves the hardware D3D11
-device path.
+track and vehicle meshes, with dithering off. The current version-4 topology
+fixture has complete authored identity for all 7,917 captured track vertex
+instances. Its topology pass emits 3,659 commands from 3,657 inputs after two
+real source triangles become four exact T-junction subdivisions. The same
+frame reports 227 authored boundary groups, 64 coplanar overlap pairs, 60 exact
+duplicate pairs, and three deterministic ownership reorders. WARP validation
+is deterministic at GPU hash `63c96f524265c09b`; the independent CPU
+compatibility renderer remains stable at `17b87953231f3c05`. A separate
+default-adapter run proves the hardware D3D11 device path.
 
 For interactive inspection, the same executable can show its GPU output in a
 resizable window:
@@ -191,9 +197,9 @@ post-process enlargement. This is viewer-only evidence plumbing; it does not
 expose or prematurely implement the future wrapper resolution/widescreen
 setting.
 
-This backend is standalone. Integrating it into live race/replay presentation,
-deduplicating authored topology, and replacing the old road-padding path remain
-later milestones.
+This backend is standalone. Integrating it into live race/replay presentation
+remains the next milestone; the standalone path no longer uses the old
+road-padding workaround.
 
 ## Texture projection
 
@@ -210,28 +216,32 @@ Enhanced and Custom use the native perspective path.
 
 Screen-space triangle expansion is not part of the new architecture.
 
-The scene decoder assigns a stable stitch-group identifier only when GT2 data
-establishes that two vertices represent the same authored boundary point. The
-renderer core then snaps every explicitly linked copy to one canonical 3D
-position before vertex-buffer upload. Per-corner UVs, normals, colors, and
-material boundaries remain independent, so joining geometry does not smear
-textures across intentional seams.
+`native/src/world_topology.cpp` is an API-neutral C++17 topology pass. It
+requires complete authored vertex identities and operates on exact integer GTE
+view coordinates. That common coordinate frame is important: GT2 stores
+neighboring road sectors in local model frames separated by 4096 units, while
+their transformed boundary copies are exactly equal in view space.
 
-The first implementation is `native/src/geometry_stitcher.cpp`. Its distance
-setting is solely a corruption guard for bad topology metadata; it never
-searches for nearby vertices. T-junctions will require boundary subdivision,
-and coplanar overlap flicker will require deterministic primitive ownership.
-Those are separate topology cases and must be diagnosed from captured scene
-data rather than hidden with padding.
+The pass builds an exact vertex/edge graph, canonicalizes only positions backed
+by distinct authored identities, classifies boundary/manifold/nonmanifold
+edges, subdivides exact T-junctions, and detects positive-area coplanar
+overlap. Same-material opaque overlap components receive deterministic
+primitive ownership; different-material overlaps retain original submission
+order. Per-corner UVs, colors, normals, and material seams are never merged.
+There are no proximity searches, epsilon joins, or screen-space expansion.
 
-Every scene capture will eventually log:
+The inspector reports all topology counters on stdout and can write one CSV
+row per source triangle. Synthetic tests cover boundary copies, T-junction
+subdivision, and deterministic coplanar ownership.
 
-- stitch group and source object identifiers;
-- chosen canonical vertex;
-- maximum pre-stitch displacement;
-- rejected/corrupt groups;
-- T-junction candidates; and
-- overlapping coplanar triangle candidates.
+The intermittent Red Rock replay fault at about 0:33 was captured at input poll
+32,492 and isolated to two triangles whose shared GTE-view edge is exact, but
+whose model-space X coordinates differ by 4096 and whose texture pages differ.
+It was not a geometric hole. The D3D11 PS1 sampler incorrectly treated integer
+UVs as texel edges with `floor(uv)`; PS1 integer UVs identify texel centers.
+Sampling the nearest texel with `floor(uv + 0.5)` removes the dotted black line
+without padding or UV nudges. In the fixed 4x replay crop, dark pixels on the
+known line fell from 22 to zero.
 
 ## LOD and visibility
 
@@ -296,8 +306,9 @@ unified-memory limit. It will use:
 2. **Complete:** render that capture in a standalone D3D11 PC viewer and
    compare deterministic WARP output against the independent compatibility
    renderer.
-3. Replace screen-space road padding with explicit boundary stitching and add
-   tests for coincident edges, T-junctions, and coplanar overlap.
+3. **Complete in the standalone renderer:** replace screen-space road padding
+   with authored topology, exact T-junction subdivision, deterministic
+   coplanar ownership, structured diagnostics, and synthetic/live tests.
 4. Integrate the PC backend into race/replay while retaining the PS1 2D
    compositor for menus, HUD, and video.
 5. Add the RecompOne C++ guest emitter/runtime needed by NXDK.

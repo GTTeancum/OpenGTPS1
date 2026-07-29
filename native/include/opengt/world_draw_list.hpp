@@ -49,6 +49,14 @@ struct WorldDrawVertex {
     std::uint8_t g;
     std::uint8_t b;
     std::uint8_t unused;
+    std::int16_t model_x;
+    std::int16_t model_y;
+    std::int16_t model_z;
+    std::uint16_t provenance_flags;
+    std::uint32_t source_vertex_identity;
+    std::int32_t exact_view_x;
+    std::int32_t exact_view_y;
+    std::int32_t exact_view_z;
 };
 
 struct WorldDrawCommand {
@@ -66,6 +74,7 @@ struct WorldDrawCommand {
     std::uint32_t object_id;
     std::uint32_t model_pointer;
     std::uint64_t transform_id;
+    std::uint32_t source_command_index;
     WorldViewChannel channel;
 };
 

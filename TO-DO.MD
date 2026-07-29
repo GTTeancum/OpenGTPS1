@@ -35,9 +35,11 @@ visible and repeatable in the packaged build at:
     material state, and original triangle order into the bounded `OGTWCAP`
     format. UI and other primitives without world provenance are excluded
     rather than inferred from screen pixels.
-  - Format version 3 also records the exact per-vertex GTE projection state and
+  - Format version 4 also records a capture-stable authored identity for every
+    track vertex, in addition to the exact per-vertex GTE projection state and
     per-draw GPU offset. GT2's main and mirror cameras can therefore be
-    separated without inferring a camera from screen pixels.
+    separated without inferring a camera from screen pixels, and topology does
+    not depend on float proximity.
   - The portable loader validates the format using caller-owned buffers,
     derives world coordinates from the captured camera, and exports an OBJ
     grouped by stable object identity. Its synthetic unit fixture verifies
@@ -48,9 +50,10 @@ visible and repeatable in the packaged build at:
     objects, two identified vehicles, 52 object/model combinations, 151
     materials, and 62 transforms; camera round-trip RMS is `0.000000`. All
     14,997 vertices also reproduce their captured screen position exactly
-    (`0.000000` RMS/max) from their own recorded projection state. The version
-    3 capture is 2,108,524 bytes and was produced with SDL dummy audio proven
-    twice and wrapper settings unchanged.
+    (`0.000000` RMS/max) from their own recorded projection state. The current
+    version-4 fixture assigns authored identity to all 7,917 captured track
+    vertex instances and was produced with SDL dummy audio proven twice and
+    wrapper settings unchanged.
 - [x] Render the captured scene through a standalone PC backend and compare it
   deterministically with the compatibility renderer.
   - The API-neutral C++17 draw-list contains homogeneous clip coordinates,
@@ -72,8 +75,27 @@ visible and repeatable in the packaged build at:
     `17b87953231f3c05` twice; its compatibility path measures 4.173142 RGB RMS
     (35.72 dB PSNR). The default hardware D3D11 adapter also renders the same
     scene successfully.
-- [ ] Replace screen-space triangle padding with model-space boundary
-  stitching, T-junction subdivision, and deterministic coplanar ownership.
+- [x] Replace screen-space triangle padding in the standalone renderer with
+  authored boundary topology, exact T-junction subdivision, and deterministic
+  coplanar ownership.
+  - The portable C++17 pass uses capture-stable authored identities and exact
+    integer GTE view coordinates. It performs no proximity search,
+    screen-space expansion, epsilon join, or UV nudge.
+  - Live Red Rock race evidence transforms 3,657 main-view commands into 3,659:
+    two source triangles are split into four at exact T-junctions. Diagnostics
+    also report 227 authored boundary groups, 64 positive-area coplanar pairs,
+    60 exact duplicates, and three deterministic ownership reorders.
+    Repeated WARP renders match at GPU hash `63c96f524265c09b`; the independent
+    compatibility oracle remains `17b87953231f3c05`.
+  - The intermittent replay fault around 0:33 was recaptured at input poll
+    32,492. The two road triangles share an exact view-space edge while their
+    sector-local model X coordinates differ by 4096. The visible dotted line
+    was a texture sampling fault, not a geometric hole: integer PS1 UVs were
+    floored as texel edges instead of rounded to texel centers. The corrected
+    point sampler reduces dark pixels on the known 4x line crop from 22 to
+    zero, without padding.
+  - Synthetic tests cover exact authored boundary copies, T-junction
+    subdivision, and deterministic same-material coplanar ownership.
 - [ ] Integrate native race/replay rendering while retaining the proven PS1
   compositor for menus, HUD, loading screens, and MDEC video.
 - [ ] Add a RecompOne C++ emitter and native guest runtime with no CLR
@@ -120,7 +142,8 @@ visible and repeatable in the packaged build at:
     HUD, or camera-cut corruption. Both captures proved dummy audio and left
     wrapper settings unchanged.
 
-- [x] Remove or conceal seams between streamed road/model sections.
+- [ ] Remove or conceal seams between streamed road/model sections in the
+  packaged live renderer.
   - Road sections must meet without visible cracks, background-colored slivers,
     or intermittent gaps as track geometry loads.
   - The mitigation must work while driving and during replay cameras.
@@ -145,13 +168,11 @@ visible and repeatable in the packaged build at:
     `artifacts\seams-replay-033-baseline` reproduced the exact frame with seam
     stabilization both on and off, proving the eligible triangles reached the
     pass but the 0.25-native-pixel centroid expansion was insufficient.
-  - The corrected pass offsets all three triangle edges by 0.75 native pixels
-    using bounded edge-normal miters. `artifacts\seams-replay-033-miter`
-    verifies every frame in the same 100-poll replay window: the crack is gone
-    at 0:24.000 and does not recur before the camera cut. A separate 450-frame
-    Tahiti run in `artifacts\seams-tahiti-miter-regression` shows continuous
-    road coverage without edge halos, overlap slivers, or new flicker. Both
-    validation runs proved the SDL dummy audio backend and stayed below 3 MiB.
+  - The compatibility renderer's 0.75-pixel miter is retained only as old
+    evidence; it is a screen-space workaround and not the accepted final fix.
+  - The standalone native renderer now resolves authored topology and the
+    0:33 texture-sampling fault without padding. This item remains open until
+    that native path presents live race/replay frames in the packaged build.
 
 - [x] Extend draw distance far enough to show the entire track.
   - Track geometry and scenery must remain visible to the farthest practical

@@ -36,7 +36,8 @@ void put_vertex(
     std::uint8_t* out,
     std::int16_t x,
     std::int16_t y,
-    std::int16_t z
+    std::int16_t z,
+    std::uint32_t source_pointer
 ) {
     put_f32(out, static_cast<float>(x));
     put_f32(out + 4, static_cast<float>(y));
@@ -52,6 +53,7 @@ void put_vertex(
     put_u32(out + 40, 160U << 16);
     put_u32(out + 44, 120U << 16);
     put_u32(out + 48, 256);
+    put_u32(out + 52, source_pointer);
 }
 
 bool write_fixture(const char* path) {
@@ -98,9 +100,9 @@ bool write_fixture(const char* path) {
     put_u16(triangle + 44, 3);
     put_u16(triangle + 46, 4);
     put_u64(triangle + 48, 0x1234);
-    put_vertex(triangle + 56, 1, 2, 3);
-    put_vertex(triangle + 108, 4, 5, 6);
-    put_vertex(triangle + 160, 7, 8, 9);
+    put_vertex(triangle + 56, 1, 2, 3, 0x80001000);
+    put_vertex(triangle + 112, 4, 5, 6, 0x80001014);
+    put_vertex(triangle + 168, 7, 8, 9, 0x80001028);
 
     std::vector<std::uint16_t> vram(1024U * 512U);
     std::FILE* file = std::fopen(path, "wb");
@@ -161,6 +163,9 @@ int main() {
         vertex.projection_offset_y == (120 << 16) &&
         vertex.projection_plane == 256,
         "per-vertex projection state");
+    okay &= expect(
+        vertex.source_vertex_identity == 0x80001000,
+        "source vertex provenance");
     okay &= expect(
         std::fabs(vertex.world_x - 1.0F) < 0.001F &&
         std::fabs(vertex.world_y - 2.0F) < 0.001F &&

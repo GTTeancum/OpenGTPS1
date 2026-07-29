@@ -10,9 +10,9 @@ namespace RecompOne.Runtime.Hle;
 /// </summary>
 internal sealed class WorldSceneCapture : IDisposable
 {
-    const uint Version = 3;
+    const uint Version = 4;
     const int HeaderSize = 160;
-    const int TriangleStride = 212;
+    const int TriangleStride = 224;
     const int MaxTriangles = 262_144;
 
     readonly string? _outputPath;
@@ -28,12 +28,18 @@ internal sealed class WorldSceneCapture : IDisposable
         int OffsetY,
         ushort Plane,
         WorldObjectKind Kind);
+    readonly record struct SourceVertexKey(
+        uint ModelPointer,
+        short X,
+        short Y,
+        short Z);
     readonly Dictionary<
         CameraProjectionKey,
         (int Count, GteProjectionOrigin Origin)> _trackCameraStates = [];
     readonly Dictionary<ulong, (int Count, GteProjectionOrigin Origin)>
         _allTransforms = [];
     readonly Dictionary<ProjectionKey, int> _projectionStates = [];
+    readonly Dictionary<SourceVertexKey, uint> _syntheticSourceVertices = [];
 
     FileStream? _stream;
     BinaryWriter? _writer;
@@ -41,6 +47,8 @@ internal sealed class WorldSceneCapture : IDisposable
     uint _triangleCount;
     uint _skippedTriangles;
     uint _validVertices;
+    uint _sourceVertices;
+    uint _trackSourceVertices;
     bool _armed;
     bool _capturing;
     bool _truncated;
@@ -162,6 +170,9 @@ internal sealed class WorldSceneCapture : IDisposable
             AccumulateProjection(in b, in originB, in env);
             AccumulateProjection(in c, in originC, in env);
             _validVertices += (uint)valid;
+            CountSource(in originA);
+            CountSource(in originB);
+            CountSource(in originC);
 
             uint primitiveFlags = 0;
             if (flags.Textured) primitiveFlags |= 1U << 0;
@@ -217,6 +228,41 @@ internal sealed class WorldSceneCapture : IDisposable
             _trackCameraStates.TryGetValue(key, out var entry);
             _trackCameraStates[key] = (entry.Count + 1, origin);
         }
+    }
+
+    void CountSource(in GteProjectionOrigin origin)
+    {
+        uint sourceIdentity = SourceIdentity(in origin);
+        if (sourceIdentity == 0)
+            return;
+        _sourceVertices++;
+        if (origin.Object.Kind == WorldObjectKind.Track)
+            _trackSourceVertices++;
+    }
+
+    uint SourceIdentity(in GteProjectionOrigin origin)
+    {
+        if (!origin.Valid)
+            return 0;
+        if (
+            origin.Object.Kind != WorldObjectKind.Track ||
+            origin.Object.ModelPointer == 0
+        )
+            return 0;
+        var key = new SourceVertexKey(
+            origin.Object.ModelPointer,
+            origin.ModelX,
+            origin.ModelY,
+            origin.ModelZ);
+        if (_syntheticSourceVertices.TryGetValue(key, out uint identity))
+            return identity;
+        // 0x40000000 is outside the cached guest pointer range used by GT2.
+        // The lower bits are a deterministic frame-local intern ID keyed by
+        // exact model provenance, never by a float/proximity comparison.
+        identity = 0x40000000u |
+            checked((uint)_syntheticSourceVertices.Count + 1u);
+        _syntheticSourceVertices.Add(key, identity);
+        return identity;
     }
 
     void CountProjection(in GteProjectionOrigin origin)
@@ -305,6 +351,9 @@ internal sealed class WorldSceneCapture : IDisposable
                 $"[World-Capture] complete frame={presentedFrame} " +
                 $"poll={inputPoll} triangles={_triangleCount} " +
                 $"validVertices={_validVertices} skipped={_skippedTriangles} " +
+                $"sourceVertices={_sourceVertices} " +
+                $"trackSourceVertices={_trackSourceVertices} " +
+                $"syntheticSourceIdentities={_syntheticSourceVertices.Count} " +
                 $"trackCameraStates={_trackCameraStates.Count} transforms={_allTransforms.Count} " +
                 $"cameraTransform=0x{camera.TransformId:X16} " +
                 $"projection={camera.ProjectionOffsetX / 65536.0:F3}," +
@@ -397,6 +446,7 @@ internal sealed class WorldSceneCapture : IDisposable
         _writer.Write(origin.ProjectionOffsetX);
         _writer.Write(origin.ProjectionOffsetY);
         _writer.Write((uint)origin.ProjectionPlane);
+        _writer.Write(SourceIdentity(in origin));
     }
 
     void WriteHeader(

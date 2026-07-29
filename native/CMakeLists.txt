@@ -12,6 +12,7 @@ add_library(opengt_renderer_core STATIC
     src/world_capture.cpp
     src/world_draw_list.cpp
     src/world_gpu_renderer_d3d11.cpp
+    src/world_topology.cpp
 )
 
 target_include_directories(opengt_renderer_core
@@ -99,6 +100,21 @@ if(OPENGT_BUILD_TESTS)
     add_test(
         NAME opengt_world_draw_list_tests
         COMMAND opengt_world_draw_list_tests
+    )
+
+    add_executable(opengt_world_topology_tests
+        tests/world_topology_tests.cpp
+    )
+    target_link_libraries(
+        opengt_world_topology_tests
+        PRIVATE
+            opengt_renderer_core
+    )
+    target_compile_features(opengt_world_topology_tests PRIVATE cxx_std_17)
+
+    add_test(
+        NAME opengt_world_topology_tests
+        COMMAND opengt_world_topology_tests
     )
 endif()
 

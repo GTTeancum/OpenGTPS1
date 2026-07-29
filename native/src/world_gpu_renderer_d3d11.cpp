@@ -138,8 +138,8 @@ float4 PSMain(VsOutput input) : SV_TARGET {
     float3 color = saturate(input.color.rgb);
     if (textured) {
         uint word = TextureWord(
-            (int)floor(input.uv.x + 0.0001),
-            (int)floor(input.uv.y + 0.0001));
+            (int)floor(input.uv.x + 0.5),
+            (int)floor(input.uv.y + 0.5));
         if (word == 0)
             discard;
         bool stp = (word & 0x8000) != 0;

@@ -3,6 +3,7 @@
 #include "opengt/world_capture.hpp"
 #include "opengt/world_draw_list.hpp"
 #include "opengt/world_gpu_renderer.hpp"
+#include "opengt/world_topology.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -220,6 +221,7 @@ int main(int argc, char** argv) {
             stderr,
             "usage: opengt_world_viewer <capture.ogtwcap> <gpu.png> "
             "[--warp] [--no-depth] [--dither] "
+            "[--no-topology] "
             "[--scale <1-8>] [--oracle <oracle.png>] [--window]\n");
         return 2;
     }
@@ -227,6 +229,7 @@ int main(int argc, char** argv) {
     bool depth = true;
     bool dither = false;
     bool window = false;
+    bool topology = true;
     std::uint32_t scale = 1;
     const char* oracle_path = nullptr;
     for (int index = 3; index < argc; ++index) {
@@ -238,6 +241,8 @@ int main(int argc, char** argv) {
             dither = true;
         else if (std::strcmp(argv[index], "--window") == 0)
             window = true;
+        else if (std::strcmp(argv[index], "--no-topology") == 0)
+            topology = false;
         else if (
             std::strcmp(argv[index], "--scale") == 0 &&
             index + 1 < argc
@@ -303,6 +308,21 @@ int main(int argc, char** argv) {
             world_draw_list_result_name(list_result));
         return 1;
     }
+    const WorldDrawList compatibility_draw_list = draw_list;
+    WorldTopologyStats topology_stats{};
+    if (topology) {
+        const auto topology_result = apply_world_topology(
+            &draw_list,
+            WorldTopologyOptions{true, true, true},
+            &topology_stats);
+        if (topology_result != WorldTopologyResult::success) {
+            std::fprintf(
+                stderr,
+                "topology pass failed: %s\n",
+                world_topology_result_name(topology_result));
+            return 1;
+        }
+    }
     const std::uint32_t output_width =
         static_cast<std::uint32_t>(header.display_width) * scale;
     const std::uint32_t output_height =
@@ -343,7 +363,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const auto oracle_triangles = make_oracle_input(draw_list);
+    const auto oracle_triangles =
+        make_oracle_input(compatibility_draw_list);
     ProjectedCaptureHeader oracle_header{};
     oracle_header.frame_index = header.frame_index;
     oracle_header.input_poll = header.input_poll;
@@ -394,7 +415,7 @@ int main(int argc, char** argv) {
     std::vector<std::uint8_t> comparison_gpu(reference_size);
     WorldGpuRenderStats comparison_stats{};
     const auto comparison_result = render_world_d3d11(
-        draw_list,
+        compatibility_draw_list,
         vram.data(),
         vram.size(),
         comparison_gpu.data(),
@@ -425,6 +446,16 @@ int main(int argc, char** argv) {
         "scale=%u depth=%s "
         "dither=%s commands=%u track=%u vehicles=%u unclassified=%u "
         "materials=%zu secondaryExcluded=%u "
+        "topology=%s topologyInput=%u topologyOutput=%u "
+        "topologyEligible=%u topologyMissingProvenance=%u "
+        "topologySources=%u topologyPositionGroups=%u "
+        "topologyBoundaryGroups=%u topologyAdjusted=%u "
+        "topologyBoundaryEdges=%u topologyManifoldEdges=%u "
+        "topologyNonmanifoldEdges=%u topologyTJunctions=%u "
+        "topologySplitSources=%u topologySplitTriangles=%u "
+        "topologyCoplanarPairs=%u topologyMaterialPairs=%u "
+        "topologyDuplicatePairs=%u topologyOwnershipGroups=%u "
+        "topologyReorders=%u "
         "drawCalls=%u transparentDrawCalls=%u "
         "gpuHash=%016llx oracleHash=%016llx "
         "compatibilityRms=%.6f compatibilityPsnr=%.3f "
@@ -445,6 +476,26 @@ int main(int argc, char** argv) {
         draw_list.unclassified_commands,
         draw_list.materials.size(),
         draw_list.secondary_commands,
+        topology ? "on" : "off",
+        topology_stats.input_commands,
+        topology_stats.output_commands,
+        topology_stats.eligible_track_commands,
+        topology_stats.skipped_without_provenance,
+        topology_stats.unique_source_vertices,
+        topology_stats.exact_position_groups,
+        topology_stats.authored_boundary_groups,
+        topology_stats.adjusted_vertex_instances,
+        topology_stats.boundary_edges,
+        topology_stats.manifold_edges,
+        topology_stats.nonmanifold_edges,
+        topology_stats.exact_t_junctions,
+        topology_stats.split_source_triangles,
+        topology_stats.emitted_split_triangles,
+        topology_stats.coplanar_overlap_pairs,
+        topology_stats.material_overlap_pairs,
+        topology_stats.exact_duplicate_pairs,
+        topology_stats.ownership_components,
+        topology_stats.ownership_reorders,
         gpu_stats.draw_calls,
         gpu_stats.transparent_draw_calls,
         static_cast<unsigned long long>(

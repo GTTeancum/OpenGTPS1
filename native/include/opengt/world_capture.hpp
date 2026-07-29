@@ -5,11 +5,12 @@
 
 namespace opengt::render {
 
-constexpr std::uint32_t world_capture_version = 3;
+constexpr std::uint32_t world_capture_version = 4;
 constexpr std::uint32_t world_capture_header_size = 160;
 constexpr std::uint32_t world_capture_v1_header_size = 128;
 constexpr std::uint32_t world_capture_legacy_triangle_stride = 176;
-constexpr std::uint32_t world_capture_triangle_stride = 212;
+constexpr std::uint32_t world_capture_v3_triangle_stride = 212;
+constexpr std::uint32_t world_capture_triangle_stride = 224;
 constexpr std::uint32_t world_capture_max_triangles = 262144;
 
 struct WorldCaptureHeader {
@@ -58,6 +59,7 @@ struct WorldCaptureVertex {
     std::int32_t projection_offset_x;
     std::int32_t projection_offset_y;
     std::uint32_t projection_plane;
+    std::uint32_t source_vertex_identity;
     float world_x;
     float world_y;
     float world_z;

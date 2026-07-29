@@ -1,5 +1,6 @@
 #include "opengt/world_capture.hpp"
 #include "opengt/world_draw_list.hpp"
+#include "opengt/world_topology.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -10,11 +11,11 @@
 #include <vector>
 
 int main(int argc, char** argv) {
-    if (argc < 2 || argc > 3) {
+    if (argc < 2 || argc > 4) {
         std::fprintf(
             stderr,
             "usage: opengt_world_capture_inspect <capture.ogtwcap> "
-            "[output.obj]\n");
+            "[output.obj] [topology.csv]\n");
         return 2;
     }
     opengt::render::WorldCaptureHeader header{};
@@ -48,6 +49,11 @@ int main(int argc, char** argv) {
     std::set<std::tuple<std::uint32_t, std::uint16_t, std::uint16_t>> materials;
     std::set<std::uint64_t> transforms;
     std::uint64_t valid_vertices = 0;
+    std::uint64_t source_vertices = 0;
+    std::uint64_t track_source_vertices = 0;
+    std::uint64_t track_missing_source_vertices = 0;
+    std::set<std::pair<std::uint32_t, std::uint32_t>>
+        unique_track_sources;
     std::uint64_t track_triangles = 0;
     std::uint64_t vehicle_triangles = 0;
     float minimum[3] = {
@@ -69,8 +75,8 @@ int main(int argc, char** argv) {
     std::uint64_t vehicle_screen_error_over_two = 0;
     std::uint64_t main_projection_triangles = 0;
     std::uint64_t secondary_projection_triangles = 0;
-    std::FILE* obj = argc == 3 ? std::fopen(argv[2], "wb") : nullptr;
-    if (argc == 3 && obj == nullptr) {
+    std::FILE* obj = argc >= 3 ? std::fopen(argv[2], "wb") : nullptr;
+    if (argc >= 3 && obj == nullptr) {
         std::fprintf(stderr, "cannot write %s\n", argv[2]);
         return 1;
     }
@@ -112,6 +118,17 @@ int main(int argc, char** argv) {
         }
         bool complete = true;
         for (const auto& vertex : triangle.vertices) {
+            if (vertex.source_vertex_identity != 0) {
+                ++source_vertices;
+                if (triangle.object_kind == 1) {
+                    ++track_source_vertices;
+                    unique_track_sources.emplace(
+                        triangle.model_pointer,
+                        vertex.source_vertex_identity);
+                }
+            } else if (triangle.object_kind == 1) {
+                ++track_missing_source_vertices;
+            }
             if (!vertex.world_valid) {
                 complete = false;
                 continue;
@@ -196,8 +213,68 @@ int main(int argc, char** argv) {
     const double screen_rms = screen_samples == 0
         ? 0.0
         : std::sqrt(screen_squared_error / (screen_samples * 2));
+    opengt::render::WorldDrawList draw_list{};
+    opengt::render::WorldTopologyStats topology{};
+    const auto draw_result = opengt::render::build_world_draw_list(
+        header,
+        triangles.data(),
+        triangles.size(),
+        opengt::render::WorldDrawListOptions{false},
+        &draw_list);
+    if (argc == 4 && draw_result ==
+            opengt::render::WorldDrawListResult::success) {
+        std::FILE* csv = std::fopen(argv[3], "wb");
+        if (csv == nullptr) {
+            std::fprintf(stderr, "cannot write %s\n", argv[3]);
+            return 1;
+        }
+        std::fprintf(
+            csv,
+            "command,source_command,object_kind,object_id,model_pointer,"
+            "material,ordering_table,vertex,model_x,model_y,model_z,"
+            "view_x,view_y,view_z,screen_x,screen_y,source_identity\n");
+        for (std::size_t command_index = 0;
+             command_index < draw_list.commands.size();
+             ++command_index) {
+            const auto& command = draw_list.commands[command_index];
+            for (int vertex_index = 0; vertex_index < 3; ++vertex_index) {
+                const auto& vertex = command.vertices[vertex_index];
+                std::fprintf(
+                    csv,
+                    "%zu,%u,%u,%u,%u,%u,%d,%d,%d,%d,%d,"
+                    "%.0f,%.0f,%.0f,%.6f,%.6f,%u\n",
+                    command_index,
+                    command.source_command_index,
+                    command.object_kind,
+                    command.object_id,
+                    command.model_pointer,
+                    command.material_index,
+                    command.ordering_table_index,
+                    vertex_index,
+                    vertex.model_x,
+                    vertex.model_y,
+                    vertex.model_z,
+                    vertex.view_x,
+                    vertex.view_y,
+                    vertex.view_z,
+                    vertex.screen_x,
+                    vertex.screen_y,
+                    vertex.source_vertex_identity);
+            }
+        }
+        std::fclose(csv);
+    }
+    const auto topology_result =
+        draw_result == opengt::render::WorldDrawListResult::success
+            ? opengt::render::apply_world_topology(
+                &draw_list,
+                opengt::render::WorldTopologyOptions{true, true, true},
+                &topology)
+            : opengt::render::WorldTopologyResult::invalid_argument;
     std::printf(
         "version=%u frame=%llu poll=%d triangles=%u validVertices=%llu "
+        "sourceVertices=%llu trackSourceVertices=%llu "
+        "trackMissingSourceVertices=%llu uniqueTrackSources=%zu "
         "trackTriangles=%llu vehicleTriangles=%llu trackObjects=%zu "
         "vehicleObjects=%zu objects=%zu models=%zu materials=%zu "
         "transforms=%zu cameraTransform=%016llx "
@@ -207,12 +284,25 @@ int main(int argc, char** argv) {
         "screenProjectionMax=%.6f screenSamples=%llu "
         "screenErrorOver1=%llu screenErrorOver2=%llu "
         "screenErrorOver10=%llu trackErrorOver2=%llu "
-        "vehicleErrorOver2=%llu obj=%s\n",
+        "vehicleErrorOver2=%llu "
+        "topologyResult=%s topologyInput=%u topologyOutput=%u "
+        "topologyEligible=%u topologyMissingProvenance=%u "
+        "topologyPositionGroups=%u topologyBoundaryGroups=%u "
+        "topologyAdjusted=%u topologyBoundaryEdges=%u "
+        "topologyManifoldEdges=%u topologyNonmanifoldEdges=%u "
+        "topologyTJunctions=%u topologySplitSources=%u "
+        "topologySplitTriangles=%u topologyCoplanarPairs=%u "
+        "topologyMaterialPairs=%u topologyDuplicatePairs=%u "
+        "topologyOwnershipGroups=%u topologyReorders=%u obj=%s\n",
         header.version,
         static_cast<unsigned long long>(header.frame_index),
         header.input_poll,
         header.triangle_count,
         static_cast<unsigned long long>(valid_vertices),
+        static_cast<unsigned long long>(source_vertices),
+        static_cast<unsigned long long>(track_source_vertices),
+        static_cast<unsigned long long>(track_missing_source_vertices),
+        unique_track_sources.size(),
         static_cast<unsigned long long>(track_triangles),
         static_cast<unsigned long long>(vehicle_triangles),
         track_objects.size(),
@@ -235,7 +325,26 @@ int main(int argc, char** argv) {
         static_cast<unsigned long long>(screen_error_over_ten),
         static_cast<unsigned long long>(track_screen_error_over_two),
         static_cast<unsigned long long>(vehicle_screen_error_over_two),
-        argc == 3 ? argv[2] : "none");
+        opengt::render::world_topology_result_name(topology_result),
+        topology.input_commands,
+        topology.output_commands,
+        topology.eligible_track_commands,
+        topology.skipped_without_provenance,
+        topology.exact_position_groups,
+        topology.authored_boundary_groups,
+        topology.adjusted_vertex_instances,
+        topology.boundary_edges,
+        topology.manifold_edges,
+        topology.nonmanifold_edges,
+        topology.exact_t_junctions,
+        topology.split_source_triangles,
+        topology.emitted_split_triangles,
+        topology.coplanar_overlap_pairs,
+        topology.material_overlap_pairs,
+        topology.exact_duplicate_pairs,
+        topology.ownership_components,
+        topology.ownership_reorders,
+        argc >= 3 ? argv[2] : "none");
     return valid_vertices == static_cast<std::uint64_t>(
         header.triangle_count) * 3 ? 0 : 1;
 }

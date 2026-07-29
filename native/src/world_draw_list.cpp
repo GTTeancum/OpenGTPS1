@@ -211,6 +211,8 @@ WorldDrawListResult build_world_draw_list(
             command.object_id = triangle.object_id;
             command.model_pointer = triangle.model_pointer;
             command.transform_id = triangle.transform_id;
+            command.source_command_index =
+                static_cast<std::uint32_t>(index);
             command.channel = is_main
                 ? WorldViewChannel::main_view
                 : WorldViewChannel::secondary_view;
@@ -258,6 +260,16 @@ WorldDrawListResult build_world_draw_list(
                 destination.r = source.r;
                 destination.g = source.g;
                 destination.b = source.b;
+                destination.model_x = source.model_x;
+                destination.model_y = source.model_y;
+                destination.model_z = source.model_z;
+                destination.provenance_flags =
+                    source.source_vertex_identity != 0 ? 1U : 0U;
+                destination.source_vertex_identity =
+                    source.source_vertex_identity;
+                destination.exact_view_x = source.view_x;
+                destination.exact_view_y = source.view_y;
+                destination.exact_view_z = source.view_z;
             }
             normal(&command);
             result.commands.push_back(command);

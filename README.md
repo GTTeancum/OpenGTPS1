@@ -186,14 +186,25 @@ object-scoped depth that preserves GT2 ordering layers, explicit optional
 dithering, CPU-oracle comparison, a `--window` inspection mode, and viewer-only
 `--scale 1` through `--scale 8` diagnostic output. The scale switch rerasterizes
 at the requested size and is separate from the deferred wrapper
-resolution/widescreen work. Validate a captured world frame twice with bounded
-lossless PNG output:
+resolution/widescreen work.
+
+World-capture format version 4 supplies capture-stable authored track vertex
+identity. The portable topology pass uses that identity plus exact integer GTE
+view coordinates to join authored sector boundaries, subdivide exact
+T-junctions, and choose deterministic ownership for same-material coplanar
+overlap. It performs no proximity search or screen-space triangle expansion.
+The D3D11 point sampler also treats PS1 integer UVs as texel centers; this
+removes the intermittent Red Rock replay road line around 0:33 without padding.
+The native renderer is still standalone and has not yet replaced packaged live
+race/replay presentation.
+
+Validate a captured world frame twice with bounded lossless PNG output:
 
 ```powershell
 cmake -S native -B build\native
 cmake --build build\native --config Release
 powershell -ExecutionPolicy Bypass -File tools\validate_world_renderer.ps1 `
-  -Capture artifacts\modern-world-v3-vehicles\race-frame.ogtwcap
+  -Capture artifacts\modern-world-v4-topology-live\race-frame.ogtwcap
 ```
 
 See

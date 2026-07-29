@@ -59,7 +59,9 @@ WorldCaptureReadResult parse_header(
     const std::uint32_t expected_triangle_stride =
         version < 3
             ? world_capture_legacy_triangle_stride
-            : world_capture_triangle_stride;
+            : version == 3
+                ? world_capture_v3_triangle_stride
+                : world_capture_triangle_stride;
     if (header_size != expected_header_size ||
         byte_count != expected_header_size ||
         u32(bytes + 48) != expected_triangle_stride)
@@ -198,11 +200,14 @@ void parse_vertex(
     vertex->projection_offset_x = header.projection_offset_x;
     vertex->projection_offset_y = header.projection_offset_y;
     vertex->projection_plane = header.projection_plane;
+    vertex->source_vertex_identity = 0;
     if (header.version >= 3) {
         vertex->projection_offset_x = i32(bytes + 40);
         vertex->projection_offset_y = i32(bytes + 44);
         vertex->projection_plane = u32(bytes + 48);
     }
+    if (header.version >= 4)
+        vertex->source_vertex_identity = u32(bytes + 52);
     if (vertex->world_valid)
         calculate_world(header, vertex);
     else
@@ -239,7 +244,8 @@ void parse_triangle(
         triangle->draw_offset_y = i16(bytes + 46);
     }
     triangle->transform_id = u64(bytes + 48);
-    const std::size_t vertex_stride = header.version >= 3 ? 52 : 40;
+    const std::size_t vertex_stride =
+        header.version >= 4 ? 56 : header.version >= 3 ? 52 : 40;
     parse_vertex(bytes + 56, header, &triangle->vertices[0]);
     parse_vertex(
         bytes + 56 + vertex_stride,
