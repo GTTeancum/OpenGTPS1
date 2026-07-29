@@ -102,6 +102,7 @@ internal static class HostWindow
     public static void Present(Gpu? gpu)
     {
         _gpu = gpu;
+        gpu?.CapturePresentedFrame();
         if (_headless || _window == null) return;
         try { _window.DoEvents(); }
         catch (Exception e) {

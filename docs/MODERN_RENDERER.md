@@ -28,6 +28,52 @@ The current C# runtime will initially call the native core through a narrow
 C-compatible bridge. Original Xbox support also requires a C++ RecompOne
 emitter/runtime path; the CLR-based guest runtime cannot be carried to NXDK.
 
+## Projected capture bridge
+
+The first executable vertical slice is deliberately narrower than the final
+scene contract. RecompOne can capture one real race draw stream as:
+
+- an 80-byte, little-endian `OGTPCAP` header;
+- fixed 96-byte projected triangle records in original submission order
+  (polygon triangles directly and rectangle sprites as two triangles); and
+- one complete 1024 x 512 BGR555 VRAM snapshot, including an explicit HLE
+  framebuffer/texture readback.
+
+The runtime waits for the requested input poll, captures one geometry list, and
+atomically publishes the file only after VRAM is present. Triangle storage is
+hard-capped at 262,144 records (25 MiB) and VRAM adds exactly 1 MiB. A normal
+GT2 race frame is about 1.6 MiB. Captures and rendered evidence live under the
+ignored `artifacts\` tree and cannot bloat source control.
+
+The native C++17 loader takes caller-owned triangle and VRAM buffers. The
+allocation-free CPU reference rasterizer reconstructs PS1 4/8/15-bit textures,
+CLUTs, texture windows, mask behavior, transparency, draw order, dithering, and
+affine or perspective interpolation. The command-line tool writes compact QOI
+or universally viewable PNG output, can extract the exact captured framebuffer
+as a VRAM reference, and emits deterministic RGBA hashes.
+
+Build the native target, then capture and render the same deterministic race
+frame both ways:
+
+```powershell
+cmake -S native -B build\native
+cmake --build build\native --config Release
+powershell -ExecutionPolicy Bypass -File tools\capture_projected_scene.ps1 `
+  -LoosePath C:\path\to\OpenGTPS1 -AiAutoDrive
+```
+
+The script refuses success unless both runtime checks prove SDL's dummy audio
+driver, the `.ogtcap` file stays between 1 and 32 MiB, both independent native
+renders and the VRAM-reference extraction finish, and the wrapper settings
+file remains byte-identical.
+
+This bridge is not presented as the modern renderer itself. It still starts
+from projected PS1 XY and opportunistic GTE depth, so it cannot establish
+authored model adjacency, world-space lighting, a free camera, or Xbox-ready
+vertex buffers. Its purpose is to give the native core a real, deterministic
+GT2 workload and a compatibility oracle while world-space extraction replaces
+it field by field.
+
 ## Texture projection
 
 Race vertices will carry model/world position through the native scene path.
@@ -118,8 +164,10 @@ unified-memory limit. It will use:
 
 ## Milestones
 
-1. Capture a deterministic race frame with camera, geometry, materials, object
-   identity, and original draw order.
+0. Capture and independently rasterize the live projected draw stream and VRAM
+   as a bounded migration fixture.
+1. Capture a deterministic world-space race frame with camera, geometry,
+   materials, object identity, and original draw order.
 2. Render that capture in a standalone PC viewer and compare it against the
    compatibility renderer.
 3. Replace screen-space road padding with explicit boundary stitching and add

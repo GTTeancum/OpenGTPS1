@@ -10,6 +10,24 @@ visible and repeatable in the packaged build at:
 
 - [x] Establish a portable C++17 scene contract and explicit topology-based
   boundary stitcher with desktop unit tests.
+- [x] Capture one bounded live projected race draw stream plus complete HLE
+  VRAM, load it through the native C++ core, and independently render
+  deterministic affine/perspective PNGs as a migration fixture.
+  - `tools\capture_projected_scene.ps1` captures at a requested input poll,
+    hard-caps triangle data at 25 MiB, adds exactly 1 MiB of BGR555 VRAM, and
+    atomically publishes only a complete file.
+  - The native reference path reconstructs PS1 textures/CLUTs, draw order,
+    masks, transparency, dithering, and both interpolation modes without
+    graphics-API dependencies or hidden core allocations.
+  - Current live Red Rock evidence contains 5,493 triangles in a 1,575,984-byte
+    capture. The independent perspective render used coherent depth on 3,213
+    triangles and differs from affine across 20,207 of 76,800 pixels
+    (25.31 dB PSNR). Perspective, affine, and the exact captured VRAM reference
+    are ordinary 320x240 PNGs; automation proved the SDL dummy driver twice,
+    restored the caller's audio environment, and left wrapper settings
+    unchanged.
+  - This projected fixture does not satisfy the world-space scene milestone
+    below; it is the deterministic compatibility oracle used to reach it.
 - [ ] Capture a deterministic race scene containing camera, world geometry,
   materials, visibility identity, and original draw order.
 - [ ] Render the captured scene through a standalone PC backend and compare it

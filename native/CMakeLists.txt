@@ -6,6 +6,8 @@ option(OPENGT_BUILD_TESTS "Build native renderer core tests" ON)
 
 add_library(opengt_renderer_core STATIC
     src/geometry_stitcher.cpp
+    src/projected_capture.cpp
+    src/projected_reference_renderer.cpp
 )
 
 target_include_directories(opengt_renderer_core
@@ -17,6 +19,11 @@ target_compile_features(opengt_renderer_core PUBLIC cxx_std_17)
 
 if(MSVC)
     target_compile_options(opengt_renderer_core PRIVATE /W4 /permissive-)
+    target_compile_definitions(
+        opengt_renderer_core
+        PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+    )
 else()
     target_compile_options(opengt_renderer_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -34,4 +41,25 @@ if(OPENGT_BUILD_TESTS)
         NAME opengt_renderer_core_tests
         COMMAND opengt_renderer_core_tests
     )
+
+    add_executable(opengt_projected_capture_tests
+        tests/projected_capture_tests.cpp
+    )
+    target_link_libraries(
+        opengt_projected_capture_tests
+        PRIVATE
+            opengt_renderer_core
+    )
+    target_compile_features(opengt_projected_capture_tests PRIVATE cxx_std_17)
+
+    add_test(
+        NAME opengt_projected_capture_tests
+        COMMAND opengt_projected_capture_tests
+    )
 endif()
+
+add_executable(opengt_capture_render
+    tools/capture_render.cpp
+)
+target_link_libraries(opengt_capture_render PRIVATE opengt_renderer_core)
+target_compile_features(opengt_capture_render PRIVATE cxx_std_17)

@@ -5,6 +5,9 @@ namespace RecompOne.Runtime;
 
 public sealed partial class Gpu
 {
+    readonly ProjectedSceneCapture _projectedCapture = new();
+    long _projectedCaptureFrame;
+
     static bool HleOn => GpuHle.Active && GpuHle.Backend is { Ready: true };
     bool DitherEnabled => _dither && ConfigManager.View.Ps1Dithering;
 
@@ -38,6 +41,105 @@ public sealed partial class Gpu
         var be = GpuHle.Backend!;
         be.SetDrawEnv(CurEnv());
         be.DrawTri(HV(a), HV(b), HV(c), PrimOf(tex, semi, raw, clut, gouraud));
+    }
+
+    void CaptureTri(
+        in Vert a,
+        in Vert b,
+        in Vert c,
+        bool tex,
+        bool gouraud,
+        bool semi,
+        bool raw,
+        int clut)
+    {
+        var flags = PrimOf(tex, semi, raw, clut, gouraud);
+        var ha = HV(a);
+        var hb = HV(b);
+        var hc = HV(c);
+        CaptureHleTri(in ha, in hb, in hc, in flags);
+    }
+
+    void CaptureHleTri(
+        in HleVertex a,
+        in HleVertex b,
+        in HleVertex c,
+        in PrimFlags flags)
+    {
+        var environment = CurEnv();
+        _projectedCapture.RecordTriangle(
+            _projectedCaptureFrame + 1,
+            Host.InputManager.CurrentPoll,
+            in environment,
+            in a,
+            in b,
+            in c,
+            in flags);
+    }
+
+    void CaptureRect(
+        int x,
+        int y,
+        int w,
+        int h,
+        int u,
+        int v,
+        int clut,
+        int r,
+        int g,
+        int b,
+        bool textured,
+        bool semi,
+        bool raw)
+    {
+        var flags = PrimOf(textured, semi, raw, clut);
+        var a = new HleVertex
+        {
+            X = x, Y = y, U = (short)u, V = (short)v,
+            R = (byte)r, G = (byte)g, B = (byte)b,
+        };
+        var topRight = a;
+        topRight.X += w;
+        topRight.U = (short)(u + w);
+        var bottomLeft = a;
+        bottomLeft.Y += h;
+        bottomLeft.V = (short)(v + h);
+        var bottomRight = topRight;
+        bottomRight.Y += h;
+        bottomRight.V = (short)(v + h);
+        CaptureHleTri(in a, in topRight, in bottomLeft, in flags);
+        CaptureHleTri(
+            in topRight,
+            in bottomRight,
+            in bottomLeft,
+            in flags);
+    }
+
+    internal void CapturePresentedFrame()
+    {
+        _projectedCaptureFrame++;
+        if (_projectedCapture.NeedsVramSnapshot && HleOn)
+        {
+            GpuHle.Backend!.ReadVram(
+                0,
+                0,
+                VramShadow.Width,
+                VramShadow.Height,
+                Shadow.Pixels);
+        }
+        var display = new HleDispEnv
+        {
+            X = DisplayX,
+            Y = DisplayY,
+            W = DisplayWidth,
+            H = DisplayHeight,
+            Rgb24 = Display24Bit,
+        };
+        _projectedCapture.OnPresentedFrame(
+            _projectedCaptureFrame,
+            Host.InputManager.CurrentPoll,
+            in display,
+            Shadow.Pixels);
     }
 
     void HleRect(int x, int y, int w, int h, int u, int v, int clut, int r, int g, int b, bool tex, bool semi, bool raw)

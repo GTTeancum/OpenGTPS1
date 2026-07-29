@@ -106,6 +106,10 @@ public sealed partial class Gpu
                 cmd, tex, quad, traceVertices);
         }
 
+        CaptureTri(v[0], v[1], v[2], tex, gouraud, semi, raw, clut);
+        if (quad)
+            CaptureTri(v[1], v[2], v[3], tex, gouraud, semi, raw, clut);
+
         if (HleOn)
         {
             HleTri(v[0], v[1], v[2], tex, gouraud, semi, raw, clut);
@@ -211,6 +215,8 @@ public sealed partial class Gpu
         if (sz == 0) { uint wh = _fifo[idx]; w = (int)(wh & 0xFFFF); h = (int)((wh >> 16) & 0xFFFF); }
         else { w = h = sz == 1 ? 1 : sz == 2 ? 8 : 16; }
 
+        CaptureRect(
+            x, y, w, h, u0, v0, clut, cr, cg, cb, tex, semi, raw);
         if (HleOn) { HleRect(x, y, w, h, u0, v0, clut, cr, cg, cb, tex, semi, raw); return; }
 
         for (int dy = 0; dy < h; dy++)
