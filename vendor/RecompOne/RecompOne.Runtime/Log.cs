@@ -1,0 +1,49 @@
+namespace RecompOne.Runtime;
+
+public static class Log
+{
+    public static bool BiosOn =
+        Environment.GetEnvironmentVariable("RECOMPONE_TRACE_BIOS") == "1";
+    public static bool SpuOn = false;
+    public static bool GpuOn = Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GPU") == "1";
+    public static bool DmaOn = Environment.GetEnvironmentVariable("RECOMPONE_TRACE_DMA") == "1";
+    public static bool CdOn = false;
+    public static bool SdkOn = false;
+    public static bool MdecOn = Environment.GetEnvironmentVariable("RECOMPONE_TRACE_MDEC") == "1";
+
+    public static void Mdec(string m)
+    {
+        if (MdecOn) Console.WriteLine($"[MDEC] {m}");
+    }
+
+    public static void Bios(string m)
+    {
+        if (BiosOn) Console.WriteLine($"[BIOS] {m}");
+    }
+
+    public static void Spu(string m)
+    {
+        if (SpuOn)  Console.WriteLine($"[SPU] {m}");
+    }
+
+    public static void Gpu(string m)
+    {
+        if (GpuOn)  
+            Console.WriteLine($"[GPU] {m}");
+    }
+
+    public static void Dma(string m)
+    {
+        if (DmaOn)  Console.WriteLine($"[DMA] {m}");
+    }
+
+    public static void Cd(string m)
+    {
+        if (CdOn)   Console.WriteLine($"[CD] {m}");
+    }
+
+    public static void Sdk(string m)
+    {
+        if (SdkOn)  Console.WriteLine($"[SDK] {m}");
+    }
+}

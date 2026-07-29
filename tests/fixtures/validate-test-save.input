@@ -1,0 +1,13 @@
+# Enter Simulation Mode with the generated card auto-loaded.
+680+8=CROSS,START
+760+3=RIGHT
+780+3=RIGHT
+820+4=CROSS
+1100+1=CAPTURE
+
+# From Home on the overview map, select License.
+1260+4=RIGHT
+1300+4=CROSS
+1600+1=CAPTURE
+1640+4=CROSS
+1900+1=CAPTURE

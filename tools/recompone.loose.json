@@ -1,0 +1,51 @@
+{
+  "formatVersion": 1,
+  "volume": "GRANTURISMO2",
+  "leadOutLba": 294154,
+  "metadataSectors": {},
+  "files": [
+    {
+      "path": "DISC_META.DAT",
+      "lba": 16,
+      "size": 16384
+    },
+    {
+      "path": "SYSTEM.CNF",
+      "lba": 23,
+      "size": 68
+    },
+    {
+      "path": "SCUS_944.88",
+      "lba": 24,
+      "size": 628736
+    },
+    {
+      "path": "GT2.OVL",
+      "lba": 331,
+      "size": 289752
+    },
+    {
+      "path": "GT2.VOL",
+      "lba": 473,
+      "size": 488241152
+    },
+    {
+      "path": "MUSIC.DAT",
+      "lba": 238872,
+      "size": 85262336
+    },
+    {
+      "path": "FAULTY.PSX",
+      "lba": 280504,
+      "size": 27648000
+    }
+  ],
+  "tracks": [
+    {
+      "number": 1,
+      "index0Lba": 0,
+      "startLba": 0,
+      "endLba": 294154
+    }
+  ]
+}

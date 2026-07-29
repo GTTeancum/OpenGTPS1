@@ -1,0 +1,38 @@
+# Load the packaged convenience save and reach Home.
+680+8=CROSS,START
+760+3=RIGHT
+780+3=RIGHT
+820+4=CROSS
+1100+1=CAPTURE
+
+# Move from Home to the lower-right GT-map exit.
+1220+4=DOWN
+1260+1=CAPTURE
+1300+4=RIGHT
+1340+1=CAPTURE
+1380+4=DOWN
+1420+1=CAPTURE
+1460+4=RIGHT
+1500+1=CAPTURE
+1540+4=CROSS
+1660+1=CAPTURE
+
+# Main menu: Start Game -> Replay Theater -> Options -> Save Game.
+1740+4=DOWN
+1780+1=CAPTURE
+1820+4=DOWN
+1860+1=CAPTURE
+1900+4=DOWN
+1940+1=CAPTURE
+1980+4=CROSS
+2100+1=CAPTURE
+
+# Select the existing slot/card and confirm the overwrite prompts.
+2180+4=CROSS
+2300+1=CAPTURE
+2380+4=LEFT
+2420+4=CROSS
+2500+1=CAPTURE
+2580+4=CROSS
+2700+1=CAPTURE
+3200+1=CAPTURE

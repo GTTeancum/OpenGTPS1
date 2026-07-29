@@ -1,0 +1,46 @@
+# Original disc image (user-supplied)
+*.ccd
+*.cue
+*.img
+*.sub
+*.bin
+*.iso
+*.chd
+*.pbp
+
+# Extracted proprietary game data and user content
+*.dat
+*.ovl
+*.vol
+*.psx
+*.sav
+*.mcr
+*.ogg
+*.mp4
+
+# Extracted/generated content
+work/
+generated/
+artifacts/
+OpenGTPS1/
+.local-forks/
+
+# .NET/Python transient files
+bin/
+obj/
+__pycache__/
+*.pyc
+*.dll
+*.exe
+*.pdb
+*.xbe
+*.xiso
+.vs/
+.vscode/
+.idea/
+
+# Runtime state and logs
+settings.json
+*.log
+*.ppm
+*.wav

@@ -1,0 +1,61 @@
+# Title -> GT Mode. The packaged convenience card auto-loads its purchased,
+# upgraded Mazda Protege and starts on the overview map.
+680+8=CROSS,START
+760+3=RIGHT
+780+3=RIGHT
+820+4=CROSS
+1100+1=CAPTURE
+
+# Overview map -> Go Race -> Special Events -> Sunday Cup.
+1220+4=LEFT
+1260+4=CROSS
+1440+4=CROSS
+1640+3=RIGHT
+1660+3=RIGHT
+1700+4=CROSS
+1900+4=CROSS
+2100+1=CAPTURE
+
+# Event details -> Red Rock Valley -> GO.
+2140+4=SQUARE
+2320+4=RIGHT
+2360+4=CROSS
+2540+4=LEFT
+2580+4=CROSS
+2780+4=SQUARE
+2900+4=UP
+2920+4=LEFT
+2960+4=CROSS
+3160+4=DOWN
+3180+4=RIGHT
+3200+4=RIGHT
+3240+4=CROSS
+3600+1=CAPTURE
+
+# Single Race menu -> Start Race -> automatic transmission.
+4120+4=DOWN
+4160+4=DOWN
+4200+4=DOWN
+4240+4=DOWN
+4280+4=CROSS
+4920+4=CROSS
+5600+1=CAPTURE
+
+# Native AI drives the exact saved player vehicle. No driving input follows.
+7000+1=CAPTURE
+8000+1=CAPTURE
+9000+1=CAPTURE
+10000+1=CAPTURE
+20000+1=CAPTURE
+30000+1=CAPTURE
+
+# Confirm Results once, then do not touch the replay controller.
+30500+4=CROSS
+32000+1=CAPTURE
+35000+1=CAPTURE
+38300+1=CAPTURE
+40000+1=CAPTURE
+45000+1=CAPTURE
+50000+1=CAPTURE
+55000+1=CAPTURE
+60000+1=CAPTURE
