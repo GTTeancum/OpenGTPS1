@@ -6,6 +6,7 @@ namespace RecompOne.Runtime;
 public sealed partial class Gpu
 {
     readonly ProjectedSceneCapture _projectedCapture = new();
+    readonly WorldSceneCapture _worldCapture = new();
     long _projectedCaptureFrame;
 
     static bool HleOn => GpuHle.Active && GpuHle.Backend is { Ready: true };
@@ -58,6 +59,30 @@ public sealed partial class Gpu
         var hb = HV(b);
         var hc = HV(c);
         CaptureHleTri(in ha, in hb, in hc, in flags);
+        if (WorldCaptureContext.CaptureEnabled && _worldCapture.Enabled)
+        {
+            Gte.TryGetPacketOrigin(
+                a.SourceAddress,
+                out GteProjectionOrigin originA);
+            Gte.TryGetPacketOrigin(
+                b.SourceAddress,
+                out GteProjectionOrigin originB);
+            Gte.TryGetPacketOrigin(
+                c.SourceAddress,
+                out GteProjectionOrigin originC);
+            var environment = CurEnv();
+            _worldCapture.RecordTriangle(
+                _projectedCaptureFrame + 1,
+                Host.InputManager.CurrentPoll,
+                in environment,
+                in ha,
+                in hb,
+                in hc,
+                in originA,
+                in originB,
+                in originC,
+                in flags);
+        }
     }
 
     void CaptureHleTri(
@@ -118,7 +143,9 @@ public sealed partial class Gpu
     internal void CapturePresentedFrame()
     {
         _projectedCaptureFrame++;
-        if (_projectedCapture.NeedsVramSnapshot && HleOn)
+        if ((_projectedCapture.NeedsVramSnapshot ||
+             (WorldCaptureContext.CaptureEnabled &&
+              _worldCapture.NeedsVramSnapshot)) && HleOn)
         {
             GpuHle.Backend!.ReadVram(
                 0,
@@ -140,6 +167,14 @@ public sealed partial class Gpu
             Host.InputManager.CurrentPoll,
             in display,
             Shadow.Pixels);
+        if (WorldCaptureContext.CaptureEnabled)
+        {
+            _worldCapture.OnPresentedFrame(
+                _projectedCaptureFrame,
+                Host.InputManager.CurrentPoll,
+                in display,
+                Shadow.Pixels);
+        }
     }
 
     void HleRect(int x, int y, int w, int h, int u, int v, int clut, int r, int g, int b, bool tex, bool semi, bool raw)

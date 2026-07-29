@@ -110,9 +110,6 @@ public static class GT2Compat
     public static void TraceVehicleLodSelection(
         uint carState, uint renderRequest, IMemory m)
     {
-        if (!TraceVehicleLod)
-            return;
-
         uint selector = m.ReadU8(renderRequest);
         uint modelSet = m.ReadU32(renderRequest + 0xCu);
         uint modelPointer = 0;
@@ -122,6 +119,10 @@ public static class GT2Compat
             modelPointer =
                 m.ReadU32(modelSet + 0x870u + modelIndex * 8u);
         }
+        WorldCaptureContext.BeginVehicle(carState, modelPointer);
+
+        if (!TraceVehicleLod)
+            return;
 
         lock (VehicleLodSelectorCounts)
         {

@@ -28,8 +28,24 @@ visible and repeatable in the packaged build at:
     unchanged.
   - This projected fixture does not satisfy the world-space scene milestone
     below; it is the deterministic compatibility oracle used to reach it.
-- [ ] Capture a deterministic race scene containing camera, world geometry,
+- [x] Capture a deterministic race scene containing camera, world geometry,
   materials, visibility identity, and original draw order.
+  - `tools\capture_world_scene.ps1` captures upstream GTE model/view data,
+    complete camera transforms, GT2 track/vehicle submission identity,
+    material state, and original triangle order into the bounded `OGTWCAP`
+    format. UI and other primitives without world provenance are excluded
+    rather than inferred from screen pixels.
+  - The portable loader validates the format using caller-owned buffers,
+    derives world coordinates from the captured camera, and exports an OBJ
+    grouped by stable object identity. Its synthetic unit fixture verifies
+    identity and exact world-coordinate recovery.
+  - Current live Red Rock evidence contains 4,999 world triangles / 14,997
+    valid vertices: 2,639 track, 1,817 vehicle, and 543 transform-complete
+    unclassified effect/environment triangles. It records 48 identified track
+    objects, two identified vehicles, 52 object/model combinations, 151
+    materials, and 62 transforms; camera round-trip RMS is `0.000000`. The
+    1,928,528-byte capture was produced with SDL dummy audio proven twice and
+    wrapper settings unchanged.
 - [ ] Render the captured scene through a standalone PC backend and compare it
   deterministically with the compatibility renderer.
 - [ ] Replace screen-space triangle padding with model-space boundary

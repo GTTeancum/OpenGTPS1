@@ -74,6 +74,60 @@ vertex buffers. Its purpose is to give the native core a real, deterministic
 GT2 workload and a compatibility oracle while world-space extraction replaces
 it field by field.
 
+## World-space capture
+
+The second executable slice captures GT2 geometry before screen projection
+rather than attempting to reconstruct it from framebuffer pixels. It combines
+three upstream sources:
+
+- the model-space vertex entering each GTE perspective transform;
+- the complete fixed-point GTE rotation and translation plus the resulting
+  camera-space vertex; and
+- object context installed at GT2's track submission and vehicle model
+  submission boundaries.
+
+Track objects use their visibility-table index as a stable identifier.
+Vehicles use a stable per-car-state identifier. Every triangle retains its
+original submission index, material/PS1 draw state, model pointer, object
+identity, transform identity, screen coordinates, model coordinates, view
+coordinates, and vertex color. UI sprites and other primitives without a
+world-space GTE origin are deliberately excluded instead of being guessed.
+The dominant track transform supplies the frame camera; its fixed-point
+inverse produces world coordinates in the native loader.
+
+The little-endian `OGTWCAP` format has a fixed 128-byte header, fixed 176-byte
+triangle records, and one complete 1 MiB VRAM snapshot. It is hard-capped at
+262,144 triangles. The C++17 loader validates every bound into caller-owned
+storage, derives world coordinates, and rejects invalid camera transforms or
+vertices. The inspector preserves draw order while exporting a diagnostic OBJ
+grouped by stable object identity.
+
+Capture and validate the deterministic race frame with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\capture_world_scene.ps1 `
+  -LoosePath C:\path\to\OpenGTPS1 -AiAutoDrive
+```
+
+The helper delegates launch safety to the existing capture harness: headless
+audio must report SDL's dummy driver twice, the caller's audio environment and
+wrapper settings are restored, and incomplete or unexpectedly large captures
+are rejected.
+
+Current Red Rock evidence at input poll 10,000 contains 4,999 world triangles
+and 14,997 valid vertices. Of those triangles, 2,639 are identified track
+geometry, 1,817 are identified vehicles, and 543 retain complete transforms
+but remain unclassified effects/environment submissions. The scene has 48
+identified track objects, two identified vehicles, 52 object/model
+combinations, 151 materials, and 62 transforms. Reapplying the captured camera
+to every derived world vertex has 0.000000 RMS error. The diagnostic path is
+environment-gated; normal gameplay avoids provenance construction and
+packet-origin lookup.
+
+This capture completes the extraction contract, not the GPU backend. It does
+not yet deduplicate topology, stitch road boundaries, replace GT2 visibility,
+or draw the world-space records in the running game.
+
 ## Texture projection
 
 Race vertices will carry model/world position through the native scene path.
@@ -166,8 +220,8 @@ unified-memory limit. It will use:
 
 0. Capture and independently rasterize the live projected draw stream and VRAM
    as a bounded migration fixture.
-1. Capture a deterministic world-space race frame with camera, geometry,
-   materials, object identity, and original draw order.
+1. **Complete:** capture a deterministic world-space race frame with camera,
+   geometry, materials, object identity, and original draw order.
 2. Render that capture in a standalone PC viewer and compare it against the
    compatibility renderer.
 3. Replace screen-space road padding with explicit boundary stitching and add

@@ -66,6 +66,18 @@ def main() -> int:
     )
 
     replace_once(
+        main,
+        """        c.RA = m.ReadU32((c.SP + 0x5Cu));
+        c.FP = m.ReadU32((c.SP + 0x58u));
+""",
+        """        RecompOne.Runtime.WorldCaptureContext.EndObject();
+        c.RA = m.ReadU32((c.SP + 0x5Cu));
+        c.FP = m.ReadU32((c.SP + 0x58u));
+""",
+        "vehicle world-capture object end hook",
+    )
+
+    replace_once(
         race,
         """    public static void func_8003E0C4(CpuContext c, IMemory m)
     {
@@ -135,6 +147,45 @@ def main() -> int:
         c.S1 = c.SP + 0x10u;
 """,
         "full-track race visibility list",
+    )
+
+    replace_once(
+        race,
+        """        m.WriteU16((c.S1 + 0xEu), (ushort)c.V1);
+        c.S5 = m.ReadU32((c.SP + 0x1054u));
+""",
+        """        m.WriteU16((c.S1 + 0xEu), (ushort)c.V1);
+        RecompOne.Runtime.WorldCaptureContext.RegisterTrackObject(
+            c.S1,
+            m.ReadU16((c.S2 + 0x2u)) & 0x3FFFu,
+            m.ReadU32((c.S1 + 0x4u)));
+        c.S5 = m.ReadU32((c.SP + 0x1054u));
+""",
+        "track world-capture identity registration",
+    )
+
+    replace_once(
+        race,
+        """        c.S0 = m.ReadU32((c.S6 + 0x4u));
+        c.S1 = m.ReadU16((c.S6 + 0xCu));
+""",
+        """        c.S0 = m.ReadU32((c.S6 + 0x4u));
+        RecompOne.Runtime.WorldCaptureContext.BeginTrackObject(c.S6, c.S0);
+        c.S1 = m.ReadU16((c.S6 + 0xCu));
+""",
+        "track world-capture object begin hook",
+    )
+
+    replace_once(
+        race,
+        """        c.RA = m.ReadU32((c.SP + 0x107Cu));
+        c.FP = m.ReadU32((c.SP + 0x1078u));
+""",
+        """        RecompOne.Runtime.WorldCaptureContext.EndObject();
+        c.RA = m.ReadU32((c.SP + 0x107Cu));
+        c.FP = m.ReadU32((c.SP + 0x1078u));
+""",
+        "track world-capture object end hook",
     )
 
     replace_once(

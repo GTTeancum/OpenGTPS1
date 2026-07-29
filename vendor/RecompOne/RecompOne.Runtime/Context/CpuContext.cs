@@ -6,31 +6,54 @@ public sealed class CpuContext
 {
     readonly uint[] _gpr = new uint[32];
     readonly GteProjectedValue[] _projected = new GteProjectedValue[32];
+    readonly GteProjectionOrigin[] _projectionOrigins =
+        new GteProjectionOrigin[32];
 
     uint Get(int index)
     {
         uint value = index == 0 ? 0u : _gpr[index];
         if (Gte.ProjectionTrackingEnabled)
-            Gte.NotifyCpuRegisterRead(
-                value,
-                index == 0 ? default : _projected[index]);
+        {
+            if (WorldCaptureContext.CaptureEnabled)
+            {
+                Gte.NotifyCpuRegisterRead(
+                    value,
+                    index == 0 ? default : _projected[index],
+                    index == 0 ? default : _projectionOrigins[index]);
+            }
+            else
+            {
+                Gte.NotifyCpuRegisterRead(
+                    value,
+                    index == 0 ? default : _projected[index]);
+            }
+        }
         return value;
     }
 
     void Set(int index, uint value)
     {
-        GteProjectedValue projected =
-            Gte.ProjectionTrackingEnabled
-                ? Gte.ConsumeCpuRegisterWrite(value)
-                : default;
+        GteProjectionOrigin origin = default;
+        GteProjectedValue projected = default;
+        if (Gte.ProjectionTrackingEnabled)
+        {
+            projected = WorldCaptureContext.CaptureEnabled
+                ? Gte.ConsumeCpuRegisterWrite(value, out origin)
+                : Gte.ConsumeCpuRegisterWrite(value);
+        }
         if (index == 0)
             return;
         _gpr[index] = value;
         _projected[index] = projected;
+        if (WorldCaptureContext.CaptureEnabled)
+            _projectionOrigins[index] = origin;
     }
 
-    public void ClearProjectionMetadata() =>
+    public void ClearProjectionMetadata()
+    {
         Array.Clear(_projected);
+        Array.Clear(_projectionOrigins);
+    }
 
     // Read-only diagnostics sometimes run inside memory-write callbacks where
     // the normal register getters would themselves alter projection-flow

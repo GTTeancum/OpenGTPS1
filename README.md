@@ -171,12 +171,15 @@ The scripts in `tools\` include bounded capture and regression helpers. The
 input fixtures under `tests\fixtures\` drive deterministic game flows; they do
 not contain game data.
 
-The `modern-renderer` branch also includes a bounded projected-scene bridge.
-After building the native CMake target and development game DLL,
-`tools\capture_projected_scene.ps1` captures one live race frame plus VRAM and
-renders independent perspective and affine PNGs through the portable C++ core.
-See [`docs/MODERN_RENDERER.md`](docs/MODERN_RENDERER.md) for the exact command,
-format boundary, audio safety checks, and the remaining world-space work.
+The `modern-renderer` branch includes bounded projected- and world-scene
+bridges. `tools\capture_projected_scene.ps1` captures one live draw stream plus
+VRAM and renders independent perspective and affine PNGs through the portable
+C++ core. `tools\capture_world_scene.ps1` additionally captures upstream
+model/view coordinates, camera transforms, stable track/vehicle identity,
+materials, and original draw order, then validates and exports the scene
+through the native loader. See
+[`docs/MODERN_RENDERER.md`](docs/MODERN_RENDERER.md) for the formats, exact
+commands, audio-safety checks, and next renderer milestone.
 
 ## Repository layout
 
