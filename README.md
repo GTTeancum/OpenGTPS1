@@ -183,8 +183,11 @@ The branch now also builds `opengt_world_viewer.exe`, a standalone D3D11
 backend over the API-neutral C++17 world draw list. It supports hardware
 rendering, deterministic WARP validation, perspective-correct PS1 materials,
 object-scoped depth that preserves GT2 ordering layers, explicit optional
-dithering, CPU-oracle comparison, and a `--window` inspection mode. Validate a
-captured world frame twice with bounded lossless PNG output:
+dithering, CPU-oracle comparison, a `--window` inspection mode, and viewer-only
+`--scale 1` through `--scale 8` diagnostic output. The scale switch rerasterizes
+at the requested size and is separate from the deferred wrapper
+resolution/widescreen work. Validate a captured world frame twice with bounded
+lossless PNG output:
 
 ```powershell
 cmake -S native -B build\native

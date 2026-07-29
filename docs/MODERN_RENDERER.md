@@ -185,6 +185,12 @@ build\native\Release\opengt_world_viewer.exe `
   artifacts\world-gpu.png --window
 ```
 
+`--scale 1` through `--scale 8` increases the standalone GPU target itself,
+so diagnostic screenshots contain newly rasterized samples rather than a
+post-process enlargement. This is viewer-only evidence plumbing; it does not
+expose or prematurely implement the future wrapper resolution/widescreen
+setting.
+
 This backend is standalone. Integrating it into live race/replay presentation,
 deduplicating authored topology, and replacing the old road-padding path remain
 later milestones.

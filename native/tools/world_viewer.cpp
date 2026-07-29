@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -181,7 +182,9 @@ bool show_window(
         GetLastError() != ERROR_CLASS_ALREADY_EXISTS
     )
         return false;
-    RECT rectangle{0, 0, width * 4, height * 4};
+    const int display_scale = width <= 640 ? 4 : 1;
+    RECT rectangle{
+        0, 0, width * display_scale, height * display_scale};
     AdjustWindowRect(&rectangle, WS_OVERLAPPEDWINDOW, FALSE);
     HWND window = CreateWindowExW(
         0,
@@ -217,13 +220,14 @@ int main(int argc, char** argv) {
             stderr,
             "usage: opengt_world_viewer <capture.ogtwcap> <gpu.png> "
             "[--warp] [--no-depth] [--dither] "
-            "[--oracle <oracle.png>] [--window]\n");
+            "[--scale <1-8>] [--oracle <oracle.png>] [--window]\n");
         return 2;
     }
     bool warp = false;
     bool depth = true;
     bool dither = false;
     bool window = false;
+    std::uint32_t scale = 1;
     const char* oracle_path = nullptr;
     for (int index = 3; index < argc; ++index) {
         if (std::strcmp(argv[index], "--warp") == 0)
@@ -234,6 +238,17 @@ int main(int argc, char** argv) {
             dither = true;
         else if (std::strcmp(argv[index], "--window") == 0)
             window = true;
+        else if (
+            std::strcmp(argv[index], "--scale") == 0 &&
+            index + 1 < argc
+        ) {
+            const long parsed = std::strtol(argv[++index], nullptr, 10);
+            if (parsed < 1 || parsed > 8) {
+                std::fprintf(stderr, "--scale must be between 1 and 8\n");
+                return 2;
+            }
+            scale = static_cast<std::uint32_t>(parsed);
+        }
         else if (
             std::strcmp(argv[index], "--oracle") == 0 &&
             index + 1 < argc
@@ -288,15 +303,20 @@ int main(int argc, char** argv) {
             world_draw_list_result_name(list_result));
         return 1;
     }
+    const std::uint32_t output_width =
+        static_cast<std::uint32_t>(header.display_width) * scale;
+    const std::uint32_t output_height =
+        static_cast<std::uint32_t>(header.display_height) * scale;
     const std::size_t output_size =
-        static_cast<std::size_t>(header.display_width) *
-        header.display_height * 4;
+        static_cast<std::size_t>(output_width) *
+        output_height * 4;
     std::vector<std::uint8_t> gpu(output_size);
     WorldGpuRenderStats gpu_stats{};
     const WorldGpuRenderOptions options{
         warp,
         depth,
         dither,
+        scale,
         0xFF402820U,
     };
     const auto gpu_result = render_world_d3d11(
@@ -317,8 +337,8 @@ int main(int argc, char** argv) {
     if (!write_rgba_png(
             argv[2],
             gpu.data(),
-            header.display_width,
-            header.display_height)) {
+            output_width,
+            output_height)) {
         std::fprintf(stderr, "cannot write %s\n", argv[2]);
         return 1;
     }
@@ -335,7 +355,10 @@ int main(int argc, char** argv) {
         static_cast<std::uint32_t>(oracle_triangles.size());
     oracle_header.vram_width = 1024;
     oracle_header.vram_height = 512;
-    std::vector<std::uint8_t> oracle(output_size);
+    const std::size_t reference_size =
+        static_cast<std::size_t>(header.display_width) *
+        header.display_height * 4;
+    std::vector<std::uint8_t> oracle(reference_size);
     const auto oracle_stats = render_projected_capture(
         oracle_header,
         oracle_triangles.data(),
@@ -368,7 +391,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::vector<std::uint8_t> comparison_gpu(output_size);
+    std::vector<std::uint8_t> comparison_gpu(reference_size);
     WorldGpuRenderStats comparison_stats{};
     const auto comparison_result = render_world_d3d11(
         draw_list,
@@ -380,6 +403,7 @@ int main(int argc, char** argv) {
             true,
             false,
             dither,
+            1,
             0xFF402820U,
         },
         &comparison_stats);
@@ -397,7 +421,8 @@ int main(int argc, char** argv) {
             ? 999.0
             : 20.0 * std::log10(255.0 / comparison.rms);
     std::printf(
-        "version=%u frame=%llu poll=%d adapter=%s depth=%s "
+        "version=%u frame=%llu poll=%d adapter=%s resolution=%ux%u "
+        "scale=%u depth=%s "
         "dither=%s commands=%u track=%u vehicles=%u unclassified=%u "
         "materials=%zu secondaryExcluded=%u "
         "drawCalls=%u transparentDrawCalls=%u "
@@ -409,6 +434,9 @@ int main(int argc, char** argv) {
         static_cast<unsigned long long>(header.frame_index),
         header.input_poll,
         warp ? "warp" : "hardware",
+        output_width,
+        output_height,
+        scale,
         depth ? "on" : "off",
         dither ? "on" : "off",
         gpu_stats.commands,
@@ -433,8 +461,8 @@ int main(int argc, char** argv) {
 #if defined(_WIN32)
     if (window && !show_window(
             gpu,
-            header.display_width,
-            header.display_height)) {
+            output_width,
+            output_height)) {
         std::fprintf(stderr, "cannot open viewer window\n");
         return 1;
     }

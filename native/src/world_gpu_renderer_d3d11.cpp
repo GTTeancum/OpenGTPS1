@@ -272,17 +272,29 @@ WorldGpuRenderResult render_world_d3d11(
     WorldGpuRenderOptions options,
     WorldGpuRenderStats* stats
 ) noexcept {
+    const std::uint32_t output_scale = options.output_scale;
+    if (
+        draw_list.display_width <= 0 ||
+        draw_list.display_height <= 0 ||
+        output_scale == 0 ||
+        output_scale > 8
+    )
+        return WorldGpuRenderResult::invalid_argument;
+    const std::uint32_t output_width =
+        static_cast<std::uint32_t>(draw_list.display_width) *
+        output_scale;
+    const std::uint32_t output_height =
+        static_cast<std::uint32_t>(draw_list.display_height) *
+        output_scale;
     const std::size_t required_output =
-        static_cast<std::size_t>(draw_list.display_width) *
-        draw_list.display_height * 4;
+        static_cast<std::size_t>(output_width) *
+        output_height * 4;
     if (
         vram == nullptr ||
         output_rgba == nullptr ||
         stats == nullptr ||
         vram_word_count < 1024U * 512U ||
-        output_size < required_output ||
-        draw_list.display_width <= 0 ||
-        draw_list.display_height <= 0
+        output_size < required_output
     )
         return WorldGpuRenderResult::invalid_argument;
     *stats = {};
@@ -380,8 +392,8 @@ WorldGpuRenderResult render_world_d3d11(
         return WorldGpuRenderResult::resource_failed;
 
     D3D11_TEXTURE2D_DESC color_description{};
-    color_description.Width = draw_list.display_width;
-    color_description.Height = draw_list.display_height;
+    color_description.Width = output_width;
+    color_description.Height = output_height;
     color_description.MipLevels = 1;
     color_description.ArraySize = 1;
     color_description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -503,8 +515,8 @@ WorldGpuRenderResult render_world_d3d11(
     const D3D11_VIEWPORT viewport{
         0.0F,
         0.0F,
-        static_cast<float>(draw_list.display_width),
-        static_cast<float>(draw_list.display_height),
+        static_cast<float>(output_width),
+        static_cast<float>(output_height),
         0.0F,
         1.0F,
     };
@@ -577,24 +589,28 @@ WorldGpuRenderResult render_world_d3d11(
         const D3D11_RECT scissor{
             std::clamp(
                 static_cast<LONG>(
-                    command.clip_x0 - draw_list.display_x),
+                    (command.clip_x0 - draw_list.display_x) *
+                    static_cast<std::int32_t>(output_scale)),
                 0L,
-                static_cast<LONG>(draw_list.display_width)),
+                static_cast<LONG>(output_width)),
             std::clamp(
                 static_cast<LONG>(
-                    command.clip_y0 - draw_list.display_y),
+                    (command.clip_y0 - draw_list.display_y) *
+                    static_cast<std::int32_t>(output_scale)),
                 0L,
-                static_cast<LONG>(draw_list.display_height)),
+                static_cast<LONG>(output_height)),
             std::clamp(
                 static_cast<LONG>(
-                    command.clip_x1 - draw_list.display_x + 1),
+                    (command.clip_x1 - draw_list.display_x + 1) *
+                    static_cast<std::int32_t>(output_scale)),
                 0L,
-                static_cast<LONG>(draw_list.display_width)),
+                static_cast<LONG>(output_width)),
             std::clamp(
                 static_cast<LONG>(
-                    command.clip_y1 - draw_list.display_y + 1),
+                    (command.clip_y1 - draw_list.display_y + 1) *
+                    static_cast<std::int32_t>(output_scale)),
                 0L,
-                static_cast<LONG>(draw_list.display_height)),
+                static_cast<LONG>(output_height)),
         };
         if (scissor.left >= scissor.right ||
             scissor.top >= scissor.bottom)
@@ -707,8 +723,8 @@ WorldGpuRenderResult render_world_d3d11(
             &mapped)))
         return WorldGpuRenderResult::render_failed;
     const std::size_t row_size =
-        static_cast<std::size_t>(draw_list.display_width) * 4;
-    for (int y = 0; y < draw_list.display_height; ++y) {
+        static_cast<std::size_t>(output_width) * 4;
+    for (std::uint32_t y = 0; y < output_height; ++y) {
         std::memcpy(
             output_rgba + static_cast<std::size_t>(y) * row_size,
             static_cast<const std::uint8_t*>(mapped.pData) +
