@@ -6,6 +6,29 @@ visible and repeatable in the packaged build at:
 
 `C:\Programming\GitHub\OpenGTPS1\OpenGTPS1\GranTurismo2PC.exe`
 
+## Native renderer and original Xbox
+
+- [x] Establish a portable C++17 scene contract and explicit topology-based
+  boundary stitcher with desktop unit tests.
+- [ ] Capture a deterministic race scene containing camera, world geometry,
+  materials, visibility identity, and original draw order.
+- [ ] Render the captured scene through a standalone PC backend and compare it
+  deterministically with the compatibility renderer.
+- [ ] Replace screen-space triangle padding with model-space boundary
+  stitching, T-junction subdivision, and deterministic coplanar ownership.
+- [ ] Integrate native race/replay rendering while retaining the proven PS1
+  compositor for menus, HUD, loading screens, and MDEC video.
+- [ ] Add a RecompOne C++ emitter and native guest runtime with no CLR
+  dependency.
+- [ ] Add the NXDK/NV2A backend and validate the same captured scene on an
+  original Xbox.
+- [ ] Fit native runtime, track data, textures, audio, and transient geometry
+  into a measured 64 MiB unified-memory budget.
+- [ ] Port loose-file I/O, input, audio, memory cards, and the complete game
+  loop to the native runtime.
+- [ ] Add backend-neutral lighting/material extension points for future car
+  reflections, normal/bump maps, and specular response.
+
 ## Graphics enhancements
 
 - [x] Fix affine texture projection.

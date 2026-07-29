@@ -37,7 +37,9 @@ OpenGTPS1 is a development build, not a finished release.
 
 [`TO-DO.MD`](TO-DO.MD) is the detailed implementation and validation record.
 [`docs/PORT_PLAN.md`](docs/PORT_PLAN.md) documents the playable vertical slice
-and the RecompOne-specific discoveries behind it.
+and the RecompOne-specific discoveries behind it. The
+[`modern renderer architecture`](docs/MODERN_RENDERER.md) defines the shared PC
+and original-Xbox direction.
 
 ## Requirements
 
