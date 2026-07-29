@@ -96,8 +96,24 @@ visible and repeatable in the packaged build at:
     zero, without padding.
   - Synthetic tests cover exact authored boundary copies, T-junction
     subdivision, and deterministic same-material coplanar ownership.
-- [ ] Integrate native race/replay rendering while retaining the proven PS1
-  compositor for menus, HUD, loading screens, and MDEC video.
+- [x] Integrate native race/replay rendering while retaining the proven PS1
+  presentation path for menus, loading screens, display-mode transitions, and
+  MDEC video, plus PS1 screen-primitive semantics for the HUD.
+  - The packaged runtime records complete provenance, explicit screen-space
+    primitives, and VRAM into three bounded reusable OGTWCAP v4 buffers. A
+    persistent D3D11 worker consumes only the newest frame and publishes
+    reusable RGBA buffers without blocking emulation or touching the
+    filesystem.
+  - `artifacts\live-native-full-tail-fixed` reaches input poll 45,000 through
+    the purchased/upgraded Mazda race and natural replay, renders 19,502
+    native frames, engages the deterministic driver for race pass 1/2 and
+    replay pass 2/2, proves both SDL dummy-audio checks, and exits cleanly.
+    It records no native disable, fatal error, or unhandled exception.
+  - The post-replay 352x300 viewport at 4x scale exceeds the deliberately
+    bounded 4,915,200-byte native output pool. The renderer logs one compositor
+    fallback, returns to the PS1 presentation path without disabling native
+    rendering, then completes audio, native renderer, host, and runtime
+    shutdown.
 - [ ] Add a RecompOne C++ emitter and native guest runtime with no CLR
   dependency.
 - [ ] Add the NXDK/NV2A backend and validate the same captured scene on an
@@ -142,7 +158,7 @@ visible and repeatable in the packaged build at:
     HUD, or camera-cut corruption. Both captures proved dummy audio and left
     wrapper settings unchanged.
 
-- [ ] Remove or conceal seams between streamed road/model sections in the
+- [x] Remove or conceal seams between streamed road/model sections in the
   packaged live renderer.
   - Road sections must meet without visible cracks, background-colored slivers,
     or intermittent gaps as track geometry loads.
@@ -170,9 +186,13 @@ visible and repeatable in the packaged build at:
     pass but the 0.25-native-pixel centroid expansion was insufficient.
   - The compatibility renderer's 0.75-pixel miter is retained only as old
     evidence; it is a screen-space workaround and not the accepted final fix.
-  - The standalone native renderer now resolves authored topology and the
-    0:33 texture-sampling fault without padding. This item remains open until
-    that native path presents live race/replay frames in the packaged build.
+  - The packaged native renderer now resolves authored topology and the 0:33
+    texture-sampling fault without padding. The exact final input-poll 32,492
+    presentation is retained at
+    `artifacts\native-live-replay-final\presentation-32492.png`; it has no
+    diagonal road crack. Screen-space sprites use edge-based sampling while 3D
+    polygons use texel-center sampling, so the minimap/tachometer also avoid
+    the former one-column edge artifacts.
 
 - [x] Extend draw distance far enough to show the entire track.
   - Track geometry and scenery must remain visible to the farthest practical
@@ -271,6 +291,11 @@ visible and repeatable in the packaged build at:
     300-frame race windows measured 59.94 FPS; 49 replay windows measured
     59.91–59.95 FPS (59.9394 average). The host logs frame pacing, guest,
     device, and wait time without changing the user's saved audio settings.
+  - The packaged native-world replay encode rendered 19,470 frames before the
+    normal post-replay display-mode transition, averaging 14.033 ms per native
+    frame with 12 stale-buffer drops (0.06%). GT2 submits its 3D world at
+    30 Hz, so the persistent D3D11 path remains inside its 33.37 ms budget
+    without blocking the emulation thread.
 
 - [x] Eliminate frequent audio stutter.
   - Music, sound effects, and video audio must play continuously during menus,
@@ -457,6 +482,13 @@ visible and repeatable in the packaged build at:
     H.264/yuv420p, 640x480, 30 fps, 233.33 seconds, 35,895,125 bytes,
     SHA-256
     `975DCB1BEBF1D82050442F86179CAB2C77B438876562BAA37E7749A495ABF76F`.
+  - Final native-world evidence:
+    `artifacts\native-live-replay-final\GT2_Native_Enhanced_Replay_Final.mp4`;
+    H.264 High/yuv420p, 640x480, 30 fps, 216.63 seconds, 33,331,101
+    bytes, SHA-256
+    `1E7092C8E5ACE1DE7416BFF185863C5CC2BB7E36AF0E9694A06B9AF5E9DB571A`.
+    The stream decodes end-to-end, covers the corrected live replay, and
+    reaches the original Results screen through the PS1 compositor.
 
 - [x] Capture paired PS1 Quality and Enhanced replay frames from the same track,
   camera, and moment to prove projection, seams, draw distance, LOD, and

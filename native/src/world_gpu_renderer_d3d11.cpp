@@ -39,7 +39,8 @@ struct alignas(16) DrawConstants {
     std::int32_t texture_offset_y;
     std::uint32_t pass_kind;
     std::uint32_t dithering;
-    std::uint32_t unused[2];
+    std::uint32_t perspective_correct;
+    std::uint32_t unused;
 };
 
 const char shader_source[] = R"(
@@ -56,7 +57,8 @@ cbuffer DrawConstants : register(b0) {
     int TextureOffsetY;
     uint PassKind;
     uint Dithering;
-    uint2 Unused;
+    uint PerspectiveCorrect;
+    uint Unused;
 };
 
 struct VsInput {
@@ -67,14 +69,16 @@ struct VsInput {
 
 struct VsOutput {
     float4 position : SV_POSITION;
-    float2 uv : TEXCOORD0;
+    float2 perspectiveUv : TEXCOORD0;
+    noperspective float2 affineUv : TEXCOORD1;
     noperspective float4 color : COLOR0;
 };
 
 VsOutput VSMain(VsInput input) {
     VsOutput output;
     output.position = input.position;
-    output.uv = input.uv;
+    output.perspectiveUv = input.uv;
+    output.affineUv = input.uv;
     output.color = input.color;
     return output;
 }
@@ -135,11 +139,19 @@ float4 PSMain(VsOutput input) : SV_TARGET {
     bool textured = (PrimitiveFlags & 1) != 0;
     bool semitransparent = (PrimitiveFlags & 2) != 0;
     bool rawTexture = (PrimitiveFlags & 4) != 0;
+    bool screenSpace = (PrimitiveFlags & 0x80000000) != 0;
+    float2 uv = PerspectiveCorrect != 0
+        ? input.perspectiveUv
+        : input.affineUv;
     float3 color = saturate(input.color.rgb);
     if (textured) {
         uint word = TextureWord(
-            (int)floor(input.uv.x + 0.5),
-            (int)floor(input.uv.y + 0.5));
+            screenSpace
+                ? (int)floor(uv.x)
+                : (int)floor(uv.x + 0.5),
+            screenSpace
+                ? (int)floor(uv.y)
+                : (int)floor(uv.y + 0.5));
         if (word == 0)
             discard;
         bool stp = (word & 0x8000) != 0;
@@ -261,6 +273,134 @@ ComPtr<ID3D11DepthStencilState> depth_state(
     return result;
 }
 
+struct BaseResources {
+    bool ready;
+    bool software_adapter;
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    ComPtr<ID3D11VertexShader> vertex_shader;
+    ComPtr<ID3D11PixelShader> pixel_shader;
+    ComPtr<ID3D11InputLayout> input_layout;
+    ComPtr<ID3D11RasterizerState> rasterizer;
+    std::array<ComPtr<ID3D11BlendState>, 5> blend_states;
+    ComPtr<ID3D11DepthStencilState> depth_states[2][2][2][2];
+};
+
+bool initialize_base(
+    BaseResources* resources,
+    bool software_adapter
+) {
+    if (
+        resources->ready &&
+        resources->software_adapter == software_adapter
+    )
+        return true;
+    *resources = {};
+    resources->software_adapter = software_adapter;
+    D3D_FEATURE_LEVEL feature_level{};
+    const D3D_DRIVER_TYPE driver = software_adapter
+        ? D3D_DRIVER_TYPE_WARP
+        : D3D_DRIVER_TYPE_HARDWARE;
+    if (FAILED(D3D11CreateDevice(
+            nullptr,
+            driver,
+            nullptr,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            nullptr,
+            0,
+            D3D11_SDK_VERSION,
+            resources->device.GetAddressOf(),
+            &feature_level,
+            resources->context.GetAddressOf())))
+        return false;
+
+    ComPtr<ID3DBlob> vertex_blob;
+    ComPtr<ID3DBlob> pixel_blob;
+    if (
+        !compile_shader("VSMain", "vs_4_0", &vertex_blob) ||
+        !compile_shader("PSMain", "ps_4_0", &pixel_blob)
+    )
+        return false;
+    if (
+        FAILED(resources->device->CreateVertexShader(
+            vertex_blob->GetBufferPointer(),
+            vertex_blob->GetBufferSize(),
+            nullptr,
+            resources->vertex_shader.GetAddressOf())) ||
+        FAILED(resources->device->CreatePixelShader(
+            pixel_blob->GetBufferPointer(),
+            pixel_blob->GetBufferSize(),
+            nullptr,
+            resources->pixel_shader.GetAddressOf()))
+    )
+        return false;
+    const D3D11_INPUT_ELEMENT_DESC elements[] = {
+        {
+            "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT,
+            0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0,
+        },
+        {
+            "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,
+            0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0,
+        },
+        {
+            "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT,
+            0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0,
+        },
+    };
+    if (FAILED(resources->device->CreateInputLayout(
+            elements,
+            static_cast<UINT>(std::size(elements)),
+            vertex_blob->GetBufferPointer(),
+            vertex_blob->GetBufferSize(),
+            resources->input_layout.GetAddressOf())))
+        return false;
+    D3D11_RASTERIZER_DESC rasterizer_description{};
+    rasterizer_description.FillMode = D3D11_FILL_SOLID;
+    rasterizer_description.CullMode = D3D11_CULL_NONE;
+    rasterizer_description.ScissorEnable = TRUE;
+    rasterizer_description.DepthClipEnable = TRUE;
+    if (FAILED(resources->device->CreateRasterizerState(
+            &rasterizer_description,
+            resources->rasterizer.GetAddressOf())))
+        return false;
+    resources->blend_states[0] =
+        blend_state(resources->device.Get(), -1);
+    for (int mode = 0; mode < 4; ++mode)
+        resources->blend_states[mode + 1] =
+            blend_state(resources->device.Get(), mode);
+    for (const auto& state : resources->blend_states)
+        if (!state)
+            return false;
+    for (int enabled = 0; enabled < 2; ++enabled) {
+        for (int transparent = 0; transparent < 2; ++transparent) {
+            for (int check = 0; check < 2; ++check) {
+                for (int set = 0; set < 2; ++set) {
+                    auto& state =
+                        resources->depth_states
+                            [enabled][transparent][check][set];
+                    state = depth_state(
+                        resources->device.Get(),
+                        transparent == 0,
+                        check != 0,
+                        set != 0,
+                        enabled != 0);
+                    if (!state)
+                        return false;
+                }
+            }
+        }
+    }
+    resources->ready = true;
+    return true;
+}
+
+BaseResources& base_resources(bool software_adapter) {
+    static thread_local BaseResources resources;
+    initialize_base(&resources, software_adapter);
+    return resources;
+}
+
 } // namespace
 
 WorldGpuRenderResult render_world_d3d11(
@@ -303,73 +443,22 @@ WorldGpuRenderResult render_world_d3d11(
         static_cast<std::uint32_t>(draw_list.commands.size());
     stats->secondary_commands = draw_list.secondary_commands;
 
-    ComPtr<ID3D11Device> device;
-    ComPtr<ID3D11DeviceContext> context;
-    D3D_FEATURE_LEVEL feature_level{};
-    const D3D_DRIVER_TYPE driver = options.use_software_adapter
-        ? D3D_DRIVER_TYPE_WARP
-        : D3D_DRIVER_TYPE_HARDWARE;
-    if (FAILED(D3D11CreateDevice(
-            nullptr,
-            driver,
-            nullptr,
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            nullptr,
-            0,
-            D3D11_SDK_VERSION,
-            device.GetAddressOf(),
-            &feature_level,
-            context.GetAddressOf())))
+    auto& base = base_resources(options.use_software_adapter);
+    if (!base.ready)
         return WorldGpuRenderResult::device_failed;
-
-    ComPtr<ID3DBlob> vertex_blob;
-    ComPtr<ID3DBlob> pixel_blob;
-    if (
-        !compile_shader("VSMain", "vs_4_0", &vertex_blob) ||
-        !compile_shader("PSMain", "ps_4_0", &pixel_blob)
-    )
-        return WorldGpuRenderResult::shader_failed;
-    ComPtr<ID3D11VertexShader> vertex_shader;
-    ComPtr<ID3D11PixelShader> pixel_shader;
-    if (
-        FAILED(device->CreateVertexShader(
-            vertex_blob->GetBufferPointer(),
-            vertex_blob->GetBufferSize(),
-            nullptr,
-            vertex_shader.GetAddressOf())) ||
-        FAILED(device->CreatePixelShader(
-            pixel_blob->GetBufferPointer(),
-            pixel_blob->GetBufferSize(),
-            nullptr,
-            pixel_shader.GetAddressOf()))
-    )
-        return WorldGpuRenderResult::shader_failed;
-
-    const D3D11_INPUT_ELEMENT_DESC elements[] = {
-        {
-            "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT,
-            0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0,
-        },
-        {
-            "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,
-            0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0,
-        },
-        {
-            "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT,
-            0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0,
-        },
-    };
-    ComPtr<ID3D11InputLayout> input_layout;
-    if (FAILED(device->CreateInputLayout(
-            elements,
-            static_cast<UINT>(std::size(elements)),
-            vertex_blob->GetBufferPointer(),
-            vertex_blob->GetBufferSize(),
-            input_layout.GetAddressOf())))
-        return WorldGpuRenderResult::resource_failed;
+    ID3D11Device* device = base.device.Get();
+    ID3D11DeviceContext* context = base.context.Get();
 
     D3D11_BUFFER_DESC vertex_buffer_description{};
-    vertex_buffer_description.ByteWidth = sizeof(GpuVertex) * 3;
+    const std::size_t vertex_count =
+        std::max<std::size_t>(3, draw_list.commands.size() * 3);
+    if (
+        vertex_count >
+        (std::numeric_limits<UINT>::max)() / sizeof(GpuVertex)
+    )
+        return WorldGpuRenderResult::invalid_argument;
+    vertex_buffer_description.ByteWidth =
+        static_cast<UINT>(vertex_count * sizeof(GpuVertex));
     vertex_buffer_description.Usage = D3D11_USAGE_DYNAMIC;
     vertex_buffer_description.BindFlags = D3D11_BIND_VERTEX_BUFFER;
     vertex_buffer_description.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -459,45 +548,6 @@ WorldGpuRenderResult render_world_d3d11(
     )
         return WorldGpuRenderResult::resource_failed;
 
-    D3D11_RASTERIZER_DESC rasterizer_description{};
-    rasterizer_description.FillMode = D3D11_FILL_SOLID;
-    rasterizer_description.CullMode = D3D11_CULL_NONE;
-    rasterizer_description.ScissorEnable = TRUE;
-    rasterizer_description.DepthClipEnable = TRUE;
-    ComPtr<ID3D11RasterizerState> rasterizer;
-    if (FAILED(device->CreateRasterizerState(
-            &rasterizer_description,
-            rasterizer.GetAddressOf())))
-        return WorldGpuRenderResult::resource_failed;
-
-    std::array<ComPtr<ID3D11BlendState>, 5> blend_states;
-    blend_states[0] = blend_state(device.Get(), -1);
-    for (int mode = 0; mode < 4; ++mode)
-        blend_states[mode + 1] = blend_state(device.Get(), mode);
-    for (const auto& state : blend_states) {
-        if (!state)
-            return WorldGpuRenderResult::resource_failed;
-    }
-
-    ComPtr<ID3D11DepthStencilState> depth_states[2][2][2][2];
-    for (int enabled = 0; enabled < 2; ++enabled) {
-        for (int transparent = 0; transparent < 2; ++transparent) {
-            for (int check = 0; check < 2; ++check) {
-                for (int set = 0; set < 2; ++set) {
-                    depth_states[enabled][transparent][check][set] =
-                        depth_state(
-                            device.Get(),
-                            transparent == 0,
-                            check != 0,
-                            set != 0,
-                            enabled != 0);
-                    if (!depth_states[enabled][transparent][check][set])
-                        return WorldGpuRenderResult::resource_failed;
-                }
-            }
-        }
-    }
-
     const float clear[] = {
         (options.clear_color_rgba8 & 0xFF) / 255.0F,
         ((options.clear_color_rgba8 >> 8) & 0xFF) / 255.0F,
@@ -521,8 +571,8 @@ WorldGpuRenderResult render_world_d3d11(
         1.0F,
     };
     context->RSSetViewports(1, &viewport);
-    context->RSSetState(rasterizer.Get());
-    context->IASetInputLayout(input_layout.Get());
+    context->RSSetState(base.rasterizer.Get());
+    context->IASetInputLayout(base.input_layout.Get());
     context->IASetPrimitiveTopology(
         D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     const UINT stride = sizeof(GpuVertex);
@@ -530,45 +580,30 @@ WorldGpuRenderResult render_world_d3d11(
     ID3D11Buffer* raw_vertex_buffer = vertex_buffer.Get();
     context->IASetVertexBuffers(
         0, 1, &raw_vertex_buffer, &stride, &offset);
-    context->VSSetShader(vertex_shader.Get(), nullptr, 0);
-    context->PSSetShader(pixel_shader.Get(), nullptr, 0);
+    context->VSSetShader(base.vertex_shader.Get(), nullptr, 0);
+    context->PSSetShader(base.pixel_shader.Get(), nullptr, 0);
     ID3D11Buffer* raw_constant_buffer = constant_buffer.Get();
     context->PSSetConstantBuffers(0, 1, &raw_constant_buffer);
     ID3D11ShaderResourceView* raw_vram_view = vram_view.Get();
     context->PSSetShaderResources(0, 1, &raw_vram_view);
 
-    std::uint32_t depth_object_kind =
-        (std::numeric_limits<std::uint32_t>::max)();
-    std::uint32_t depth_object_id =
-        (std::numeric_limits<std::uint32_t>::max)();
-    std::uint32_t depth_model_pointer =
-        (std::numeric_limits<std::uint32_t>::max)();
-    std::int32_t depth_bucket =
-        (std::numeric_limits<std::int32_t>::min)();
-    for (const auto& command : draw_list.commands) {
-        if (command.material_index >= draw_list.materials.size())
-            return WorldGpuRenderResult::render_failed;
-        const auto& material =
-            draw_list.materials[command.material_index];
-        const bool textured =
-            (material.primitive_flags & textured_flag) != 0;
-        const bool semitransparent =
-            (material.primitive_flags & semi_transparent_flag) != 0;
-        const int pass_count =
-            textured && semitransparent ? 2 : 1;
-
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        if (FAILED(context->Map(
-                vertex_buffer.Get(),
-                0,
-                D3D11_MAP_WRITE_DISCARD,
-                0,
-                &mapped)))
-            return WorldGpuRenderResult::render_failed;
-        auto* gpu_vertices = static_cast<GpuVertex*>(mapped.pData);
+    D3D11_MAPPED_SUBRESOURCE mapped_vertices{};
+    if (FAILED(context->Map(
+            vertex_buffer.Get(),
+            0,
+            D3D11_MAP_WRITE_DISCARD,
+            0,
+            &mapped_vertices)))
+        return WorldGpuRenderResult::render_failed;
+    auto* gpu_vertices =
+        static_cast<GpuVertex*>(mapped_vertices.pData);
+    for (std::size_t command_index = 0;
+         command_index < draw_list.commands.size();
+         ++command_index) {
+        const auto& command = draw_list.commands[command_index];
         for (int index = 0; index < 3; ++index) {
             const auto& source = command.vertices[index];
-            gpu_vertices[index] = GpuVertex{
+            gpu_vertices[command_index * 3 + index] = GpuVertex{
                 {
                     source.clip_x,
                     source.clip_y,
@@ -584,7 +619,31 @@ WorldGpuRenderResult render_world_d3d11(
                 },
             };
         }
-        context->Unmap(vertex_buffer.Get(), 0);
+    }
+    context->Unmap(vertex_buffer.Get(), 0);
+
+    std::uint32_t depth_object_kind =
+        (std::numeric_limits<std::uint32_t>::max)();
+    std::uint32_t depth_object_id =
+        (std::numeric_limits<std::uint32_t>::max)();
+    std::uint32_t depth_model_pointer =
+        (std::numeric_limits<std::uint32_t>::max)();
+    std::int32_t depth_bucket =
+        (std::numeric_limits<std::int32_t>::min)();
+    for (std::size_t command_index = 0;
+         command_index < draw_list.commands.size();
+         ++command_index) {
+        const auto& command = draw_list.commands[command_index];
+        if (command.material_index >= draw_list.materials.size())
+            return WorldGpuRenderResult::render_failed;
+        const auto& material =
+            draw_list.materials[command.material_index];
+        const bool textured =
+            (material.primitive_flags & textured_flag) != 0;
+        const bool semitransparent =
+            (material.primitive_flags & semi_transparent_flag) != 0;
+        const int pass_count =
+            textured && semitransparent ? 2 : 1;
 
         const D3D11_RECT scissor{
             std::clamp(
@@ -656,7 +715,8 @@ WorldGpuRenderResult render_world_d3d11(
                 material.texture_offset_y,
                 static_cast<std::uint32_t>(pass),
                 options.dithering ? 1U : 0U,
-                {0, 0},
+                options.perspective_correct ? 1U : 0U,
+                0,
             };
             context->UpdateSubresource(
                 constant_buffer.Get(),
@@ -676,8 +736,8 @@ WorldGpuRenderResult render_world_d3d11(
             };
             context->OMSetBlendState(
                 blended
-                    ? blend_states[blend_mode + 1].Get()
-                    : blend_states[0].Get(),
+                    ? base.blend_states[blend_mode + 1].Get()
+                    : base.blend_states[0].Get(),
                 blend_factor,
                 0xFFFFFFFFU);
             const bool check_mask =
@@ -691,12 +751,14 @@ WorldGpuRenderResult render_world_d3d11(
             const bool use_depth =
                 options.depth_buffer && identified_world;
             context->OMSetDepthStencilState(
-                depth_states[use_depth ? 1 : 0]
+                base.depth_states[use_depth ? 1 : 0]
                     [blended ? 1 : 0]
                     [check_mask ? 1 : 0]
                     [set_mask ? 1 : 0].Get(),
                 1);
-            context->Draw(3, 0);
+            context->Draw(
+                3,
+                static_cast<UINT>(command_index * 3));
             ++stats->draw_calls;
             if (blended)
                 ++stats->transparent_draw_calls;

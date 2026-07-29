@@ -219,7 +219,7 @@ int main(int argc, char** argv) {
         header,
         triangles.data(),
         triangles.size(),
-        opengt::render::WorldDrawListOptions{false},
+        opengt::render::WorldDrawListOptions{false, false},
         &draw_list);
     if (argc == 4 && draw_result ==
             opengt::render::WorldDrawListResult::success) {

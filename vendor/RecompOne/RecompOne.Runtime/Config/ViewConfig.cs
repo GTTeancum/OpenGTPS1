@@ -70,6 +70,7 @@ public class ViewConfig
             SetBool("PerspectiveCorrectTextures", value);
             Gte.SetProjectionTrackingEnabled(
                 value || StabilizeGeometrySeams ||
+                Hle.LiveWorldRenderer.Requested ||
                 ProjectionTrace.Enabled);
         }
     }
@@ -82,6 +83,7 @@ public class ViewConfig
             SetBool("StabilizeGeometrySeams", value);
             Gte.SetProjectionTrackingEnabled(
                 value || PerspectiveCorrectTextures ||
+                Hle.LiveWorldRenderer.Requested ||
                 ProjectionTrace.Enabled);
         }
     }

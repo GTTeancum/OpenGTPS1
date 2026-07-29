@@ -15,6 +15,16 @@ add_library(opengt_renderer_core STATIC
     src/world_topology.cpp
 )
 
+add_library(opengt_live_renderer SHARED
+    src/live_renderer_bridge.cpp
+)
+target_link_libraries(opengt_live_renderer PRIVATE opengt_renderer_core)
+target_include_directories(opengt_live_renderer
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(opengt_live_renderer PRIVATE cxx_std_17)
+
 target_include_directories(opengt_renderer_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -135,3 +145,9 @@ add_executable(opengt_world_viewer
 )
 target_link_libraries(opengt_world_viewer PRIVATE opengt_renderer_core)
 target_compile_features(opengt_world_viewer PRIVATE cxx_std_17)
+
+add_executable(opengt_live_benchmark
+    tools/live_renderer_benchmark.cpp
+)
+target_link_libraries(opengt_live_benchmark PRIVATE opengt_live_renderer)
+target_compile_features(opengt_live_benchmark PRIVATE cxx_std_17)

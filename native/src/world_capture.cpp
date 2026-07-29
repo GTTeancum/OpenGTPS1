@@ -331,6 +331,70 @@ WorldCaptureReadResult load_world_capture(
     return WorldCaptureReadResult::success;
 }
 
+WorldCaptureReadResult load_world_capture_memory(
+    const std::uint8_t* bytes,
+    std::size_t byte_count,
+    WorldCaptureHeader* header,
+    WorldCaptureTriangle* triangles,
+    std::size_t triangle_capacity,
+    std::uint16_t* vram,
+    std::size_t vram_word_capacity
+) noexcept {
+    if (
+        bytes == nullptr ||
+        header == nullptr ||
+        triangles == nullptr ||
+        vram == nullptr
+    )
+        return WorldCaptureReadResult::invalid_argument;
+    if (byte_count < world_capture_v1_header_size)
+        return WorldCaptureReadResult::truncated;
+    const std::uint32_t header_size = u32(bytes + 12);
+    if (
+        header_size != world_capture_v1_header_size &&
+        header_size != world_capture_header_size
+    )
+        return WorldCaptureReadResult::invalid_layout;
+    if (byte_count < header_size)
+        return WorldCaptureReadResult::truncated;
+    auto result = parse_header(bytes, header_size, header);
+    if (result != WorldCaptureReadResult::success)
+        return result;
+    constexpr std::size_t required_vram = 1024U * 512U;
+    if (
+        triangle_capacity < header->triangle_count ||
+        vram_word_capacity < required_vram
+    )
+        return WorldCaptureReadResult::capacity_too_small;
+    if (
+        header->vram_offset > byte_count ||
+        header->vram_size > byte_count - header->vram_offset
+    )
+        return WorldCaptureReadResult::truncated;
+    for (std::uint32_t index = 0;
+         index < header->triangle_count;
+         ++index) {
+        const std::uint64_t offset =
+            header->triangle_offset +
+            static_cast<std::uint64_t>(index) *
+            header->triangle_stride;
+        if (
+            offset > byte_count ||
+            header->triangle_stride > byte_count - offset
+        )
+            return WorldCaptureReadResult::truncated;
+        parse_triangle(
+            bytes + static_cast<std::size_t>(offset),
+            *header,
+            &triangles[index]);
+    }
+    const auto* vram_bytes =
+        bytes + static_cast<std::size_t>(header->vram_offset);
+    for (std::size_t index = 0; index < required_vram; ++index)
+        vram[index] = u16(vram_bytes + index * 2);
+    return WorldCaptureReadResult::success;
+}
+
 const char* world_capture_read_result_name(
     WorldCaptureReadResult result
 ) noexcept {

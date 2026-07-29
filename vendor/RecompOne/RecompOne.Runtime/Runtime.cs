@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using RecompOne.Runtime.Context;
 using RecompOne.Runtime.Host;
 using RecompOne.Runtime.Memory;
@@ -104,8 +105,11 @@ public static class Runtime
             _shutdownRequested = true;
         if (_shutdownRequested)
         {
+            Console.Error.WriteLine(
+                $"[Runtime] shutdown requested poll={InputManager.CurrentPoll}");
             Shutdown();
-            Environment.Exit(0);
+            Console.Error.WriteLine("[Runtime] shutdown complete; exit=0");
+            TerminateProcess(0);
         }
         if (TraceVSync && traceFrame < 10) Console.Error.WriteLine($"[VSync] present {traceFrame}: audio");
         Audio.Attach(Spu);
@@ -228,4 +232,35 @@ public static class Runtime
     }
 
     public static void RequestShutdown() => _shutdownRequested = true;
+
+    public static void TerminateProcess(int exitCode)
+    {
+        // Console.Out may be a long-lived redirected writer in automated
+        // replays. Its managed Flush can wait indefinitely after the GL/D3D
+        // teardown, while the bounded session log and capture encoders have
+        // already flushed their own files during Shutdown.
+        if (OperatingSystem.IsWindows())
+        {
+            using Process current = Process.GetCurrentProcess();
+            if (NativeTerminateProcess(
+                    current.Handle,
+                    unchecked((uint)exitCode)))
+                throw new InvalidOperationException(
+                    "TerminateProcess unexpectedly returned success");
+            Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error());
+        }
+        Environment.Exit(exitCode);
+        throw new InvalidOperationException(
+            "Process termination unexpectedly returned");
+    }
+
+    [DllImport(
+        "kernel32.dll",
+        EntryPoint = "TerminateProcess",
+        ExactSpelling = true,
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool NativeTerminateProcess(
+        nint processHandle,
+        uint exitCode);
 }

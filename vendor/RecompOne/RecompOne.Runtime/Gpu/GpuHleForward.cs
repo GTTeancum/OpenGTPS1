@@ -7,7 +7,23 @@ public sealed partial class Gpu
 {
     readonly ProjectedSceneCapture _projectedCapture = new();
     readonly WorldSceneCapture _worldCapture = new();
+    readonly LiveWorldRenderer _liveWorldRenderer = new();
+    readonly LiveWorldFrameRecorder _liveWorldCapture;
     long _projectedCaptureFrame;
+    bool _liveWorldExpected;
+    bool _liveVramReported;
+    bool _liveVramInitialized;
+    long _mirroredUploadWords;
+    long _mirroredFillWords;
+    long _mirroredCopyWords;
+
+    public Gpu()
+    {
+        _liveWorldCapture =
+            new LiveWorldFrameRecorder(_liveWorldRenderer);
+        WorldCaptureContext.LiveRenderingEnabled =
+            _liveWorldRenderer.Enabled;
+    }
 
     static bool HleOn => GpuHle.Active && GpuHle.Backend is { Ready: true };
     bool DitherEnabled => _dither && ConfigManager.View.Ps1Dithering;
@@ -60,7 +76,9 @@ public sealed partial class Gpu
         var hb = HV(b);
         var hc = HV(c);
         CaptureHleTri(in ha, in hb, in hc, in flags);
-        if (WorldCaptureContext.CaptureEnabled && _worldCapture.Enabled)
+        bool fileWorldCapture = _worldCapture.Enabled;
+        bool liveWorldCapture = _liveWorldCapture.Enabled;
+        if (fileWorldCapture || liveWorldCapture)
         {
             Gte.TryGetPacketOrigin(
                 a.SourceAddress,
@@ -72,17 +90,33 @@ public sealed partial class Gpu
                 c.SourceAddress,
                 out GteProjectionOrigin originC);
             var environment = CurEnv();
-            _worldCapture.RecordTriangle(
-                _projectedCaptureFrame + 1,
-                Host.InputManager.CurrentPoll,
-                in environment,
-                in ha,
-                in hb,
-                in hc,
-                in originA,
-                in originB,
-                in originC,
-                in flags);
+            if (fileWorldCapture)
+            {
+                _worldCapture.RecordTriangle(
+                    _projectedCaptureFrame + 1,
+                    Host.InputManager.CurrentPoll,
+                    in environment,
+                    in ha,
+                    in hb,
+                    in hc,
+                    in originA,
+                    in originB,
+                    in originC,
+                    in flags);
+            }
+            if (liveWorldCapture)
+            {
+                _liveWorldCapture.RecordTriangle(
+                    _projectedCaptureFrame + 1,
+                    in environment,
+                    in ha,
+                    in hb,
+                    in hc,
+                    in originA,
+                    in originB,
+                    in originC,
+                    in flags);
+            }
         }
     }
 
@@ -139,14 +173,41 @@ public sealed partial class Gpu
             in bottomRight,
             in bottomLeft,
             in flags);
+        if (_liveWorldCapture.Enabled)
+        {
+            var environment = CurEnv();
+            _liveWorldCapture.RecordScreenTriangle(
+                _projectedCaptureFrame + 1,
+                in environment,
+                in a,
+                in topRight,
+                in bottomLeft,
+                in flags);
+            _liveWorldCapture.RecordScreenTriangle(
+                _projectedCaptureFrame + 1,
+                in environment,
+                in topRight,
+                in bottomRight,
+                in bottomLeft,
+                in flags);
+        }
     }
 
     internal void CapturePresentedFrame()
     {
         _projectedCaptureFrame++;
+        // Diagnostic captures require the completed GL framebuffer. Live
+        // rendering only needs texture/CLUT VRAM, whose CPU mirror is kept
+        // current at upload/fill/copy time. Reading all 1 MiB of GL VRAM on
+        // every presented frame serializes the emulation and render threads
+        // and is both unnecessary and catastrophically slow.
+        bool initializeLiveVram =
+            !_liveVramInitialized &&
+            _liveWorldCapture.NeedsVramSnapshot;
         if ((_projectedCapture.NeedsVramSnapshot ||
              (WorldCaptureContext.CaptureEnabled &&
-              _worldCapture.NeedsVramSnapshot)) && HleOn)
+              _worldCapture.NeedsVramSnapshot) ||
+             initializeLiveVram) && HleOn)
         {
             GpuHle.Backend!.ReadVram(
                 0,
@@ -154,6 +215,13 @@ public sealed partial class Gpu
                 VramShadow.Width,
                 VramShadow.Height,
                 Shadow.Pixels);
+            if (initializeLiveVram)
+            {
+                _liveVramInitialized = true;
+                Console.Error.WriteLine(
+                    "[Native-World] initialized texture VRAM from " +
+                    "one-time HLE snapshot");
+            }
         }
         var display = new HleDispEnv
         {
@@ -170,12 +238,63 @@ public sealed partial class Gpu
             Shadow.Pixels);
         if (WorldCaptureContext.CaptureEnabled)
         {
-            _worldCapture.OnPresentedFrame(
+            if (_worldCapture.Enabled)
+            {
+                _worldCapture.OnPresentedFrame(
+                    _projectedCaptureFrame,
+                    Host.InputManager.CurrentPoll,
+                    in display,
+                    Shadow.Pixels);
+            }
+            _liveWorldCapture.OnPresentedFrame(
                 _projectedCaptureFrame,
                 Host.InputManager.CurrentPoll,
                 in display,
                 Shadow.Pixels);
+            _liveWorldExpected =
+                _liveWorldCapture.LastPresentedFrameWasWorld;
+            if (
+                !_liveVramReported &&
+                _liveWorldExpected &&
+                _liveWorldCapture.Enabled
+            )
+            {
+                _liveVramReported = true;
+                int nonzero = 0;
+                uint hash = 2166136261u;
+                foreach (ushort word in Shadow.Pixels)
+                {
+                    if (word != 0)
+                        nonzero++;
+                    hash = (hash ^ word) * 16777619u;
+                }
+                Console.Error.WriteLine(
+                    $"[Native-World] VRAM mirror nonzero={nonzero}/" +
+                    $"{Shadow.Pixels.Length} hash=0x{hash:X8} " +
+                    $"uploadWords={_mirroredUploadWords} " +
+                    $"fillWords={_mirroredFillWords} " +
+                    $"copyWords={_mirroredCopyWords}");
+            }
         }
+    }
+
+    internal bool LiveWorldExpected => _liveWorldExpected;
+
+    internal GteProjectionOrigin LiveWorldMainProjection =>
+        _liveWorldCapture.MainProjection;
+
+    internal bool TryTakeLiveWorldOutput(
+        out LiveWorldOutput output) =>
+        _liveWorldRenderer.TryTakeOutput(out output);
+
+    internal void ReturnLiveWorldOutput(byte[] pixels) =>
+        _liveWorldRenderer.ReturnOutput(pixels);
+
+    internal void ShutdownLiveWorldRenderer()
+    {
+        _liveWorldCapture.Dispose();
+        _liveWorldRenderer.Dispose();
+        WorldCaptureContext.LiveRenderingEnabled = false;
     }
 
     void HleRect(int x, int y, int w, int h, int u, int v, int clut, int r, int g, int b, bool tex, bool semi, bool raw)
@@ -190,18 +309,95 @@ public sealed partial class Gpu
     {
         if (Math.Abs(x1 - x0) > 1023 || Math.Abs(y1 - y0) > 511) return;
 
+        var flags = PrimOf(false, semi, false, 0, gouraud);
+        var a = new HleVertex
+        {
+            X = x0,
+            Y = y0,
+            R = (byte)r0,
+            G = (byte)g0,
+            B = (byte)b0,
+        };
+        var b = new HleVertex
+        {
+            X = x1,
+            Y = y1,
+            R = (byte)r1,
+            G = (byte)g1,
+            B = (byte)b1,
+        };
+        if (_liveWorldCapture.Enabled)
+        {
+            var environment = CurEnv();
+            _liveWorldCapture.RecordScreenLine(
+                _projectedCaptureFrame + 1,
+                in environment,
+                in a,
+                in b,
+                in flags);
+        }
         var be = GpuHle.Backend!;
         be.SetDrawEnv(CurEnv());
         be.DrawLine(
-            new HleVertex { X = x0, Y = y0, R = (byte)r0, G = (byte)g0, B = (byte)b0 },
-            new HleVertex { X = x1, Y = y1, R = (byte)r1, G = (byte)g1, B = (byte)b1 },
-            PrimOf(false, semi, false, 0, gouraud));
+            in a,
+            in b,
+            in flags);
     }
 
-    void HleFill(int x, int y, int w, int h, ushort color) => GpuHle.Backend!.FillRect(x, y, w, h, color);
-    void HleCopy(int sx, int sy, int dx, int dy, int w, int h) => GpuHle.Backend!.CopyVram(sx, sy, dx, dy, w, h);
+    void HleFill(int x, int y, int w, int h, ushort color)
+    {
+        MirrorFill(x, y, w, h, color);
+        GpuHle.Backend!.FillRect(x, y, w, h, color);
+    }
+
+    void HleCopy(int sx, int sy, int dx, int dy, int w, int h)
+    {
+        MirrorCopy(sx, sy, dx, dy, w, h);
+        GpuHle.Backend!.CopyVram(sx, sy, dx, dy, w, h);
+    }
+
+    void MirrorFill(int x, int y, int w, int h, ushort color)
+    {
+        _mirroredFillWords += (long)w * h;
+        for (int row = 0; row < h; ++row)
+            for (int column = 0; column < w; ++column)
+                Shadow[
+                    (x + column) & (VramWidth - 1),
+                    (y + row) & (VramHeight - 1)] = color;
+    }
+
+    void MirrorCopy(int sx, int sy, int dx, int dy, int w, int h)
+    {
+        _mirroredCopyWords += (long)w * h;
+        int pixelCount = checked(w * h);
+        if (_mirrorCopy.Length < pixelCount)
+            _mirrorCopy = new ushort[pixelCount];
+        for (int row = 0; row < h; ++row)
+            for (int column = 0; column < w; ++column)
+                _mirrorCopy[row * w + column] =
+                    Shadow[
+                        (sx + column) & (VramWidth - 1),
+                        (sy + row) & (VramHeight - 1)];
+        for (int row = 0; row < h; ++row)
+            for (int column = 0; column < w; ++column)
+            {
+                int destinationX =
+                    (dx + column) & (VramWidth - 1);
+                int destinationY =
+                    (dy + row) & (VramHeight - 1);
+                ushort value = _mirrorCopy[row * w + column];
+                ushort previous =
+                    Shadow[destinationX, destinationY];
+                if (_checkMask && (previous & 0x8000) != 0)
+                    continue;
+                if (_setMask)
+                    value |= 0x8000;
+                Shadow[destinationX, destinationY] = value;
+            }
+    }
 
     ushort[] _readBuf = Array.Empty<ushort>();
+    ushort[] _mirrorCopy = Array.Empty<ushort>();
 
     void HleReadback(int x, int y, int w, int h)
     {
@@ -232,6 +428,19 @@ public sealed partial class Gpu
     void HleLoadFlush()
     {
         if (!_hleLoadActive) return;
+        int count = _loadW * _loadH;
+        _mirroredUploadWords += count;
+        for (int index = 0; index < count; ++index)
+        {
+            int x = (_loadX + index % _loadW) &
+                (VramWidth - 1);
+            int y = (_loadY + index / _loadW) &
+                (VramHeight - 1);
+            ushort previous = Shadow[x, y];
+            if (_checkMask && (previous & 0x8000) != 0)
+                continue;
+            Shadow[x, y] = _hleLoad[index];
+        }
         GpuHle.Backend!.WriteVram(_loadX, _loadY, _loadW, _loadH, _hleLoad.AsSpan(0, _loadW * _loadH));
         _hleLoadActive = false;
     }

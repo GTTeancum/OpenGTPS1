@@ -72,12 +72,57 @@ bool main_projection(
     return true;
 }
 
+bool displayed_screen_target(
+    const WorldCaptureHeader& header,
+    const WorldCaptureTriangle& triangle
+) {
+    if (
+        triangle.draw_offset_x != header.draw_offset_x ||
+        triangle.draw_offset_y != header.draw_offset_y
+    )
+        return false;
+    const std::int32_t display_x1 =
+        header.display_x + header.display_width - 1;
+    const std::int32_t display_y1 =
+        header.display_y + header.display_height - 1;
+    if (
+        triangle.clip_x1 < header.display_x ||
+        triangle.clip_y1 < header.display_y ||
+        triangle.clip_x0 > display_x1 ||
+        triangle.clip_y0 > display_y1
+    )
+        return false;
+    float minimum_x = triangle.vertices[0].screen_x;
+    float maximum_x = minimum_x;
+    float minimum_y = triangle.vertices[0].screen_y;
+    float maximum_y = minimum_y;
+    for (int index = 1; index < 3; ++index) {
+        minimum_x = std::min(
+            minimum_x, triangle.vertices[index].screen_x);
+        maximum_x = std::max(
+            maximum_x, triangle.vertices[index].screen_x);
+        minimum_y = std::min(
+            minimum_y, triangle.vertices[index].screen_y);
+        maximum_y = std::max(
+            maximum_y, triangle.vertices[index].screen_y);
+    }
+    return
+        maximum_x >= header.display_x &&
+        maximum_y >= header.display_y &&
+        minimum_x <= display_x1 &&
+        minimum_y <= display_y1;
+}
+
 std::uint32_t material_index(
     const WorldCaptureTriangle& triangle,
+    bool screen_space,
     std::vector<WorldMaterial>* materials
 ) {
     const WorldMaterial material{
-        triangle.primitive_flags,
+        triangle.primitive_flags |
+            (screen_space
+                ? world_primitive_screen_space_flag
+                : 0U),
         triangle.texture_page,
         triangle.clut,
         triangle.texture_mask_x,
@@ -187,12 +232,20 @@ WorldDrawListResult build_world_draw_list(
             bool complete = true;
             for (const auto& vertex : triangle.vertices)
                 complete = complete && vertex.world_valid;
-            if (!complete) {
-                ++result.rejected_incomplete;
+            const bool is_main =
+                complete && main_projection(header, triangle);
+            const bool screen_space =
+                options.include_screen_space && !complete;
+            if (
+                screen_space &&
+                !displayed_screen_target(header, triangle)
+            )
                 continue;
-            }
-            const bool is_main = main_projection(header, triangle);
-            if (!is_main) {
+            if (!complete)
+                ++result.rejected_incomplete;
+            if (!complete && !screen_space)
+                continue;
+            if (complete && !is_main) {
                 ++result.secondary_commands;
                 if (!options.include_secondary_views)
                     continue;
@@ -200,16 +253,22 @@ WorldDrawListResult build_world_draw_list(
 
             WorldDrawCommand command{};
             command.material_index =
-                material_index(triangle, &result.materials);
+                material_index(
+                    triangle,
+                    screen_space,
+                    &result.materials);
             command.ordering_table_index =
                 triangle.ordering_table_index;
             command.clip_x0 = triangle.clip_x0;
             command.clip_y0 = triangle.clip_y0;
             command.clip_x1 = triangle.clip_x1;
             command.clip_y1 = triangle.clip_y1;
-            command.object_kind = triangle.object_kind;
-            command.object_id = triangle.object_id;
-            command.model_pointer = triangle.model_pointer;
+            command.object_kind =
+                screen_space ? 0U : triangle.object_kind;
+            command.object_id =
+                screen_space ? 0U : triangle.object_id;
+            command.model_pointer =
+                screen_space ? 0U : triangle.model_pointer;
             command.transform_id = triangle.transform_id;
             command.source_command_index =
                 static_cast<std::uint32_t>(index);
@@ -220,10 +279,17 @@ WorldDrawListResult build_world_draw_list(
             for (int vertex_index = 0; vertex_index < 3; ++vertex_index) {
                 const auto& source = triangle.vertices[vertex_index];
                 auto& destination = command.vertices[vertex_index];
-                const Ps1ProjectedPoint projected = project_ps1_vertex(
-                    source,
-                    triangle.draw_offset_x,
-                    triangle.draw_offset_y);
+                const Ps1ProjectedPoint projected = screen_space
+                    ? Ps1ProjectedPoint{
+                        static_cast<std::int32_t>(
+                            std::lround(source.screen_x)),
+                        static_cast<std::int32_t>(
+                            std::lround(source.screen_y)),
+                        1U}
+                    : project_ps1_vertex(
+                        source,
+                        triangle.draw_offset_x,
+                        triangle.draw_offset_y);
                 const float ndc_x =
                     ((projected.x - header.display_x) /
                         static_cast<float>(header.display_width)) *
@@ -233,8 +299,11 @@ WorldDrawListResult build_world_draw_list(
                     ((projected.y - header.display_y) /
                         static_cast<float>(header.display_height)) *
                         2.0F;
-                const float clip_w =
-                    std::max(1.0F, static_cast<float>(source.view_z));
+                const float clip_w = screen_space
+                    ? 1.0F
+                    : std::max(
+                        1.0F,
+                        static_cast<float>(source.view_z));
                 constexpr float near_plane = 16.0F;
                 constexpr float far_plane = 1048576.0F;
                 constexpr float depth_a =
@@ -250,8 +319,9 @@ WorldDrawListResult build_world_draw_list(
                 destination.view_z = static_cast<float>(source.view_z);
                 destination.clip_x = ndc_x * clip_w;
                 destination.clip_y = ndc_y * clip_w;
-                destination.clip_z =
-                    depth_a * clip_w + depth_b;
+                destination.clip_z = screen_space
+                    ? 0.5F
+                    : depth_a * clip_w + depth_b;
                 destination.clip_w = clip_w;
                 destination.screen_x = static_cast<float>(projected.x);
                 destination.screen_y = static_cast<float>(projected.y);

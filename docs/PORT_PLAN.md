@@ -38,9 +38,11 @@
 
 - Texture projection correction uses the recovered per-vertex GTE depth in the
   host shader. Disabling it restores the PS1's affine interpolation.
-- Road/model seam stabilization expands only projected 3D triangles by one
-  quarter of a native pixel. It does not alter collision, menus, videos, or 2D
-  art.
+- Road/model seam stabilization uses authored boundary identity, exact
+  view-space T-junction subdivision, and deterministic coplanar ownership.
+  The known Red Rock replay line was a 3D texel-center sampling fault and is
+  corrected without screen-space expansion, collision changes, UV nudges, or
+  changes to menus/video/2D art.
 - Extended draw distance selects GT2's longer replay visibility path during a
   race. The maximum remains bounded by the authored track data.
 - Maximum vehicle LOD forces selector `1`, the player-quality model, for all

@@ -20,6 +20,7 @@ internal static class HostWindow
     static Gpu? _gpu;
 
     static uint _displayTex;
+    static uint _nativeWorldTex;
     static uint _vramTex;
     static uint _ramTex;
     static Hle.GlBackend? _glBackend;
@@ -34,6 +35,10 @@ internal static class HostWindow
     static volatile bool _ramReady;
     static int _ramFrame;
     static int _displayProbeFrame;
+    static bool _nativeWorldAvailable;
+    static int _nativeWorldWidth;
+    static int _nativeWorldHeight;
+    static int _nativeWorldInputPoll;
     static uint _lastDisplayHash;
     static string? _requestedDisplayCapture;
     static string? _pendingPresentationCapture;
@@ -108,7 +113,13 @@ internal static class HostWindow
         catch (Exception e) {
             Console.WriteLine(e.Message);
         }
-        if (_window.IsClosing) { Runtime.Shutdown(); Environment.Exit(0); }
+        if (_window.IsClosing)
+        {
+            Console.Error.WriteLine(
+                "[Host] window closing observed during Present");
+            Runtime.Shutdown();
+            Runtime.TerminateProcess(0);
+        }
         InputManager.Poll();
         if (InputManager.ConsumeTopBarToggle())
         {
@@ -128,15 +139,29 @@ internal static class HostWindow
     {
         if (_headless || _window == null) return;
         try { _window.DoEvents(); } catch { }
-        if (_window.IsClosing) { Runtime.Shutdown(); Environment.Exit(0); }
+        if (_window.IsClosing)
+        {
+            Console.Error.WriteLine(
+                "[Host] window closing observed during Pump");
+            Runtime.Shutdown();
+            Runtime.TerminateProcess(0);
+        }
         _window.DoRender();
     }
 
     public static void Shutdown()
     {
-        if (!_headless && _window != null && !_window.IsClosing)
-            _window.Close();
+        // Silk/GLFW can wait indefinitely when Close is requested from the
+        // same render callback that owns the current GL context. Runtime
+        // shutdown always terminates the process immediately after this
+        // method, so perform the registered close work directly and let
+        // Environment.Exit release the native window after resources and
+        // capture encoders are finalized.
+        Console.Error.WriteLine("[Host] shutdown request=resources");
+        OnClosing();
+        Console.Error.WriteLine("[Host] shutdown request=input");
         InputManager.Shutdown();
+        Console.Error.WriteLine("[Host] shutdown request=returned");
     }
 
     public static void SetFullscreen(bool on)
@@ -190,7 +215,11 @@ internal static class HostWindow
             if (!string.IsNullOrWhiteSpace(path) && File.Exists(path)) return;
 
             try { _window.DoEvents(); } catch { }
-            if (_window.IsClosing) { Runtime.Shutdown(); Environment.Exit(0); }
+            if (_window.IsClosing)
+            {
+                Runtime.Shutdown();
+                Runtime.TerminateProcess(0);
+            }
             InputManager.Poll();
             _window.DoRender();
         }
@@ -208,6 +237,7 @@ internal static class HostWindow
         _gl.Viewport(0, 0, (uint)fb.X, (uint)fb.Y);
         _window.FramebufferResize += size => _gl?.Viewport(0, 0, (uint)size.X, (uint)size.Y);
         _displayTex = CreateTexture(_gl);
+        _nativeWorldTex = CreateTexture(_gl);
         _vramTex= CreateTexture(_gl);
         _ramTex = CreateTexture(_gl);
         _presentationRenderer = new PresentationRenderer(_gl);
@@ -233,6 +263,9 @@ internal static class HostWindow
             $"seams={(ConfigManager.View.StabilizeGeometrySeams ? "Stabilized" : "PS1")} " +
             $"draw-distance={(ConfigManager.View.ExtendedDrawDistance ? "Extended" : "Stock")} " +
             $"LOD={ConfigManager.View.LevelOfDetail}");
+        Console.WriteLine(
+            $"[Host] native world renderer=" +
+            $"{(Hle.LiveWorldRenderer.Requested ? "Enabled" : "Disabled")}");
 
         _imgui = new ImGuiController(_gl, _window, input, null, ConfigureImGui);
 
@@ -299,8 +332,17 @@ internal static class HostWindow
         var gpu = _gpu;
         if (gpu != null)
         {
-
-            if (Hle.GpuHle.Active && _glBackend is { Ready: true } && gpu.DisplayEnabled)
+            bool nativePresented = PresentNativeWorld(gl, gpu);
+            if (nativePresented)
+            {
+                // PresentNativeWorld already submitted the completed texture
+                // to the output panel.
+            }
+            else if (
+                Hle.GpuHle.Active &&
+                _glBackend is { Ready: true } &&
+                gpu.DisplayEnabled
+            )
             {
                 var wf = _window!.FramebufferSize;
                 var (tex, tw, th, aspect) = _glBackend.PresentDisplay(
@@ -378,15 +420,25 @@ internal static class HostWindow
     {
         if (_closed) return;
         _closed = true;
+        Console.Error.WriteLine("[Host] shutdown stage=config");
         ConfigManager.SaveView(PanelManager.Panels);
         ConfigManager.SaveGame();
+        Console.Error.WriteLine("[Host] shutdown stage=panels");
         PanelManager.Shutdown();
+        Console.Error.WriteLine("[Host] shutdown stage=hle");
         _glBackend?.Dispose();
+        Console.Error.WriteLine("[Host] shutdown stage=native-world");
+        _gpu?.ShutdownLiveWorldRenderer();
+        Console.Error.WriteLine("[Host] shutdown stage=presentation");
         _presentationRenderer?.Dispose();
+        Console.Error.WriteLine("[Host] shutdown stage=imgui");
         _imgui?.Dispose();
+        Console.Error.WriteLine("[Host] shutdown stage=textures");
         _gl?.DeleteTexture(_displayTex);
+        _gl?.DeleteTexture(_nativeWorldTex);
         _gl?.DeleteTexture(_vramTex);
         _gl?.DeleteTexture(_ramTex);
+        Console.Error.WriteLine("[Host] shutdown stage=complete");
     }
 
     static uint CreateTexture(GL gl)
@@ -412,6 +464,74 @@ internal static class HostWindow
         gl.TexImage2D<byte>(TextureTarget.Texture2D, 0, InternalFormat.Rgb, (uint)w, (uint)h, 0,
             PixelFormat.Rgb, PixelType.UnsignedByte, _rgbDisplay.AsSpan(0, needed));
         PresentTexture(gl, _displayTex, w, h, 4f / 3f);
+    }
+
+    static bool PresentNativeWorld(GL gl, Gpu gpu)
+    {
+        if (!gpu.DisplayEnabled)
+        {
+            _nativeWorldAvailable = false;
+            return false;
+        }
+        if (gpu.TryTakeLiveWorldOutput(out var output))
+        {
+            try
+            {
+                int needed = checked(
+                    output.Width * output.Height * 4);
+                if (
+                    output.Width > 0 &&
+                    output.Height > 0 &&
+                    needed <= output.Pixels.Length
+                )
+                {
+                    gl.BindTexture(
+                        TextureTarget.Texture2D,
+                        _nativeWorldTex);
+                    gl.TexImage2D<byte>(
+                        TextureTarget.Texture2D,
+                        0,
+                        InternalFormat.Rgba8,
+                        (uint)output.Width,
+                        (uint)output.Height,
+                        0,
+                        PixelFormat.Rgba,
+                        PixelType.UnsignedByte,
+                        output.Pixels.AsSpan(0, needed));
+                    _nativeWorldWidth = output.Width;
+                    _nativeWorldHeight = output.Height;
+                    _nativeWorldInputPoll = output.InputPoll;
+                    _nativeWorldAvailable = true;
+                }
+            }
+            finally
+            {
+                gpu.ReturnLiveWorldOutput(output.Pixels);
+            }
+        }
+        // GT2 renders its 3D scene at 30 Hz while the host presents at
+        // 60 Hz. Reuse the latest native frame for the intervening vblank
+        // instead of alternating native and legacy framebuffers. The short
+        // age bound also prevents a delayed result from lingering after a
+        // transition back to a menu or video.
+        int outputAge =
+            InputManager.CurrentPoll - _nativeWorldInputPoll;
+        bool recentWorld =
+            _nativeWorldAvailable &&
+            outputAge >= 0 &&
+            outputAge <= 4;
+        if (!gpu.LiveWorldExpected && !recentWorld)
+        {
+            _nativeWorldAvailable = false;
+            return false;
+        }
+        PresentTexture(
+            gl,
+            _nativeWorldTex,
+            _nativeWorldWidth,
+            _nativeWorldHeight,
+            4f / 3f);
+        return true;
     }
 
     static void PresentTexture(GL gl, uint sourceTexture, int sourceWidth, int sourceHeight, float aspect)

@@ -11,6 +11,7 @@ struct WorldGpuRenderOptions {
     bool use_software_adapter;
     bool depth_buffer;
     bool dithering;
+    bool perspective_correct;
     std::uint32_t output_scale;
     std::uint32_t clear_color_rgba8;
 };

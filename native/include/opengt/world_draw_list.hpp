@@ -8,6 +8,10 @@
 
 namespace opengt::render {
 
+// Internal material bit added by draw-list construction. Captured PS1
+// primitive bits occupy only the low nibble.
+constexpr std::uint32_t world_primitive_screen_space_flag = 1U << 31;
+
 enum class WorldViewChannel : std::uint8_t {
     main_view,
     secondary_view,
@@ -95,6 +99,7 @@ struct WorldDrawList {
 
 struct WorldDrawListOptions {
     bool include_secondary_views;
+    bool include_screen_space;
 };
 
 enum class WorldDrawListResult {

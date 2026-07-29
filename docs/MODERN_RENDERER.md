@@ -197,9 +197,47 @@ post-process enlargement. This is viewer-only evidence plumbing; it does not
 expose or prematurely implement the future wrapper resolution/widescreen
 setting.
 
-This backend is standalone. Integrating it into live race/replay presentation
-remains the next milestone; the standalone path no longer uses the old
-road-padding workaround.
+The same backend now runs in the packaged PC build. The standalone viewer
+remains the deterministic capture oracle and diagnostic surface.
+
+## Live PC integration
+
+Race and replay presentation use a bounded C ABI bridge in
+`opengt_live_renderer.dll`. RecompOne records the newest complete world frame
+directly into one of three reusable OGTWCAP v4 buffers, including exact
+provenance and a complete VRAM snapshot. A persistent native worker consumes
+only the newest pending frame, builds the same draw list/topology used by the
+standalone viewer, and renders through D3D11 without filesystem traffic or a
+per-frame device rebuild. The emulation thread never waits for native
+rendering; stale pending or published buffers are returned to their pools.
+
+Native world output replaces only the live 3D region. Explicit screen-space
+triangles carry the PS1 HUD, tachometer, minimap, text, and other race/replay
+overlays through the same composition. Menus, loading screens, display-mode
+transitions, and MDEC video remain owned by the proven PS1 compositor. A frame
+whose scaled viewport exceeds the bounded native output pool falls back to
+that compositor instead of disabling the native renderer.
+
+PS1 UV rules differ across those two classes. Authored 3D polygons sample
+integer UVs as texel centers with `floor(uv + 0.5)`, which fixes the Red Rock
+0:33 road fault. Screen-space sprites retain edge-based `floor(uv)` sampling,
+preventing the minimap and tachometer from reading one texture column beyond
+their rectangles.
+
+The live recorder grows its fixed MemoryStream before copying VRAM into the
+public backing array. This order is required because `SetLength` zero-fills
+newly exposed bytes; copying first would erase the entire submitted VRAM
+snapshot and produce a sparse, dark native frame.
+
+Packaged validation in `artifacts/live-native-full-tail-fixed` reaches input
+poll 45,000 through race, replay, the oversized post-replay viewport fallback,
+and orderly shutdown. It renders 19,502 native frames with 12 stale-buffer
+drops, logs no native disable or fatal error, and proves the headless harness
+opened only SDL's dummy audio backend. The final native replay video is
+`artifacts/native-live-replay-final/GT2_Native_Enhanced_Replay_Final.mp4`
+(H.264 High/yuv420p, 640x480, 30 fps, 216.63 seconds, 33,331,101 bytes,
+SHA-256
+`1E7092C8E5ACE1DE7416BFF185863C5CC2BB7E36AF0E9694A06B9AF5E9DB571A`).
 
 ## Texture projection
 
@@ -309,8 +347,10 @@ unified-memory limit. It will use:
 3. **Complete in the standalone renderer:** replace screen-space road padding
    with authored topology, exact T-junction subdivision, deterministic
    coplanar ownership, structured diagnostics, and synthetic/live tests.
-4. Integrate the PC backend into race/replay while retaining the PS1 2D
-   compositor for menus, HUD, and video.
+4. **Complete on PC:** integrate the D3D11 backend into live race/replay,
+   preserve PS1 screen-primitive semantics for the HUD, and retain the PS1
+   compositor for menus, loading screens, display-mode transitions, and
+   video.
 5. Add the RecompOne C++ guest emitter/runtime needed by NXDK.
 6. Render the same captured scene through the NV2A backend within a measured
    memory budget.

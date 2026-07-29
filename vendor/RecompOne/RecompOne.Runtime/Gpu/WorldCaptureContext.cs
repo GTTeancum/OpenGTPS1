@@ -19,7 +19,7 @@ public readonly record struct WorldObjectContext(
 /// </summary>
 public static class WorldCaptureContext
 {
-    static readonly bool Enabled =
+    static readonly bool FileCaptureEnabled =
         !string.IsNullOrWhiteSpace(
             Environment.GetEnvironmentVariable(
                 "RECOMPONE_WORLD_CAPTURE_PATH"));
@@ -27,16 +27,18 @@ public static class WorldCaptureContext
     static readonly Dictionary<uint, uint> VehicleIds = [];
     static WorldObjectContext _current;
 
-    public static bool CaptureEnabled => Enabled;
+    public static bool LiveRenderingEnabled { get; set; }
+    public static bool CaptureEnabled =>
+        FileCaptureEnabled || LiveRenderingEnabled;
     public static WorldObjectContext Current =>
-        Enabled ? _current : default;
+        CaptureEnabled ? _current : default;
 
     public static void RegisterTrackObject(
         uint submissionPointer,
         uint stableId,
         uint modelPointer)
     {
-        if (!Enabled || submissionPointer == 0 || modelPointer == 0)
+        if (!CaptureEnabled || submissionPointer == 0 || modelPointer == 0)
             return;
         TrackObjects[submissionPointer] = new WorldObjectContext(
             WorldObjectKind.Track,
@@ -48,7 +50,7 @@ public static class WorldCaptureContext
         uint submissionPointer,
         uint modelPointer)
     {
-        if (!Enabled)
+        if (!CaptureEnabled)
             return;
         if (TrackObjects.TryGetValue(submissionPointer, out var context) &&
             context.ModelPointer == modelPointer)
@@ -61,7 +63,7 @@ public static class WorldCaptureContext
 
     public static void BeginVehicle(uint carState, uint modelPointer)
     {
-        if (!Enabled)
+        if (!CaptureEnabled)
             return;
         if (!VehicleIds.TryGetValue(carState, out uint stableId))
         {
@@ -76,7 +78,7 @@ public static class WorldCaptureContext
 
     public static void EndObject()
     {
-        if (Enabled)
+        if (CaptureEnabled)
             _current = default;
     }
 }

@@ -23,6 +23,15 @@ try {
         throw 'Generated sources are missing. Use tools\build.ps1 -Regenerate with the archival source available.'
     }
 
+    cmake -S native -B build\native
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native renderer configuration failed: $LASTEXITCODE"
+    }
+    cmake --build build\native --config Release
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native renderer build failed: $LASTEXITCODE"
+    }
+
     dotnet build generated\recompiled\GranTurismo2PC.csproj -c Release
     if ($LASTEXITCODE -ne 0) { throw "GT2 build failed: $LASTEXITCODE" }
 
@@ -35,6 +44,11 @@ try {
         -p:DebugType=None -p:DebugSymbols=false `
         -o $install
     if ($LASTEXITCODE -ne 0) { throw "GT2 publish failed: $LASTEXITCODE" }
+
+    Copy-Item -LiteralPath `
+        (Join-Path $repo 'build\native\Release\opengt_live_renderer.dll') `
+        -Destination (Join-Path $install 'opengt_live_renderer.dll') `
+        -Force
 
     # Convenience cards and the developer's settings file are intentionally
     # excluded from the public source tree. Seed them when present locally,

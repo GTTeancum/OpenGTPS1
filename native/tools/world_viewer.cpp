@@ -299,7 +299,7 @@ int main(int argc, char** argv) {
         header,
         triangles.data(),
         triangles.size(),
-        WorldDrawListOptions{false},
+        WorldDrawListOptions{false, false},
         &draw_list);
     if (list_result != WorldDrawListResult::success) {
         std::fprintf(
@@ -336,6 +336,7 @@ int main(int argc, char** argv) {
         warp,
         depth,
         dither,
+        true,
         scale,
         0xFF402820U,
     };
@@ -424,6 +425,7 @@ int main(int argc, char** argv) {
             true,
             false,
             dither,
+            true,
             1,
             0xFF402820U,
         },

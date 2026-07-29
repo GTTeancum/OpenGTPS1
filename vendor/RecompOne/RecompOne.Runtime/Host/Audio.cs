@@ -317,10 +317,27 @@ internal static unsafe class Audio
 
     public static void Shutdown()
     {
+        Console.Error.WriteLine("[Audio] shutdown stage=mixer-stop");
         _running = false;
-        _mixerThread?.Join();
+        Thread? mixerThread = _mixerThread;
+        if (
+            mixerThread != null &&
+            !mixerThread.Join(TimeSpan.FromSeconds(5))
+        )
+        {
+            // Runtime termination follows immediately after shutdown. Do not
+            // deadlock the render thread or tear SDL/capture storage out from
+            // under a mixer that is still returning from guest SPU mixing.
+            Console.Error.WriteLine(
+                "[Audio] shutdown mixer join timed out; " +
+                "deferring audio teardown to process exit");
+            _mixerThread = null;
+            _spu = null;
+            return;
+        }
         _mixerThread = null;
         _spu = null;
+        Console.Error.WriteLine("[Audio] shutdown stage=mixer-stopped");
         _mixedFrames = 0;
         _firstAudibleBufferReported = false;
         _traceSamples = 0;
@@ -349,5 +366,6 @@ internal static unsafe class Audio
             _sdl.Dispose();
             _sdl = null;
         }
+        Console.Error.WriteLine("[Audio] shutdown stage=complete");
     }
 }

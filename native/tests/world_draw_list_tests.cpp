@@ -71,7 +71,7 @@ int main() {
             header,
             triangles,
             2,
-            WorldDrawListOptions{false},
+            WorldDrawListOptions{false, false},
             &list) == WorldDrawListResult::success,
         "build main draw list");
     okay &= expect(list.commands.size() == 1, "filter secondary view");
@@ -85,6 +85,36 @@ int main() {
     okay &= expect(
         std::fabs(list.commands[0].face_normal_z - 1.0F) < 0.001F,
         "derive face normal for future lighting");
+
+    WorldCaptureTriangle screen_triangle{};
+    screen_triangle.primitive_flags = 1;
+    screen_triangle.clip_x0 = 0;
+    screen_triangle.clip_y0 = 0;
+    screen_triangle.clip_x1 = 319;
+    screen_triangle.clip_y1 = 239;
+    screen_triangle.vertices[0].screen_x = 16.0F;
+    screen_triangle.vertices[0].screen_y = 144.0F;
+    screen_triangle.vertices[1].screen_x = 112.0F;
+    screen_triangle.vertices[1].screen_y = 144.0F;
+    screen_triangle.vertices[2].screen_x = 16.0F;
+    screen_triangle.vertices[2].screen_y = 240.0F;
+    WorldDrawList screen_list{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            &screen_triangle,
+            1,
+            WorldDrawListOptions{false, true},
+            &screen_list) == WorldDrawListResult::success,
+        "build screen-space draw list");
+    okay &= expect(
+        screen_list.commands.size() == 1,
+        "retain displayed screen primitive");
+    okay &= expect(
+        screen_list.materials.size() == 1 &&
+        (screen_list.materials[0].primitive_flags &
+            world_primitive_screen_space_flag) != 0,
+        "tag screen material for sprite texel sampling");
 
     if (!okay)
         return 1;

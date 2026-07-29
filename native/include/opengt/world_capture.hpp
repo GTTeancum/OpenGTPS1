@@ -114,6 +114,16 @@ WorldCaptureReadResult load_world_capture(
     std::size_t vram_word_capacity
 ) noexcept;
 
+WorldCaptureReadResult load_world_capture_memory(
+    const std::uint8_t* bytes,
+    std::size_t byte_count,
+    WorldCaptureHeader* header,
+    WorldCaptureTriangle* triangles,
+    std::size_t triangle_capacity,
+    std::uint16_t* vram,
+    std::size_t vram_word_capacity
+) noexcept;
+
 const char* world_capture_read_result_name(
     WorldCaptureReadResult result
 ) noexcept;

@@ -102,6 +102,7 @@ public static class ConfigManager
         Gte.SetProjectionTrackingEnabled(
             View.PerspectiveCorrectTextures ||
             View.StabilizeGeometrySeams ||
+            Hle.LiveWorldRenderer.Requested ||
             ProjectionTrace.Enabled);
     }
 

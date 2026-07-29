@@ -52,6 +52,7 @@
 # Confirm Results once, then do not touch the replay controller.
 30500+4=CROSS
 32000+1=CAPTURE
+32492+1=CAPTURE
 35000+1=CAPTURE
 38300+1=CAPTURE
 40000+1=CAPTURE

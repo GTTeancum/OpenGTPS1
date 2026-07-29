@@ -339,7 +339,8 @@ public sealed class GlBackend : IGpuBackend
             (a.HasGteZ || b.HasGteZ || c.HasGteZ);
         bool seamPadding =
             seamEligible &&
-            ConfigManager.View.StabilizeGeometrySeams;
+            ConfigManager.View.StabilizeGeometrySeams &&
+            !LiveWorldRenderer.Requested;
         Begin(f, seamPadding ? 6 : 3);
         var va = V(a, f, dith, perspectiveCorrect);
         var vb = V(b, f, dith, perspectiveCorrect);
