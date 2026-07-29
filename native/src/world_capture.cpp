@@ -42,16 +42,30 @@ float f32(const std::uint8_t* bytes) {
 
 WorldCaptureReadResult parse_header(
     const std::uint8_t* bytes,
+    std::uint32_t byte_count,
     WorldCaptureHeader* header
 ) {
     const char magic[8] = {'O', 'G', 'T', 'W', 'C', 'A', 'P', '\0'};
     if (std::memcmp(bytes, magic, 8) != 0)
         return WorldCaptureReadResult::invalid_magic;
-    if (u32(bytes + 8) != world_capture_version)
+    const std::uint32_t version = u32(bytes + 8);
+    const std::uint32_t header_size = u32(bytes + 12);
+    if (version < 1 || version > world_capture_version)
         return WorldCaptureReadResult::unsupported_version;
-    if (u32(bytes + 12) != world_capture_header_size ||
-        u32(bytes + 48) != world_capture_triangle_stride)
+    const std::uint32_t expected_header_size =
+        version == 1
+            ? world_capture_v1_header_size
+            : world_capture_header_size;
+    const std::uint32_t expected_triangle_stride =
+        version < 3
+            ? world_capture_legacy_triangle_stride
+            : world_capture_triangle_stride;
+    if (header_size != expected_header_size ||
+        byte_count != expected_header_size ||
+        u32(bytes + 48) != expected_triangle_stride)
         return WorldCaptureReadResult::invalid_layout;
+    header->version = version;
+    header->header_size = header_size;
     header->frame_index = u64(bytes + 16);
     header->input_poll = i32(bytes + 24);
     header->display_x = i32(bytes + 28);
@@ -59,6 +73,7 @@ WorldCaptureReadResult parse_header(
     header->display_width = i32(bytes + 36);
     header->display_height = i32(bytes + 40);
     header->triangle_count = u32(bytes + 44);
+    header->triangle_stride = u32(bytes + 48);
     header->vram_width = u32(bytes + 52);
     header->vram_height = u32(bytes + 56);
     header->triangle_offset = u64(bytes + 60);
@@ -70,11 +85,23 @@ WorldCaptureReadResult parse_header(
         header->camera_rotation[index] = i16(bytes + 96 + index * 2);
     for (int index = 0; index < 3; ++index)
         header->camera_translation[index] = i32(bytes + 116 + index * 4);
+    header->projection_offset_x = 0;
+    header->projection_offset_y = 0;
+    header->projection_plane = 0;
+    header->draw_offset_x = 0;
+    header->draw_offset_y = 0;
+    if (version >= 2) {
+        header->projection_offset_x = i32(bytes + 128);
+        header->projection_offset_y = i32(bytes + 132);
+        header->projection_plane = u32(bytes + 136);
+        header->draw_offset_x = i32(bytes + 140);
+        header->draw_offset_y = i32(bytes + 144);
+    }
 
     const std::uint64_t triangle_end =
-        world_capture_header_size +
+        header->header_size +
         static_cast<std::uint64_t>(header->triangle_count) *
-        world_capture_triangle_stride;
+        header->triangle_stride;
     if (header->display_width <= 0 ||
         header->display_height <= 0 ||
         header->display_width > 4096 ||
@@ -82,10 +109,13 @@ WorldCaptureReadResult parse_header(
         header->triangle_count > world_capture_max_triangles ||
         header->vram_width != 1024 ||
         header->vram_height != 512 ||
-        header->triangle_offset != world_capture_header_size ||
+        header->triangle_offset != header->header_size ||
         header->vram_offset != triangle_end ||
         header->vram_size != 1024U * 512U * 2U ||
-        header->camera_transform_id == 0)
+        header->camera_transform_id == 0 ||
+        (version >= 2 &&
+            (((header->flags & (1U << 2)) == 0) ||
+             header->projection_plane == 0)))
         return WorldCaptureReadResult::invalid_layout;
     return WorldCaptureReadResult::success;
 }
@@ -94,10 +124,30 @@ WorldCaptureReadResult read_header(
     std::FILE* file,
     WorldCaptureHeader* header
 ) {
-    std::uint8_t bytes[world_capture_header_size];
-    if (std::fread(bytes, 1, sizeof(bytes), file) != sizeof(bytes))
+    std::uint8_t bytes[world_capture_header_size]{};
+    constexpr std::size_t preamble_size = 16;
+    if (std::fread(bytes, 1, preamble_size, file) != preamble_size)
         return WorldCaptureReadResult::truncated;
-    return parse_header(bytes, header);
+    const std::uint32_t version = u32(bytes + 8);
+    const std::uint32_t header_size = u32(bytes + 12);
+    const std::uint32_t expected_header_size =
+        version == 1
+            ? world_capture_v1_header_size
+            : version >= 2 && version <= world_capture_version
+                ? world_capture_header_size
+                : 0;
+    if (expected_header_size == 0)
+        return WorldCaptureReadResult::unsupported_version;
+    if (header_size != expected_header_size)
+        return WorldCaptureReadResult::invalid_layout;
+    const std::size_t remaining = header_size - preamble_size;
+    if (std::fread(
+            bytes + preamble_size,
+            1,
+            remaining,
+            file) != remaining)
+        return WorldCaptureReadResult::truncated;
+    return parse_header(bytes, header_size, header);
 }
 
 void calculate_world(
@@ -145,6 +195,14 @@ void parse_vertex(
     vertex->view_x = i32(bytes + 28);
     vertex->view_y = i32(bytes + 32);
     vertex->view_z = i32(bytes + 36);
+    vertex->projection_offset_x = header.projection_offset_x;
+    vertex->projection_offset_y = header.projection_offset_y;
+    vertex->projection_plane = header.projection_plane;
+    if (header.version >= 3) {
+        vertex->projection_offset_x = i32(bytes + 40);
+        vertex->projection_offset_y = i32(bytes + 44);
+        vertex->projection_plane = u32(bytes + 48);
+    }
     if (vertex->world_valid)
         calculate_world(header, vertex);
     else
@@ -172,10 +230,25 @@ void parse_triangle(
     triangle->object_kind = u32(bytes + 32);
     triangle->object_id = u32(bytes + 36);
     triangle->model_pointer = u32(bytes + 40);
+    triangle->draw_offset_x =
+        static_cast<std::int16_t>(header.draw_offset_x);
+    triangle->draw_offset_y =
+        static_cast<std::int16_t>(header.draw_offset_y);
+    if (header.version >= 3) {
+        triangle->draw_offset_x = i16(bytes + 44);
+        triangle->draw_offset_y = i16(bytes + 46);
+    }
     triangle->transform_id = u64(bytes + 48);
+    const std::size_t vertex_stride = header.version >= 3 ? 52 : 40;
     parse_vertex(bytes + 56, header, &triangle->vertices[0]);
-    parse_vertex(bytes + 96, header, &triangle->vertices[1]);
-    parse_vertex(bytes + 136, header, &triangle->vertices[2]);
+    parse_vertex(
+        bytes + 56 + vertex_stride,
+        header,
+        &triangle->vertices[1]);
+    parse_vertex(
+        bytes + 56 + vertex_stride * 2,
+        header,
+        &triangle->vertices[2]);
 }
 
 } // namespace
@@ -221,7 +294,11 @@ WorldCaptureReadResult load_world_capture(
     }
     std::uint8_t record[world_capture_triangle_stride];
     for (std::uint32_t index = 0; index < header->triangle_count; ++index) {
-        if (std::fread(record, 1, sizeof(record), file) != sizeof(record)) {
+        if (std::fread(
+                record,
+                1,
+                header->triangle_stride,
+                file) != header->triangle_stride) {
             std::fclose(file);
             return WorldCaptureReadResult::truncated;
         }

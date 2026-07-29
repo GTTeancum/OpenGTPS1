@@ -24,6 +24,8 @@ public readonly record struct GteProjectionOrigin(
     short R10, short R11, short R12,
     short R20, short R21, short R22,
     int TranslateX, int TranslateY, int TranslateZ,
+    int ProjectionOffsetX, int ProjectionOffsetY,
+    ushort ProjectionPlane,
     ulong TransformId,
     WorldObjectContext Object)
 {
@@ -247,7 +249,7 @@ public static class Gte
         return n;
     }
 
-    static uint Divide(uint h, uint sz3)
+    internal static uint Divide(uint h, uint sz3)
     {
         if (h >= sz3 * 2) { Flag(17); return 0x1FFFF; }
         int z = Clz16(sz3);
@@ -332,6 +334,7 @@ public static class Gte
             RT[3], RT[4], RT[5],
             RT[6], RT[7], RT[8],
             TR[0], TR[1], TR[2],
+            OFX, OFY, H,
             hash,
             WorldCaptureContext.Current);
     }

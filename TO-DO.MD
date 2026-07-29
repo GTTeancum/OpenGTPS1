@@ -35,6 +35,9 @@ visible and repeatable in the packaged build at:
     material state, and original triangle order into the bounded `OGTWCAP`
     format. UI and other primitives without world provenance are excluded
     rather than inferred from screen pixels.
+  - Format version 3 also records the exact per-vertex GTE projection state and
+    per-draw GPU offset. GT2's main and mirror cameras can therefore be
+    separated without inferring a camera from screen pixels.
   - The portable loader validates the format using caller-owned buffers,
     derives world coordinates from the captured camera, and exports an OBJ
     grouped by stable object identity. Its synthetic unit fixture verifies
@@ -43,11 +46,32 @@ visible and repeatable in the packaged build at:
     valid vertices: 2,639 track, 1,817 vehicle, and 543 transform-complete
     unclassified effect/environment triangles. It records 48 identified track
     objects, two identified vehicles, 52 object/model combinations, 151
-    materials, and 62 transforms; camera round-trip RMS is `0.000000`. The
-    1,928,528-byte capture was produced with SDL dummy audio proven twice and
-    wrapper settings unchanged.
-- [ ] Render the captured scene through a standalone PC backend and compare it
+    materials, and 62 transforms; camera round-trip RMS is `0.000000`. All
+    14,997 vertices also reproduce their captured screen position exactly
+    (`0.000000` RMS/max) from their own recorded projection state. The version
+    3 capture is 2,108,524 bytes and was produced with SDL dummy audio proven
+    twice and wrapper settings unchanged.
+- [x] Render the captured scene through a standalone PC backend and compare it
   deterministically with the compatibility renderer.
+  - The API-neutral C++17 draw-list contains homogeneous clip coordinates,
+    world/view positions, UVs, colors, face normals, PS1 materials, scissor,
+    object identity, ordering-table data, and original submission order. No
+    D3D type crosses that boundary, leaving an explicit NV2A backend seam.
+  - The D3D11 backend decodes raw 4/8/15-bit VRAM and CLUT state in its shader,
+    uses perspective-correct UVs, preserves Gouraud color interpolation and
+    all four blend modes, handles STP transparency and mask bits, and applies
+    depth within coherent object/model/ordering layers without discarding
+    GT2's inter-model ordering contract. Dithering is off by default and
+    available only through the explicit viewer switch.
+  - The AI-driven fixture builds 3,657 main-view commands and excludes 1,342
+    separately projected mirror commands. It includes 677 main-view vehicle
+    triangles from two identified cars.
+  - `tools\validate_world_renderer.ps1` runs the WARP backend twice, requires
+    identical hashes, bounds PNG output, and removes repeat images. The
+    retained run produced GPU hash `299b4de4d2d03d2e` twice and CPU oracle hash
+    `17b87953231f3c05` twice; its compatibility path measures 4.173142 RGB RMS
+    (35.72 dB PSNR). The default hardware D3D11 adapter also renders the same
+    scene successfully.
 - [ ] Replace screen-space triangle padding with model-space boundary
   stitching, T-junction subdivision, and deterministic coplanar ownership.
 - [ ] Integrate native race/replay rendering while retaining the proven PS1

@@ -176,8 +176,24 @@ bridges. `tools\capture_projected_scene.ps1` captures one live draw stream plus
 VRAM and renders independent perspective and affine PNGs through the portable
 C++ core. `tools\capture_world_scene.ps1` additionally captures upstream
 model/view coordinates, camera transforms, stable track/vehicle identity,
-materials, and original draw order, then validates and exports the scene
-through the native loader. See
+exact per-vertex projection state, materials, and original draw order, then
+validates and exports the scene through the native loader.
+
+The branch now also builds `opengt_world_viewer.exe`, a standalone D3D11
+backend over the API-neutral C++17 world draw list. It supports hardware
+rendering, deterministic WARP validation, perspective-correct PS1 materials,
+object-scoped depth that preserves GT2 ordering layers, explicit optional
+dithering, CPU-oracle comparison, and a `--window` inspection mode. Validate a
+captured world frame twice with bounded lossless PNG output:
+
+```powershell
+cmake -S native -B build\native
+cmake --build build\native --config Release
+powershell -ExecutionPolicy Bypass -File tools\validate_world_renderer.ps1 `
+  -Capture artifacts\modern-world-v3-vehicles\race-frame.ogtwcap
+```
+
+See
 [`docs/MODERN_RENDERER.md`](docs/MODERN_RENDERER.md) for the formats, exact
 commands, audio-safety checks, and next renderer milestone.
 

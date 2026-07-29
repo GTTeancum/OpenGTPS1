@@ -5,12 +5,16 @@
 
 namespace opengt::render {
 
-constexpr std::uint32_t world_capture_version = 1;
-constexpr std::uint32_t world_capture_header_size = 128;
-constexpr std::uint32_t world_capture_triangle_stride = 176;
+constexpr std::uint32_t world_capture_version = 3;
+constexpr std::uint32_t world_capture_header_size = 160;
+constexpr std::uint32_t world_capture_v1_header_size = 128;
+constexpr std::uint32_t world_capture_legacy_triangle_stride = 176;
+constexpr std::uint32_t world_capture_triangle_stride = 212;
 constexpr std::uint32_t world_capture_max_triangles = 262144;
 
 struct WorldCaptureHeader {
+    std::uint32_t version;
+    std::uint32_t header_size;
     std::uint64_t frame_index;
     std::int32_t input_poll;
     std::int32_t display_x;
@@ -18,6 +22,7 @@ struct WorldCaptureHeader {
     std::int32_t display_width;
     std::int32_t display_height;
     std::uint32_t triangle_count;
+    std::uint32_t triangle_stride;
     std::uint32_t vram_width;
     std::uint32_t vram_height;
     std::uint64_t triangle_offset;
@@ -27,6 +32,11 @@ struct WorldCaptureHeader {
     std::uint64_t camera_transform_id;
     std::int16_t camera_rotation[9];
     std::int32_t camera_translation[3];
+    std::int32_t projection_offset_x;
+    std::int32_t projection_offset_y;
+    std::uint32_t projection_plane;
+    std::int32_t draw_offset_x;
+    std::int32_t draw_offset_y;
 };
 
 struct WorldCaptureVertex {
@@ -45,6 +55,9 @@ struct WorldCaptureVertex {
     std::int32_t view_x;
     std::int32_t view_y;
     std::int32_t view_z;
+    std::int32_t projection_offset_x;
+    std::int32_t projection_offset_y;
+    std::uint32_t projection_plane;
     float world_x;
     float world_y;
     float world_z;
@@ -67,6 +80,8 @@ struct WorldCaptureTriangle {
     std::uint32_t object_kind;
     std::uint32_t object_id;
     std::uint32_t model_pointer;
+    std::int16_t draw_offset_x;
+    std::int16_t draw_offset_y;
     std::uint64_t transform_id;
     WorldCaptureVertex vertices[3];
 };

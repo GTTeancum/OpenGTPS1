@@ -95,9 +95,13 @@ world-space GTE origin are deliberately excluded instead of being guessed.
 The dominant track transform supplies the frame camera; its fixed-point
 inverse produces world coordinates in the native loader.
 
-The little-endian `OGTWCAP` format has a fixed 128-byte header, fixed 176-byte
-triangle records, and one complete 1 MiB VRAM snapshot. It is hard-capped at
-262,144 triangles. The C++17 loader validates every bound into caller-owned
+Version 3 of the little-endian `OGTWCAP` format has a fixed 160-byte header,
+fixed 212-byte triangle records, and one complete 1 MiB VRAM snapshot. It is
+hard-capped at 262,144 triangles. Every triangle records its GPU draw offset;
+every vertex records the exact GTE projection offset and projection plane that
+created it. This is necessary because GT2 renders the main view and mirror with
+different projection state in the same frame. The loader remains compatible
+with version 1 and 2 captures. It validates every bound into caller-owned
 storage, derives world coordinates, and rejects invalid camera transforms or
 vertices. The inspector preserves draw order while exporting a diagnostic OBJ
 grouped by stable object identity.
@@ -114,26 +118,84 @@ audio must report SDL's dummy driver twice, the caller's audio environment and
 wrapper settings are restored, and incomplete or unexpectedly large captures
 are rejected.
 
-Current Red Rock evidence at input poll 10,000 contains 4,999 world triangles
-and 14,997 valid vertices. Of those triangles, 2,639 are identified track
-geometry, 1,817 are identified vehicles, and 543 retain complete transforms
-but remain unclassified effects/environment submissions. The scene has 48
-identified track objects, two identified vehicles, 52 object/model
+Current AI-driven Red Rock evidence at input poll 10,000 contains 4,999 world
+triangles and 14,997 valid vertices. Of those triangles, 2,639 are identified
+track geometry, 1,817 are identified vehicles, and 543 retain complete
+transforms but remain unclassified effects/environment submissions. The scene
+has 48 identified track objects, two identified vehicles, 52 object/model
 combinations, 151 materials, and 62 transforms. Reapplying the captured camera
-to every derived world vertex has 0.000000 RMS error. The diagnostic path is
-environment-gated; normal gameplay avoids provenance construction and
-packet-origin lookup.
+to every derived world vertex has 0.000000 RMS error. Reprojecting every vertex
+with its own captured GTE state has 0.000000 RMS and maximum screen error:
+14,997 of 14,997 vertices reproduce exactly. The main view contains 3,657 draw
+commands; 1,342 mirror-view commands are identified and excluded from that
+draw list instead of being mistaken for malformed main-camera geometry.
 
-This capture completes the extraction contract, not the GPU backend. It does
-not yet deduplicate topology, stitch road boundaries, replace GT2 visibility,
-or draw the world-space records in the running game.
+The diagnostic path is environment-gated; normal gameplay avoids provenance
+construction and packet-origin lookup.
+
+## Standalone PC backend
+
+`opengt_world_viewer` is the first GPU consumer of the world contract. The
+portable C++17 draw-list builder:
+
+- separates main and secondary projection channels;
+- emits homogeneous clip coordinates from exact GTE view/projection data;
+- retains world position, view position, UVs, vertex color, material state,
+  scissor, ordering-table index, object identity, and submission order; and
+- derives a face normal for the future lighting/reflection material path.
+
+The Windows backend uses D3D11. It uploads the captured 1024 x 512 BGR555 VRAM
+as an integer texture and decodes PS1 4-bit, 8-bit, and 15-bit pages plus CLUT
+and texture-window state in the pixel shader. UV interpolation is
+perspective-correct; vertex color retains non-perspective Gouraud interpolation.
+It implements nearest sampling, raw/modulated texture color, transparent texel
+discard, all four PS1 blend modes, STP-aware two-pass textured transparency,
+mask-bit stencil behavior, scissoring, and optional dithering. Dithering is off
+unless `--dither` is explicitly supplied.
+
+Depth is scoped to coherent identified object/model and ordering-table layers.
+This gives each mesh a real Z buffer without allowing legacy sky, scenery,
+road, and vehicle layer conventions to overwrite GT2's intentional
+inter-model ordering. Secondary mirror geometry is retained in the capture for
+a later compositor pass but is not mixed into the main-world buffer.
+
+Hardware D3D11 is the normal path. `--warp` uses Microsoft's software adapter
+for deterministic validation. The validator renders twice, requires identical
+GPU and compatibility-oracle hashes, bounds each PNG below 2 MiB, and removes
+the repeat images:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\validate_world_renderer.ps1 `
+  -Capture artifacts\modern-world-v3-vehicles\race-frame.ogtwcap
+```
+
+The retained AI-driven fixture produces 3,657 main-view commands, including
+track and vehicle meshes, with dithering off. Two WARP runs produced identical
+GPU hash `299b4de4d2d03d2e`; the independent CPU compatibility oracle produced
+`17b87953231f3c05`. The no-depth comparison path measures 4.173142 RGB RMS
+(35.72 dB PSNR). A separate default-adapter run proves the hardware D3D11
+device path.
+
+For interactive inspection, the same executable can show its GPU output in a
+resizable window:
+
+```powershell
+build\native\Release\opengt_world_viewer.exe `
+  artifacts\modern-world-v3-vehicles\race-frame.ogtwcap `
+  artifacts\world-gpu.png --window
+```
+
+This backend is standalone. Integrating it into live race/replay presentation,
+deduplicating authored topology, and replacing the old road-padding path remain
+later milestones.
 
 ## Texture projection
 
-Race vertices will carry model/world position through the native scene path.
-The backend performs homogeneous projection and perspective-correct
-interpolation from those coordinates. It will not reconstruct perspective from
-already projected PS1 XY packets or correlate transient GTE depth metadata.
+Race vertices carry model/world position and exact GTE view/projection state
+through the native scene path. The backend performs homogeneous projection and
+perspective-correct interpolation from those values. It does not reconstruct
+perspective from already projected PS1 XY packets or correlate framebuffer
+pixels.
 
 PS1 Quality can still request affine interpolation for visual compatibility.
 Enhanced and Custom use the native perspective path.
@@ -195,14 +257,17 @@ These additions must not alter simulation, collision, replay, or save state.
 ## Platform contract
 
 The core uses C++17, fixed-width types, explicit array views, and no graphics
-API types in public scene structures. Geometry processing takes caller-owned
-scratch arenas; the renderer core performs no hidden heap allocation. This
-makes memory cost visible on both desktop and the 64 MiB Xbox target.
+API types in public scene structures. Capture loading uses caller-owned
+buffers. The desktop draw-list builder uses bounded `std::vector` storage and
+reports allocation failure; the NXDK implementation will replace those vectors
+with preallocated arenas while retaining the same public records. This keeps
+graphics API and desktop runtime dependencies out of the shared contract.
 
 ### PC
 
-The first backend will use a desktop API suitable for rapid capture and shader
-validation. Backend choice remains isolated from scene extraction.
+The first backend uses D3D11 for hardware rendering and WARP-based deterministic
+validation. D3D headers, shader compilation, and device objects are isolated in
+`world_gpu_renderer_d3d11.cpp`; none appear in the capture or draw-list API.
 
 ### Original Xbox
 
@@ -222,8 +287,9 @@ unified-memory limit. It will use:
    as a bounded migration fixture.
 1. **Complete:** capture a deterministic world-space race frame with camera,
    geometry, materials, object identity, and original draw order.
-2. Render that capture in a standalone PC viewer and compare it against the
-   compatibility renderer.
+2. **Complete:** render that capture in a standalone D3D11 PC viewer and
+   compare deterministic WARP output against the independent compatibility
+   renderer.
 3. Replace screen-space road padding with explicit boundary stitching and add
    tests for coincident edges, T-junctions, and coplanar overlap.
 4. Integrate the PC backend into race/replay while retaining the PS1 2D

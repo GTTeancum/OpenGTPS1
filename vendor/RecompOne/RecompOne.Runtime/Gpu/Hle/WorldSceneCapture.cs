@@ -10,18 +10,30 @@ namespace RecompOne.Runtime.Hle;
 /// </summary>
 internal sealed class WorldSceneCapture : IDisposable
 {
-    const uint Version = 1;
-    const int HeaderSize = 128;
-    const int TriangleStride = 176;
+    const uint Version = 3;
+    const int HeaderSize = 160;
+    const int TriangleStride = 212;
     const int MaxTriangles = 262_144;
 
     readonly string? _outputPath;
     readonly string? _temporaryPath;
     readonly int _targetInputPoll;
-    readonly Dictionary<ulong, (int Count, GteProjectionOrigin Origin)>
-        _trackTransforms = [];
+    readonly record struct CameraProjectionKey(
+        ulong TransformId,
+        int OffsetX,
+        int OffsetY,
+        ushort Plane);
+    readonly record struct ProjectionKey(
+        int OffsetX,
+        int OffsetY,
+        ushort Plane,
+        WorldObjectKind Kind);
+    readonly Dictionary<
+        CameraProjectionKey,
+        (int Count, GteProjectionOrigin Origin)> _trackCameraStates = [];
     readonly Dictionary<ulong, (int Count, GteProjectionOrigin Origin)>
         _allTransforms = [];
+    readonly Dictionary<ProjectionKey, int> _projectionStates = [];
 
     FileStream? _stream;
     BinaryWriter? _writer;
@@ -39,6 +51,12 @@ internal sealed class WorldSceneCapture : IDisposable
     int _viewportWidth;
     int _viewportHeight;
     long _viewportArea;
+    int _drawOffsetX;
+    int _drawOffsetY;
+    double _ownProjectionSquaredError;
+    double _ownProjectionMaximumError;
+    uint _ownProjectionSamples;
+    uint _ownProjectionOverTwoPixels;
 
     public bool Enabled => _outputPath != null && !_completed && !_failed;
     public bool NeedsVramSnapshot => Enabled && _capturing;
@@ -124,6 +142,8 @@ internal sealed class WorldSceneCapture : IDisposable
             _viewportWidth = viewportWidth;
             _viewportHeight = viewportHeight;
             _viewportArea = viewportArea;
+            _drawOffsetX = env.DrawOffsetX;
+            _drawOffsetY = env.DrawOffsetY;
         }
 
         try
@@ -135,6 +155,12 @@ internal sealed class WorldSceneCapture : IDisposable
             CountTransform(in originA);
             CountTransform(in originB);
             CountTransform(in originC);
+            CountProjection(in originA);
+            CountProjection(in originB);
+            CountProjection(in originC);
+            AccumulateProjection(in a, in originA, in env);
+            AccumulateProjection(in b, in originB, in env);
+            AccumulateProjection(in c, in originC, in env);
             _validVertices += (uint)valid;
 
             uint primitiveFlags = 0;
@@ -162,7 +188,8 @@ internal sealed class WorldSceneCapture : IDisposable
             _writer.Write((uint)identity.Object.Kind);
             _writer.Write(identity.Object.StableId);
             _writer.Write(identity.Object.ModelPointer);
-            _writer.Write(0U);
+            _writer.Write((short)env.DrawOffsetX);
+            _writer.Write((short)env.DrawOffsetY);
             _writer.Write(identity.TransformId);
             WriteVertex(in a, in originA);
             WriteVertex(in b, in originB);
@@ -181,7 +208,59 @@ internal sealed class WorldSceneCapture : IDisposable
             return;
         Add(_allTransforms, in origin);
         if (origin.Object.Kind == WorldObjectKind.Track)
-            Add(_trackTransforms, in origin);
+        {
+            var key = new CameraProjectionKey(
+                origin.TransformId,
+                origin.ProjectionOffsetX,
+                origin.ProjectionOffsetY,
+                origin.ProjectionPlane);
+            _trackCameraStates.TryGetValue(key, out var entry);
+            _trackCameraStates[key] = (entry.Count + 1, origin);
+        }
+    }
+
+    void CountProjection(in GteProjectionOrigin origin)
+    {
+        if (!origin.Valid)
+            return;
+        var key = new ProjectionKey(
+            origin.ProjectionOffsetX,
+            origin.ProjectionOffsetY,
+            origin.ProjectionPlane,
+            origin.Object.Kind);
+        _projectionStates.TryGetValue(key, out int count);
+        _projectionStates[key] = count + 1;
+    }
+
+    void AccumulateProjection(
+        in HleVertex vertex,
+        in GteProjectionOrigin origin,
+        in HleDrawEnv env)
+    {
+        if (!origin.Valid || origin.ProjectionPlane == 0)
+            return;
+
+        int depth = Math.Clamp(origin.ViewZ, 0, 0xFFFF);
+        uint quotient = Gte.Divide(
+            origin.ProjectionPlane,
+            (ushort)depth);
+        int ir1 = Math.Clamp(origin.ViewX, -0x8000, 0x7FFF);
+        int ir2 = Math.Clamp(origin.ViewY, -0x8000, 0x7FFF);
+        long projectedX =
+            (long)quotient * ir1 + origin.ProjectionOffsetX;
+        long projectedY =
+            (long)quotient * ir2 + origin.ProjectionOffsetY;
+        int screenX = Math.Clamp((int)(projectedX >> 16), -0x400, 0x3FF);
+        int screenY = Math.Clamp((int)(projectedY >> 16), -0x400, 0x3FF);
+        double deltaX = screenX + env.DrawOffsetX - vertex.X;
+        double deltaY = screenY + env.DrawOffsetY - vertex.Y;
+        double error = Math.Sqrt(deltaX * deltaX + deltaY * deltaY);
+        _ownProjectionSquaredError += error * error;
+        _ownProjectionMaximumError =
+            Math.Max(_ownProjectionMaximumError, error);
+        _ownProjectionSamples++;
+        if (error > 2.0)
+            _ownProjectionOverTwoPixels++;
     }
 
     static void Add(
@@ -226,10 +305,35 @@ internal sealed class WorldSceneCapture : IDisposable
                 $"[World-Capture] complete frame={presentedFrame} " +
                 $"poll={inputPoll} triangles={_triangleCount} " +
                 $"validVertices={_validVertices} skipped={_skippedTriangles} " +
-                $"trackTransforms={_trackTransforms.Count} transforms={_allTransforms.Count} " +
+                $"trackCameraStates={_trackCameraStates.Count} transforms={_allTransforms.Count} " +
                 $"cameraTransform=0x{camera.TransformId:X16} " +
+                $"projection={camera.ProjectionOffsetX / 65536.0:F3}," +
+                $"{camera.ProjectionOffsetY / 65536.0:F3}," +
+                $"{camera.ProjectionPlane} drawOffset={_drawOffsetX},{_drawOffsetY} " +
                 $"bytes={new FileInfo(_outputPath!).Length} " +
                 $"truncated={_truncated} path={_outputPath}");
+            double ownProjectionRms = _ownProjectionSamples == 0
+                ? 0.0
+                : Math.Sqrt(
+                    _ownProjectionSquaredError /
+                    _ownProjectionSamples);
+            Console.Error.WriteLine(
+                $"[World-Capture] ownProjection samples={_ownProjectionSamples} " +
+                $"rms={ownProjectionRms:F6} " +
+                $"max={_ownProjectionMaximumError:F6} " +
+                $"over2={_ownProjectionOverTwoPixels} " +
+                $"states={_projectionStates.Count}");
+            foreach (var state in _projectionStates
+                         .OrderByDescending(entry => entry.Value)
+                         .Take(12))
+            {
+                Console.Error.WriteLine(
+                    $"[World-Capture] projectionState count={state.Value} " +
+                    $"kind={state.Key.Kind} " +
+                    $"offset={state.Key.OffsetX / 65536.0:F3}," +
+                    $"{state.Key.OffsetY / 65536.0:F3} " +
+                    $"plane={state.Key.Plane}");
+            }
         }
         catch (Exception exception)
         {
@@ -239,12 +343,15 @@ internal sealed class WorldSceneCapture : IDisposable
 
     GteProjectionOrigin SelectCamera()
     {
-        var source = _trackTransforms.Count != 0
-            ? _trackTransforms
-            : _allTransforms;
-        return source.Count == 0
+        if (_trackCameraStates.Count != 0)
+        {
+            return _trackCameraStates.Values
+                .MaxBy(entry => entry.Count)
+                .Origin;
+        }
+        return _allTransforms.Count == 0
             ? default
-            : source.Values.MaxBy(entry => entry.Count).Origin;
+            : _allTransforms.Values.MaxBy(entry => entry.Count).Origin;
     }
 
     void EnsureOpen()
@@ -287,6 +394,9 @@ internal sealed class WorldSceneCapture : IDisposable
         _writer.Write(origin.ViewX);
         _writer.Write(origin.ViewY);
         _writer.Write(origin.ViewZ);
+        _writer.Write(origin.ProjectionOffsetX);
+        _writer.Write(origin.ProjectionOffsetY);
+        _writer.Write((uint)origin.ProjectionPlane);
     }
 
     void WriteHeader(
@@ -316,6 +426,7 @@ internal sealed class WorldSceneCapture : IDisposable
         _writer.Write((ulong)vramSize);
         uint flags = _truncated ? 1U : 0U;
         if (display.Rgb24) flags |= 1U << 1;
+        if (camera.ProjectionPlane != 0) flags |= 1U << 2;
         _writer.Write(flags);
         _writer.Write(camera.TransformId);
         _writer.Write(camera.R00);
@@ -331,6 +442,14 @@ internal sealed class WorldSceneCapture : IDisposable
         _writer.Write(camera.TranslateX);
         _writer.Write(camera.TranslateY);
         _writer.Write(camera.TranslateZ);
+        _writer.Write(camera.ProjectionOffsetX);
+        _writer.Write(camera.ProjectionOffsetY);
+        _writer.Write((uint)camera.ProjectionPlane);
+        _writer.Write(_drawOffsetX);
+        _writer.Write(_drawOffsetY);
+        _writer.Write(0U);
+        _writer.Write(0U);
+        _writer.Write(0U);
         _stream.Position = vramOffset + vramSize;
     }
 

@@ -18,6 +18,7 @@ public sealed partial class Gpu
     HleDrawEnv CurEnv() => new()
     {
         ClipX0 = _drawAreaLeft, ClipY0 = _drawAreaTop, ClipX1 = _drawAreaRight, ClipY1 = _drawAreaBottom,
+        DrawOffsetX = _drawOffsetX, DrawOffsetY = _drawOffsetY,
         TwMaskX = _texWinMaskX, TwMaskY = _texWinMaskY, TwOffX = _texWinOffX, TwOffY = _texWinOffY,
         SetMask = _setMask, CheckMask = _checkMask, Dither = DitherEnabled,
     };

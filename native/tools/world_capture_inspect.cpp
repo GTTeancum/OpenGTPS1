@@ -1,4 +1,5 @@
 #include "opengt/world_capture.hpp"
+#include "opengt/world_draw_list.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -58,6 +59,16 @@ int main(int argc, char** argv) {
         -std::numeric_limits<float>::infinity(),
         -std::numeric_limits<float>::infinity()};
     double squared_error = 0.0;
+    double screen_squared_error = 0.0;
+    double screen_max_error = 0.0;
+    std::uint64_t screen_samples = 0;
+    std::uint64_t screen_error_over_one = 0;
+    std::uint64_t screen_error_over_two = 0;
+    std::uint64_t screen_error_over_ten = 0;
+    std::uint64_t track_screen_error_over_two = 0;
+    std::uint64_t vehicle_screen_error_over_two = 0;
+    std::uint64_t main_projection_triangles = 0;
+    std::uint64_t secondary_projection_triangles = 0;
     std::FILE* obj = argc == 3 ? std::fopen(argv[2], "wb") : nullptr;
     if (argc == 3 && obj == nullptr) {
         std::fprintf(stderr, "cannot write %s\n", argv[2]);
@@ -65,6 +76,22 @@ int main(int argc, char** argv) {
     }
     std::uint64_t obj_vertex = 1;
     for (const auto& triangle : triangles) {
+        bool main_projection =
+            triangle.draw_offset_x == header.draw_offset_x &&
+            triangle.draw_offset_y == header.draw_offset_y;
+        for (const auto& vertex : triangle.vertices) {
+            main_projection =
+                main_projection &&
+                vertex.projection_offset_x ==
+                    header.projection_offset_x &&
+                vertex.projection_offset_y ==
+                    header.projection_offset_y &&
+                vertex.projection_plane == header.projection_plane;
+        }
+        if (main_projection)
+            ++main_projection_triangles;
+        else
+            ++secondary_projection_triangles;
         objects.emplace(triangle.object_kind, triangle.object_id);
         models.emplace(
             triangle.object_kind,
@@ -107,6 +134,37 @@ int main(int argc, char** argv) {
                 const double difference = projected - view[row];
                 squared_error += difference * difference;
             }
+            if (vertex.projection_plane != 0 && vertex.view_z > 0) {
+                const auto projected =
+                    opengt::render::project_ps1_vertex(
+                        vertex,
+                        triangle.draw_offset_x,
+                        triangle.draw_offset_y);
+                const double projected_x = projected.x;
+                const double projected_y = projected.y;
+                const double difference_x =
+                    projected_x - vertex.screen_x;
+                const double difference_y =
+                    projected_y - vertex.screen_y;
+                const double error =
+                    std::sqrt(
+                        difference_x * difference_x +
+                        difference_y * difference_y);
+                screen_squared_error +=
+                    difference_x * difference_x +
+                    difference_y * difference_y;
+                screen_max_error = std::max(screen_max_error, error);
+                if (error > 1.0) ++screen_error_over_one;
+                if (error > 2.0) {
+                    ++screen_error_over_two;
+                    if (triangle.object_kind == 1)
+                        ++track_screen_error_over_two;
+                    if (triangle.object_kind == 2)
+                        ++vehicle_screen_error_over_two;
+                }
+                if (error > 10.0) ++screen_error_over_ten;
+                ++screen_samples;
+            }
         }
         if (obj != nullptr && complete) {
             std::fprintf(
@@ -135,13 +193,22 @@ int main(int argc, char** argv) {
     const double rms = valid_vertices == 0
         ? 0.0
         : std::sqrt(squared_error / (valid_vertices * 3));
+    const double screen_rms = screen_samples == 0
+        ? 0.0
+        : std::sqrt(screen_squared_error / (screen_samples * 2));
     std::printf(
-        "frame=%llu poll=%d triangles=%u validVertices=%llu "
+        "version=%u frame=%llu poll=%d triangles=%u validVertices=%llu "
         "trackTriangles=%llu vehicleTriangles=%llu trackObjects=%zu "
         "vehicleObjects=%zu objects=%zu models=%zu materials=%zu "
         "transforms=%zu cameraTransform=%016llx "
+        "mainProjectionTriangles=%llu secondaryProjectionTriangles=%llu "
         "worldMin=%.3f,%.3f,%.3f worldMax=%.3f,%.3f,%.3f "
-        "viewRoundTripRms=%.6f obj=%s\n",
+        "viewRoundTripRms=%.6f screenProjectionRms=%.6f "
+        "screenProjectionMax=%.6f screenSamples=%llu "
+        "screenErrorOver1=%llu screenErrorOver2=%llu "
+        "screenErrorOver10=%llu trackErrorOver2=%llu "
+        "vehicleErrorOver2=%llu obj=%s\n",
+        header.version,
         static_cast<unsigned long long>(header.frame_index),
         header.input_poll,
         header.triangle_count,
@@ -155,9 +222,19 @@ int main(int argc, char** argv) {
         materials.size(),
         transforms.size(),
         static_cast<unsigned long long>(header.camera_transform_id),
+        static_cast<unsigned long long>(main_projection_triangles),
+        static_cast<unsigned long long>(secondary_projection_triangles),
         minimum[0], minimum[1], minimum[2],
         maximum[0], maximum[1], maximum[2],
         rms,
+        screen_rms,
+        screen_max_error,
+        static_cast<unsigned long long>(screen_samples),
+        static_cast<unsigned long long>(screen_error_over_one),
+        static_cast<unsigned long long>(screen_error_over_two),
+        static_cast<unsigned long long>(screen_error_over_ten),
+        static_cast<unsigned long long>(track_screen_error_over_two),
+        static_cast<unsigned long long>(vehicle_screen_error_over_two),
         argc == 3 ? argv[2] : "none");
     return valid_vertices == static_cast<std::uint64_t>(
         header.triangle_count) * 3 ? 0 : 1;

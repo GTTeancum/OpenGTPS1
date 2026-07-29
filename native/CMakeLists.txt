@@ -6,9 +6,12 @@ option(OPENGT_BUILD_TESTS "Build native renderer core tests" ON)
 
 add_library(opengt_renderer_core STATIC
     src/geometry_stitcher.cpp
+    src/image_writer.cpp
     src/projected_capture.cpp
     src/projected_reference_renderer.cpp
     src/world_capture.cpp
+    src/world_draw_list.cpp
+    src/world_gpu_renderer_d3d11.cpp
 )
 
 target_include_directories(opengt_renderer_core
@@ -27,6 +30,16 @@ if(MSVC)
     )
 else()
     target_compile_options(opengt_renderer_core PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(WIN32)
+    target_link_libraries(
+        opengt_renderer_core
+        PUBLIC
+            d3d11
+            d3dcompiler
+            dxgi
+    )
 endif()
 
 if(OPENGT_BUILD_TESTS)
@@ -72,6 +85,21 @@ if(OPENGT_BUILD_TESTS)
         NAME opengt_world_capture_tests
         COMMAND opengt_world_capture_tests
     )
+
+    add_executable(opengt_world_draw_list_tests
+        tests/world_draw_list_tests.cpp
+    )
+    target_link_libraries(
+        opengt_world_draw_list_tests
+        PRIVATE
+            opengt_renderer_core
+    )
+    target_compile_features(opengt_world_draw_list_tests PRIVATE cxx_std_17)
+
+    add_test(
+        NAME opengt_world_draw_list_tests
+        COMMAND opengt_world_draw_list_tests
+    )
 endif()
 
 add_executable(opengt_capture_render
@@ -85,3 +113,9 @@ add_executable(opengt_world_capture_inspect
 )
 target_link_libraries(opengt_world_capture_inspect PRIVATE opengt_renderer_core)
 target_compile_features(opengt_world_capture_inspect PRIVATE cxx_std_17)
+
+add_executable(opengt_world_viewer
+    tools/world_viewer.cpp
+)
+target_link_libraries(opengt_world_viewer PRIVATE opengt_renderer_core)
+target_compile_features(opengt_world_viewer PRIVATE cxx_std_17)

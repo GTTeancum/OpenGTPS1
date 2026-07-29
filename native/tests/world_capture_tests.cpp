@@ -49,6 +49,9 @@ void put_vertex(
     put_u32(out + 28, static_cast<std::uint32_t>(x + 10));
     put_u32(out + 32, static_cast<std::uint32_t>(y + 20));
     put_u32(out + 36, static_cast<std::uint32_t>(z + 30));
+    put_u32(out + 40, 160U << 16);
+    put_u32(out + 44, 120U << 16);
+    put_u32(out + 48, 256);
 }
 
 bool write_fixture(const char* path) {
@@ -74,6 +77,7 @@ bool write_fixture(const char* path) {
     put_u64(bytes.data() + 60, opengt::render::world_capture_header_size);
     put_u64(bytes.data() + 68, prefix_size);
     put_u64(bytes.data() + 76, 1024U * 512U * 2U);
+    put_u32(bytes.data() + 84, 1U << 2);
     put_u64(bytes.data() + 88, 0x1234);
     put_u16(bytes.data() + 96, 4096);
     put_u16(bytes.data() + 104, 4096);
@@ -81,6 +85,9 @@ bool write_fixture(const char* path) {
     put_u32(bytes.data() + 116, 10);
     put_u32(bytes.data() + 120, 20);
     put_u32(bytes.data() + 124, 30);
+    put_u32(bytes.data() + 128, 160U << 16);
+    put_u32(bytes.data() + 132, 120U << 16);
+    put_u32(bytes.data() + 136, 256);
 
     std::uint8_t* triangle =
         bytes.data() + opengt::render::world_capture_header_size;
@@ -88,10 +95,12 @@ bool write_fixture(const char* path) {
     put_u32(triangle + 32, 1);
     put_u32(triangle + 36, 42);
     put_u32(triangle + 40, 0x80123456);
+    put_u16(triangle + 44, 3);
+    put_u16(triangle + 46, 4);
     put_u64(triangle + 48, 0x1234);
     put_vertex(triangle + 56, 1, 2, 3);
-    put_vertex(triangle + 96, 4, 5, 6);
-    put_vertex(triangle + 136, 7, 8, 9);
+    put_vertex(triangle + 108, 4, 5, 6);
+    put_vertex(triangle + 160, 7, 8, 9);
 
     std::vector<std::uint16_t> vram(1024U * 512U);
     std::FILE* file = std::fopen(path, "wb");
@@ -143,6 +152,15 @@ int main() {
         "load capture");
     const auto& vertex = triangles[0].vertices[0];
     okay &= expect(triangles[0].object_id == 42, "stable object identity");
+    okay &= expect(
+        triangles[0].draw_offset_x == 3 &&
+        triangles[0].draw_offset_y == 4,
+        "per-draw projection offset");
+    okay &= expect(
+        vertex.projection_offset_x == (160 << 16) &&
+        vertex.projection_offset_y == (120 << 16) &&
+        vertex.projection_plane == 256,
+        "per-vertex projection state");
     okay &= expect(
         std::fabs(vertex.world_x - 1.0F) < 0.001F &&
         std::fabs(vertex.world_y - 2.0F) < 0.001F &&
