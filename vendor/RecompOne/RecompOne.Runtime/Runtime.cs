@@ -21,9 +21,12 @@ public static class Runtime
             : 0;
     static readonly bool CreateGt2TestSave =
         Environment.GetEnvironmentVariable("RECOMPONE_GT2_CREATE_TEST_SAVE") == "1";
+    static readonly bool UnlockGt2SoakEvents =
+        Environment.GetEnvironmentVariable("RECOMPONE_GT2_SOAK_UNLOCK_ALL_RACES") == "1";
     static readonly bool TraceGt2Save =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_SAVE") == "1";
     static bool _testSavePatchReported;
+    static bool _soakEventUnlockReported;
     static bool _saveTraceReported;
     static long _performanceStarted;
     static long _performanceHostTicks;
@@ -92,6 +95,7 @@ public static class Runtime
         long performanceStart = Stopwatch.GetTimestamp();
         int traceFrame = _presentTraceCount++;
         ApplyGt2TestSavePatch();
+        ApplyGt2SoakEventUnlock();
         ReportGt2SaveState();
         if (TraceVSync && traceFrame < 10) Console.Error.WriteLine($"[VSync] present {traceFrame}: window");
         if (Gpu != null && _lastDisplayEnabled != Gpu.DisplayEnabled)
@@ -252,6 +256,27 @@ public static class Runtime
         Environment.Exit(exitCode);
         throw new InvalidOperationException(
             "Process termination unexpectedly returned");
+    }
+
+    static void ApplyGt2SoakEventUnlock()
+    {
+        if (!UnlockGt2SoakEvents || Mem == null || InputManager.CurrentPoll < 820)
+            return;
+
+        // NTSC-U v1.2 Simulation Mode race-result working data. The long soak
+        // uses this opt-in setup hook only to satisfy the regional-league
+        // prerequisite for entering World League. The run still starts and
+        // completes the championship normally, and its memory card is restored
+        // by the soak harness.
+        const uint firstRaceResult = 0x801C99F8u;
+        const uint raceResultCount = 0x44u;
+        for (uint race = 0; race < raceResultCount; race++)
+            Mem.WriteU16(firstRaceResult + race * 2u, 0x1111);
+
+        if (_soakEventUnlockReported) return;
+        _soakEventUnlockReported = true;
+        Console.Error.WriteLine(
+            "[GT2-Soak] setup active: race prerequisites unlocked in working memory");
     }
 
     [DllImport(

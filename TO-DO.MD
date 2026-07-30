@@ -491,6 +491,24 @@ visible and repeatable in the packaged build at:
     `artifacts\cd-fifo-full-race-enhanced` is back on Results at poll 45,000
     without the former replay-exit sector retry loop.
 
+- [x] Run a bounded multi-event crash-hunt soak.
+  - `tools\test_gt2_soak.ps1` preserves and hash-verifies both memory cards and
+    both settings files in a `finally` path, rejects known crash signatures,
+    enforces a hard maximum of 180 minutes, and isolates every headless stage
+    behind SDL's dummy audio backend.
+  - The World League path completed five race/replay pairs on Trial Mountain,
+    Laguna Seca Raceway, Apricot Hill, Rome Circuit, and Midfield Raceway. Each
+    race ran 600 native AI ticks before an opt-in test transition asked GT2's
+    original race flow to finish. The corrected final pass in
+    `artifacts\gt2-soak-championship-final-20260730-114200` selected Continue
+    after race five and returned to the league entry with the in-game day and
+    credits advanced.
+  - The economy paths purchased and upgraded a Mazda before a complete
+    unshortened Red Rock Valley race/replay, then separately purchased a Nissan
+    Silvia and purchased/equipped Nismo Sports Brakes. The retained crash-hunt
+    logs contain zero unmapped-call, fatal-error, access-violation, or unhandled
+    exception signatures and all end in a clean runtime shutdown.
+
 - [x] Verify complete user-controlled playability in the packaged build.
   - Menus and videos render correctly.
   - Controller/keyboard input reaches the game.

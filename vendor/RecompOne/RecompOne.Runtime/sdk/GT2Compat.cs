@@ -59,6 +59,14 @@ public static class GT2Compat
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_AI_DRIVERS") == "1";
     static readonly bool AiAutoDrive =
         Environment.GetEnvironmentVariable("RECOMPONE_GT2_AI_AUTODRIVE") == "1";
+    static readonly int AiAutoDriveMaxEngagements =
+        ParseAiAutoDriveMaxEngagements(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_GT2_AI_AUTODRIVE_MAX_ENGAGEMENTS"));
+    static readonly int AiAutoDriveQuickWinAfterTicks =
+        ParseAiAutoDriveQuickWinAfterTicks(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_GT2_SOAK_QUICK_WIN_AFTER_AI_TICKS"));
     static readonly uint DiagnosticVehicleLodSelector =
         ParseVehicleLodSelector(
             Environment.GetEnvironmentVariable(
@@ -96,6 +104,28 @@ public static class GT2Compat
     static int _forcedVehicleLodReported;
     static long _aiDriverTicks;
     static int _aiAutoDriveReported;
+    static int _aiAutoDriveRaceTicks;
+    static int _aiAutoDriveQuickWinApplied;
+
+    static int ParseAiAutoDriveMaxEngagements(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return 2;
+        if (!int.TryParse(text, out int value) || value is < 2 or > 64)
+            throw new InvalidOperationException(
+                "RECOMPONE_GT2_AI_AUTODRIVE_MAX_ENGAGEMENTS must be from 2 through 64");
+        return value;
+    }
+
+    static int ParseAiAutoDriveQuickWinAfterTicks(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return 0;
+        if (!int.TryParse(text, out int value) || value is < 1 or > 60_000)
+            throw new InvalidOperationException(
+                "RECOMPONE_GT2_SOAK_QUICK_WIN_AFTER_AI_TICKS must be from 1 through 60000");
+        return value;
+    }
 
     static uint ParseVehicleLodSelector(string? text)
     {
@@ -231,10 +261,34 @@ public static class GT2Compat
 
         // GT2 records the human pad stream, not the output of a mode-2 driver.
         // Permit one engagement for the live race and one when replay rebuilds
-        // the player car.  The two-pass ceiling prevents a later menu/race
-        // object that reuses mode 0 from being touched.
+        // the player car. The default two-pass ceiling prevents a later
+        // menu/race object that reuses mode 0 from being touched. Long,
+        // explicitly opted-in soak sessions can raise the ceiling for
+        // subsequent championship races and replays.
         int engagement = Volatile.Read(ref _aiAutoDriveReported);
-        if (engagement >= 2)
+        if (AiAutoDriveQuickWinAfterTicks > 0 &&
+            engagement > 0 &&
+            engagement % 2 == 1)
+        {
+            int ticks = Interlocked.Increment(ref _aiAutoDriveRaceTicks);
+            if (ticks >= AiAutoDriveQuickWinAfterTicks &&
+                Interlocked.Exchange(ref _aiAutoDriveQuickWinApplied, 1) == 0)
+            {
+                // NTSC-U v1.2 live-race working data. This test-only transition
+                // is equivalent to the established quick-win diagnostic: it
+                // leaves boot, loading, vehicle setup, physics, and the grace
+                // window untouched, then asks the original race flow to finish.
+                m.WriteU8(0x801D586Bu, 1);
+                if (m.ReadU16(0x800A9CBCu) == 0)
+                    m.WriteU16(0x800A9CBCu, 1);
+                m.WriteU16(0x801D5944u, 1);
+                m.WriteU16(0x801D5D54u, 0x0500);
+                Console.Error.WriteLine(
+                    $"[GT2-Soak] quick-win transition applied after {ticks} AI ticks " +
+                    $"engagement={engagement}");
+            }
+        }
+        if (engagement >= AiAutoDriveMaxEngagements)
             return;
 
         for (uint index = 0; index < carCount; index++)
@@ -245,9 +299,17 @@ public static class GT2Compat
 
             m.WriteU8(car + 0x45Du, 2);
             int pass = Interlocked.Increment(ref _aiAutoDriveReported);
+            string phase = pass % 2 == 1 ? "race" : "replay";
+            if (pass % 2 == 1)
+            {
+                Interlocked.Exchange(ref _aiAutoDriveRaceTicks, 0);
+                Interlocked.Exchange(ref _aiAutoDriveQuickWinApplied, 0);
+            }
+            int session = (pass + 1) / 2;
+            Host.InputManager.SignalScriptStage($"{phase}_{session}");
             Console.Error.WriteLine(
-                $"[GT2-AI] auto-drive engaged pass={pass}/2 " +
-                $"phase={(pass == 1 ? "race" : "replay")} car={index}: " +
+                $"[GT2-AI] auto-drive engaged pass={pass}/{AiAutoDriveMaxEngagements} " +
+                $"phase={phase} car={index}: " +
                 "native driver mode 0 -> 2; vehicle physics unchanged");
             return;
         }
