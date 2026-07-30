@@ -18,6 +18,21 @@ public static class GT2Compat
         Config.ConfigManager.View.LevelOfDetail.Equals(
             "Maximum", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Overlay 0 applies a second, camera-relative radial cutoff after walking
+    /// the current sector visibility list. Replacing that list alone therefore
+    /// cannot extend draw distance: distant objects remain absent until they
+    /// cross the stock 0x0063FFFF threshold, which exposes whole section
+    /// boundaries as visible pop-in. The expanded buffers can hold the union
+    /// of authored track objects, so disable only this redundant radial cutoff
+    /// when Extended Draw Distance is selected. Frustum/near-plane rejection
+    /// and the game's ordinary polygon clipping still run unchanged.
+    /// </summary>
+    public static uint GetTrackDrawDistanceLimit() =>
+        Config.ConfigManager.View.ExtendedDrawDistance
+            ? uint.MaxValue
+            : 0x0063FFFFu;
+
     static readonly bool TraceBoot =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_BOOT") == "1";
     static readonly bool TraceMenu =

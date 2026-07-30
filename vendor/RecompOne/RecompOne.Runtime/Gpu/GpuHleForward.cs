@@ -106,16 +106,32 @@ public sealed partial class Gpu
             }
             if (liveWorldCapture)
             {
-                _liveWorldCapture.RecordTriangle(
-                    _projectedCaptureFrame + 1,
-                    in environment,
-                    in ha,
-                    in hb,
-                    in hc,
-                    in originA,
-                    in originB,
-                    in originC,
-                    in flags);
+                if (originA.Valid || originB.Valid || originC.Valid)
+                {
+                    _liveWorldCapture.RecordTriangle(
+                        _projectedCaptureFrame + 1,
+                        in environment,
+                        in ha,
+                        in hb,
+                        in hc,
+                        in originA,
+                        in originB,
+                        in originC,
+                        in flags);
+                }
+                else
+                {
+                    // HUD needles and redline wedges are ordinary polygon
+                    // packets, not only GPU line commands. Preserve triangles
+                    // with no GTE provenance as explicit screen primitives.
+                    _liveWorldCapture.RecordScreenTriangle(
+                        _projectedCaptureFrame + 1,
+                        in environment,
+                        in ha,
+                        in hb,
+                        in hc,
+                        in flags);
+                }
             }
         }
     }

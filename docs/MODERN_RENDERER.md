@@ -213,10 +213,20 @@ rendering; stale pending or published buffers are returned to their pools.
 
 Native world output replaces only the live 3D region. Explicit screen-space
 triangles carry the PS1 HUD, tachometer, minimap, text, and other race/replay
-overlays through the same composition. Menus, loading screens, display-mode
-transitions, and MDEC video remain owned by the proven PS1 compositor. A frame
-whose scaled viewport exceeds the bounded native output pool falls back to
-that compositor instead of disabling the native renderer.
+overlays through the same composition. Ordinary polygons without GTE
+provenance are retained as screen primitives, which includes the tachometer
+needle and redline wedge. GT2 emits the thin tachometer and turbo line layers
+on alternating screen-only frames, so the recorder retains that bounded line
+layer and appends it to the next world frame. Menus, loading screens,
+display-mode transitions, and MDEC video remain owned by the proven PS1
+compositor.
+
+The reusable output pool is sized for a 640x512 PS1 display at the maximum 4x
+native scale, preventing a late `invalid_argument` failure while keeping
+allocation bounded. Submission is intentionally limited to GT2's 320x240 live
+race/replay viewport. Larger transition and rotating-car Results draw areas
+return to the complete PS1 compositor; they are not partial native-world
+surfaces.
 
 PS1 UV rules differ across those two classes. Authored 3D polygons sample
 integer UVs as texel centers with `floor(uv + 0.5)`, which fixes the Red Rock
@@ -229,15 +239,25 @@ public backing array. This order is required because `SetLength` zero-fills
 newly exposed bytes; copying first would erase the entire submitted VRAM
 snapshot and produce a sparse, dark native frame.
 
-Packaged validation in `artifacts/live-native-full-tail-fixed` reaches input
-poll 45,000 through race, replay, the oversized post-replay viewport fallback,
-and orderly shutdown. It renders 19,502 native frames with 12 stale-buffer
-drops, logs no native disable or fatal error, and proves the headless harness
-opened only SDL's dummy audio backend. The final native replay video is
-`artifacts/native-live-replay-final/GT2_Native_Enhanced_Replay_Final.mp4`
-(H.264 High/yuv420p, 640x480, 30 fps, 216.63 seconds, 33,331,101 bytes,
-SHA-256
-`1E7092C8E5ACE1DE7416BFF185863C5CC2BB7E36AF0E9694A06B9AF5E9DB571A`).
+Packaged validation in
+`artifacts/native-live-replay-corrected-final-v2` reaches input poll 45,100
+through race, natural replay, the deliberate 352x300 Results compositor
+handoff, and orderly shutdown. It submits 19,505 native frames, renders 19,497,
+consumes 19,495, and drops 10 obsolete queue entries. It logs no native
+disable, truncation, fatal error, or unhandled exception and proves the
+headless harness opened only SDL's dummy audio backend.
+
+The accepted native replay video is
+`artifacts/native-live-replay-corrected-final-v2/GT2_Native_Enhanced_Replay_Corrected.mp4`
+(H.264 High/yuv420p, 640x480, 30 fps, 6,499 frames, 216.633 seconds,
+33,437,139 bytes, SHA-256
+`D7093C0376D30D4B63A52A572C85532C296B235BE80FE5CB307008EA5B75282F`).
+One-second whole-video review and four-frame-per-second race review show
+continuous track sections and complete gauge layers. Every encoded frame from
+0:52 through 1:02 retains the tachometer/turbo needles and redline. Exact
+legacy captures at input polls 35,240 and 35,570 prove the reported diagonal
+surface and extreme close camera are authored GT2 replay shots. The final
+Results review confirms the complete PS1 UI after the native handoff.
 
 ## Texture projection
 
@@ -290,6 +310,12 @@ Draw distance and LOD are scene-selection policies, not shader tricks.
 - Enhanced submits the complete authored track object set and highest vehicle
   LOD.
 - Custom controls the two choices independently.
+
+Overlay 0 applies a second camera-relative radial cutoff after consuming that
+visibility set. Extended Draw Distance disables only this redundant stock
+cutoff; frustum, near-plane, and ordinary polygon clipping remain active. This
+prevents complete distant sections from crossing the radial threshold and
+popping into view even when the authored visibility union was already complete.
 
 The original Xbox backend must stream this data within a fixed budget instead
 of assuming desktop memory. Scene content will be partitioned into immutable
@@ -348,9 +374,10 @@ unified-memory limit. It will use:
    with authored topology, exact T-junction subdivision, deterministic
    coplanar ownership, structured diagnostics, and synthetic/live tests.
 4. **Complete on PC:** integrate the D3D11 backend into live race/replay,
-   preserve PS1 screen-primitive semantics for the HUD, and retain the PS1
-   compositor for menus, loading screens, display-mode transitions, and
-   video.
+   preserve PS1 screen-primitive semantics and persistence for every HUD
+   layer, eliminate motion-visible track seams and section pop-in, and retain
+   the PS1 compositor for menus, loading screens, display-mode transitions,
+   Results, and video.
 5. Add the RecompOne C++ guest emitter/runtime needed by NXDK.
 6. Render the same captured scene through the NV2A backend within a measured
    memory budget.

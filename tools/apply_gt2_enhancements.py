@@ -136,6 +136,16 @@ def main() -> int:
 
     replace_once(
         race,
+        """        c.FP = 0x00630000u;
+""",
+        """        c.FP =
+            RecompOne.Runtime.Sdk.GT2Compat.GetTrackDrawDistanceLimit();
+""",
+        "extended track radial draw distance",
+    )
+
+    replace_once(
+        race,
         """        c.FP = c.FP | 0xFFFFu;
         c.V0 = m.ReadU32((c.V0 + 0xA0u));
         c.S1 = c.SP + 0x10u;

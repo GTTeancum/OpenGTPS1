@@ -109,11 +109,29 @@ visible and repeatable in the packaged build at:
     native frames, engages the deterministic driver for race pass 1/2 and
     replay pass 2/2, proves both SDL dummy-audio checks, and exits cleanly.
     It records no native disable, fatal error, or unhandled exception.
-  - The post-replay 352x300 viewport at 4x scale exceeds the deliberately
-    bounded 4,915,200-byte native output pool. The renderer logs one compositor
-    fallback, returns to the PS1 presentation path without disabling native
-    rendering, then completes audio, native renderer, host, and runtime
-    shutdown.
+  - The live recorder now retains ordinary no-GTE polygons as screen
+    primitives, preserving the tachometer needle and redline wedge. GT2 emits
+    the thin tachometer/turbo line layer on alternating screen-only frames, so
+    a bounded 256-triangle cache carries only that line layer into the next
+    native world frame. The native draw list also retains the authored
+    secondary projection used by the rear-view mirror.
+  - The former output pool covered only a 320x240 display at 4x and failed with
+    `invalid_argument` when GT2 selected a wider late transition mode. The
+    fixed pool remains bounded but covers every 640x512 PS1 display at 4x.
+    Native submission is restricted to the 320x240 live race/replay viewport;
+    larger transition and rotating-car Results draw areas deliberately return
+    to the complete PS1 compositor.
+  - Exact native/legacy comparisons at input polls 35,240 and 35,570 prove the
+    reported gray diagonal surface and extreme close replay camera are authored
+    identically by GT2. The genuine native-only defects in those frames were
+    the missing HUD layers and rear-view projection.
+  - Final packaged validation
+    `artifacts\native-live-replay-corrected-final-v2` reaches input poll 45,100,
+    records the natural replay through its end, deliberately hands the 352x300
+    Results draw area back to the PS1 compositor, and exits cleanly. It submits
+    19,505 native frames, renders 19,497, consumes 19,495, and drops 10 obsolete
+    queue entries without a native disable, truncation, fatal error, or
+    unhandled exception.
 - [ ] Add a RecompOne C++ emitter and native guest runtime with no CLR
   dependency.
 - [ ] Add the NXDK/NV2A backend and validate the same captured scene on an
@@ -189,10 +207,14 @@ visible and repeatable in the packaged build at:
   - The packaged native renderer now resolves authored topology and the 0:33
     texture-sampling fault without padding. The exact final input-poll 32,492
     presentation is retained at
-    `artifacts\native-live-replay-final\presentation-32492.png`; it has no
-    diagonal road crack. Screen-space sprites use edge-based sampling while 3D
-    polygons use texel-center sampling, so the minimap/tachometer also avoid
-    the former one-column edge artifacts.
+    `artifacts\native-live-replay-corrected-final-v2\presentation-32492.png`;
+    it has no diagonal road crack. Screen-space sprites use edge-based sampling
+    while 3D polygons use texel-center sampling, so the minimap/tachometer also
+    avoid the former one-column edge artifacts.
+  - The accepted 216.63-second replay was reviewed at one-second intervals
+    end-to-end and at four frames per second through all race motion. Track
+    boundaries remain continuous without section pop-in, background slivers,
+    overlap flicker, floating geometry, or divergent vehicle motion.
 
 - [x] Extend draw distance far enough to show the entire track.
   - Track geometry and scenery must remain visible to the farthest practical
@@ -211,6 +233,12 @@ visible and repeatable in the packaged build at:
     regressions scan 107, 135, and 95 entries per call on the three structurally
     different validated tracks; the isolated stock control averages only 17.34
     entries per call on Red Rock.
+  - Overlay 0 also applied a camera-relative `0x0063FFFF` radial cutoff after
+    consuming the visibility union. Enhanced now disables only that redundant
+    cutoff while retaining frustum, near-plane, and polygon clipping. At the
+    matched Red Rock poll 5,600 capture, visible track objects increase from 38
+    to 68 and track triangles from 2,390 to 2,633, preventing whole distant
+    sections from crossing the stock threshold and popping into view.
 
 - [x] Force the highest available LOD at all distances.
   - Cars, track objects, and scenery must use their highest-detail model.
@@ -482,13 +510,26 @@ visible and repeatable in the packaged build at:
     H.264/yuv420p, 640x480, 30 fps, 233.33 seconds, 35,895,125 bytes,
     SHA-256
     `975DCB1BEBF1D82050442F86179CAB2C77B438876562BAA37E7749A495ABF76F`.
-  - Final native-world evidence:
+  - Rejected native-world evidence (retained for regression):
     `artifacts\native-live-replay-final\GT2_Native_Enhanced_Replay_Final.mp4`;
     H.264 High/yuv420p, 640x480, 30 fps, 216.63 seconds, 33,331,101
     bytes, SHA-256
     `1E7092C8E5ACE1DE7416BFF185863C5CC2BB7E36AF0E9694A06B9AF5E9DB571A`.
-    The stream decodes end-to-end, covers the corrected live replay, and
-    reaches the original Results screen through the PS1 compositor.
+    Although the stream decodes end-to-end and reaches Results, review found
+    recurring track-section pop-in plus intermittently missing tach/turbo
+    needles and redline detail. The reported close-camera shapes around
+    0:55-1:00 also required exact legacy comparison before acceptance. It is
+    not final evidence.
+  - Accepted native-world evidence:
+    `artifacts\native-live-replay-corrected-final-v2\GT2_Native_Enhanced_Replay_Corrected.mp4`;
+    H.264 High/yuv420p, 640x480, 30 fps, 6,499 frames, 216.633 seconds,
+    33,437,139 bytes, SHA-256
+    `D7093C0376D30D4B63A52A572C85532C296B235BE80FE5CB307008EA5B75282F`.
+    Whole-video review retains complete tach/turbo needles and redline detail,
+    finds no motion-visible track pop-in, and reaches the complete PS1 Results
+    UI. Every encoded frame from 0:52 through 1:02 was also reviewed; the two
+    reported shapes match exact legacy captures while the corrected HUD remains
+    complete throughout.
 
 - [x] Capture paired PS1 Quality and Enhanced replay frames from the same track,
   camera, and moment to prove projection, seams, draw distance, LOD, and

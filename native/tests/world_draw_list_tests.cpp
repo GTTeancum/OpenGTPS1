@@ -86,6 +86,21 @@ int main() {
         std::fabs(list.commands[0].face_normal_z - 1.0F) < 0.001F,
         "derive face normal for future lighting");
 
+    WorldDrawList live_list{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            triangles,
+            2,
+            WorldDrawListOptions{true, false},
+            &live_list) == WorldDrawListResult::success,
+        "build live draw list with secondary projection");
+    okay &= expect(
+        live_list.commands.size() == 2 &&
+        live_list.secondary_commands == 1 &&
+        live_list.commands[1].channel == WorldViewChannel::secondary_view,
+        "retain authored rear-view projection for live presentation");
+
     WorldCaptureTriangle screen_triangle{};
     screen_triangle.primitive_flags = 1;
     screen_triangle.clip_x0 = 0;

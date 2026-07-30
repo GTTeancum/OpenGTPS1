@@ -8,6 +8,7 @@ param(
         'C:\Programming\GitHub\OpenGTPS1\OpenGTPS1',
     [switch]$CapturePresentation,
     [switch]$DumpNativeCapture,
+    [switch]$LegacyControl,
     [switch]$Unthrottled
 )
 
@@ -47,6 +48,8 @@ $environment = [ordered]@{
     'RECOMPONE_GRAPHICS_PRESET_OVERRIDE' = 'Enhanced'
     'RECOMPONE_EXIT_AFTER_INPUT_POLL' = $ExitPoll.ToString()
     'RECOMPONE_NATIVE_WORLD_TRACE_INTERVAL' = '30'
+    'RECOMPONE_NATIVE_WORLD_RENDERER' =
+        if ($LegacyControl) { '0' } else { $null }
     'RECOMPONE_PRESENTATION_CAPTURE' =
         if ($CapturePresentation) { '1' } else { $null }
     'RECOMPONE_NATIVE_WORLD_DUMP_PATH' =
@@ -125,19 +128,23 @@ if ($null -ne $exitCode -and $exitCode -ne 0) {
 if ($stderr -match 'Unhandled exception|Fatal error') {
     throw 'Live-native smoke logged a fatal runtime failure'
 }
-if (
-    $stderr -notmatch '\[Native-World\] enabled' -or
-    $stderr -notmatch '\[Native-World\] frame='
-) {
-    throw 'Live-native smoke did not prove native rendering'
-}
-if ($stderr -match '\[Native-World\] disabled:') {
-    throw 'Live-native smoke logged a native renderer failure'
+if (-not $LegacyControl) {
+    if (
+        $stderr -notmatch '\[Native-World\] enabled' -or
+        $stderr -notmatch '\[Native-World\] frame='
+    ) {
+        throw 'Live-native smoke did not prove native rendering'
+    }
+    if ($stderr -match '\[Native-World\] disabled:') {
+        throw 'Live-native smoke logged a native renderer failure'
+    }
 }
 if ($stderr -notmatch '\[Runtime\] shutdown complete; exit=0') {
     throw 'Live-native smoke did not complete orderly shutdown'
 }
 
 Write-Output (
-    "live_native=pass exitPoll=$ExitPoll " +
+    "live_native=pass renderer=" +
+    "$(if ($LegacyControl) { 'legacy' } else { 'native' }) " +
+    "exitPoll=$ExitPoll " +
     "audio=dummy logs=$artifact")

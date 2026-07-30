@@ -69,7 +69,14 @@ internal sealed class LiveWorldRenderer : IDisposable
     internal const int VramBytes = 1024 * 512 * 2;
     internal const int CaptureCapacity =
         HeaderSize + MaxTriangles * TriangleStride + VramBytes;
-    internal const int MaxOutputBytes = 320 * 240 * 4 * 16;
+    internal const int LiveViewportWidth = 320;
+    internal const int LiveViewportHeight = 240;
+    // GT2 races normally use a 320x240 display, but race/replay transitions
+    // briefly select a wider PS1 display mode. Keep the fixed output pool large
+    // enough for every GT2 mode at the maximum supported 4x scale so that one
+    // transition frame cannot fail the native renderer with an undersized
+    // output buffer.
+    internal const int MaxOutputBytes = 640 * 512 * 4 * 16;
 
     const uint DepthFlag = 1u << 0;
     const uint DitherFlag = 1u << 1;
@@ -296,7 +303,12 @@ internal sealed class LiveWorldRenderer : IDisposable
                     if (result != 0)
                         throw new InvalidOperationException(
                             $"native render failed result={result} " +
-                            $"detail={stats.Result}");
+                            $"detail={stats.Result} " +
+                            $"captureDisplay=" +
+                            $"{BitConverter.ToInt32(capture, 36)}x" +
+                            $"{BitConverter.ToInt32(capture, 40)} " +
+                            $"outputScale={options.OutputScale} " +
+                            $"outputCapacity={output.Length}");
                     LiveWorldOutput? replaced;
                     lock (_gate)
                     {
@@ -433,6 +445,8 @@ internal sealed class LiveWorldRenderer : IDisposable
 /// </summary>
 internal sealed class LiveWorldFrameRecorder : IDisposable
 {
+    const int MaxDeferredScreenLineTriangles = 256;
+
     readonly record struct CameraProjectionKey(
         ulong TransformId,
         int OffsetX,
@@ -451,6 +465,11 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
     readonly Dictionary<ulong, (int Count, GteProjectionOrigin Origin)>
         _allTransforms = [];
     readonly Dictionary<SourceVertexKey, uint> _sourceVertices = [];
+    readonly List<int> _screenLineRecordIndices = [];
+    readonly byte[] _deferredScreenLines =
+        new byte[
+            MaxDeferredScreenLineTriangles *
+            LiveWorldRenderer.TriangleStride];
 
     byte[]? _buffer;
     MemoryStream? _stream;
@@ -460,6 +479,10 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
     uint _worldTriangleCount;
     bool _truncated;
     bool _reportedOversizeOutput;
+    bool _reportedNonRaceViewport;
+    int _deferredScreenLineTriangles;
+    long _deferredScreenLineUpdates;
+    long _deferredScreenLineReuses;
     int _viewportX;
     int _viewportY;
     int _viewportWidth;
@@ -619,6 +642,7 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         in HleVertex end,
         in PrimFlags flags)
     {
+        int firstTriangle = checked((int)_triangleCount);
         float x1 = start.X;
         float y1 = start.Y;
         float x2 = end.X;
@@ -647,6 +671,7 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
                 in bottomLeft,
                 in a,
                 in flags);
+            RememberScreenLineTriangles(firstTriangle);
             return;
         }
 
@@ -704,6 +729,7 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             in aOffset,
             in a,
             in flags);
+        RememberScreenLineTriangles(firstTriangle);
     }
 
     public void OnPresentedFrame(
@@ -713,12 +739,14 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         ReadOnlySpan<ushort> vram)
     {
         LastPresentedFrameWasWorld = false;
-        if (
-            !Enabled ||
-            _worldTriangleCount == 0 ||
-            presentedFrame < _geometryFrame
-        )
+        if (!Enabled || presentedFrame < _geometryFrame)
         {
+            ResetCurrent();
+            return;
+        }
+        if (_worldTriangleCount == 0)
+        {
+            CacheCurrentScreenLines();
             ResetCurrent();
             return;
         }
@@ -730,6 +758,10 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             ResetCurrent();
             return;
         }
+        if (_screenLineRecordIndices.Count != 0)
+            CacheCurrentScreenLines();
+        else
+            AppendDeferredScreenLines();
         long vramOffset = _stream!.Position;
         int vramBytes = vram.Length * sizeof(ushort);
         if (
@@ -767,6 +799,27 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             _viewportArea > 0 ? _viewportWidth : display.W;
         int outputHeight =
             _viewportArea > 0 ? _viewportHeight : display.H;
+        // The native path is deliberately a race/replay renderer. GT2 changes
+        // to larger draw areas for transitions and the rotating Results car;
+        // those frames contain UI composition that is not a native-world
+        // surface. Return them to the complete PS1 compositor instead of
+        // replacing its presentation with the partial 3D capture.
+        if (
+            outputWidth != LiveWorldRenderer.LiveViewportWidth ||
+            outputHeight != LiveWorldRenderer.LiveViewportHeight
+        )
+        {
+            if (!_reportedNonRaceViewport)
+            {
+                _reportedNonRaceViewport = true;
+                Console.Error.WriteLine(
+                    $"[Native-World] compositor fallback non-race " +
+                    $"viewport={outputWidth}x{outputHeight}");
+            }
+            ResetCurrent();
+            return;
+        }
+        _reportedNonRaceViewport = false;
         long requiredOutputBytes =
             (long)outputWidth * settings.OutputScale *
             outputHeight * settings.OutputScale * 4;
@@ -808,6 +861,78 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         LastPresentedFrameWasWorld =
             _renderer.Submit(submitted, size, settings);
         RentAndReset();
+    }
+
+    void RememberScreenLineTriangles(int firstTriangle)
+    {
+        int lastTriangle = checked((int)_triangleCount);
+        for (
+            int triangle = firstTriangle;
+            triangle < lastTriangle;
+            ++triangle
+        )
+            _screenLineRecordIndices.Add(triangle);
+    }
+
+    void CacheCurrentScreenLines()
+    {
+        if (_screenLineRecordIndices.Count == 0)
+            return;
+        _writer!.Flush();
+        int count = Math.Min(
+            _screenLineRecordIndices.Count,
+            MaxDeferredScreenLineTriangles);
+        for (int destination = 0; destination < count; ++destination)
+        {
+            int source = _screenLineRecordIndices[destination];
+            int sourceOffset =
+                LiveWorldRenderer.HeaderSize +
+                source * LiveWorldRenderer.TriangleStride;
+            int destinationOffset =
+                destination * LiveWorldRenderer.TriangleStride;
+            _buffer!.AsSpan(
+                sourceOffset,
+                LiveWorldRenderer.TriangleStride).CopyTo(
+                    _deferredScreenLines.AsSpan(
+                        destinationOffset,
+                        LiveWorldRenderer.TriangleStride));
+        }
+        _deferredScreenLineTriangles = count;
+        _deferredScreenLineUpdates++;
+    }
+
+    void AppendDeferredScreenLines()
+    {
+        if (_deferredScreenLineTriangles == 0)
+            return;
+        int availableTriangles =
+            LiveWorldRenderer.MaxTriangles -
+            checked((int)_triangleCount);
+        int count = Math.Min(
+            _deferredScreenLineTriangles,
+            availableTriangles);
+        if (count <= 0)
+            return;
+        int bytes = count * LiveWorldRenderer.TriangleStride;
+        long offset = _stream!.Position;
+        long length = offset + bytes;
+        if (length > _buffer!.Length)
+            return;
+        // As with the VRAM snapshot, grow before copying into the public
+        // backing array so MemoryStream cannot zero the appended records.
+        _stream.SetLength(length);
+        _deferredScreenLines.AsSpan(0, bytes).CopyTo(
+            _buffer.AsSpan(checked((int)offset), bytes));
+        _stream.Position = length;
+        _triangleCount += checked((uint)count);
+        _deferredScreenLineReuses++;
+        if (_deferredScreenLineReuses <= 3)
+        {
+            Console.Error.WriteLine(
+                $"[Native-World] reused deferred HUD line layer " +
+                $"triangles={count} updates={_deferredScreenLineUpdates} " +
+                $"reuses={_deferredScreenLineReuses}");
+        }
     }
 
     void CountTransform(in GteProjectionOrigin origin)
@@ -975,6 +1100,7 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         _trackCameras.Clear();
         _allTransforms.Clear();
         _sourceVertices.Clear();
+        _screenLineRecordIndices.Clear();
         _geometryFrame = 0;
         _triangleCount = 0;
         _worldTriangleCount = 0;

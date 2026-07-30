@@ -115,7 +115,11 @@ int32_t opengt_live_render(
                 header,
                 context->triangles.data(),
                 context->triangles.size(),
-                opengt::render::WorldDrawListOptions{false, true},
+                // A live GT2 frame needs both authored projections: the main
+                // race view and the rear-view mirror. Diagnostic standalone
+                // renders may isolate the main camera, but excluding the
+                // secondary channel here removes visible race content.
+                opengt::render::WorldDrawListOptions{true, true},
                 &context->draw_list);
         if (
             list_result != opengt::render::WorldDrawListResult::success
