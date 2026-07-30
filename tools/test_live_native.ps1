@@ -6,6 +6,11 @@ param(
         'tests\fixtures\ai-autodrive-save-sunday-race.input',
     [string]$DeployPath =
         'C:\Programming\GitHub\OpenGTPS1\OpenGTPS1',
+    [ValidateSet('Enhanced', 'PS1 Quality')]
+    [string]$GraphicsPreset = 'Enhanced',
+    [string]$VideoCapture = '',
+    [int]$VideoStartPoll = 0,
+    [int]$VideoEndPoll = 0,
     [switch]$CapturePresentation,
     [switch]$DumpNativeCapture,
     [switch]$LegacyControl,
@@ -26,12 +31,25 @@ if (-not (Test-Path -LiteralPath $exe)) {
 if (-not (Test-Path -LiteralPath $fixturePath)) {
     throw "Input fixture is missing: $fixturePath"
 }
+if (
+    -not [string]::IsNullOrWhiteSpace($VideoCapture) -and
+    $VideoEndPoll -le $VideoStartPoll
+) {
+    throw 'VideoEndPoll must be greater than VideoStartPoll'
+}
 
 $artifact = Join-Path $repo "artifacts\$ArtifactName"
 New-Item -ItemType Directory -Path $artifact -Force | Out-Null
 $stdoutPath = Join-Path $artifact 'stdout.log'
 $stderrPath = Join-Path $artifact 'stderr.log'
 $nativeDumpPath = Join-Path $artifact 'first-live-frame.ogtwcap'
+$videoCapturePath = if ([string]::IsNullOrWhiteSpace($VideoCapture)) {
+    $null
+} elseif ([IO.Path]::IsPathRooted($VideoCapture)) {
+    $VideoCapture
+} else {
+    Join-Path $artifact $VideoCapture
+}
 foreach ($path in @($stdoutPath, $stderrPath)) {
     if (Test-Path -LiteralPath $path) {
         Remove-Item -LiteralPath $path -Force
@@ -45,11 +63,18 @@ $environment = [ordered]@{
     'RECOMPONE_DISABLE_LIVE_INPUT' = '1'
     'RECOMPONE_SUPPRESS_RUMBLE' = '1'
     'RECOMPONE_GT2_AI_AUTODRIVE' = '1'
-    'RECOMPONE_GRAPHICS_PRESET_OVERRIDE' = 'Enhanced'
+    'RECOMPONE_GRAPHICS_PRESET_OVERRIDE' = $GraphicsPreset
     'RECOMPONE_EXIT_AFTER_INPUT_POLL' = $ExitPoll.ToString()
     'RECOMPONE_NATIVE_WORLD_TRACE_INTERVAL' = '30'
     'RECOMPONE_NATIVE_WORLD_RENDERER' =
         if ($LegacyControl) { '0' } else { $null }
+    'RECOMPONE_VIDEO_CAPTURE' = $videoCapturePath
+    'RECOMPONE_VIDEO_START_INPUT_POLL' =
+        if ($videoCapturePath) { $VideoStartPoll.ToString() } else { $null }
+    'RECOMPONE_VIDEO_END_INPUT_POLL' =
+        if ($videoCapturePath) { $VideoEndPoll.ToString() } else { $null }
+    'RECOMPONE_VIDEO_WIDTH' = if ($videoCapturePath) { '640' } else { $null }
+    'RECOMPONE_VIDEO_HEIGHT' = if ($videoCapturePath) { '480' } else { $null }
     'RECOMPONE_PRESENTATION_CAPTURE' =
         if ($CapturePresentation) { '1' } else { $null }
     'RECOMPONE_NATIVE_WORLD_DUMP_PATH' =
@@ -142,9 +167,23 @@ if (-not $LegacyControl) {
 if ($stderr -notmatch '\[Runtime\] shutdown complete; exit=0') {
     throw 'Live-native smoke did not complete orderly shutdown'
 }
+if ($videoCapturePath) {
+    if ($stderr -match '\[Host\] video capture (failed|finalization failed):') {
+        throw 'Live-native smoke logged a video encoder failure'
+    }
+    if ($stderr -notmatch '\[Host\] video capture complete.*ffmpeg exit=0') {
+        throw 'Live-native smoke did not prove successful video finalization'
+    }
+    if (-not (Test-Path -LiteralPath $videoCapturePath -PathType Leaf)) {
+        throw "Live-native smoke did not create video: $videoCapturePath"
+    }
+}
 
 Write-Output (
     "live_native=pass renderer=" +
     "$(if ($LegacyControl) { 'legacy' } else { 'native' }) " +
+    "preset=$GraphicsPreset " +
     "exitPoll=$ExitPoll " +
-    "audio=dummy logs=$artifact")
+    "audio=dummy " +
+    "$(if ($videoCapturePath) { "video=$videoCapturePath " } else { '' })" +
+    "logs=$artifact")

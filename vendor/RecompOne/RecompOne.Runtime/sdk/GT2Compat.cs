@@ -18,18 +18,30 @@ public static class GT2Compat
         Config.ConfigManager.View.LevelOfDetail.Equals(
             "Maximum", StringComparison.OrdinalIgnoreCase);
 
+    // Internal regression-isolation switches default to enabled. Setting one
+    // to 0 separates the radial and replay distance gates during capture
+    // without changing the user-facing Extended Draw Distance option.
+    static bool ExtendedTrackFeatureEnabled(string overrideName) =>
+        Config.ConfigManager.View.ExtendedDrawDistance &&
+        Environment.GetEnvironmentVariable(overrideName) != "0";
+
+    public static bool ExtendedReplayTrackDrawDistanceEnabled =>
+        ExtendedTrackFeatureEnabled(
+            "RECOMPONE_GT2_EXTENDED_REPLAY_TRACK_DRAW");
+
     /// <summary>
     /// Overlay 0 applies a second, camera-relative radial cutoff after walking
     /// the current sector visibility list. Replacing that list alone therefore
     /// cannot extend draw distance: distant objects remain absent until they
     /// cross the stock 0x0063FFFF threshold, which exposes whole section
-    /// boundaries as visible pop-in. The expanded buffers can hold the union
-    /// of authored track objects, so disable only this redundant radial cutoff
-    /// when Extended Draw Distance is selected. Frustum/near-plane rejection
+    /// boundaries as visible pop-in. Disable only this redundant radial cutoff
+    /// when Extended Draw Distance is selected; retain the authored
+    /// current-sector potential-visibility set. Frustum/near-plane rejection
     /// and the game's ordinary polygon clipping still run unchanged.
     /// </summary>
     public static uint GetTrackDrawDistanceLimit() =>
-        Config.ConfigManager.View.ExtendedDrawDistance
+        ExtendedTrackFeatureEnabled(
+            "RECOMPONE_GT2_EXTENDED_TRACK_RADIAL_LIMIT")
             ? uint.MaxValue
             : 0x0063FFFFu;
 
@@ -70,10 +82,6 @@ public static class GT2Compat
     static long _visibilityLodEntriesScanned;
     static long _visibilityLodNonzeroSelectors;
     static int _visibilityLodExitTraceRegistered;
-    readonly record struct TrackVisibilitySet(
-        int SectorCount,
-        ushort[] ObjectIndices);
-    static readonly Dictionary<uint, TrackVisibilitySet> TrackVisibilitySets = [];
     static readonly Dictionary<uint, long> VehicleLodSelectorCounts = [];
     static readonly HashSet<uint> VehicleLodModelSets = [];
     static readonly HashSet<uint> VehicleLodModelPointers = [];
@@ -379,100 +387,36 @@ public static class GT2Compat
     }
 
     /// <summary>
-    /// Overlay 0 normally renders the packed visibility list attached to the
-    /// camera's current track sector. Enhanced distance replaces that narrow
-    /// list with the union of object indices found in every native sector
-    /// visibility list. The original sector's LOD selectors are retained when
-    /// maximum LOD is off; objects outside the stock list start at the lowest
-    /// detail. Maximum LOD clears the selector bits independently.
+    /// Overlay 0 renders the packed visibility list authored for the camera's
+    /// current track sector. Those lists are potential-visibility sets, not
+    /// independent slices of a global object list: combining every sector
+    /// exposes mutually exclusive or occluded road surfaces. Extended draw
+    /// distance therefore retains the current authored set and changes only
+    /// the later radial limit. Maximum LOD copies that same set and clears its
+    /// two selector bits independently.
     /// </summary>
     public static uint GetTrackVisibilityList(
-        IMemory m, uint trackRoot, uint stockList)
+        IMemory m, uint _trackRoot, uint stockList)
     {
-        bool extended =
-            Config.ConfigManager.View.ExtendedDrawDistance;
         bool maximumLod =
             Config.ConfigManager.View.LevelOfDetail.Equals(
                 "Maximum", StringComparison.OrdinalIgnoreCase);
-        if (!extended && !maximumLod)
+        if (!maximumLod)
         {
             TraceTrackVisibilityLod(m, stockList, maximumLod);
             return stockList;
         }
 
-        // Maximum LOD without extended distance is still a distinct option:
-        // copy only the stock visible set and clear its two selector bits.
-        if (!extended)
-        {
-            if (!IsGuestRam(stockList))
-                return stockList;
-            int visibleCount = Math.Min((int)m.ReadU16(stockList), 0x4000);
-            m.WriteU16(ExpandedVisibilityListAddress, (ushort)visibleCount);
-            for (int item = 0; item < visibleCount; item++)
-                m.WriteU16(
-                    ExpandedVisibilityListAddress + 2u + (uint)item * 2u,
-                    (ushort)(m.ReadU16(
-                        stockList + 2u + (uint)item * 2u) & 0x3FFF));
-            TraceTrackVisibilityLod(
-                m, ExpandedVisibilityListAddress, maximumLod);
-            return ExpandedVisibilityListAddress;
-        }
-
-        if (!TrackVisibilitySets.TryGetValue(
-                trackRoot, out TrackVisibilitySet visibility))
-        {
-            visibility = DiscoverTrackVisibility(m, trackRoot);
-            TrackVisibilitySets[trackRoot] = visibility;
-            ushort first = visibility.ObjectIndices.Length == 0
-                ? (ushort)0
-                : visibility.ObjectIndices[0];
-            ushort last = visibility.ObjectIndices.Length == 0
-                ? (ushort)0
-                : visibility.ObjectIndices[^1];
-            bool contiguous =
-                visibility.ObjectIndices.Length > 0 &&
-                last - first + 1 == visibility.ObjectIndices.Length;
-            Console.Error.WriteLine(
-                $"[GT2-Visibility] discovered sectors={visibility.SectorCount} " +
-                $"objects={visibility.ObjectIndices.Length} " +
-                $"indexRange={first}-{last} contiguous={contiguous} " +
-                $"root=0x{trackRoot:X8}");
-        }
-
-        int objectCount = visibility.ObjectIndices.Length;
-        if (objectCount <= 0 || objectCount > 0x3FFF)
-        {
-            TraceTrackVisibilityLod(m, stockList, maximumLod);
+        if (!IsGuestRam(stockList))
             return stockList;
-        }
-
+        int visibleCount = Math.Min((int)m.ReadU16(stockList), 0x4000);
         uint output = ExpandedVisibilityListAddress;
-        m.WriteU16(output, (ushort)objectCount);
-        for (int item = 0; item < objectCount; item++)
-        {
-            ushort entry = visibility.ObjectIndices[item];
-            if (!maximumLod)
-                entry |= 0x8000;
-            m.WriteU16(output + 2u + (uint)item * 2u, entry);
-        }
-
-        if (!maximumLod && IsGuestRam(stockList))
-        {
-            int stockCount = Math.Min((int)m.ReadU16(stockList), 0x4000);
-            for (int item = 0; item < stockCount; item++)
-            {
-                ushort entry =
-                    m.ReadU16(stockList + 2u + (uint)item * 2u);
-                ushort index = (ushort)(entry & 0x3FFF);
-                int outputIndex = Array.BinarySearch(
-                    visibility.ObjectIndices, index);
-                if (outputIndex >= 0)
-                {
-                    m.WriteU16(
-                        output + 2u + (uint)outputIndex * 2u, entry);
-                }
-            }
-        }
+        m.WriteU16(output, (ushort)visibleCount);
+        for (int item = 0; item < visibleCount; item++)
+            m.WriteU16(
+                output + 2u + (uint)item * 2u,
+                (ushort)(m.ReadU16(
+                    stockList + 2u + (uint)item * 2u) & 0x3FFF));
         TraceTrackVisibilityLod(m, output, maximumLod);
         return output;
     }
@@ -515,53 +459,6 @@ public static class GT2Compat
                     $"stockCalls={_visibilityLodStockCalls} " +
                     $"entriesScanned={_visibilityLodEntriesScanned} " +
                     $"nonzeroSelectors={_visibilityLodNonzeroSelectors}");
-    }
-
-    static TrackVisibilitySet DiscoverTrackVisibility(
-        IMemory m, uint trackRoot)
-    {
-        if (!IsGuestRam(trackRoot))
-            return new TrackVisibilitySet(0, []);
-
-        // The sector-pointer table begins at root+0xC and is immediately
-        // followed by its first descriptor. Therefore the first descriptor's
-        // address defines the table length exactly; do not assume later
-        // descriptors are monotonically allocated, which is not a format
-        // guarantee and could silently truncate a valid track.
-        uint tableStart = trackRoot + 0xCu;
-        uint firstDescriptor = m.ReadU32(tableStart);
-        uint tableBytes = unchecked(firstDescriptor - tableStart);
-        if (!IsGuestRam(firstDescriptor) ||
-            firstDescriptor <= tableStart ||
-            (tableBytes & 3u) != 0)
-            return new TrackVisibilitySet(0, []);
-        int sectorCount = checked((int)(tableBytes / 4u));
-        if (sectorCount is < 1 or > 0x1000)
-            return new TrackVisibilitySet(0, []);
-
-        var objectIndices = new SortedSet<ushort>();
-        for (int index = 0; index < sectorCount; index++)
-        {
-            uint descriptor =
-                m.ReadU32(tableStart + (uint)index * 4u);
-            if (!IsGuestRam(descriptor))
-                return new TrackVisibilitySet(0, []);
-
-            uint visibility = m.ReadU32(descriptor + 0xA0u);
-            if (!IsGuestRam(visibility))
-                return new TrackVisibilitySet(0, []);
-            int visibleCount = m.ReadU16(visibility);
-            if (visibleCount <= 0 || visibleCount > 0x400)
-                return new TrackVisibilitySet(0, []);
-
-            for (int item = 0; item < visibleCount; item++)
-                objectIndices.Add(
-                    (ushort)(m.ReadU16(
-                        visibility + 2u + (uint)item * 2u) & 0x3FFF));
-        }
-        return new TrackVisibilitySet(
-            sectorCount,
-            objectIndices.ToArray());
     }
 
     static bool IsGuestRam(uint address) =>

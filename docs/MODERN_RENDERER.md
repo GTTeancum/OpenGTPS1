@@ -240,24 +240,24 @@ newly exposed bytes; copying first would erase the entire submitted VRAM
 snapshot and produce a sparse, dark native frame.
 
 Packaged validation in
-`artifacts/native-live-replay-corrected-final-v2` reaches input poll 45,100
+`artifacts/native-track-surface-corrected-final-v3` reaches input poll 45,100
 through race, natural replay, the deliberate 352x300 Results compositor
-handoff, and orderly shutdown. It submits 19,505 native frames, renders 19,497,
-consumes 19,495, and drops 10 obsolete queue entries. It logs no native
+handoff, and orderly shutdown. It submits 19,505 native frames, renders 19,496,
+consumes 19,494, and drops 11 obsolete queue entries. It logs no native
 disable, truncation, fatal error, or unhandled exception and proves the
 headless harness opened only SDL's dummy audio backend.
 
 The accepted native replay video is
-`artifacts/native-live-replay-corrected-final-v2/GT2_Native_Enhanced_Replay_Corrected.mp4`
+`artifacts/native-track-surface-corrected-final-v3/GT2_Native_Enhanced_Replay_Track_Surface_Corrected.mp4`
 (H.264 High/yuv420p, 640x480, 30 fps, 6,499 frames, 216.633 seconds,
-33,437,139 bytes, SHA-256
-`D7093C0376D30D4B63A52A572C85532C296B235BE80FE5CB307008EA5B75282F`).
-One-second whole-video review and four-frame-per-second race review show
-continuous track sections and complete gauge layers. Every encoded frame from
-0:52 through 1:02 retains the tachometer/turbo needles and redline. Exact
-legacy captures at input polls 35,240 and 35,570 prove the reported diagonal
-surface and extreme close camera are authored GT2 replay shots. The final
-Results review confirms the complete PS1 UI after the native handoff.
+33,224,796 bytes, SHA-256
+`76F3BB5C455EB87C741684EB689F25C73CFB847C2C1F2EA7091E9F58A5AEDA10`).
+End-to-end four-frame-per-second review shows continuous track sections and
+complete gauge layers. Every encoded frame from 0:52 through 1:02 received an
+additional frame-by-frame review. Exact failed/replacement frames at 0:55.000
+and 0:55.500 prove the former diagonal road slab is gone. The extreme
+car-filling replay cut is authored; the slab was not. The final Results review
+confirms the complete PS1 UI after the native handoff.
 
 ## Texture projection
 
@@ -307,15 +307,18 @@ Draw distance and LOD are scene-selection policies, not shader tricks.
 
 - PS1 Quality submits GT2's original visibility result and selected vehicle
   LOD.
-- Enhanced submits the complete authored track object set and highest vehicle
-  LOD.
+- Enhanced retains GT2's authored current-sector potential-visibility set,
+  extends its later distance gates, and selects the highest vehicle LOD.
 - Custom controls the two choices independently.
 
 Overlay 0 applies a second camera-relative radial cutoff after consuming that
 visibility set. Extended Draw Distance disables only this redundant stock
 cutoff; frustum, near-plane, and ordinary polygon clipping remain active. This
-prevents complete distant sections from crossing the radial threshold and
-popping into view even when the authored visibility union was already complete.
+prevents distant authored objects from crossing the radial threshold and
+popping into view. GT2's sector lists must not be unioned: they are
+potential-visibility sets containing mutually exclusive or occluded surfaces,
+and the former union exposed a false diagonal road slab at replay time 0:55.
+Replay's separate stock distance gate is extended by the same option.
 
 The original Xbox backend must stream this data within a fixed budget instead
 of assuming desktop memory. Scene content will be partitioned into immutable

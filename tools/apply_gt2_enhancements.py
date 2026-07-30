@@ -156,7 +156,7 @@ def main() -> int:
             m, c.S6, c.V0);
         c.S1 = c.SP + 0x10u;
 """,
-        "full-track race visibility list",
+        "track visibility and LOD policy",
     )
 
     replace_once(
@@ -218,7 +218,7 @@ def main() -> int:
         c.A0 = m.ReadU32((c.SP + 0x64u));
 """,
         """        L80020414: ;
-        if (RecompOne.Runtime.Config.ConfigManager.View.ExtendedDrawDistance) {
+        if (RecompOne.Runtime.Sdk.GT2Compat.ExtendedReplayTrackDrawDistanceEnabled) {
             c.S0 = 0x00000001u;
             goto L800204BC;
         }

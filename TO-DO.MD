@@ -121,15 +121,18 @@ visible and repeatable in the packaged build at:
     Native submission is restricted to the 320x240 live race/replay viewport;
     larger transition and rotating-car Results draw areas deliberately return
     to the complete PS1 compositor.
-  - Exact native/legacy comparisons at input polls 35,240 and 35,570 prove the
-    reported gray diagonal surface and extreme close replay camera are authored
-    identically by GT2. The genuine native-only defects in those frames were
-    the missing HUD layers and rear-view projection.
+  - The earlier native/legacy comparison was invalid because its so-called
+    legacy control disabled only the compositor while retaining Enhanced's
+    all-sector visibility replacement. A true PS1 Quality control at input poll
+    35,240 does not contain the reported gray diagonal surface. The extreme
+    close replay camera at 35,570 is authored, but the diagonal surface was a
+    native-only visibility defect.
   - Final packaged validation
-    `artifacts\native-live-replay-corrected-final-v2` reaches input poll 45,100,
+    `artifacts\native-track-surface-corrected-final-v3` reaches input poll
+    45,100,
     records the natural replay through its end, deliberately hands the 352x300
     Results draw area back to the PS1 compositor, and exits cleanly. It submits
-    19,505 native frames, renders 19,497, consumes 19,495, and drops 10 obsolete
+    19,505 native frames, renders 19,496, consumes 19,494, and drops 11 obsolete
     queue entries without a native disable, truncation, fatal error, or
     unhandled exception.
 - [ ] Add a RecompOne C++ emitter and native guest runtime with no CLR
@@ -204,41 +207,40 @@ visible and repeatable in the packaged build at:
     pass but the 0.25-native-pixel centroid expansion was insufficient.
   - The compatibility renderer's 0.75-pixel miter is retained only as old
     evidence; it is a screen-space workaround and not the accepted final fix.
-  - The packaged native renderer now resolves authored topology and the 0:33
-    texture-sampling fault without padding. The exact final input-poll 32,492
-    presentation is retained at
-    `artifacts\native-live-replay-corrected-final-v2\presentation-32492.png`;
-    it has no diagonal road crack. Screen-space sprites use edge-based sampling
-    while 3D polygons use texel-center sampling, so the minimap/tachometer also
-    avoid the former one-column edge artifacts.
-  - The accepted 216.63-second replay was reviewed at one-second intervals
-    end-to-end and at four frames per second through all race motion. Track
-    boundaries remain continuous without section pop-in, background slivers,
-    overlap flicker, floating geometry, or divergent vehicle motion.
+  - The packaged native renderer resolves authored topology and the 0:33
+    texture-sampling fault without padding. Screen-space sprites use edge-based
+    sampling while 3D polygons use texel-center sampling, so the
+    minimap/tachometer also avoid the former one-column edge artifacts.
+  - A second defect in the former accepted video was a long gray road slab
+    crossing the view at 0:55. The old all-sector union combined GT2
+    potential-visibility lists that contain mutually exclusive or occluded
+    road surfaces. Enhanced now preserves the authored current-sector list;
+    exact old/new frames at 0:55.000 and 0:55.500 in
+    `artifacts\track-surface-old-new-comparison` show the false slab removed.
+  - The replacement 216.63-second replay was reviewed end-to-end at four frames
+    per second. Every encoded frame from 0:52 through 1:02 received an
+    additional frame-by-frame review. Track boundaries remain continuous
+    without the false slab, section pop-in, background slivers, overlap
+    flicker, or floating geometry.
 
 - [x] Extend draw distance far enough to show the entire track.
   - Track geometry and scenery must remain visible to the farthest practical
     distance instead of appearing in streamed chunks near the camera.
   - Distant geometry must not disappear when the camera changes direction.
   - The implementation must cover every track, not only the current test track.
-  - Current packaged evidence: Enhanced discovers and submits the complete
-    native visibility union on Red Rock Valley (107/107 sector objects),
-    Tahiti Road (135/135), and High Speed Ring (95/95). On Tahiti, disabling
-    only extended distance removes roughly 34,000 triangles from the matched
-    120-frame window.
-  - The runtime contains no track IDs, names, or per-track counts. It derives
-    the exact sector count from the loaded track's sector-pointer table, unions
-    every native object index, and returns that same complete set on every
-    race/replay visibility call regardless of camera direction. The exact-table
-    regressions scan 107, 135, and 95 entries per call on the three structurally
-    different validated tracks; the isolated stock control averages only 17.34
-    entries per call on Red Rock.
-  - Overlay 0 also applied a camera-relative `0x0063FFFF` radial cutoff after
-    consuming the visibility union. Enhanced now disables only that redundant
-    cutoff while retaining frustum, near-plane, and polygon clipping. At the
-    matched Red Rock poll 5,600 capture, visible track objects increase from 38
-    to 68 and track triangles from 2,390 to 2,633, preventing whole distant
-    sections from crossing the stock threshold and popping into view.
+  - GT2's per-sector lists are authored potential-visibility sets rather than
+    independent chunks of a global object list. Unioning all lists exposed
+    mutually exclusive road surfaces, including the false diagonal slab at
+    0:55. Enhanced therefore retains the current authored list.
+  - Overlay 0 also applies a camera-relative `0x0063FFFF` radial cutoff after
+    consuming that list. Enhanced disables this redundant distance cutoff
+    while retaining the authored visibility set, frustum, near-plane, and
+    polygon clipping. Replay's separate stock distance gate is extended by the
+    same setting.
+  - Matched isolation runs prove the distinction: keeping the radial and replay
+    distance extensions while removing only the all-sector union removes the
+    gray slab. The full replacement replay then completes without
+    motion-visible track-section pop-in or false surface exposure.
 
 - [x] Force the highest available LOD at all distances.
   - Cars, track objects, and scenery must use their highest-detail model.
@@ -520,16 +522,21 @@ visible and repeatable in the packaged build at:
     needles and redline detail. The reported close-camera shapes around
     0:55-1:00 also required exact legacy comparison before acceptance. It is
     not final evidence.
-  - Accepted native-world evidence:
+  - Rejected native-world evidence (retained for regression):
     `artifacts\native-live-replay-corrected-final-v2\GT2_Native_Enhanced_Replay_Corrected.mp4`;
     H.264 High/yuv420p, 640x480, 30 fps, 6,499 frames, 216.633 seconds,
     33,437,139 bytes, SHA-256
     `D7093C0376D30D4B63A52A572C85532C296B235BE80FE5CB307008EA5B75282F`.
-    Whole-video review retains complete tach/turbo needles and redline detail,
-    finds no motion-visible track pop-in, and reaches the complete PS1 Results
-    UI. Every encoded frame from 0:52 through 1:02 was also reviewed; the two
-    reported shapes match exact legacy captures while the corrected HUD remains
-    complete throughout.
+    The gauge and Results fixes are valid, but exact review confirms an invalid
+    diagonal track surface at 0:55; it is not final evidence.
+  - Accepted native-world evidence:
+    `artifacts\native-track-surface-corrected-final-v3\GT2_Native_Enhanced_Replay_Track_Surface_Corrected.mp4`;
+    H.264 High/yuv420p, 640x480, 30 fps, 6,499 frames, 216.633 seconds,
+    33,224,796 bytes, SHA-256
+    `76F3BB5C455EB87C741684EB689F25C73CFB847C2C1F2EA7091E9F58A5AEDA10`.
+    End-to-end 4-fps motion review and every-frame review from 0:52 through
+    1:02 find no false track surface, section pop-in, or gap. The complete
+    tach/turbo layers remain present and the video reaches the PS1 Results UI.
 
 - [x] Capture paired PS1 Quality and Enhanced replay frames from the same track,
   camera, and moment to prove projection, seams, draw distance, LOD, and
@@ -542,9 +549,12 @@ visible and repeatable in the packaged build at:
   - The paired logs identify all five preset states. PS1 Quality records
     projection off, seam pass off, stock distance/LOD, and dithering on;
     Enhanced records projection on, 248,769 seam-padded triangles in the final
-    trace window, all 107 visibility objects, forced vehicle model index zero,
-    and dithering off. Both runs proved SDL dummy audio and left persistent
-    wrapper settings unchanged.
+    trace window, forced vehicle model index zero, and dithering off. Both runs
+    proved SDL dummy audio and left persistent wrapper settings unchanged. The
+    old 107-object all-sector visibility count from this historical pair is
+    explicitly superseded: it exposed occluded surfaces and is not evidence for
+    the corrected distance policy. The accepted full-motion v3 replay validates
+    that policy.
 
 - [x] Run final checks from a clean copy of the exact deployment folder, with
   the source disc image unavailable and no development-tree dependencies.
