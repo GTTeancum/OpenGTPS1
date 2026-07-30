@@ -25,6 +25,8 @@ struct WorldTopologyStats {
     std::uint32_t exact_position_groups;
     std::uint32_t authored_boundary_groups;
     std::uint32_t adjusted_vertex_instances;
+    std::uint32_t authored_projection_groups;
+    std::uint32_t adjusted_projection_instances;
     std::uint32_t boundary_edges;
     std::uint32_t manifold_edges;
     std::uint32_t nonmanifold_edges;

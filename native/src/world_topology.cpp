@@ -80,6 +80,14 @@ Position position(const WorldDrawVertex& vertex) {
     };
 }
 
+Position model_position(const WorldDrawVertex& vertex) {
+    return Position{
+        vertex.model_x,
+        vertex.model_y,
+        vertex.model_z,
+    };
+}
+
 bool eligible(const WorldDrawCommand& command) {
     if (
         command.object_kind != 1 ||
@@ -126,6 +134,26 @@ void copy_geometric_fields(
     destination->clip_w = source.clip_w;
     destination->screen_x = source.screen_x;
     destination->screen_y = source.screen_y;
+}
+
+void copy_projected_position(
+    WorldDrawVertex* destination,
+    const WorldDrawVertex& source,
+    const WorldDrawList& list
+) {
+    destination->screen_x = source.screen_x;
+    destination->screen_y = source.screen_y;
+    const float ndc_x =
+        ((source.screen_x - list.display_x) /
+            static_cast<float>(list.display_width)) *
+            2.0F - 1.0F;
+    const float ndc_y =
+        1.0F -
+        ((source.screen_y - list.display_y) /
+            static_cast<float>(list.display_height)) *
+            2.0F;
+    destination->clip_x = ndc_x * destination->clip_w;
+    destination->clip_y = ndc_y * destination->clip_w;
 }
 
 std::int64_t absolute(std::int64_t value) {
@@ -547,6 +575,12 @@ WorldTopologyResult apply_world_topology(
             static_cast<std::uint32_t>(draw_list->commands.size());
 
         std::map<Position, std::vector<Occurrence>> positions;
+        using ModelOccurrences =
+            std::map<Position, std::vector<Occurrence>>;
+        std::map<std::uint32_t, ModelOccurrences> object_models;
+        std::map<
+            std::uint32_t,
+            std::map<Position, std::set<Position>>> object_view_models;
         std::set<std::pair<std::uint32_t, std::uint32_t>> sources;
         std::vector<bool> command_eligible(
             draw_list->commands.size(), false);
@@ -568,6 +602,13 @@ WorldTopologyResult apply_world_topology(
                 const auto& vertex = command.vertices[vertex_index];
                 positions[position(vertex)].push_back(
                     Occurrence{command_index, vertex_index});
+                const Occurrence occurrence{
+                    command_index, vertex_index};
+                const Position model = model_position(vertex);
+                object_models[command.object_id][model].push_back(
+                    occurrence);
+                object_view_models[command.object_id][position(vertex)]
+                    .insert(model);
                 sources.emplace(
                     command.model_pointer,
                     vertex.source_vertex_identity);
@@ -622,6 +663,106 @@ WorldTopologyResult apply_world_topology(
                 copy_geometric_fields(&vertex, canonical_vertex);
                 if (changed)
                     ++stats.adjusted_vertex_instances;
+            }
+        }
+
+        if (draw_list->continuous_projection) {
+            // Determine the exact 4096-unit coordinate-cell translation
+            // between each pair of consecutive track sections.  A candidate
+            // translation must be demonstrated by at least two distinct
+            // authored vertices (an edge), either through identical raw model
+            // coordinates or through vertices that already coincide in exact
+            // GTE view space.  No proximity or screen-space threshold is used.
+            for (auto left_object = object_models.begin();
+                 left_object != object_models.end();
+                 ++left_object) {
+                const auto right_object =
+                    object_models.find(left_object->first + 1U);
+                if (right_object == object_models.end())
+                    continue;
+                std::set<std::pair<Position, Position>> demonstrated;
+                for (const auto& left : left_object->second) {
+                    if (right_object->second.find(left.first) !=
+                        right_object->second.end())
+                        demonstrated.emplace(left.first, left.first);
+                }
+                const auto& left_views =
+                    object_view_models[left_object->first];
+                const auto& right_views =
+                    object_view_models[right_object->first];
+                for (const auto& left : left_views) {
+                    const auto right = right_views.find(left.first);
+                    if (right == right_views.end())
+                        continue;
+                    for (const Position& left_model : left.second)
+                        for (const Position& right_model : right->second)
+                            demonstrated.emplace(
+                                left_model, right_model);
+                }
+                std::map<Position, std::uint32_t> translations;
+                for (const auto& pair : demonstrated) {
+                    const Position delta{
+                        pair.second.x - pair.first.x,
+                        pair.second.y - pair.first.y,
+                        pair.second.z - pair.first.z,
+                    };
+                    if (
+                        delta.x % 4096 == 0 &&
+                        delta.y % 4096 == 0 &&
+                        delta.z % 4096 == 0
+                    )
+                        ++translations[delta];
+                }
+                if (translations.empty())
+                    continue;
+                const auto best = std::max_element(
+                    translations.begin(), translations.end(),
+                    [](const auto& left, const auto& right) {
+                        if (left.second != right.second)
+                            return left.second < right.second;
+                        return right.first < left.first;
+                    });
+                if (best->second < 2)
+                    continue;
+                const Position delta = best->first;
+                for (const auto& left : left_object->second) {
+                    const Position target{
+                        left.first.x + delta.x,
+                        left.first.y + delta.y,
+                        left.first.z + delta.z,
+                    };
+                    const auto right =
+                        right_object->second.find(target);
+                    if (right == right_object->second.end())
+                        continue;
+                    std::vector<Occurrence> component = left.second;
+                    component.insert(
+                        component.end(),
+                        right->second.begin(),
+                        right->second.end());
+                    ++stats.authored_projection_groups;
+                    const auto canonical = *std::min_element(
+                        component.begin(), component.end(),
+                        [&](const Occurrence& a, const Occurrence& b) {
+                            return occurrence_key(*draw_list, a) <
+                                occurrence_key(*draw_list, b);
+                        });
+                    const auto canonical_vertex =
+                        draw_list->commands[canonical.command]
+                            .vertices[canonical.vertex];
+                    for (const auto& occurrence : component) {
+                        auto& vertex =
+                            draw_list->commands[occurrence.command]
+                                .vertices[occurrence.vertex];
+                        const bool changed =
+                            vertex.screen_x != canonical_vertex.screen_x ||
+                            vertex.screen_y != canonical_vertex.screen_y;
+                        copy_projected_position(
+                            &vertex, canonical_vertex, *draw_list);
+                        if (changed)
+                            ++stats.adjusted_projection_instances;
+                    }
+                }
             }
         }
 

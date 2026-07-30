@@ -71,7 +71,7 @@ int main() {
             header,
             triangles,
             2,
-            WorldDrawListOptions{false, false},
+            WorldDrawListOptions{false, false, false},
             &list) == WorldDrawListResult::success,
         "build main draw list");
     okay &= expect(list.commands.size() == 1, "filter secondary view");
@@ -86,13 +86,70 @@ int main() {
         std::fabs(list.commands[0].face_normal_z - 1.0F) < 0.001F,
         "derive face normal for future lighting");
 
+    // This is the transform-scale boundary from the captured 0:57 track
+    // seam.  The two authored copies represent the same endpoint, but the
+    // PS1's integer projection rounds their Y coordinates to 345 and 346.
+    // Enhanced continuous projection must retain the subpixel relationship
+    // instead of magnifying that one-pixel engine crack.
+    WorldCaptureHeader seam_header = header;
+    seam_header.display_y = 240;
+    seam_header.projection_plane = 597;
+    seam_header.draw_offset_y = 240;
+    WorldCaptureTriangle seam_triangles[2]{};
+    seam_triangles[0].object_kind = 1;
+    seam_triangles[0].draw_offset_y = 240;
+    seam_triangles[0].vertices[0] =
+        vertex(891, -354, 15091, 0, 0);
+    seam_triangles[0].vertices[1] =
+        vertex(343, -203, 14909, 1, 0);
+    seam_triangles[0].vertices[2] =
+        vertex(584, -361, 15939, 0, 1);
+    seam_triangles[1] = seam_triangles[0];
+    seam_triangles[1].vertices[0] =
+        vertex(1784, -706, 30184, 0, 0);
+    seam_triangles[1].vertices[1] =
+        vertex(687, -405, 29819, 1, 0);
+    seam_triangles[1].vertices[2] =
+        vertex(1202, -368, 28154, 0, 1);
+    for (auto& triangle : seam_triangles) {
+        for (auto& point : triangle.vertices)
+            point.projection_plane = 597;
+    }
+    WorldDrawList seam_ps1{};
+    WorldDrawList seam_enhanced{};
+    okay &= expect(
+        build_world_draw_list(
+            seam_header,
+            seam_triangles,
+            2,
+            WorldDrawListOptions{false, false, false},
+            &seam_ps1) == WorldDrawListResult::success &&
+        build_world_draw_list(
+            seam_header,
+            seam_triangles,
+            2,
+            WorldDrawListOptions{false, false, true},
+            &seam_enhanced) == WorldDrawListResult::success,
+        "build PS1 and continuous seam projections");
+    okay &= expect(
+        seam_ps1.commands.size() == 2 &&
+        seam_enhanced.commands.size() == 2 &&
+        seam_ps1.commands[0].vertices[0].screen_y == 345.0F &&
+        seam_ps1.commands[1].vertices[0].screen_y == 346.0F,
+        "reproduce one-pixel PS1 transform-scale seam");
+    okay &= expect(
+        std::fabs(
+            seam_enhanced.commands[0].vertices[0].screen_y -
+            seam_enhanced.commands[1].vertices[0].screen_y) < 0.05F,
+        "preserve continuous subpixel boundary");
+
     WorldDrawList live_list{};
     okay &= expect(
         build_world_draw_list(
             header,
             triangles,
             2,
-            WorldDrawListOptions{true, false},
+            WorldDrawListOptions{true, false, false},
             &live_list) == WorldDrawListResult::success,
         "build live draw list with secondary projection");
     okay &= expect(
@@ -119,7 +176,7 @@ int main() {
             header,
             &screen_triangle,
             1,
-            WorldDrawListOptions{false, true},
+            WorldDrawListOptions{false, true, false},
             &screen_list) == WorldDrawListResult::success,
         "build screen-space draw list");
     okay &= expect(

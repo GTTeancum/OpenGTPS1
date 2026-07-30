@@ -88,6 +88,7 @@ struct WorldDrawList {
     std::int32_t display_width;
     std::int32_t display_height;
     std::uint64_t camera_transform_id;
+    bool continuous_projection;
     std::vector<WorldMaterial> materials;
     std::vector<WorldDrawCommand> commands;
     std::uint32_t rejected_incomplete;
@@ -100,6 +101,7 @@ struct WorldDrawList {
 struct WorldDrawListOptions {
     bool include_secondary_views;
     bool include_screen_space;
+    bool continuous_projection;
 };
 
 enum class WorldDrawListResult {

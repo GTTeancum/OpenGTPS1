@@ -119,7 +119,10 @@ int32_t opengt_live_render(
                 // race view and the rear-view mirror. Diagnostic standalone
                 // renders may isolate the main camera, but excluding the
                 // secondary channel here removes visible race content.
-                opengt::render::WorldDrawListOptions{true, true},
+                opengt::render::WorldDrawListOptions{
+                    true,
+                    true,
+                    (options->flags & OPENGT_LIVE_TOPOLOGY) != 0},
                 &context->draw_list);
         if (
             list_result != opengt::render::WorldDrawListResult::success

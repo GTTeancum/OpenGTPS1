@@ -219,7 +219,7 @@ int main(int argc, char** argv) {
         header,
         triangles.data(),
         triangles.size(),
-        opengt::render::WorldDrawListOptions{false, false},
+        opengt::render::WorldDrawListOptions{false, false, false},
         &draw_list);
     if (argc == 4 && draw_result ==
             opengt::render::WorldDrawListResult::success) {
@@ -231,34 +231,50 @@ int main(int argc, char** argv) {
         std::fprintf(
             csv,
             "command,source_command,object_kind,object_id,model_pointer,"
-            "material,ordering_table,vertex,model_x,model_y,model_z,"
-            "view_x,view_y,view_z,screen_x,screen_y,source_identity\n");
+            "material,primitive_flags,texture_page,clut,ordering_table,"
+            "vertex,model_x,model_y,model_z,world_x,world_y,world_z,"
+            "view_x,view_y,view_z,screen_x,screen_y,u,v,r,g,b,"
+            "source_identity\n");
         for (std::size_t command_index = 0;
              command_index < draw_list.commands.size();
              ++command_index) {
             const auto& command = draw_list.commands[command_index];
+            const auto& material =
+                draw_list.materials[command.material_index];
             for (int vertex_index = 0; vertex_index < 3; ++vertex_index) {
                 const auto& vertex = command.vertices[vertex_index];
                 std::fprintf(
                     csv,
-                    "%zu,%u,%u,%u,%u,%u,%d,%d,%d,%d,%d,"
-                    "%.0f,%.0f,%.0f,%.6f,%.6f,%u\n",
+                    "%zu,%u,%u,%u,%u,%u,%u,%u,%u,%d,%d,%d,%d,%d,"
+                    "%.6f,%.6f,%.6f,%.0f,%.0f,%.0f,%.6f,%.6f,"
+                    "%.6f,%.6f,%u,%u,%u,%u\n",
                     command_index,
                     command.source_command_index,
                     command.object_kind,
                     command.object_id,
                     command.model_pointer,
                     command.material_index,
+                    material.primitive_flags,
+                    material.texture_page,
+                    material.clut,
                     command.ordering_table_index,
                     vertex_index,
                     vertex.model_x,
                     vertex.model_y,
                     vertex.model_z,
+                    vertex.world_x,
+                    vertex.world_y,
+                    vertex.world_z,
                     vertex.view_x,
                     vertex.view_y,
                     vertex.view_z,
                     vertex.screen_x,
                     vertex.screen_y,
+                    vertex.u,
+                    vertex.v,
+                    vertex.r,
+                    vertex.g,
+                    vertex.b,
                     vertex.source_vertex_identity);
             }
         }
@@ -288,7 +304,8 @@ int main(int argc, char** argv) {
         "topologyResult=%s topologyInput=%u topologyOutput=%u "
         "topologyEligible=%u topologyMissingProvenance=%u "
         "topologyPositionGroups=%u topologyBoundaryGroups=%u "
-        "topologyAdjusted=%u topologyBoundaryEdges=%u "
+        "topologyAdjusted=%u topologyProjectionGroups=%u "
+        "topologyProjectionAdjusted=%u topologyBoundaryEdges=%u "
         "topologyManifoldEdges=%u topologyNonmanifoldEdges=%u "
         "topologyTJunctions=%u topologySplitSources=%u "
         "topologySplitTriangles=%u topologyCoplanarPairs=%u "
@@ -333,6 +350,8 @@ int main(int argc, char** argv) {
         topology.exact_position_groups,
         topology.authored_boundary_groups,
         topology.adjusted_vertex_instances,
+        topology.authored_projection_groups,
+        topology.adjusted_projection_instances,
         topology.boundary_edges,
         topology.manifold_edges,
         topology.nonmanifold_edges,

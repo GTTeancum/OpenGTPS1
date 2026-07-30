@@ -211,6 +211,22 @@ visible and repeatable in the packaged build at:
     texture-sampling fault without padding. Screen-space sprites use edge-based
     sampling while 3D polygons use texel-center sampling, so the
     minimap/tachometer also avoid the former one-column edge artifacts.
+  - A later reported diagonal crack at replay poll 35,528 was audited directly
+    from the submitted models. Sections 78/79 share 11 exact integer boundary
+    edges, including identical endpoints `(2651,1975,2951)` and
+    `(2818,2211,3034)`, ruling out an authored mesh gap. GT2 submits the two
+    copies through almost exactly 1x/2x fixed-point transforms, whose integer
+    projection rounds the latter endpoint to Y 345/346.
+  - Enhanced now projects from the captured GTE ratios continuously, then
+    canonicalizes only adjacent boundary copies demonstrated by two or more
+    exact authored vertices (including 4096-unit local-cell translations).
+    The captured frame identified 48 such groups and adjusted 36 submitted
+    copies. No geometry, padding, epsilon join, UV nudge, or collision change
+    is involved. PS1 Quality retains the original integer projection.
+  - `artifacts\seam-geometry-proven-live-35528` contains the exact live
+    35,510–35,550 regression. Its 20 composed H.264 frames were all reviewed
+    clean with the HUD intact; the deterministic run proved dummy audio,
+    native rendering, encoder completion, and a zero exit.
   - A second defect in the former accepted video was a long gray road slab
     crossing the view at 0:55. The old all-sector union combined GT2
     potential-visibility lists that contain mutually exclusive or occluded

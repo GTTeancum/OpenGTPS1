@@ -224,6 +224,7 @@ WorldDrawListResult build_world_draw_list(
         result.display_width = header.display_width;
         result.display_height = header.display_height;
         result.camera_transform_id = header.camera_transform_id;
+        result.continuous_projection = options.continuous_projection;
         result.materials.reserve(256);
         result.commands.reserve(triangle_count);
 
@@ -290,13 +291,45 @@ WorldDrawListResult build_world_draw_list(
                         source,
                         triangle.draw_offset_x,
                         triangle.draw_offset_y);
+                float projected_x = static_cast<float>(projected.x);
+                float projected_y = static_cast<float>(projected.y);
+                if (
+                    !screen_space &&
+                    options.continuous_projection &&
+                    source.view_z > 0
+                ) {
+                    // Enhanced rendering starts from the exact captured GTE
+                    // view coordinates, not the PS1's integer SXY result.
+                    // Adjacent sections can deliberately use different
+                    // fixed-point transform scales; their ratios describe
+                    // the same authored boundary, but independent integer
+                    // projection can round its copies to neighboring pixels.
+                    // Keeping the division continuous removes that engine
+                    // quantization without adding geometry or expanding a
+                    // triangle in screen space.
+                    constexpr float fixed_scale = 1.0F / 65536.0F;
+                    const float inverse_depth =
+                        1.0F / static_cast<float>(source.view_z);
+                    projected_x =
+                        triangle.draw_offset_x +
+                        source.projection_offset_x * fixed_scale +
+                        source.projection_plane *
+                            static_cast<float>(source.view_x) *
+                            inverse_depth;
+                    projected_y =
+                        triangle.draw_offset_y +
+                        source.projection_offset_y * fixed_scale +
+                        source.projection_plane *
+                            static_cast<float>(source.view_y) *
+                            inverse_depth;
+                }
                 const float ndc_x =
-                    ((projected.x - header.display_x) /
+                    ((projected_x - header.display_x) /
                         static_cast<float>(header.display_width)) *
                         2.0F - 1.0F;
                 const float ndc_y =
                     1.0F -
-                    ((projected.y - header.display_y) /
+                    ((projected_y - header.display_y) /
                         static_cast<float>(header.display_height)) *
                         2.0F;
                 const float clip_w = screen_space
@@ -323,8 +356,8 @@ WorldDrawListResult build_world_draw_list(
                     ? 0.5F
                     : depth_a * clip_w + depth_b;
                 destination.clip_w = clip_w;
-                destination.screen_x = static_cast<float>(projected.x);
-                destination.screen_y = static_cast<float>(projected.y);
+                destination.screen_x = projected_x;
+                destination.screen_y = projected_y;
                 destination.u = static_cast<float>(source.u);
                 destination.v = static_cast<float>(source.v);
                 destination.r = source.r;

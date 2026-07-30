@@ -299,7 +299,7 @@ int main(int argc, char** argv) {
         header,
         triangles.data(),
         triangles.size(),
-        WorldDrawListOptions{false, false},
+        WorldDrawListOptions{false, false, scale > 1},
         &draw_list);
     if (list_result != WorldDrawListResult::success) {
         std::fprintf(
@@ -452,6 +452,7 @@ int main(int argc, char** argv) {
         "topologyEligible=%u topologyMissingProvenance=%u "
         "topologySources=%u topologyPositionGroups=%u "
         "topologyBoundaryGroups=%u topologyAdjusted=%u "
+        "topologyProjectionGroups=%u topologyProjectionAdjusted=%u "
         "topologyBoundaryEdges=%u topologyManifoldEdges=%u "
         "topologyNonmanifoldEdges=%u topologyTJunctions=%u "
         "topologySplitSources=%u topologySplitTriangles=%u "
@@ -487,6 +488,8 @@ int main(int argc, char** argv) {
         topology_stats.exact_position_groups,
         topology_stats.authored_boundary_groups,
         topology_stats.adjusted_vertex_instances,
+        topology_stats.authored_projection_groups,
+        topology_stats.adjusted_projection_instances,
         topology_stats.boundary_edges,
         topology_stats.manifold_edges,
         topology_stats.nonmanifold_edges,

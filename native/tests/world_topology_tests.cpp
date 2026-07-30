@@ -180,6 +180,55 @@ int main() {
         list.track_commands == list.commands.size(),
         "refresh draw-list category counts");
 
+    // Adjacent track sections can submit the same authored boundary through
+    // differently scaled GTE transforms. Continuous projection preserves the
+    // subpixel result, and topology must then give both copies one exact
+    // projected endpoint without moving unrelated geometry.
+    WorldDrawList projection_list{};
+    projection_list.display_width = 320;
+    projection_list.display_height = 240;
+    projection_list.continuous_projection = true;
+    auto projection_left = triangle(
+        vertex(100, 0, 0, 0x7000),
+        vertex(100, 20, 0, 0x7014),
+        vertex(80, 0, 0, 0x7028),
+        0x80007000,
+        10);
+    auto projection_right = triangle(
+        vertex(100, 0, 0, 0x8000),
+        vertex(100, 20, 0, 0x8014),
+        vertex(120, 20, 0, 0x8028),
+        0x80008000,
+        11);
+    projection_left.vertices[0].screen_x = 100.20F;
+    projection_left.vertices[1].screen_x = 100.20F;
+    projection_right.vertices[0].screen_x = 100.80F;
+    projection_right.vertices[1].screen_x = 100.80F;
+    projection_list.commands.push_back(projection_left);
+    projection_list.commands.push_back(projection_right);
+    projection_list.track_commands = 2;
+    WorldTopologyStats projection_stats{};
+    okay &= expect(
+        apply_world_topology(
+            &projection_list,
+            WorldTopologyOptions{false, false, false},
+            &projection_stats) == WorldTopologyResult::success,
+        "apply authored projection join");
+    okay &= expect(
+        projection_stats.authored_projection_groups == 2 &&
+        projection_stats.adjusted_projection_instances == 2,
+        "identify and join the two exact authored boundary endpoints");
+    okay &= expect(
+        projection_list.commands[0].vertices[0].screen_x ==
+            projection_list.commands[1].vertices[0].screen_x &&
+        projection_list.commands[0].vertices[1].screen_x ==
+            projection_list.commands[1].vertices[1].screen_x,
+        "give adjacent authored copies exact projected positions");
+    okay &= expect(
+        projection_list.commands[0].vertices[2].screen_x == 80.0F &&
+        projection_list.commands[1].vertices[2].screen_x == 120.0F,
+        "leave non-boundary vertices unchanged");
+
     if (!okay)
         return 1;
     std::puts("world topology tests passed");

@@ -290,7 +290,38 @@ There are no proximity searches, epsilon joins, or screen-space expansion.
 
 The inspector reports all topology counters on stdout and can write one CSV
 row per source triangle. Synthetic tests cover boundary copies, T-junction
-subdivision, and deterministic coplanar ownership.
+subdivision, deterministic coplanar ownership, and exact projected-position
+joins between adjacent authored sections.
+
+`tools/audit_track_section_seams.py` independently audits captured track
+triangles in authored model space or transformed GTE view space. It writes a
+machine-readable summary, a boundary-edge CSV, and an optional OBJ; the OBJ is
+only a visual cross-check. Exact integer vertex and edge comparisons determine
+the result.
+
+A later Red Rock replay crack at input poll 35,528 was not a mesh gap either.
+Sections 78 and 79 share 11 exact model-space boundary edges. The endpoints
+under the visible line are exactly `(2651,1975,2951)`–`(2818,2211,3034)` in
+both models. GT2 submits the second copy through an almost exactly doubled
+fixed-point transform: the latter endpoint becomes view-space
+`(891,-354,15091)` in section 78 and `(1784,-706,30184)` in section 79.
+PS1 integer projection therefore rounds the same authored endpoint to screen Y
+345 and 346.
+
+Enhanced rendering now evaluates projection continuously from the captured GTE
+view coordinates. The topology pass then gives adjacent boundary copies one
+exact projected position only when at least two authored vertices demonstrate
+the join, including GT2's exact 4096-unit local-coordinate-cell translations.
+It does not add geometry, move unproven vertices, use a proximity threshold, or
+expand triangles. The poll-35,528 capture reports 48 demonstrated projection
+groups and 36 adjusted copies. PS1 Quality bypasses both continuous projection
+and topology, retaining the original integer result.
+
+`artifacts/seam-geometry-proven-live-35528/native-35510-35550.mp4` is the
+composed live regression: H.264 High/yuv420p, 640x480, 30 fps, 20 frames.
+Every frame spanning the reported junction is clean, with the complete HUD and
+without a diagonal background sliver. The run used dummy audio and exited with
+code zero. `contact-sheet.png` contains the complete 20-frame review.
 
 The intermittent Red Rock replay fault at about 0:33 was captured at input poll
 32,492 and isolated to two triangles whose shared GTE-view edge is exact, but
