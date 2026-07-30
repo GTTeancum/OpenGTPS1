@@ -2,6 +2,6 @@ namespace RecompOne.Runtime.Host.Window;
 
 internal static class AppVersion
 {
-    public const string Name = "RecompOne";
-    public const string Version = "pre-release";
+    public const string Name = "OpenGTPS1";
+    public const string Version = "0.8beta";
 }

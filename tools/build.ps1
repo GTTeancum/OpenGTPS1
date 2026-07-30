@@ -3,6 +3,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$packageVersion = '0.8.0-beta'
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Push-Location $repo
@@ -32,7 +33,8 @@ try {
         throw "Native renderer build failed: $LASTEXITCODE"
     }
 
-    dotnet build generated\recompiled\GranTurismo2PC.csproj -c Release
+    dotnet build generated\recompiled\GranTurismo2PC.csproj -c Release `
+        -p:Version=$packageVersion
     if ($LASTEXITCODE -ne 0) { throw "GT2 build failed: $LASTEXITCODE" }
 
     python tools\prepare_loose_install.py
@@ -41,6 +43,7 @@ try {
     $install = Join-Path $repo 'OpenGTPS1'
     dotnet publish generated\recompiled\GranTurismo2PC.csproj -c Release `
         -r win-x64 --self-contained true -p:PublishSingleFile=true `
+        -p:Version=$packageVersion `
         -p:DebugType=None -p:DebugSymbols=false `
         -o $install
     if ($LASTEXITCODE -ne 0) { throw "GT2 publish failed: $LASTEXITCODE" }

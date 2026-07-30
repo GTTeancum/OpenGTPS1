@@ -1,14 +1,15 @@
 # OpenGTPS1
 
-OpenGTPS1 is an experimental static-recompilation port of the US Gran Turismo
-2 Simulation Disc (`SCUS-94488`, NTSC-U revision 2), built with
+OpenGTPS1 0.8beta is an experimental static-recompilation port of the US
+Gran Turismo 2 **Simulation Disc** (`SCUS-94488`, NTSC-U revision 2), built with
 [RecompOne](vendor/RecompOne/UPSTREAM.md).
 
 The project currently targets Windows x64. It boots through the original game
 flow, renders menus and videos, supports controllers and memory cards, and can
-run a purchased and upgraded car through a complete race and replay. The next
-major milestone is a portable native renderer designed for both modern PCs and
-the original Xbox through [NXDK](https://github.com/XboxDev/nxdk).
+run a purchased and upgraded car through complete races, championships, and
+replays. Its portable native race/replay renderer is designed to support both
+modern PCs and, in a future port, the original Xbox through
+[NXDK](https://github.com/XboxDev/nxdk).
 
 > [!IMPORTANT]
 > This repository contains no Gran Turismo 2 disc data, Sony BIOS, music, save
@@ -17,7 +18,7 @@ the original Xbox through [NXDK](https://github.com/XboxDev/nxdk).
 
 ## Project status
 
-OpenGTPS1 is a development build, not a finished release.
+OpenGTPS1 0.8beta is a public beta, not a finished 1.0 release.
 
 - The core Windows port is playable from boot through a complete race.
 - Menus, videos, input, memory-card persistence, sound effects, and XA audio
@@ -26,13 +27,14 @@ OpenGTPS1 is a development build, not a finished release.
   adjacent BIN/CUE/CCD/IMG/SUB image after preparation.
 - External OGG music, wrapper-level graphics presets, structured logging, and a
   deterministic AI-driven test harness are available.
-- Perspective-correct textures, road-seam handling, extended draw distance,
-  maximum vehicle LOD, and dithering controls exist in the current renderer,
-  but graphics work remains active. The planned native renderer will replace
-  PS1-era rasterization workarounds with real geometry, depth, and material
-  handling.
-- Resolution and widescreen support are deliberately deferred until that
-  renderer is established.
+- The packaged native race/replay renderer provides perspective-correct
+  textures, exact road-seam handling, extended draw distance, maximum vehicle
+  LOD, and dithering controls. Original PS1 presentation remains in use for
+  menus, videos, HUD layers, and display transitions.
+- Graphics work remains active; visual defects and hardware-specific problems
+  may still exist.
+- Resolution and widescreen expansion remain deferred while that renderer
+  matures.
 - Original Xbox support has not landed yet.
 
 [`TO-DO.MD`](TO-DO.MD) is the detailed implementation and validation record.
@@ -41,13 +43,59 @@ and the RecompOne-specific discoveries behind it. The
 [`modern renderer architecture`](docs/MODERN_RENDERER.md) defines the shared PC
 and original-Xbox direction.
 
-## Requirements
+## Install the 0.8beta Windows release
+
+The prebuilt release requires:
 
 - Windows 10 or 11, x64
 - PowerShell
+- Your own US Gran Turismo 2 **Simulation Disc**, revision 2
+
+The Arcade Disc, other regions, and earlier US revisions are not supported.
+The required raw Mode 2 IMG has:
+
+```text
+Serial:  SCUS-94488
+Size:    691,850,208 bytes
+SHA-256: D0AB6E70539601057590A36299543C0ADAD219254D712F7D4273219094ED5031
+```
+
+The release contains no game data. To install:
+
+1. Download `OpenGTPS1-0.8beta-win-x64.zip` from the GitHub release.
+2. Extract the entire `OpenGTPS1-0.8beta-win-x64` folder to a writable
+   location. Do not run it from inside the ZIP.
+3. Rip your matching Simulation Disc as a raw Mode 2/2352 `.img` file.
+4. Open PowerShell in the extracted folder and run:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File `
+     .\Setup-From-Simulation-Disc.ps1 `
+     -ImagePath "D:\Rips\Gran Turismo 2 [Simulation Disc] [U] [SCUS-94488].img"
+   ```
+
+5. When setup reports `Installation complete`, run `GranTurismo2PC.exe`.
+
+Setup validates the complete disc hash before writing anything, extracts only
+the required loose runtime files beside the executable, and does not copy or
+retain the original IMG. The game creates blank `carda.sav` and `cardb.sav`
+memory cards on first launch.
+
+Keep the installation in a writable folder because saves, settings, and the
+latest diagnostic log are stored beside the executable. Windows SmartScreen
+may warn because this beta is not code-signed.
+
+The ZIP also contains an installation-focused `README.md`. Existing users
+should back up `carda.sav`, `cardb.sav`, and `settings.json` before replacing
+an older build.
+
+## Build requirements
+
+Building from source additionally requires:
+
 - Python 3
 - .NET 10 SDK
-- Your own US Gran Turismo 2 Simulation Disc, revision 2
+- CMake and a Visual Studio C++ x64 toolchain
 
 The archival input must use these exact names in the repository root:
 
@@ -195,8 +243,9 @@ T-junctions, and choose deterministic ownership for same-material coplanar
 overlap. It performs no proximity search or screen-space triangle expansion.
 The D3D11 point sampler also treats PS1 integer UVs as texel centers; this
 removes the intermittent Red Rock replay road line around 0:33 without padding.
-The native renderer is still standalone and has not yet replaced packaged live
-race/replay presentation.
+The same native renderer is integrated into packaged live race/replay
+presentation; the standalone viewer remains available for deterministic
+capture inspection and renderer development.
 
 Validate a captured world frame twice with bounded lossless PNG output:
 
