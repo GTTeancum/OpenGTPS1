@@ -149,6 +149,20 @@ public static class Dispatcher
     }
     public static void ClearPending() => _pending = null;
 
+    public static void ResetGuestImages()
+    {
+        _pending = null;
+        _registry.Clear();
+        _lbaToName.Clear();
+        lock (_active) _active.Clear();
+        _funcMap.Clear();
+        _relocatedFunctions.Clear();
+        _relocatedAliases.Clear();
+        _objectOwners.Clear();
+        _relocatedImages.Clear();
+        Runtime.OverlayLog.Clear();
+    }
+
     public static void Load(string name)
     {
         if (!_registry.TryGetValue(name, out var overlay))

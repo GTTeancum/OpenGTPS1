@@ -3,14 +3,21 @@ using RecompOne.Runtime.Memory;
 
 namespace RecompOne.Runtime.Sdk;
 
+public sealed class GT2VariantSwitch(string variant) : Exception
+{
+    public string Variant { get; } = variant;
+}
+
 /// <summary>
 /// Narrow host bridges proven against Gran Turismo 2 SCUS-94488.
 /// </summary>
 public static class GT2Compat
 {
-    private sealed class NonLocalJump(uint target) : Exception
+    private sealed class NonLocalJump(
+        uint target, bool returnTrampoline = false) : Exception
     {
         public uint Target { get; } = target;
+        public bool ReturnTrampoline { get; } = returnTrampoline;
     }
 
     public static bool ExpandedPolygonBuffersEnabled =>
@@ -99,6 +106,138 @@ public static class GT2Compat
     static int _finiteCdReadTraceCount;
     static int _menuListTraceCount;
     static uint _overlayIndex;
+    static string _overlayPrefix = "gt2_overlay";
+    static bool _unifiedTitleInstalled;
+    static bool _unifiedArcadeTransition;
+
+    const uint UnifiedTitleList = 0x8004BC28u;
+    const uint UnifiedArcadeDescriptor = 0x803FF000u;
+    const uint UnifiedGtDescriptor = UnifiedArcadeDescriptor + 0xCu;
+
+    public static bool ArcadeVariant =>
+        _overlayPrefix.Equals(
+            "gt2_arcade_overlay", StringComparison.Ordinal);
+
+    public static uint CdDriveStateAddress =>
+        ArcadeVariant ? 0x801EFF00u : 0x801F0510u;
+
+    public static uint CdReadyCallbackAddress =>
+        ArcadeVariant ? 0x8007CD04u : 0x8007CDF4u;
+
+    public static uint CdFiniteReadHandlerAddress =>
+        ArcadeVariant ? 0x8007DE28u : 0x8007DF18u;
+
+    public static void SetUnifiedArcadeTransition(bool enabled) =>
+        _unifiedArcadeTransition = enabled;
+
+    /// <summary>
+    /// A unified-menu handoff has already shown the Simulation-disc legal and
+    /// opening presentation.  Preserve Arcade's normal bootstrap, but ask its
+    /// original overlay loader to enter the native Arcade frontend directly.
+    /// Standalone diagnostics retain the stock Arcade-disc opening overlay.
+    /// </summary>
+    public static uint InitialArcadeOverlayIndex() =>
+        _unifiedArcadeTransition ? 1u : 5u;
+
+    /// <summary>
+    /// Extend the original Simulation-disc title list in guest memory.  The
+    /// list engine, cursor, arrows, fading and draw path remain GT2's; only its
+    /// item count and two additional native TIM descriptors are supplied here.
+    /// </summary>
+    public static void InstallUnifiedTitleMenu(IMemory m)
+    {
+        m.WriteU16(UnifiedTitleList, 9);
+        ushort clut = m.ReadU16(0x8004BA52u);
+        WriteTitleDescriptor(
+            m, UnifiedArcadeDescriptor, u: 0, v: 24,
+            width: 132, height: 22, tpage: 12, clut);
+        WriteTitleDescriptor(
+            m, UnifiedGtDescriptor, u: 0, v: 48,
+            width: 177, height: 22, tpage: 12, clut);
+
+        if (_unifiedTitleInstalled)
+            return;
+        _unifiedTitleInstalled = true;
+        string palette = Runtime.Gpu == null
+            ? "unavailable"
+            : string.Join(
+                ',',
+                Enumerable.Range(0, 16).Select(index =>
+                    $"{Runtime.Gpu.Vram[252 * 1024 + 848 + index]:X4}"));
+        Console.WriteLine(
+            "[GT2] native unified title menu installed: " +
+            "Arcade Mode, Gran Turismo Mode; " +
+            $"language={m.ReadU8(0x801C98E0u)} clut=0x{clut:X4} " +
+            $"palette={palette}");
+    }
+
+    static void WriteTitleDescriptor(
+        IMemory m, uint address, byte u, byte v,
+        ushort width, ushort height, ushort tpage, ushort clut)
+    {
+        m.WriteU16(address, (ushort)(u | (v << 8)));
+        m.WriteU16(address + 2u, clut);
+        m.WriteU16(address + 4u, width);
+        m.WriteU16(address + 6u, height);
+        m.WriteU16(address + 8u, tpage);
+        m.WriteU16(address + 10u, 0);
+    }
+
+    static int MapUnifiedTitleIndex(int index) => index switch
+    {
+        0 => 0,
+        1 => 1,
+        2 => 1,
+        >= 3 and <= 8 => index - 1,
+        _ => -1,
+    };
+
+    public static int UnifiedTitleSelectionValue(uint index)
+    {
+        int item = (int)index;
+        if (item is 0 or 8)
+            return -1;
+        if (item is 1 or 2)
+            return 0;
+        return item is >= 3 and <= 7 ? item - 2 : -1;
+    }
+
+    public static uint UnifiedTitleDescriptor(
+        IMemory m, uint index, uint language)
+    {
+        if (index == 1u)
+            return UnifiedArcadeDescriptor;
+        if (index == 2u)
+            return UnifiedGtDescriptor;
+
+        int original = MapUnifiedTitleIndex((int)index);
+        if (original < 0)
+            original = 0;
+        uint languageIndex = Math.Min(language, 6u);
+        uint descriptorTable =
+            m.ReadU32(0x8004BC5Cu + languageIndex * 4u);
+        int label = (short)m.ReadU16(
+            0x8004BC14u + (uint)original * 2u);
+        return descriptorTable + (uint)Math.Max(0, label) * 12u;
+    }
+
+    public static void CommitUnifiedTitleSelection(
+        IMemory m, uint index, uint titleState)
+    {
+        if (index == 1u)
+        {
+            Console.WriteLine("[GT2] title selection: Arcade Mode");
+            throw new GT2VariantSwitch("arcade");
+        }
+
+        int value = UnifiedTitleSelectionValue(index);
+        if (value < 0)
+            return;
+        if (index == 2u)
+            Console.WriteLine("[GT2] title selection: Gran Turismo Mode");
+        m.WriteU8(titleState + 3u, (byte)value);
+    }
+
     static long _vehicleLodRequests;
     static int _vehicleLodTraceRegistered;
     static int _forcedVehicleLodReported;
@@ -557,7 +696,7 @@ public static class GT2Compat
     /// </summary>
     public static void WaitForInitialVBlanks(CpuContext c, IMemory m)
     {
-        const uint counterAddress = 0x80011DF4u;
+        uint counterAddress = ArcadeVariant ? 0x80011DECu : 0x80011DF4u;
         m.WriteU32(counterAddress, 0u);
         for (uint count = 1; count <= 4; count++)
         {
@@ -575,14 +714,22 @@ public static class GT2Compat
     /// </summary>
     public static void VSync(CpuContext c, IMemory m)
     {
-        const uint totalCounterAddress = 0x801F0680u;
-        const uint intervalCounterAddress = 0x801F0684u;
+        uint totalCounterAddress = CdDriveStateAddress + 0x170u;
+        uint intervalCounterAddress = CdDriveStateAddress + 0x174u;
 
         int requested = (int)c.A0;
         if (requested < 0)
         {
             m.WriteU32(intervalCounterAddress, 0u);
             requested = 1;
+        }
+        else if (requested == 0)
+        {
+            // VSync(0) is a non-blocking counter query on real hardware, where
+            // VBlank interrupts continue asynchronously. Recompiled guest code
+            // runs synchronously, so polling loops would otherwise prevent the
+            // callback that advances this counter from ever executing.
+            Runtime.PresentFrame();
         }
 
         for (int frame = 0; frame < requested; frame++)
@@ -595,10 +742,10 @@ public static class GT2Compat
 
     public static void WaitForCdCommand(CpuContext c, IMemory m)
     {
-        const uint busyAddress = 0x801F0676u;
-        const uint state = 0x801F0510u;
-        const uint deferredScriptAddress = state + 0x84u;
-        const uint currentScriptAddress = state + 0x7Cu;
+        uint state = CdDriveStateAddress;
+        uint busyAddress = state + 0x166u;
+        uint deferredScriptAddress = state + 0x84u;
+        uint currentScriptAddress = state + 0x7Cu;
 
         int attempt = 0;
         for (; m.ReadU8(busyAddress) != 0 && attempt < 65536; attempt++)
@@ -631,6 +778,35 @@ public static class GT2Compat
     }
 
     /// <summary>
+    /// Give the virtual CD device the interrupt boundary that original PS1
+    /// hardware supplied between consecutive low-level status polls.
+    /// </summary>
+    public static void ServiceCdDevice(CpuContext c, IMemory m)
+    {
+        LibCd.Tick();
+        Runtime.DrainDeferredIrqs();
+        // The original MDEC/CD producer-consumer pipeline continues from
+        // interrupts while the foreground code polls the opening movie state.
+        // Deliver only those pending interrupts here. Presenting a complete
+        // host frame would re-enter the same guest object through its VBlank
+        // scheduler while it is already updating.
+        Runtime.DispatchIrq(0);
+
+        // A decoded STR frame is emitted through a chain of MDEC-out and GPU
+        // DMA slices. Each slice can raise another completion while the
+        // previous callback is still unwinding, so drain the chain exactly as
+        // the hardware interrupt controller would.
+        const uint dmaInterruptControl = 0x1F8010F4u;
+        for (int guard = 0;
+             guard < 64 &&
+             (m.ReadU32(dmaInterruptControl) & 0x7F000000u) != 0;
+             guard++)
+        {
+            Runtime.DispatchIrq(0);
+        }
+    }
+
+    /// <summary>
     /// GT2's ring-buffer accessor at 0x80082054 waits for its ready callback
     /// to increment the buffered-sector count at +0x5A. Service the virtual
     /// drive while that original asynchronous producer is starved by static
@@ -638,7 +814,7 @@ public static class GT2Compat
     /// </summary>
     public static void WaitForCdBuffer(CpuContext c, IMemory m)
     {
-        const uint state = 0x801F0510u;
+        uint state = CdDriveStateAddress;
         int attempt = 0;
         while (m.ReadU16(state + 0x5Au) == 0 && attempt < 65536)
         {
@@ -706,7 +882,7 @@ public static class GT2Compat
         if (invocation >= 40)
             return;
 
-        const uint drive = 0x801F0510u;
+        uint drive = CdDriveStateAddress;
         const uint transfer = 0x801C9500u;
         Console.Error.WriteLine(
             $"[GT2Compat] finite-read invocation={invocation} sector={c.A0} " +
@@ -742,26 +918,47 @@ public static class GT2Compat
     /// every prior overlay on the CLR stack; replay exit performs enough
     /// transitions for those stale frames to re-enter old loaders.
     /// </summary>
-    public static void RunGuestLoop(CpuContext c, IMemory m, uint entry)
+    public static void RunGuestLoop(
+        CpuContext c, IMemory m, uint entry,
+        string overlayPrefix = "gt2_overlay")
     {
-        uint target = entry;
-        int transition = 0;
-        while (true)
+        string previousOverlayPrefix = _overlayPrefix;
+        _overlayPrefix = overlayPrefix;
+        try
         {
-            try
+            uint target = entry;
+            int transition = 0;
+            bool returnTrampoline = false;
+            while (true)
             {
-                Dispatch.Dispatcher.Call(c, m, target);
-                return;
+                try
+                {
+                    Dispatch.Dispatcher.Call(c, m, target);
+                    if (!returnTrampoline)
+                        return;
+                    target = c.RA;
+                    if (TraceBoot)
+                        Console.Error.WriteLine(
+                            $"[GT2Compat] coroutine return target=0x{target:X8}");
+                    if (target == 0u)
+                        throw new InvalidOperationException(
+                            "GT2 coroutine return trampoline reached a null return address");
+                }
+                catch (NonLocalJump jump)
+                {
+                    target = jump.Target;
+                    returnTrampoline = jump.ReturnTrampoline;
+                    transition++;
+                    if (TraceBoot)
+                        Console.Error.WriteLine(
+                            $"[GT2Compat] non-local overlay transition={transition} " +
+                            $"target=0x{target:X8}");
+                }
             }
-            catch (NonLocalJump jump)
-            {
-                target = jump.Target;
-                transition++;
-                if (TraceBoot)
-                    Console.Error.WriteLine(
-                        $"[GT2Compat] non-local overlay transition={transition} " +
-                        $"target=0x{target:X8}");
-            }
+        }
+        finally
+        {
+            _overlayPrefix = previousOverlayPrefix;
         }
     }
 
@@ -774,12 +971,15 @@ public static class GT2Compat
     public static void Longjmp(CpuContext c, IMemory m)
     {
         uint context = c.A0;
-        uint target = c.A1;
-        if (_overlayIndex > 5)
-            throw new InvalidOperationException(
-                $"GT2 longjmp selected unknown overlay {_overlayIndex}");
-
-        Dispatch.Dispatcher.Load($"gt2_overlay_{_overlayIndex}");
+        uint value = c.A1 == 0u ? 1u : c.A1;
+        bool overlayTransition = value >= 0x80000000u;
+        if (overlayTransition)
+        {
+            if (_overlayIndex > 5)
+                throw new InvalidOperationException(
+                    $"GT2 longjmp selected unknown overlay {_overlayIndex}");
+            Dispatch.Dispatcher.Load($"{_overlayPrefix}_{_overlayIndex}");
+        }
 
         c.RA = m.ReadU32(context);
         c.SP = m.ReadU32(context + 0x4u);
@@ -793,15 +993,18 @@ public static class GT2Compat
         c.S6 = m.ReadU32(context + 0x24u);
         c.S7 = m.ReadU32(context + 0x28u);
         c.GP = m.ReadU32(context + 0x2Cu);
-        c.V0 = target;
+        c.V0 = value;
 
         c.A0 = m.ReadU32(0x801C945Cu);
         c.A1 = m.ReadU32(0x801C9460u);
         c.A2 = m.ReadU32(0x801C9464u);
         c.A3 = m.ReadU32(0x801C9468u);
+        uint target = overlayTransition ? value : c.RA;
         if (TraceBoot)
             Console.Error.WriteLine(
-                $"[GT2Compat] longjmp overlay={_overlayIndex} target=0x{target:X8}");
-        throw new NonLocalJump(target);
+                overlayTransition
+                    ? $"[GT2Compat] longjmp overlay={_overlayIndex} target=0x{target:X8}"
+                    : $"[GT2Compat] longjmp coroutine target=0x{target:X8} value={value}");
+        throw new NonLocalJump(target, returnTrampoline: !overlayTransition);
     }
 }

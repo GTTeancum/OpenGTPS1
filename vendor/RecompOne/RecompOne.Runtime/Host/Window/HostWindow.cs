@@ -61,6 +61,9 @@ internal static class HostWindow
     static int _presentationFrame;
     static readonly bool _capturePresentation =
         Environment.GetEnvironmentVariable("RECOMPONE_PRESENTATION_CAPTURE") == "1";
+    static readonly bool _exitAfterPresentationCapture =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_EXIT_AFTER_PRESENTATION_CAPTURE") == "1";
     static readonly bool _windowVisible =
         Environment.GetEnvironmentVariable("RECOMPONE_WINDOW_VISIBLE") != "0";
     public static bool IsHeadless => _headless || !_windowVisible;
@@ -557,6 +560,8 @@ internal static class HostWindow
                 capture = $"frame_{_presentationFrame:000000}";
             texture = _presentationRenderer.Render(sourceTexture, sourceWidth, sourceHeight,
                 output.w, output.h, fxaa, capture);
+            if (!string.IsNullOrEmpty(capture) && _exitAfterPresentationCapture)
+                Runtime.RequestShutdown();
         }
         OutputPanel.SetTexture(texture, output.w, output.h, aspect);
         gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);

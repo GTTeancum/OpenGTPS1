@@ -50,7 +50,10 @@ public sealed class Dma
             case 6: ClearOrderingTable(madr, bcr); break;
             default: return;
         }
-        Complete(channel);
+        // Completion is asynchronous on the PS1. Publishing DICR here makes
+        // a DMA started by a completion callback visible to the same guest
+        // IRQ handler before that callback can update its chunk state.
+        Runtime.DeferHardwareAction(() => Complete(channel));
     }
 
     void TransferMdecIn(uint madr, uint bcr)

@@ -22,6 +22,7 @@ public static class OverlayWriter
     public static void Write(RecompOneConfig config, CueFs fs, string outDir)
     {
         string className = SafeIdentifier(config.Game.Name);
+        string namespaceName = SafeNamespace(config.Game.Namespace);
 
         Console.WriteLine("[Recompiler] reading SYSTEM.CNF");
         var sysCfg = SystemCfg.Parse(fs);
@@ -250,14 +251,17 @@ public static class OverlayWriter
         foreach (var result in overlayResults)
         {
             Console.WriteLine($"[Recompiler] emiting {result.Name}.cs ({result.Functions.Count} functions)");
-            EmitOverlayFile(result.Name, result.Functions, className, knownFuncs,
+            EmitOverlayFile(result.Name, result.Functions, namespaceName,
+                className, knownFuncs,
                 config.Debug, result.LbaStart, result.Base, result.Size,
                 result.ImageSize, result.Relocatable, result.Instructions, outDir);
         }
 
         Console.WriteLine("[Recompiler] Emitting Entry.cs");
         var overlayNames = overlayResults.Select(o => o.Name).ToList();
-        EntryWriter.Write(mainExe, sysCfg.BootExe, sysCfg.Stack, className, config.Game.Title ?? config.Game.Name, mainCall, overlayNames, outDir);
+        EntryWriter.Write(mainExe, sysCfg.BootExe, sysCfg.Stack, namespaceName,
+            className, config.Game.Title ?? config.Game.Name, mainCall,
+            overlayNames, outDir);
 
         Console.WriteLine("[Recompiler] finished "); //maybe add time it took
     }
@@ -309,7 +313,8 @@ public static class OverlayWriter
     }
 
     static void EmitOverlayFile(string overlayName, List<MipsFunction> funcs,
-        string className, Dictionary<uint, string> knownFuncs, bool debug,
+        string namespaceName, string className,
+        Dictionary<uint, string> knownFuncs, bool debug,
         int lbaStart, uint ovlBase, uint ovlSize, uint imageSize,
         bool relocatable, MipsInstruction[] instrs, string outDir)
     {
@@ -318,7 +323,7 @@ public static class OverlayWriter
         sb.AppendLine("using RecompOne.Runtime.Dispatch;");
         sb.AppendLine("using RecompOne.Runtime.Memory;");
         sb.AppendLine();
-        sb.AppendLine("namespace Recompiled;");
+        sb.AppendLine($"namespace {namespaceName};");
         sb.AppendLine();
         sb.AppendLine($"public static partial class {className}");
         sb.AppendLine("{");
@@ -381,6 +386,15 @@ public static class OverlayWriter
     }
 
     static string SafeFuncName(string s) => Regex.Replace(s, @"[^A-Za-z0-9_]", "_");
+
+    static string SafeNamespace(string value)
+    {
+        string[] parts = value.Split(
+            '.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return parts.Length == 0
+            ? "Recompiled"
+            : string.Join('.', parts.Select(SafeIdentifier));
+    }
 
     static (byte[]? data, int lba) ResolveOverlay(CueFs fs, Config.OverlayConfig cfg)
     {

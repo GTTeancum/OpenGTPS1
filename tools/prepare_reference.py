@@ -10,8 +10,15 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[1]
-DISC_ROOT = REPO / "work" / "disc"
-CUE = REPO / "Gran Turismo 2 [Simulation Disc] [U] [SCUS-94488].cue"
+DISC_ROOT = Path(
+    os.environ.get("GT2_SIMULATION_DISC_ROOT", REPO / "work" / "disc")
+).resolve()
+CUE = Path(
+    os.environ.get(
+        "GT2_SIMULATION_CUE",
+        REPO / "Gran Turismo 2 [Simulation Disc] [U] [SCUS-94488].cue",
+    )
+).resolve()
 OUTPUT = REPO / "generated"
 
 EXTRA_MAIN_FUNCTIONS = [
@@ -139,6 +146,7 @@ def main() -> int:
         "game": {
             "id": "SCUS-94488",
             "name": "GranTurismo2PC",
+            "namespace": "Recompiled.Simulation",
             "title": "Gran Turismo 2 PC",
             "output": "recompiled",
         },

@@ -126,6 +126,7 @@ public static class Runtime
         long afterDevices = Stopwatch.GetTimestamp();
         if (TraceVSync && traceFrame < 10) Console.Error.WriteLine($"[VSync] present {traceFrame}: irq");
         DispatchIrq(0); //using this to dispatch irqs too if necessary, probably not needed after the rest of stuff is reimplemented
+        DrainDeferredIrqs();
         // GT2 submits the completed ordering table from its VBlank callback.
         // Clear recovered depths only after that callback has consumed them.
         Gte.BeginScreenDepthFrame();
@@ -227,6 +228,82 @@ public static class Runtime
     {
         if (Cpu != null && Mem != null)
             Interrupts.Deliver(irq, Cpu, Mem);
+    }
+
+    static int _irqDeferralDepth;
+    static uint _deferredIrqMask;
+    static readonly Queue<Action> DeferredHardwareActions = [];
+
+    public static void BeginIrqDeferral() => _irqDeferralDepth++;
+
+    public static void EndIrqDeferral()
+    {
+        if (_irqDeferralDepth <= 0)
+            throw new InvalidOperationException(
+                "Interrupt deferral ended without a matching begin");
+        _irqDeferralDepth--;
+    }
+
+    public static void RaiseIrq(int irq)
+    {
+        if (_irqDeferralDepth != 0)
+        {
+            _deferredIrqMask |= 1u << irq;
+            return;
+        }
+        DispatchIrq(irq);
+    }
+
+    /// <summary>
+    /// Queue a hardware interrupt for the next runtime interrupt boundary.
+    /// DMA completes asynchronously on the original hardware. Delivering its
+    /// IRQ from inside the register write lets a completion callback start a
+    /// second DMA before the first callback can update its transfer state,
+    /// recursively replaying the same chunk.
+    /// </summary>
+    public static void DeferIrq(int irq) =>
+        _deferredIrqMask |= 1u << irq;
+
+    public static void DeferHardwareAction(Action action)
+    {
+        lock (DeferredHardwareActions)
+            DeferredHardwareActions.Enqueue(action);
+    }
+
+    static bool DrainDeferredHardwareActions()
+    {
+        Action[] actions;
+        lock (DeferredHardwareActions)
+        {
+            if (DeferredHardwareActions.Count == 0)
+                return false;
+            actions = DeferredHardwareActions.ToArray();
+            DeferredHardwareActions.Clear();
+        }
+
+        foreach (Action action in actions)
+            action();
+        return true;
+    }
+
+    public static void DrainDeferredIrqs()
+    {
+        if (_irqDeferralDepth != 0)
+            return;
+
+        for (int guard = 0; guard < 64; guard++)
+        {
+            bool completedHardware = DrainDeferredHardwareActions();
+            uint pending = _deferredIrqMask;
+            _deferredIrqMask = 0;
+            if (!completedHardware && pending == 0)
+                break;
+            for (int irq = 0; irq < 32; irq++)
+            {
+                if ((pending & (1u << irq)) != 0)
+                    DispatchIrq(irq);
+            }
+        }
     }
 
     public static void Shutdown()

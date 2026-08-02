@@ -1,6 +1,5 @@
 using RecompOne.Runtime.Config;
 using RecompOne.Runtime.Memory;
-using Recompiled.Simulation;
 
 string launchDirectory = Environment.CurrentDirectory;
 Environment.CurrentDirectory = AppContext.BaseDirectory;
@@ -9,6 +8,7 @@ bool headless = args.Any(arg =>
     arg.Equals("--headless", StringComparison.OrdinalIgnoreCase));
 bool mute = args.Any(arg =>
     arg.Equals("--mute", StringComparison.OrdinalIgnoreCase));
+
 string[] positionalArgs = args.Where(arg =>
     !arg.Equals("--headless", StringComparison.OrdinalIgnoreCase) &&
     !arg.Equals("--mute", StringComparison.OrdinalIgnoreCase)).ToArray();
@@ -20,17 +20,10 @@ if (headless)
 }
 else if (mute)
 {
-    // Session-only safety switch for visible automated diagnostics. This does
-    // not change settings.json, so a later normal user launch remains audible.
     Environment.SetEnvironmentVariable("RECOMPONE_MUTE", "1");
-    Console.Error.WriteLine(
-        "[Host] --mute: audio output muted for this launch; saved audio settings unchanged");
 }
 
 ConfigManager.Load();
-// GT2's enhanced draw-distance and maximum-LOD modes use the larger polygon
-// buffer layout from PlayStation development hardware. The guest still boots
-// and otherwise behaves as the retail Simulation Disc.
 RecompOne.Runtime.Runtime.SetMode(RecompOne.Runtime.RunMode.Devkit);
 
 string looseRoot = positionalArgs.Length > 0
@@ -38,27 +31,39 @@ string looseRoot = positionalArgs.Length > 0
     : AppContext.BaseDirectory;
 if (!Directory.Exists(looseRoot))
 {
-    Console.Error.WriteLine($"Loose game directory is missing: {looseRoot}");
+    Console.Error.WriteLine($"Unified game directory is missing: {looseRoot}");
     return 1;
 }
 
-string[] missingBootstrapFiles = new[] { "SYSTEM.CNF", "recompone.loose.json" }
-    .Where(fileName => !File.Exists(Path.Combine(looseRoot, fileName)))
-    .ToArray();
-if (missingBootstrapFiles.Length > 0)
+foreach (string variant in new[] { "simulation", "arcade" })
 {
-    Console.Error.WriteLine("Loose game data is missing required file(s):");
-    foreach (string fileName in missingBootstrapFiles)
-        Console.Error.WriteLine($"  {Path.Combine(looseRoot, fileName)}");
-    Console.Error.WriteLine("Disc-image fallback is disabled.");
-    return 1;
+    string manifestPath = Path.Combine(
+        looseRoot, "manifests", $"{variant}.json");
+    if (!File.Exists(manifestPath))
+    {
+        Console.Error.WriteLine(
+            $"Unified {variant} manifest is missing: {manifestPath}");
+        return 1;
+    }
+}
+foreach (string sharedFile in new[] { "GT2.VOL", "MUSIC.DAT" })
+{
+    if (!File.Exists(Path.Combine(looseRoot, sharedFile)))
+    {
+        Console.Error.WriteLine(
+            $"Unified shared game data is missing: {Path.Combine(looseRoot, sharedFile)}");
+        return 1;
+    }
 }
 
 Environment.SetEnvironmentVariable("RECOMPONE_LOOSE_DIR", looseRoot);
-Console.WriteLine($"[Host] loose game data={looseRoot}");
+Environment.SetEnvironmentVariable(
+    "RECOMPONE_LOOSE_MANIFEST",
+    Path.Combine("manifests", "simulation.json"));
 
 PreloadBundledNative("SDL2.dll");
-Entry.Run(new PSMemory(), loosePath: looseRoot);
+var memory = new PSMemory();
+UnifiedEntry.Run(memory, looseRoot);
 return 0;
 
 static void PreloadBundledNative(string fileName)

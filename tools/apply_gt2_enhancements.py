@@ -21,6 +21,7 @@ def replace_once(path: Path, old: str, new: str, description: str) -> None:
 def main() -> int:
     race = GENERATED / "gt2_overlay_0.cs"
     track = GENERATED / "gt2_overlay_2.cs"
+    title = GENERATED / "gt2_overlay_1.cs"
     entry = GENERATED / "Entry.cs"
 
     replace_once(
@@ -31,6 +32,92 @@ def main() -> int:
             c, m, 0x8005D600u);
 """,
         "GT2 non-local overlay transition trampoline",
+    )
+
+    replace_once(
+        title,
+        """        c.A3 = (uint)(short)m.ReadU16((c.A1 + 0x10u));
+        c.A2 = m.ReadU32(c.A1);
+        c.V0 = (uint)(short)m.ReadU16(c.V1);
+        c.S2 = m.ReadU8((c.A0 - 0x6720u));
+""",
+        """        c.A3 = (uint)(short)m.ReadU16((c.A1 + 0x10u));
+        c.A2 = m.ReadU32(c.A1);
+        c.V0 = (uint)RecompOne.Runtime.Sdk.GT2Compat.UnifiedTitleSelectionValue(c.S1);
+        c.S2 = m.ReadU8((c.A0 - 0x6720u));
+""",
+        "unified title item validity map",
+    )
+
+    replace_once(
+        title,
+        """        c.A0 = 0x80050000u;
+        c.A0 = c.A0 - 0x43A4u;
+        c.A1 = c.S2 << 2;
+        c.V1 = 0x80050000u;
+        c.V1 = c.V1 - 0x43ECu;
+        c.V0 = c.S1 << 1;
+        c.V0 = c.V0 + c.V1;
+        c.V1 = (uint)(short)m.ReadU16(c.V0);
+        c.A1 = c.A1 + c.A0;
+        c.V0 = c.V1 << 1;
+        c.V0 = c.V0 + c.V1;
+        c.V1 = m.ReadU32(c.A1);
+        c.V0 = c.V0 << 2;
+        c.V0 = c.V0 + c.V1;
+""",
+        """        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.UnifiedTitleDescriptor(
+            m, c.S1, c.S2);
+""",
+        "unified title TIM descriptor map",
+    )
+
+    replace_once(
+        title,
+        """    public static void func_8001792C(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x18u;
+        c.V0 = 0x80050000u;
+""",
+        """    public static void func_8001792C(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x18u;
+        RecompOne.Runtime.Sdk.GT2Compat.InstallUnifiedTitleMenu(m);
+        c.V0 = 0x80050000u;
+""",
+        "unified title list installation",
+    )
+
+    replace_once(
+        title,
+        """        c.A0 = c.S1 + 0u;
+        c.A1 = 0x00000001u;
+        c.S0 = c.V0 + 0u;
+        c.A2 = 0x00000006u;
+        c.RA = 0x80017B28u;
+""",
+        """        c.A0 = c.S1 + 0u;
+        c.A1 = 0x00000001u;
+        c.S0 = c.V0 + 0u;
+        c.A2 = 0x00000007u;
+        c.RA = 0x80017B28u;
+""",
+        "unified title navigation bounds",
+    )
+
+    replace_once(
+        title,
+        """        c.V0 = 0x80050000u;
+        c.V0 = c.V0 - 0x43FCu;
+        c.V1 = c.S0 << 1;
+        c.V1 = c.V1 + c.V0;
+        c.V0 = m.ReadU8(c.V1);
+        m.WriteU8((c.A0 + 0x3u), (byte)c.V0);
+""",
+        """        RecompOne.Runtime.Sdk.GT2Compat.CommitUnifiedTitleSelection(
+            m, c.S0, c.A0);
+""",
+        "unified title selection dispatch",
     )
 
     replace_once(
@@ -67,10 +154,12 @@ def main() -> int:
 
     replace_once(
         main,
-        """        c.RA = m.ReadU32((c.SP + 0x5Cu));
+        """        L800677F4: ;
+        c.RA = m.ReadU32((c.SP + 0x5Cu));
         c.FP = m.ReadU32((c.SP + 0x58u));
 """,
-        """        RecompOne.Runtime.WorldCaptureContext.EndObject();
+        """        L800677F4: ;
+        RecompOne.Runtime.WorldCaptureContext.EndObject();
         c.RA = m.ReadU32((c.SP + 0x5Cu));
         c.FP = m.ReadU32((c.SP + 0x58u));
 """,

@@ -23,6 +23,23 @@ public static class BiosA
     static List<(string name, int size)> _ff = new();
     static int _ffIdx;
 
+    internal static void ResetGuestState()
+    {
+        _heapBase = 0;
+        _heapEnd = 0;
+        _free.Clear();
+        _busy.Clear();
+        _randSeed = 1;
+        _strtokPtr = 0;
+        _fs = null;
+        _cd = null;
+        _openFiles.Clear();
+        _cardFiles.Clear();
+        _nextHandle = 2;
+        _ff = [];
+        _ffIdx = 0;
+    }
+
     public static MemoryCard? CardFor(string path)
     {
         if (path.StartsWith("bu00:", StringComparison.OrdinalIgnoreCase)) return Runtime.CardA.Enabled ? Runtime.CardA : null;

@@ -29,7 +29,7 @@ public sealed class PSMemory : IMemory
 
     public PSMemory()
     {
-        _dma = new Dma(this, _gpu, _spu, _mdec, () => Runtime.DispatchIrq(3));
+        _dma = new Dma(this, _gpu, _spu, _mdec, () => Runtime.DeferIrq(3));
         Runtime.Gpu = _gpu;
         Runtime.Spu = _spu;
         Bios.KromFont.InstallInto(_bios);

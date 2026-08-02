@@ -11,6 +11,23 @@
 6. Drive on the track surface under player control.
 7. Complete every lap and reach the original results/prize flow.
 
+## Long-term content and distribution roadmap
+
+- Promote the implemented deterministic Simulation/Arcade dual-member
+  `GT2.VOL` builder into the first-start installer. The development pipeline
+  already produces one generated volume and unified installation while
+  preserving each disc's exact original payloads and game flow.
+- Automatically extract, convert, and merge Gran Turismo 1-exclusive content
+  into the generated `GT2.VOL` after the combined GT2 data and identity model
+  is stable.
+- Provide first-start BIN/CUE-to-loose-file conversion. The program prompts
+  for the user's own Gran Turismo 2 Simulation Disc, Gran Turismo 2 Arcade
+  Mode Disc, and Gran Turismo 1 disc, validates all three supported images,
+  converts the required files, and performs the reproducible `GT2.VOL` merge
+  into the unified loose installation without modifying the source images.
+- Support mods, including manifests, dependency ordering, conflict detection,
+  and possible guided conflict resolution where changes can be merged safely.
+
 ## Fidelity gates
 
 - **Boot/CD:** `SYSTEM.CNF` launches `SCUS_944.88`; ordinary files and raw

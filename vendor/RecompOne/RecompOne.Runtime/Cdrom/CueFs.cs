@@ -9,6 +9,7 @@ public sealed class CueFs : IDisposable
         uint DiscSize,
         string DiscPath,
         string HostPath,
+        long HostOffset,
         long HostSize,
         uint LogicalSize,
         LooseStorage Storage);
@@ -112,10 +113,12 @@ public sealed class CueFs : IDisposable
         {
             foreach (var file in _manifest.Files.OrderBy(candidate => candidate.Lba))
             {
-                uint size = TryGetLoose(file.Lba, out var loose)
-                    ? loose.LogicalSize
-                    : file.Size;
-                int end = file.Lba + checked((int)((size + 2047u) >> 11));
+                // LBA ownership follows the original disc extent, even when a
+                // loose replacement is larger. Named archive reads may consume
+                // the replacement's full LogicalSize, but it must not annex a
+                // later file's sectors (for example Arcade MUSIC.DAT after a
+                // unified Simulation GT2.VOL).
+                int end = file.Lba + checked((int)((file.Size + 2047u) >> 11));
                 if (lba < file.Lba || lba >= end) continue;
                 path = file.Path;
                 endLba = end;
@@ -413,14 +416,24 @@ public sealed class CueFs : IDisposable
         foreach (var file in _manifest!.Files)
         {
             string discPath = NormalizeDiscPath(file.Path);
+            string sourcePath = NormalizeDiscPath(file.Source ?? file.Path);
             if (discPath.StartsWith("REDBOOK/", StringComparison.OrdinalIgnoreCase))
                 continue;
-            if (!_looseFiles.TryGetValue(discPath, out string? hostPath))
+            if (!_looseFiles.TryGetValue(sourcePath, out string? hostPath))
             {
-                missing.Add(file.Path);
+                missing.Add(
+                    file.Source == null
+                        ? file.Path
+                        : $"{file.Path} <- {file.Source}");
                 continue;
             }
-            var entry = CreateLooseEntry(file.Lba, file.Size, file.Path, hostPath);
+            var entry = CreateLooseEntry(
+                file.Lba,
+                file.Size,
+                file.Path,
+                hostPath,
+                file.SourceOffset,
+                file.SourceLength);
             if (IsStreamPath(file.Path) && entry.Storage != LooseStorage.Raw2336)
             {
                 malformedStreams.Add(file.Path);
@@ -443,9 +456,22 @@ public sealed class CueFs : IDisposable
     }
 
     private static LooseEntry CreateLooseEntry(
-        int lba, uint discSize, string discPath, string hostPath)
+        int lba,
+        uint discSize,
+        string discPath,
+        string hostPath,
+        long sourceOffset = 0,
+        long? sourceLength = null)
     {
-        long hostSize = new FileInfo(hostPath).Length;
+        long fileSize = new FileInfo(hostPath).Length;
+        if (sourceOffset < 0 || sourceOffset > fileSize)
+            throw new InvalidDataException(
+                $"Loose source offset is outside {hostPath}: {sourceOffset}");
+        long hostSize = sourceLength ?? (fileSize - sourceOffset);
+        if (hostSize < 0 || sourceOffset + hostSize > fileSize)
+            throw new InvalidDataException(
+                $"Loose source range is outside {hostPath}: " +
+                $"{sourceOffset}+{hostSize} > {fileSize}");
         long sectors = (discSize + 2047u) / 2048u;
         bool exactRawSectorDump =
             hostSize > 0 &&
@@ -458,7 +484,14 @@ public sealed class CueFs : IDisposable
             ? checked((uint)(hostSize / 2336 * 2048))
             : checked((uint)hostSize);
         return new LooseEntry(
-            lba, discSize, discPath, hostPath, hostSize, logicalSize, storage);
+            lba,
+            discSize,
+            discPath,
+            hostPath,
+            sourceOffset,
+            hostSize,
+            logicalSize,
+            storage);
     }
 
     private static bool IsStreamPath(string path)
@@ -475,7 +508,10 @@ public sealed class CueFs : IDisposable
     {
         foreach (var entry in _looseByLba)
         {
-            int sectors = checked((int)((entry.LogicalSize + 2047u) >> 11));
+            // Sector addressing models the source disc layout. A larger loose
+            // replacement remains fully available through file-range reads,
+            // while its LBA span stays bounded to the manifest/ISO extent.
+            int sectors = checked((int)((entry.DiscSize + 2047u) >> 11));
             if (lba < entry.Lba || lba >= entry.Lba + sectors) continue;
             int sectorIndex = lba - entry.Lba;
             data = ReadLooseSector(entry, sectorIndex, size);
@@ -613,9 +649,9 @@ public sealed class CueFs : IDisposable
         {
             if (!_looseStreams.TryGetValue(entry.HostPath, out var stream))
                 _looseStreams[entry.HostPath] = stream = File.OpenRead(entry.HostPath);
-            if (offset >= stream.Length) return data;
-            stream.Position = offset;
-            int available = checked((int)Math.Min(count, stream.Length - offset));
+            if (offset >= entry.HostSize) return data;
+            stream.Position = entry.HostOffset + offset;
+            int available = checked((int)Math.Min(count, entry.HostSize - offset));
             stream.ReadExactly(data, 0, available);
         }
         return data;
