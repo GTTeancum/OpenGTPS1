@@ -1,0 +1,41 @@
+# Unified title -> Arcade single-player Road Race -> Easy -> Class C.
+600+8=CROSS,START
+1380+4=CROSS
+1980+4=CROSS
+2380+4=CROSS
+2780+4=CROSS
+3060+4=DOWN
+3300+4=DOWN
+3660+4=CROSS
+
+# Select the appended twelfth Class C entry and retain its first GT1 paint.
+4100+4=RIGHT
+4220+4=RIGHT
+4340+4=RIGHT
+4460+4=RIGHT
+4580+4=RIGHT
+4700+4=RIGHT
+4820+4=RIGHT
+4940+4=RIGHT
+5060+4=RIGHT
+5180+4=RIGHT
+5300+4=RIGHT
+5500+1=CAPTURE
+5700+4=CROSS
+
+# Automatic transmission -> Road Race course menu -> default Tahiti Road.
+6300+4=CROSS
+6900+4=CROSS
+6960+1=CAPTURE
+7020+4=CROSS
+
+# Hold the accelerator while GT2's native racing-line controller drives the
+# converted player car. Captures are live race frames.
+[race_1]
+0+8500=CROSS
+300+1=CAPTURE
+1000+1=CAPTURE
+2000+1=CAPTURE
+3000+1=CAPTURE
+6000+1=CAPTURE
+9000+1=CAPTURE

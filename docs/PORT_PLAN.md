@@ -13,18 +13,45 @@
 
 ## Long-term content and distribution roadmap
 
+- Make first-run preparation a blocking installation step, implemented either
+  inside `GranTurismo2PC.exe` or in a separate installer executable. The
+  preparation tool must prompt for the user's own Gran Turismo 2 Simulation
+  Disc (`SCUS-94488`, NTSC-U revision 2), Gran Turismo 2 Arcade Mode Disc
+  (`SCUS-94455`, NTSC-U), and Gran Turismo (`SCUS-94194`, NTSC-U).
+  `GranTurismo2PC.exe` must validate the prepared output and refuse to start
+  Arcade Mode or Gran Turismo Mode until all three images have been validated
+  and the conversion has completed successfully.
 - Promote the implemented deterministic Simulation/Arcade dual-member
   `GT2.VOL` builder into the first-start installer. The development pipeline
   already produces one generated volume and unified installation while
   preserving each disc's exact original payloads and game flow.
-- Automatically extract, convert, and merge Gran Turismo 1-exclusive content
-  into the generated `GT2.VOL` after the combined GT2 data and identity model
-  is stable.
+- Continue automatically extracting, converting, and merging Gran Turismo
+  1-exclusive content into the generated `GT2.VOL`. Special Stage Route 11 is
+  now implemented as native forward, reverse, Arcade, two-player, and HiFi
+  course data, including its `dawn3` background and exact `ARCADE.DAT` entry
+    81 selection art. The first car family is also implemented: GT1's
+    three Arcade-only EUNOS ROADSTER families are native tenth through twelfth
+    Class C entries with their exact wordmarks, all twenty-three authored
+    palettes, sorted Racing/Drift records, and content-matched GT2-native
+    physics. The ROADSTER RS includes native structural conversion of its
+    separate GT1 day/night models rather than a GT2 body substitution. Route
+    11 and all three Roadsters have clean menu-to-race AI smokes. The GT1
+    Civic Racer is integrated as a native tenth Class B entry with all three
+    liveries and clean menu/race proof. The GT1 DB7 Coupe is integrated as a
+    native ninth Class A entry with its exact selection artwork, all three
+    paints, correct nine-entry roster wrap, and clean full-lap AI smoke.
+    Complete the remaining GT1-exclusive cars,
+  prize and Arcade liveries, paint schemes, and wheel variants through the
+  same deterministic `GTPATCH.VOL` layer.
 - Provide first-start BIN/CUE-to-loose-file conversion. The program prompts
   for the user's own Gran Turismo 2 Simulation Disc, Gran Turismo 2 Arcade
   Mode Disc, and Gran Turismo 1 disc, validates all three supported images,
   converts the required files, and performs the reproducible `GT2.VOL` merge
-  into the unified loose installation without modifying the source images.
+  into the unified loose installation without modifying or retaining the
+  source images. The original unified title menu is entered only after this
+  process succeeds. Subsequent starts reuse the validated generated install.
+  Missing or damaged output blocks the game and directs the user back to the
+  preparation tool.
 - Support mods, including manifests, dependency ordering, conflict detection,
   and possible guided conflict resolution where changes can be merged safely.
 

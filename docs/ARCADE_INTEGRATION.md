@@ -7,6 +7,20 @@ overlays through the same native runtime and renderer as Simulation Mode.
 Replacing its menus, movies, race presentation, or other visuals with a host
 approximation is not an acceptable final implementation.
 
+The completed unified release must also provide a blocking first-run
+preparation tool. It may be integrated into `GranTurismo2PC.exe` or shipped as
+a separate installer executable. The tool requests the user's US Gran Turismo
+2 Simulation Disc (`SCUS-94488`), US Gran Turismo 2 Arcade Mode Disc
+(`SCUS-94455`), and US Gran Turismo disc (`SCUS-94194`), validates the three
+source images, extracts and converts the required data, imports the approved
+Gran Turismo 1-exclusive content, and builds the unified `GT2.VOL` and loose
+installation.
+
+`GranTurismo2PC.exe` must validate that prepared output and refuse to present
+the original title menu if it is incomplete, missing, or damaged. The source
+images remain read-only and are not required for later launches once the
+generated installation passes validation.
+
 ## Disc findings
 
 - The Arcade `GT2.VOL` contains 10,618 named entries.
@@ -55,6 +69,120 @@ disc-visible `GT2.VOL` at LBA 473. The Arcade executable, overlays, raw
 `tools/test_unified_modes.ps1` selects both modes through the original unified
 title menu and verifies their displays from the same executable and shared
 loose install without an unmapped call or managed exception.
+
+## Native Gran Turismo 1 content layer
+
+`tools/gt1_convert.py` validates the supported US Gran Turismo image, extracts
+Special Stage Route 11, and writes a deterministic `GTPATCH.VOL`. The patch is
+then materialized into Arcade's native `GT2.VOL`; it is not a host-rendered
+replacement or a runtime donor-course switch.
+
+The current conversion includes:
+
+- forward, reverse, Arcade forward, Arcade reverse, two-player, and HiFi
+  Route 11 course objects and maps;
+- the GT1-authored `dawn3` background converted to GT2's native BSO/BSP
+  layout;
+- the exact 120x88 GT1 course-selection route art from `ARCADE.DAT` entry 81,
+  placed without scaling or synthesis in GT2's native compressed preview;
+- native `arcade/course_map`, `arcade/course_mapinfo`, and `.crsinfo` merges;
+- sorted `.crsinfo` insertion for all six new `crsobj` pairs, preserving the
+  one-to-one index relationship used by GT2's race loader;
+- extended null-terminated Arcade forward, reverse, time-trial, and
+  two-player course tables in `GT2.OVL`;
+- the GT1 Arcade-only `a-ian` EUNOS ROADSTER model/texture family as a native
+  tenth Class C entry, with the exact GT1 wordmark and all three authored
+  olive/gold, violet-blue, and bright-yellow paint/livery palettes;
+- the separate `amian` EUNOS ROADSTER ARCADE family as the eleventh Class C
+  entry, retaining all fourteen authored GT1 palettes. Its complete 130 PS,
+  990 kg physical basis resolves to GT2's native S-Special conversion, whose
+  front and rear tire records already use the Arcade car's exact widened
+  15-inch size-table entry;
+- the `a-odn` EUNOS ROADSTER RS as the twelfth Class C entry, with its
+  dedicated GT1 `ROADSTER RS` wordmark, all six silver, black, red, gold,
+  deep-blue, and white palettes, and the exact 145 PS / 1030 kg `arodn`
+  production specification;
+- a deterministic GT-CAR-to-CDO/CNO converter for the RS's separate day and
+  night bodies. It preserves all three authored LODs, 418 vertices, 624 day
+  normals, 851 night normals, 426 faces, UVs, render ordering, wheel placement,
+  and shadow data while using the corresponding native GT2 Roadster header
+  conventions. It does not copy or substitute GT2 model geometry;
+- the GT1 `h-vrn` CIVIC (Racer) as a native tenth Class B entry, including its
+  unique converted hatchback body, original Honda/Civic selection artwork,
+  and all three turquoise, hot-pink, and yellow liveries. The converter also
+  preserves the model's authored `0x080808` untextured face colors instead of
+  flattening them to black;
+- the GT1 `l-7cn` DB7 COUPE as a native ninth Class A entry, including the
+  exact Aston Martin DB7 Coupe selection artwork and all three authored white,
+  burgundy, and deep-purple paints. GT1's Arcade DB7 body is byte-identical to
+  its production DB7 body, so the converter uses GT2's native DB7 CDO/CNO
+  container without substituting unrelated geometry;
+- sorted insertion into both native `CarArcadeRacing` and `CarArcadeDrift`
+  tables, plus independent GT2 part records for the imported packed car ID;
+- physics assembled from GT2's native conversions of the exact GT1 component
+  signatures: V-Special chassis/suspension, S-Special wheel/tire package, and
+  the Mazda brake signature shared by GT1's RX-7 Type-R family. The converter
+  validates the complete GT1 SPEC difference fingerprint before producing
+  those records.
+
+Route 11 is inserted after each table's always-available prefix. This preserves
+GT2's original progression ordering while making the imported course
+immediately selectable. The deterministic
+`tests/fixtures/unified-arcade-ssr11-race.input` smoke enters Arcade Mode
+through the unified title, selects the fourth course, starts Route 11, engages
+the original AI racing-line controller for the player car, and captures live
+race frames. The accepted run completes without an unmapped call, managed
+exception, or software fault.
+
+`tests/fixtures/unified-arcade-roadster-race.input` selects the appended
+Roadster through the same native frontend, verifies the first livery in car
+selection, starts Tahiti Road, and enables the original AI racing-line
+controller. The corrected cumulative smoke completes lap one in 1:47.598 and
+enters lap two in second place. Separate menu captures
+verify all three GT1 palettes and the ten-entry Class C wrap. The run has no
+unmapped call, managed exception, or software fault.
+
+`tests/fixtures/unified-arcade-roadster-arcade-probe.input` captures all
+fourteen `amian` palettes and verifies the eleven-entry wrap.
+`tests/fixtures/unified-arcade-roadster-arcade-race.input` then runs the second
+Roadster through the same Tahiti Road smoke: it completes lap one in 1:47.748
+and enters lap two in first place with no runtime fault.
+
+`tests/fixtures/unified-arcade-roadster-rs-probe.input` captures all six
+ROADSTER RS palettes and verifies the twelve-entry Class C wrap.
+`tests/fixtures/unified-arcade-roadster-rs-race.input` then loads the converted
+day body on Tahiti Road: auto-drive completes lap one in first at 1:48.673 and
+remains first on lap two. The separate
+`tests/fixtures/unified-arcade-roadster-rs-ssr11-night-race.input` loads the
+converted night body on Special Stage Route 11 and sustains live race rendering
+through the 9,000-poll capture. Both runs are clean of unmapped calls, managed
+exceptions, and software faults.
+
+`tests/fixtures/unified-arcade-civic-racer-probe.input` captures all three
+Civic Racer liveries and verifies the ten-entry Class B wrap.
+`tests/fixtures/unified-arcade-civic-racer-race.input` completes a Tahiti Road
+lap in 1:44.209 and enters lap two in third with clean body rendering and no
+runtime fault.
+
+`tests/fixtures/unified-arcade-db7-coupe-probe.input` captures all three DB7
+Coupe paints and verifies the nine-entry Class A wrap.
+`tests/fixtures/unified-arcade-db7-coupe-race.input` then runs the car on
+Tahiti Road: auto-drive completes lap one in 1:32.603 and enters lap two in
+third. The full smoke is clean of unmapped calls, managed exceptions, and
+software faults.
+
+The Racing/Drift master tables must remain sorted by packed car ID. An early
+diagnostic build appended `a-ian`, so the binary-searching race loader missed
+the otherwise valid record and left the car stationary. Ordered insertion
+fixed the data at its source; no runtime lookup patch or donor slot remains.
+The serialized car-reference order also deliberately follows GT2's schema:
+LSD precedes Gear, Suspension, Intercooler, and Muffler even though the GTDT
+block directory places LSD after them. Correcting that non-isomorphic order
+and rerunning all three Roadsters removed an accidentally inflated RS lap time
+while retaining clean, mutually consistent driving behavior.
+
+Remaining GT1-exclusive cars, paint schemes, prize/Arcade liveries, and wheel
+variants still need conversion through the same content layer.
 
 ## Validated native flow
 

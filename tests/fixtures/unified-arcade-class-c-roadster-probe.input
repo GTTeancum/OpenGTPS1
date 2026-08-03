@@ -1,0 +1,38 @@
+# Unified title -> Arcade single-player Road Race -> Easy.
+600+8=CROSS,START
+1380+4=CROSS
+1980+4=CROSS
+2380+4=CROSS
+2780+4=CROSS
+
+# Capture the class selector before choosing Class C.
+3000+1=CAPTURE
+
+# The selector opens on Class A; move down twice to Class C.
+3060+4=DOWN
+3300+4=DOWN
+3540+1=CAPTURE
+3660+4=CROSS
+
+# Capture the first Class C car, then advance to the appended tenth entry.
+3980+1=CAPTURE
+4100+4=RIGHT
+4220+4=RIGHT
+4340+4=RIGHT
+4460+4=RIGHT
+4580+4=RIGHT
+4700+4=RIGHT
+4820+4=RIGHT
+4940+4=RIGHT
+5060+4=RIGHT
+5700+1=CAPTURE
+
+# Cycle and capture all three authored GT1 paint/livery palettes.
+5900+4=DOWN
+6200+1=CAPTURE
+6320+4=DOWN
+6620+1=CAPTURE
+
+# One more car step must wrap the ten-entry native roster back to its first.
+6740+4=RIGHT
+7040+1=CAPTURE

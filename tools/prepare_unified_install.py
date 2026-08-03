@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 import os
 import shutil
 import struct
 from pathlib import Path
 
+from gt2_patch import apply_patches
 from gt2_vol import read_entries
 
 
@@ -43,7 +45,7 @@ INSTALL = Path(
 ).resolve()
 UNIFIED_VOLUME_LBA = 473
 UNIFIED_VOLUME_SIZE = 488241152
-ARCADE_VOLUME_SIZE = 213596160
+ARCADE_ORIGINAL_VOLUME_SIZE = 213596160
 ARCADE_VOLUME_SOURCE_OFFSET = UNIFIED_VOLUME_SIZE
 UNIFIED_MUSIC_LBA = 238872
 UNIFIED_MUSIC_SIZE = 85262336
@@ -67,6 +69,18 @@ TITLE_PALETTE = (
 )
 
 
+def configured_patch_volumes() -> list[Path]:
+    configured = os.environ.get("GT2_PATCH_VOLUMES")
+    if configured is not None:
+        return [
+            Path(item).resolve()
+            for item in configured.split(os.pathsep)
+            if item.strip()
+        ]
+    default = REPO / "work" / "gt1-converted" / "GTPATCH.VOL"
+    return [default.resolve()] if default.is_file() else []
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -79,7 +93,11 @@ def copy_if_needed(source: Path, destination: Path) -> None:
     if not source.is_file():
         raise FileNotFoundError(f"required unified-install source is missing: {source}")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.is_file() and destination.stat().st_size == source.stat().st_size:
+    if (
+        destination.is_file()
+        and destination.stat().st_size == source.stat().st_size
+        and sha256(destination) == sha256(source)
+    ):
         return
     shutil.copy2(source, destination)
     print(f"copied {source.name}: {destination}")
@@ -90,17 +108,13 @@ def merge_native_volumes(
     arcade_volume: Path,
     destination: Path,
 ) -> None:
-    """Store both untouched GTFS members in one deterministic GT2.VOL."""
-    expected = UNIFIED_VOLUME_SIZE + ARCADE_VOLUME_SIZE
+    """Store the Simulation and materialized Arcade GTFS members together."""
+    arcade_size = arcade_volume.stat().st_size
+    expected = UNIFIED_VOLUME_SIZE + arcade_size
     if simulation_volume.stat().st_size != UNIFIED_VOLUME_SIZE:
         raise ValueError(
             "unexpected Simulation GT2.VOL size: "
             f"{simulation_volume.stat().st_size} != {UNIFIED_VOLUME_SIZE}"
-        )
-    if arcade_volume.stat().st_size != ARCADE_VOLUME_SIZE:
-        raise ValueError(
-            "unexpected Arcade GT2.VOL size: "
-            f"{arcade_volume.stat().st_size} != {ARCADE_VOLUME_SIZE}"
         )
 
     temporary = destination.with_suffix(destination.suffix + ".tmp")
@@ -116,8 +130,59 @@ def merge_native_volumes(
     print(
         "merged native GT2.VOL members: "
         f"Simulation@0+{UNIFIED_VOLUME_SIZE}, "
-        f"Arcade@{ARCADE_VOLUME_SOURCE_OFFSET}+{ARCADE_VOLUME_SIZE}"
+        f"Arcade@{ARCADE_VOLUME_SOURCE_OFFSET}+{arcade_size}"
     )
+
+
+def materialize_arcade_volume() -> Path:
+    if ARCADE_VOLUME.stat().st_size != ARCADE_ORIGINAL_VOLUME_SIZE:
+        raise ValueError(
+            "unexpected original Arcade GT2.VOL size: "
+            f"{ARCADE_VOLUME.stat().st_size} != {ARCADE_ORIGINAL_VOLUME_SIZE}"
+        )
+    patches = configured_patch_volumes()
+    if not patches:
+        return ARCADE_VOLUME
+    missing = [path for path in patches if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "configured GTPATCH volume is missing: "
+            + ", ".join(str(path) for path in missing)
+        )
+    materialized = INSTALL / "arcade.materialized.vol"
+    apply_patches(ARCADE_VOLUME, patches, materialized)
+    return materialized
+
+
+def materialized_arcade_overlay() -> Path:
+    configured = os.environ.get("GT2_ARCADE_PATCHED_OVL")
+    if configured is not None:
+        candidate = Path(configured).resolve()
+        if not candidate.is_file():
+            raise FileNotFoundError(
+                f"configured patched Arcade GT2.OVL is missing: {candidate}"
+            )
+        return candidate
+    default = REPO / "work" / "gt1-converted" / "GT2.OVL"
+    return default.resolve() if default.is_file() else ARCADE_ROOT / "GT2.OVL"
+
+
+def write_arcade_manifest(destination: Path, arcade_volume_size: int) -> None:
+    template = REPO / "tools" / "recompone.arcade.unified.json"
+    data = json.loads(template.read_text(encoding="utf-8"))
+    matches = [item for item in data["files"] if item["path"] == "GT2.VOL"]
+    if len(matches) != 1:
+        raise ValueError("Arcade unified manifest has no unique GT2.VOL entry")
+    entry = matches[0]
+    entry["sourceOffset"] = ARCADE_VOLUME_SOURCE_OFFSET
+    entry["sourceLength"] = arcade_volume_size
+    entry["size"] = arcade_volume_size
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(data, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(f"wrote Arcade manifest for materialized volume size {arcade_volume_size}")
 
 
 def relocate_iso_file(
@@ -290,6 +355,8 @@ def patch_unified_title_texture(volume: Path) -> None:
 
 def main() -> int:
     INSTALL.mkdir(parents=True, exist_ok=True)
+    arcade_volume = materialize_arcade_volume()
+    arcade_volume_size = arcade_volume.stat().st_size
 
     simulation_files = (
         "DISC_META.DAT",
@@ -307,14 +374,16 @@ def main() -> int:
     )
     for name in simulation_files:
         copy_if_needed(SIMULATION_ROOT / name, INSTALL / "simulation" / name)
+    arcade_overlay = materialized_arcade_overlay()
     for name in arcade_files:
-        copy_if_needed(ARCADE_ROOT / name, INSTALL / "arcade" / name)
+        source = arcade_overlay if name == "GT2.OVL" else ARCADE_ROOT / name
+        copy_if_needed(source, INSTALL / "arcade" / name)
     for mode in ("simulation", "arcade"):
         relocate_iso_file(
             INSTALL / mode / "DISC_META.DAT",
             b"GT2.VOL;1",
             UNIFIED_VOLUME_LBA,
-            UNIFIED_VOLUME_SIZE if mode == "simulation" else ARCADE_VOLUME_SIZE,
+            UNIFIED_VOLUME_SIZE if mode == "simulation" else arcade_volume_size,
         )
     relocate_iso_file(
         INSTALL / "arcade" / "DISC_META.DAT",
@@ -343,7 +412,7 @@ def main() -> int:
     # so neither executable receives the other disc's incompatible payloads.
     merge_native_volumes(
         SIMULATION_ROOT / "GT2.VOL",
-        ARCADE_VOLUME,
+        arcade_volume,
         unified_volume,
     )
     patch_unified_title_texture(unified_volume)
@@ -353,10 +422,7 @@ def main() -> int:
         REPO / "tools" / "recompone.simulation.unified.json",
         manifest_root / "simulation.json",
     )
-    copy_if_needed(
-        REPO / "tools" / "recompone.arcade.unified.json",
-        manifest_root / "arcade.json",
-    )
+    write_arcade_manifest(manifest_root / "arcade.json", arcade_volume_size)
     (INSTALL / "music").mkdir(exist_ok=True)
     print(f"Unified native Simulation/Arcade install ready: {INSTALL}")
     return 0

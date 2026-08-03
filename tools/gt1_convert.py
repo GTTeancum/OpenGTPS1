@@ -1,0 +1,3957 @@
+#!/usr/bin/env python3
+"""Convert supported US Gran Turismo content into a GT2 patch volume."""
+
+from __future__ import annotations
+
+import argparse
+import bisect
+import gzip
+import hashlib
+import json
+import shutil
+import struct
+from dataclasses import dataclass
+from pathlib import Path
+
+from gt2_vol import members_from_directory, read_entries, write_volume
+from psx_iso import extract_image
+
+
+REPO = Path(__file__).resolve().parents[1]
+GT1_IMAGE_NAME = "Gran Turismo [U] [SCUS-94194].img"
+GT1_IMAGE_SIZE = 693_668_304
+GT1_IMAGE_SHA256 = "765a748c4f2975a063a47ba9e42708a4882954d765f9e352c5af3c0950eaefb6"
+REQUIRED_DISC_FILES = {
+    "SYSTEM.CNF": 68,
+    "SCUS_941.94": 141_312,
+    "ARCADE.DAT": 241_272,
+    "BG.DAT": 204_800,
+    "CAR.DAT": 16_379_904,
+    "CARINF.DAT": 135_301,
+    "COURSE.DAT": 23_969_792,
+    "SYSTEM.DAT": 14_768,
+}
+
+GT1_ARCADE_SSR11_ENTRY = 81
+GT1_SSR11_SKY_INDEX = 5
+GT1_SSR11_SKY_NAME = "dawn3"
+GT2_SSR11_SKY_STEM = "gt1_ssr11_sky"
+GT2_GTD_PART_RECORD_SIZES = (
+    0x0C,  # Brake
+    0x10,  # BrakeController
+    0x18,  # Steer
+    0x14,  # Chassis
+    0x0C,  # Lightweight
+    0x1C,  # RacingModify
+    0x4C,  # Engine
+    0x0C,  # PortPolish
+    0x0C,  # EngineBalance
+    0x0C,  # Displacement
+    0x0C,  # Computer
+    0x0C,  # NATune
+    0x14,  # TurbineKit
+    0x10,  # Drivetrain
+    0x0C,  # Flywheel
+    0x10,  # Clutch
+    0x0C,  # PropellerShaft
+    0x24,  # Gear
+    0x4C,  # Suspension
+    0x0C,  # Intercooler
+    0x0C,  # Muffler
+    0x20,  # LSD
+    0x10,  # TiresFront
+    0x0C,  # TiresRear
+)
+# GT2's Car and CarArcade structures group LSD before Gear/Suspension even
+# though the GTDT block directory stores LSD after Muffler. Values here are
+# GTDT block indexes in their serialized car-record field order.
+GT2_GTD_CAR_REF_BLOCKS = (
+    *range(17),
+    21,  # LSD
+    17,  # Gear
+    18,  # Suspension
+    19,  # Intercooler
+    20,  # Muffler
+    22,  # TiresFront
+    23,  # TiresRear
+)
+GT2_GTD_BLOCK_TO_CAR_REF = {
+    block_index: reference_index
+    for reference_index, block_index in enumerate(GT2_GTD_CAR_REF_BLOCKS)
+}
+GT2_GTMODE_CAR_BLOCK = 30
+GT2_ARCADE_RACING_BLOCK = 32
+GT2_ARCADE_DRIFT_BLOCK = 33
+GT2_GTMODE_BLOCK_COUNT = 31
+GT2_ARCADE_BLOCK_COUNT = 34
+GT2_ARCADE_STRING_INDEX_POSITION = 0x208
+GT1_FIRST_ARCADE_CAR = {
+    "stem": "a-ian",
+    "displayName": "EUNOS ROADSTER",
+    "modelBasisStem": "aminn",
+    # GT1's Arcade-only Roadster is an authored composite. Its complete SPEC
+    # fingerprint matches the GT2-native V-Special conversion except for the
+    # exact brake and wheel/tire fields below. Those fields have byte-exact
+    # counterparts in GT2's RX-7 Type-R and Roadster S-Special conversions.
+    "physicsBasisStem": "amivn",
+    "physicsPartBasis": {
+        0: "afo7n",
+        22: "amisn",
+        23: "amisn",
+    },
+    "arcadeLogoEntry": 2,
+    "arcadeClass": 3,
+    # Native GT2 descriptor 15 is the shared Mazda manufacturer mark used by
+    # every Arcade roster stem in GT2's `a` family. The per-car EUNOS
+    # ROADSTER wordmark remains the imported GT1 TIM below; this selects only
+    # the separate maker badge.
+    "manufacturerLogoIndex": 15,
+    "ratings": (5, 10, 7),
+    "stats": (130, 6500, 157, 4500, 990),
+    "paintSources": (
+        (104, "aminn"),
+        (105, "a2rcn"),
+        (114, "aminn"),
+    ),
+}
+GT1_ROADSTER_ARCADE_CAR = {
+    "stem": "amian",
+    "displayName": "EUNOS ROADSTER ARCADE",
+    "modelBasisStem": "amisn",
+    "physicsBasisStem": "amisn",
+    "physicsPartBasis": {},
+    "arcadeLogoEntry": 2,
+    "arcadeClass": 3,
+    "manufacturerLogoIndex": 15,
+    "ratings": (5, 10, 7),
+    "stats": (130, 6500, 157, 4500, 990),
+    "paintSources": (
+        (49, "aminn"),
+        (50, "amivn"),
+        (52, "aminn"),
+        (53, "amivn"),
+        (54, "aminn"),
+        (98, "aminn"),
+        (101, "amisn"),
+        (108, "amivn"),
+        (109, "aminn"),
+        (110, "ademn"),
+        (112, "aminn"),
+        (113, "amisn"),
+        (115, "amisn"),
+        (116, "aminn"),
+    ),
+}
+GT1_ROADSTER_RS_CAR = {
+    "stem": "a-odn",
+    "displayName": "EUNOS ROADSTER RS",
+    # The Arcade RS uses GT1's ROADSTER RS body, including its slightly
+    # asymmetric authored wheel placement. GT2's native `arodn` supplies
+    # only the corresponding GT2 header conventions; the three LODs and
+    # shadow are converted from the GT1 model below.
+    "modelBasisStem": "arodn",
+    "convertModel": True,
+    # GT1 names the graphics-only Arcade variant `a-odn`, while its complete
+    # production specification is the `arodn` EUNOS ROADSTER RS record.
+    "physicsSpecStem": "arodn",
+    "physicsBasisStem": "arodn",
+    "physicsPartBasis": {},
+    "arcadeLogoEntry": 3,
+    "arcadeClass": 3,
+    "manufacturerLogoIndex": 15,
+    "ratings": (5, 10, 7),
+    "stats": (145, 6500, 163, 5000, 1030),
+    "paintSources": tuple(
+        (color_id, "arodn")
+        for color_id in (49, 52, 54, 98, 103, 116)
+    ),
+}
+GT1_CIVIC_RACER_CAR = {
+    "stem": "h-vrn",
+    "displayName": "CIVIC (Racer)",
+    "modelBasisStem": "hcvrn",
+    "convertModel": True,
+    "physicsBasisStem": "hcvrn",
+    "physicsPartBasis": {},
+    # The physical payload is byte-identical to GT1's production Civic Racer
+    # conversion. The five differences are identity, price, and string-table
+    # references outside the serialized GT2 part records.
+    "physicsExpectedDifferences": (0x01, 0x184, 0x185, 0x190, 0x192),
+    "arcadeLogoEntry": 4,
+    "arcadeClass": 2,
+    "manufacturerLogoIndex": 10,
+    "ratings": (6, 10, 9),
+    "stats": (185, 8200, 160, 7500, 1050),
+    "paintSources": (
+        (104, "hnsbn"),
+        (111, "hcfnn"),
+        (118, "hinsn"),
+    ),
+}
+GT1_DB7_COUPE_CAR = {
+    "stem": "l-7cn",
+    "displayName": "DB7 COUPE",
+    # GT1's Arcade-only DB7 Coupe and its production DB7 share the exact
+    # authored body model. GT2's native DB7 container therefore preserves
+    # that geometry without a donor-body conversion; the exclusive GT1
+    # paint package and selection artwork are imported below.
+    "modelBasisStem": "ld7cn",
+    "physicsBasisStem": "ld7cn",
+    "physicsPartBasis": {},
+    # The serialized physical parts match. These bytes are identity, price,
+    # string references, and GT1's displayed torque statistic.
+    "physicsExpectedDifferences": (
+        0x01,
+        0x184,
+        0x185,
+        0x186,
+        0x190,
+        0x192,
+        0x19C,
+        0x19D,
+    ),
+    "arcadeLogoEntry": 24,
+    "arcadeClass": 1,
+    "manufacturerLogoIndex": 1,
+    "ratings": (10, 8, 8),
+    "stats": (340, 6000, 361, 3000, 1725),
+    "paintSources": (
+        (49, "ld6cn"),
+        (101, "ld7cn"),
+        (117, "hnann"),
+    ),
+}
+GT1_CRX_91_SI_CAR = {
+    "stem": "h-rxn",
+    "displayName": "CIVIC CR-X '91 Si",
+    "modelBasisStem": "hcrxn",
+    "physicsBasisStem": "hcrxn",
+    "physicsPartBasis": {},
+    # GT1's Arcade CR-X shares the production car's complete serialized
+    # physical specification except for its deliberate 970 kg chassis.
+    "physicsExpectedDifferences": (
+        0x01,
+        0x5A,
+        0x184,
+        0x185,
+        0x186,
+        0x190,
+        0x192,
+        0x198,
+        0x19C,
+        0x19D,
+        0x1A0,
+    ),
+    # GT2 Chassis records store vehicle weight as a u16 at byte 0x0E.
+    # Author a target-owned record rather than retaining the 986 kg source.
+    "physicsU16Overrides": {3: {0x0E: 970}},
+    "arcadeLogoEntry": 5,
+    "arcadeClass": 2,
+    "manufacturerLogoIndex": 10,
+    "ratings": (6, 10, 9),
+    "stats": (160, 7600, 152, 7000, 970),
+    "paintSources": (
+        (54, "hcrxn"),
+        (104, "h2a0n"),
+        (113, "h2csn"),
+    ),
+}
+GT1_IMPREZA_STI_V3_CAR = {
+    "stem": "s-pbn",
+    "displayName": "IMPREZA Sedan WRX-STi version III",
+    # This Arcade body has no byte-identical GT1 production model. Preserve
+    # the authored model, wheel placement, shadow, and matching texture UVs
+    # through the structural GT-CAR-to-CDO/CNO converter.
+    "modelBasisStem": "sipbn",
+    "convertModel": True,
+    "physicsBasisStem": "sipbn",
+    "physicsPartBasis": {},
+    # The sole physical difference from the production Version III is GT1's
+    # deliberate 30 kg reduction; remaining bytes are identity/price/text.
+    "physicsExpectedDifferences": (
+        0x01,
+        0x5A,
+        0x184,
+        0x185,
+        0x186,
+        0x188,
+        0x190,
+        0x192,
+    ),
+    "physicsU16Overrides": {3: {0x0E: 1220}},
+    "arcadeLogoEntry": 18,
+    "arcadeClass": 1,
+    "manufacturerLogoIndex": 28,
+    "ratings": (10, 8, 8),
+    "stats": (280, 6500, 343, 4000, 1220),
+    "paintSources": (
+        (103, "a26sn"),
+        (104, "siprn"),
+        (111, "a2bin"),
+    ),
+}
+GT1_ARCADE_CARS = (
+    GT1_FIRST_ARCADE_CAR,
+    GT1_ROADSTER_ARCADE_CAR,
+    GT1_ROADSTER_RS_CAR,
+    GT1_CIVIC_RACER_CAR,
+    GT1_DB7_COUPE_CAR,
+    GT1_IMPREZA_STI_V3_CAR,
+)
+
+SSR11_VARIANTS = (
+    ("gt1_ssr11", 26, "forward"),
+    ("gt1_ssr11_r", 27, "reverse"),
+    ("gt1_ssr11_a", 28, "Arcade forward"),
+    ("gt1_ssr11_ar", 29, "Arcade reverse"),
+    ("gt1_ssr11_2p", 30, "two-player forward"),
+    ("gt1_ssr11_hifi", 31, "HiFi forward"),
+)
+
+
+@dataclass(frozen=True)
+class GtArcEntry:
+    index: int
+    offset: int
+    packed_size: int
+    unpacked_size: int
+
+
+@dataclass(frozen=True)
+class TextureImageRelocation:
+    name: str
+    old_x: int
+    old_y: int
+    width: int
+    height: int
+    old_clut_id: int
+    new_x: int
+    new_y: int
+
+
+@dataclass(frozen=True)
+class TextureRelocation:
+    clut_ids: dict[int, int]
+    images: tuple[TextureImageRelocation, ...]
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_gt1_image(path: Path) -> str:
+    path = path.resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"US Gran Turismo disc image is missing: {path}")
+    if path.stat().st_size != GT1_IMAGE_SIZE:
+        raise ValueError(
+            f"unsupported Gran Turismo image size: "
+            f"{path.stat().st_size} != {GT1_IMAGE_SIZE}"
+        )
+    digest = sha256(path)
+    if digest != GT1_IMAGE_SHA256:
+        raise ValueError(
+            f"unsupported Gran Turismo image hash: {digest}; "
+            f"expected {GT1_IMAGE_SHA256}"
+        )
+    print(f"validated US Gran Turismo image: {path} sha256={digest}")
+    return digest
+
+
+def validate_disc_root(path: Path) -> None:
+    for name, size in REQUIRED_DISC_FILES.items():
+        candidate = path / name
+        if not candidate.is_file() or candidate.stat().st_size != size:
+            raise ValueError(
+                f"extracted GT1 file is missing or wrong-sized: "
+                f"{candidate} expected={size}"
+            )
+    system_cnf = (path / "SYSTEM.CNF").read_text(
+        encoding="ascii", errors="replace"
+    )
+    if "SCUS_941.94" not in system_cnf:
+        raise ValueError("GT1 SYSTEM.CNF does not boot SCUS_941.94")
+
+
+def gt1_lzss_decompress(data: bytes, expected_size: int | None = None) -> bytes:
+    output = bytearray()
+    position = 0
+    while position < len(data) and (
+        expected_size is None or len(output) < expected_size
+    ):
+        mask = data[position]
+        position += 1
+        for bit in range(8):
+            if expected_size is not None and len(output) >= expected_size:
+                break
+            if position >= len(data):
+                if expected_size is None:
+                    return bytes(output)
+                raise ValueError("truncated GT1 LZSS stream")
+            if not ((mask >> bit) & 1):
+                output.append(data[position])
+                position += 1
+                continue
+
+            length = data[position] + 3
+            position += 1
+            if position >= len(data):
+                raise ValueError("truncated GT1 LZSS back-reference")
+            encoded_distance = data[position]
+            position += 1
+            if encoded_distance & 0x80:
+                if position >= len(data):
+                    raise ValueError("truncated GT1 LZSS long distance")
+                distance = (
+                    ((encoded_distance & 0x7F) << 8) | data[position]
+                ) + 1
+                position += 1
+            else:
+                distance = encoded_distance + 1
+            if distance > len(output):
+                raise ValueError(
+                    f"invalid GT1 LZSS distance {distance} at {len(output)}"
+                )
+            for _ in range(length):
+                output.append(output[-distance])
+                if expected_size is not None and len(output) >= expected_size:
+                    break
+
+    if expected_size is not None and len(output) != expected_size:
+        raise ValueError(
+            f"GT1 LZSS size mismatch: {len(output)} != {expected_size}"
+        )
+    return bytes(output)
+
+
+def gt_lzss_compress(data: bytes) -> bytes:
+    """Encode the shared GT1/GT2 LZSS stream without overlapping matches."""
+    output = bytearray()
+    positions: dict[bytes, list[int]] = {}
+    cursor = 0
+    while cursor < len(data):
+        flag_offset = len(output)
+        output.append(0)
+        flags = 0
+        for bit in range(8):
+            if cursor >= len(data):
+                break
+
+            best_start = -1
+            best_length = 0
+            if cursor + 3 <= len(data):
+                key = data[cursor : cursor + 3]
+                candidates = positions.get(key, ())
+                for candidate in reversed(candidates[-128:]):
+                    distance = cursor - candidate
+                    if distance > 0x8000:
+                        break
+                    # Polyphony's encoder deliberately avoids overlapping
+                    # matches even though the decoder can repeat them.
+                    maximum = min(258, len(data) - cursor, distance)
+                    length = 3
+                    while (
+                        length < maximum
+                        and data[candidate + length] == data[cursor + length]
+                    ):
+                        length += 1
+                    if length > best_length:
+                        best_start = candidate
+                        best_length = length
+                        if best_length == maximum:
+                            break
+
+            if best_length >= 3:
+                flags |= 1 << bit
+                output.append(best_length - 3)
+                encoded_distance = cursor - best_start - 1
+                if encoded_distance >= 0x80:
+                    output.append(0x80 | (encoded_distance >> 8))
+                    output.append(encoded_distance & 0xFF)
+                else:
+                    output.append(encoded_distance)
+                next_cursor = cursor + best_length
+            else:
+                output.append(data[cursor])
+                next_cursor = cursor + 1
+
+            for position in range(cursor, next_cursor):
+                if position + 3 <= len(data):
+                    key = data[position : position + 3]
+                    bucket = positions.setdefault(key, [])
+                    bucket.append(position)
+                    if len(bucket) > 256:
+                        del bucket[:128]
+            cursor = next_cursor
+        output[flag_offset] = flags
+    return bytes(output)
+
+
+def build_gt_zip(data: bytes) -> bytes:
+    compressed = gt_lzss_compress(data)
+    if gt1_lzss_decompress(compressed, len(data)) != data:
+        raise ValueError("GT-ZIP compressor failed its round-trip check")
+    return b"@(#)GT-ZIP\0\0" + struct.pack("<I", len(data)) + compressed
+
+
+def read_gtarc(path: Path) -> tuple[bytes, list[GtArcEntry]]:
+    data = path.read_bytes()
+    if data[:10] != b"@(#)GT-ARC":
+        raise ValueError(f"not an uncompressed GT-ARC archive: {path}")
+    raw_file_count = struct.unpack_from("<H", data, 14)[0]
+    # BG.DAT sets the archive flag in bit 15 while retaining the entry count
+    # in the lower fifteen bits. COURSE.DAT leaves the flag clear.
+    file_count = raw_file_count & 0x7FFF
+    if file_count <= 0:
+        raise ValueError(
+            f"invalid GT-ARC file count: {raw_file_count:#06x}"
+        )
+    entries = []
+    for index in range(file_count):
+        offset, packed_size, unpacked_size = struct.unpack_from(
+            "<III", data, 16 + index * 12
+        )
+        if (
+            offset < 16 + file_count * 12
+            or offset + packed_size > len(data)
+            or unpacked_size <= 0
+        ):
+            raise ValueError(f"invalid GT-ARC entry {index} in {path}")
+        entries.append(
+            GtArcEntry(index, offset, packed_size, unpacked_size)
+        )
+    return data, entries
+
+
+def unpack_entry(archive: bytes, entry: GtArcEntry) -> bytes:
+    return gt1_lzss_decompress(
+        archive[entry.offset : entry.offset + entry.packed_size],
+        entry.unpacked_size,
+    )
+
+
+def convert_gt1_car_texture(data: bytes) -> bytes:
+    """Convert one native GT1 GT-CTEX texture to native GT2 CDP/CNP layout.
+
+    Both formats store the same 256x224 4-bpp bitmap, sixteen 16-colour
+    palettes per paint variant, paint IDs, illumination masks, and paint
+    masks.  GT1 places the shared masks before the bitmap and its palette
+    blocks after it; GT2 moves the bitmap to the end and reserves mask space
+    after every palette block.  No pixels or authored palette values are
+    synthesized here.
+    """
+    if (
+        len(data) < 0x8060
+        or not data.startswith(b"@(#)GT-CTEX\0")
+        or struct.unpack_from("<H", data, 12)[0] != 2
+    ):
+        raise ValueError("unsupported GT1 car texture")
+    color_count = struct.unpack_from("<H", data, 14)[0]
+    if not 1 <= color_count <= 16:
+        raise ValueError(f"invalid GT1 car color count: {color_count}")
+    expected_size = 0x8060 + color_count * 0x200
+    if len(data) != expected_size:
+        raise ValueError(
+            f"unexpected GT1 car texture size: {len(data):#x} != "
+            f"{expected_size:#x}"
+        )
+
+    output = bytearray(0xB3A0)
+    output[0] = color_count
+    output[2 : 2 + color_count] = data[0x10 : 0x10 + color_count]
+    for color_index in range(color_count):
+        source = 0x8060 + color_index * 0x200
+        target = 0x20 + color_index * 0x240
+        output[target : target + 0x200] = data[source : source + 0x200]
+    # GT1 stores one shared illumination-mask and paint-mask set.  GT2's
+    # compiler places that authored set in the first colour record and leaves
+    # the per-colour reserved mask areas zeroed.
+    output[0x220:0x260] = data[0x20:0x60]
+    output[0x43A0:0xB3A0] = data[0x1060:0x8060]
+    return bytes(output)
+
+
+def read_gt1_car_stems(path: Path) -> list[str]:
+    data = path.read_bytes()
+    start = data.index(b"0logn\0")
+    stems: list[str] = []
+    cursor = start
+    valid = set("-0123456789abcdefghijklmnopqrstuvwxyz")
+    while cursor + 6 <= len(data):
+        raw = data[cursor : cursor + 6]
+        if raw[5] != 0:
+            break
+        try:
+            stem = raw[:5].decode("ascii")
+        except UnicodeDecodeError:
+            break
+        if any(character not in valid for character in stem):
+            break
+        stems.append(stem)
+        cursor += 6
+    if len(stems) != 344:
+        raise ValueError(
+            f"expected 344 GT1 car graphic stems, found {len(stems)}"
+        )
+    return stems
+
+
+def read_gt1_car_members(
+    car_path: Path,
+    stems: list[str],
+    stem: str,
+) -> tuple[bytes, bytes, bytes, bytes]:
+    try:
+        stem_index = stems.index(stem)
+    except ValueError as exc:
+        raise ValueError(f"GT1 car stem is absent: {stem}") from exc
+    archive, entries = read_gtarc(car_path)
+    if len(entries) != len(stems) * 4:
+        raise ValueError(
+            f"GT1 CAR.DAT has {len(entries)} entries for "
+            f"{len(stems)} stems"
+        )
+    night_bank = len(stems) * 2
+    indices = (
+        stem_index * 2,
+        stem_index * 2 + 1,
+        night_bank + stem_index * 2,
+        night_bank + stem_index * 2 + 1,
+    )
+    members = tuple(unpack_entry(archive, entries[index]) for index in indices)
+    expected = (
+        b"@(#)GT-CTEX",
+        b"@(#)GT-CAR",
+        b"@(#)GT-CTEX",
+        b"@(#)GT-CAR",
+    )
+    if any(
+        not member.startswith(header)
+        for member, header in zip(members, expected)
+    ):
+        raise ValueError(f"GT1 car {stem} has an unexpected member layout")
+    return members
+
+
+def _signed_short(value: int) -> int:
+    if value == -0x8000:
+        raise ValueError("GT1 model coordinate cannot be negated")
+    return -value
+
+
+def _decode_gt1_car_polygon(
+    data: bytes,
+    offset: int,
+    *,
+    is_quad: bool,
+    is_textured: bool,
+    vertex_count: int,
+    normal_count: int,
+) -> tuple[bytes, int]:
+    size = 28 if is_textured else 16
+    if offset + size > len(data):
+        raise ValueError("GT1 car polygon is truncated")
+    vertex_data = data[offset : offset + 6]
+    normal_data = data[offset + 6 : offset + 12]
+    texture_flags = data[offset + 12 : offset + 15]
+    face_type = data[offset + 15]
+
+    vertex_refs = (
+        vertex_data[0] | ((vertex_data[1] & 1) << 8),
+        (vertex_data[1] >> 1) | ((vertex_data[2] & 3) << 7),
+        (vertex_data[2] >> 2) | ((vertex_data[3] & 7) << 6),
+        vertex_data[4] | ((vertex_data[5] & 1) << 8),
+    )
+    normal_refs = (
+        ((vertex_data[5] | (normal_data[0] << 8)) >> 1) & 0x1FF,
+        ((normal_data[0] | (normal_data[1] << 8)) >> 3) & 0x1FF,
+        (normal_data[2] | (normal_data[3] << 8)) & 0x1FF,
+        ((normal_data[3] | (normal_data[4] << 8)) >> 2) & 0x1FF,
+    )
+    used_vertices = vertex_refs if is_quad else vertex_refs[:3]
+    if any(reference >= vertex_count for reference in used_vertices):
+        raise ValueError("GT1 car polygon has an invalid vertex reference")
+    if any(reference >= normal_count for reference in normal_refs):
+        raise ValueError("GT1 car polygon has an invalid normal reference")
+    if any(reference > 0xFF for reference in used_vertices):
+        raise ValueError(
+            "GT1 car polygon cannot fit GT2's 8-bit vertex references"
+        )
+    expected_face_type = (
+        0x2D if is_quad and is_textured
+        else 0x29 if is_quad
+        else 0x25 if is_textured
+        else 0x21
+    )
+    if face_type != expected_face_type:
+        raise ValueError(
+            f"unexpected GT1 car face type: {face_type:#x} != "
+            f"{expected_face_type:#x}"
+        )
+    if (is_textured and texture_flags != b"\xFF\xFF\xFF") or (
+        normal_data[5] != 0
+    ):
+        raise ValueError("GT1 car polygon flags changed")
+
+    render_order = 17 if normal_data[1] & 0x80 else 16
+    render_flags = 0
+    gt2_face_type = face_type - 1 if face_type in (0x21, 0x29) else face_type
+    output = bytearray(
+        struct.pack(
+            "<4BHHII",
+            vertex_refs[0],
+            vertex_refs[1],
+            vertex_refs[2],
+            vertex_refs[3] if is_quad else 0,
+            (normal_refs[0] << 5) | render_order,
+            0,
+            (normal_refs[1] << 1)
+            | (normal_refs[2] << 10)
+            | (normal_refs[3] << 19),
+            (gt2_face_type << 24)
+            | (0 if is_textured else int.from_bytes(texture_flags, "little")),
+        )
+    )
+    if is_textured:
+        uv_data = data[offset + 16 : offset + 28]
+        uv0 = (uv_data[0], uv_data[1] - (32 if uv_data[1] >= 32 else 0))
+        raw_palette = struct.unpack_from("<H", uv_data, 2)[0]
+        palette = (raw_palette >> 4) + (raw_palette & 0x3F)
+        uv1 = (uv_data[4], uv_data[5] - (32 if uv_data[5] >= 32 else 0))
+        if uv_data[6:8] != b"\0\0":
+            raise ValueError("GT1 car textured-polygon padding changed")
+        uv2 = (uv_data[8], uv_data[9] - (32 if uv_data[9] >= 32 else 0))
+        uv3 = (uv_data[10], uv_data[11] - (32 if uv_data[11] >= 32 else 0))
+        if not is_quad and uv3 != (0, 0):
+            raise ValueError("GT1 car triangle has a fourth UV coordinate")
+        if palette > 15:
+            raise ValueError(f"GT1 car palette is out of range: {palette}")
+        render_flags = 8 | (4 if palette == 14 else 0)
+        struct.pack_into("<H", output, 6, render_flags << 12)
+        output.extend(
+            struct.pack(
+                "<BBHBBBBBBBB",
+                *uv0,
+                ((palette & 0x0C) << 4) | (palette & 0x03),
+                *uv1,
+                0,
+                0,
+                *uv2,
+                *uv3,
+            )
+        )
+    return bytes(output), offset + size
+
+
+def _pack_gt2_car_normal(x: int, y: int, z: int) -> int:
+    magnitude_squared = x * x + y * y + z * z
+    if magnitude_squared == 0:
+        # A handful of stock GT1 models contain an unreferenced zero normal.
+        return 0
+    if not 15_840_000 <= magnitude_squared <= 16_160_000:
+        raise ValueError(
+            f"GT1 car normal is not a unit vector: {(x, y, z)}"
+        )
+    converted = (int(x / 8), int(y / 8), int(-z / 8))
+    if any(not -512 <= value <= 511 for value in converted):
+        raise ValueError("GT1 car normal escaped GT2's signed 10-bit range")
+    return (
+        ((converted[0] & 0x3FF) << 2)
+        | ((converted[1] & 0x3FF) << 12)
+        | ((converted[2] & 0x3FF) << 22)
+    )
+
+
+def _convert_gt1_car_lod(
+    data: bytes,
+    offset: int,
+) -> tuple[bytes, int, dict[str, object]]:
+    if offset + 40 > len(data):
+        raise ValueError("GT1 car LOD header is truncated")
+    (
+        vertex_count,
+        normal_count,
+        triangle_count,
+        quad_count,
+        unknown_count_1,
+        unknown_count_2,
+        uv_triangle_count,
+        uv_quad_count,
+    ) = struct.unpack_from("<8H", data, offset)
+    if unknown_count_1 or unknown_count_2:
+        raise ValueError("GT1 car LOD has an unsupported polygon type")
+    if vertex_count > 256:
+        raise ValueError(
+            f"GT1 car LOD has {vertex_count} vertices; GT2 supports 256"
+        )
+    if normal_count > 512:
+        raise ValueError(
+            f"GT1 car LOD has {normal_count} normals; GT2 supports 512"
+        )
+    if any(data[offset + 16 : offset + 20]):
+        raise ValueError("GT1 car LOD header padding changed")
+    source_bounds = struct.unpack_from("<8h", data, offset + 20)
+    scale, scale_related = struct.unpack_from("<2H", data, offset + 36)
+
+    cursor = offset + 40
+    vertices: list[tuple[int, int, int, int]] = []
+    for _ in range(vertex_count):
+        if cursor + 8 > len(data):
+            raise ValueError("GT1 car vertex array is truncated")
+        x, y, z, w = struct.unpack_from("<4h", data, cursor)
+        vertices.append((x, y, _signed_short(z), w))
+        cursor += 8
+    normals: list[int] = []
+    for _ in range(normal_count):
+        if cursor + 8 > len(data):
+            raise ValueError("GT1 car normal array is truncated")
+        x, y, z, w = struct.unpack_from("<4h", data, cursor)
+        if w != 0:
+            raise ValueError("GT1 car normal padding changed")
+        normals.append(_pack_gt2_car_normal(x, y, z))
+        cursor += 8
+
+    polygon_groups: list[list[bytes]] = []
+    for count, is_quad, is_textured in (
+        (triangle_count, False, False),
+        (quad_count, True, False),
+        (uv_triangle_count, False, True),
+        (uv_quad_count, True, True),
+    ):
+        polygons: list[bytes] = []
+        for _ in range(count):
+            polygon, cursor = _decode_gt1_car_polygon(
+                data,
+                cursor,
+                is_quad=is_quad,
+                is_textured=is_textured,
+                vertex_count=vertex_count,
+                normal_count=normal_count,
+            )
+            polygons.append(polygon)
+        polygon_groups.append(polygons)
+
+    output = bytearray(0x50)
+    struct.pack_into(
+        "<8H",
+        output,
+        0,
+        vertex_count,
+        normal_count,
+        triangle_count,
+        quad_count,
+        0,
+        0,
+        uv_triangle_count,
+        uv_quad_count,
+    )
+    struct.pack_into("<I", output, 0x14, 0x50)
+    low = tuple(min(vertex[axis] for vertex in vertices) for axis in range(3))
+    high = tuple(max(vertex[axis] for vertex in vertices) for axis in range(3))
+    expected_low = (
+        source_bounds[0],
+        source_bounds[1],
+        _signed_short(source_bounds[6]),
+    )
+    expected_high = (
+        source_bounds[4],
+        source_bounds[5],
+        _signed_short(source_bounds[2]),
+    )
+    if low != expected_low or high != expected_high:
+        raise ValueError(
+            "GT1 car LOD bounds do not match its vertices: "
+            f"{low}/{high} != {expected_low}/{expected_high}"
+        )
+    struct.pack_into(
+        "<8hHH",
+        output,
+        0x3C,
+        *low,
+        0,
+        *high,
+        0,
+        scale,
+        scale_related,
+    )
+    for vertex in vertices:
+        output.extend(struct.pack("<4h", *vertex))
+
+    group_offsets: list[int] = [len(output)]
+    for normal in normals:
+        output.extend(struct.pack("<I", normal))
+    for polygons in polygon_groups:
+        group_offsets.append(len(output))
+        for polygon in polygons:
+            output.extend(polygon)
+    # The two unsupported arrays are empty and share the UV-triangle offset.
+    normal_offset = group_offsets[0]
+    triangle_offset = group_offsets[1]
+    quad_offset = group_offsets[2]
+    uv_triangle_offset = group_offsets[3]
+    uv_quad_offset = group_offsets[4]
+    struct.pack_into(
+        "<7I",
+        output,
+        0x1C,
+        normal_offset,
+        triangle_offset,
+        quad_offset,
+        uv_triangle_offset,
+        uv_triangle_offset,
+        uv_triangle_offset,
+        uv_quad_offset,
+    )
+    return bytes(output), cursor, {
+        "vertices": vertex_count,
+        "normals": normal_count,
+        "triangles": triangle_count,
+        "quads": quad_count,
+        "uvTriangles": uv_triangle_count,
+        "uvQuads": uv_quad_count,
+        "scale": scale,
+        "scaleRelated": scale_related,
+        "size": len(output),
+    }
+
+
+def _convert_gt1_car_shadow(
+    data: bytes,
+    offset: int,
+) -> tuple[bytes, int, dict[str, object]]:
+    if offset + 32 > len(data):
+        raise ValueError("GT1 car shadow is truncated")
+    unknown, quad_count, scale, unknown_2 = struct.unpack_from(
+        "<4H", data, offset
+    )
+    if unknown or unknown_2 or quad_count != 4:
+        raise ValueError(
+            "unsupported GT1 car shadow header: "
+            f"{(unknown, quad_count, scale, unknown_2)}"
+        )
+    cursor = offset + 32
+    vertex_count = quad_count * 4
+    vertices: list[tuple[int, int]] = []
+    for _ in range(vertex_count):
+        if cursor + 8 > len(data):
+            raise ValueError("GT1 car shadow vertex array is truncated")
+        x, y, z, padding = struct.unpack_from("<4h", data, cursor)
+        if y or padding:
+            raise ValueError("GT1 car shadow vertex padding changed")
+        vertices.append((x, _signed_short(z)))
+        cursor += 8
+
+    output = bytearray(28)
+    low_x = min(vertex[0] for vertex in vertices)
+    low_z = min(vertex[1] for vertex in vertices)
+    high_x = max(vertex[0] for vertex in vertices)
+    high_z = max(vertex[1] for vertex in vertices)
+    struct.pack_into(
+        "<4H8hHH",
+        output,
+        0,
+        vertex_count,
+        0,
+        quad_count,
+        0,
+        low_x,
+        0,
+        low_z,
+        0,
+        high_x,
+        0,
+        high_z,
+        0,
+        scale,
+        0,
+    )
+    for vertex in vertices:
+        output.extend(struct.pack("<2h", *vertex))
+    mockups = (
+        (0, 1, 2, 3),
+        (3, 2, 7, 6),
+        (6, 7, 4, 5),
+        (5, 4, 8, 9),
+    )
+    for refs in mockups:
+        packed = (
+            refs[0]
+            | (refs[1] << 6)
+            | (refs[2] << 12)
+            | (refs[3] << 18)
+            | 0x80000000
+        )
+        output.extend(struct.pack("<I", packed))
+    return bytes(output), cursor, {
+        "vertices": vertex_count,
+        "triangles": 0,
+        "quads": quad_count,
+        "scale": scale,
+        "size": len(output),
+    }
+
+
+def _gt2_car_model_end(data: bytes) -> int:
+    if len(data) < 0x884 or data[:3] != b"GT\x02":
+        raise ValueError("GT2 car model header is missing")
+    if struct.unpack_from("<I", data, 0x868)[0] != 3:
+        raise ValueError("GT2 car model does not contain three LODs")
+    cursor = 0x884
+    for _ in range(3):
+        if cursor + 0x50 > len(data):
+            raise ValueError("GT2 car LOD is truncated")
+        counts = struct.unpack_from("<8H", data, cursor)
+        vertex_count, normal_count, tri_count, quad_count = counts[:4]
+        uv_tri_count, uv_quad_count = counts[6:8]
+        cursor += (
+            0x50
+            + vertex_count * 8
+            + normal_count * 4
+            + (tri_count + quad_count) * 16
+            + (uv_tri_count + uv_quad_count) * 28
+        )
+    if cursor + 28 > len(data):
+        raise ValueError("GT2 car shadow header is truncated")
+    vertex_count, triangle_count, quad_count = struct.unpack_from(
+        "<3H", data, cursor
+    )
+    return cursor + 28 + vertex_count * 4 + (triangle_count + quad_count) * 4
+
+
+def convert_gt1_car_model(
+    data: bytes,
+    gt2_header_basis: bytes,
+) -> tuple[bytes, dict[str, object]]:
+    if len(data) < 0x80 or not data.startswith(b"@(#)GT-CAR\0"):
+        raise ValueError("GT1 car model header is missing")
+    if _gt2_car_model_end(gt2_header_basis) != len(gt2_header_basis):
+        raise ValueError("GT2 car header basis has trailing data")
+    lod_count = struct.unpack_from("<H", data, 0x3C)[0]
+    if lod_count != 3:
+        raise ValueError(f"GT1 car model has {lod_count} LODs; expected 3")
+    lod_distances = tuple(
+        struct.unpack_from("<H", data, 0x42 + index * 8)[0]
+        for index in range(3)
+    )
+    if lod_distances != (5, 15, 300):
+        raise ValueError(
+            f"GT1 car LOD distances changed: {lod_distances}"
+        )
+
+    output = bytearray(gt2_header_basis[:0x868])
+    gt1_wheels = [
+        struct.unpack_from("<4h", data, 0x10 + index * 8)
+        for index in range(4)
+    ]
+    gt1_wheels = [gt1_wheels[index] for index in (2, 3, 0, 1)]
+    basis_wheels = [
+        struct.unpack_from("<4h", gt2_header_basis, 0x20 + index * 8)
+        for index in range(4)
+    ]
+    for index, ((x, y, z, padding), basis) in enumerate(
+        zip(gt1_wheels, basis_wheels)
+    ):
+        if padding:
+            raise ValueError("GT1 car wheel-position padding changed")
+        menu_x = x + basis[3] - basis[0]
+        if not -0x8000 <= menu_x <= 0x7FFF:
+            raise ValueError("converted GT1 menu wheel position overflowed")
+        struct.pack_into(
+            "<4h", output, 0x20 + index * 8, x, y, z, menu_x
+        )
+
+    output.extend(struct.pack("<I", 3))
+    distance_offsets: list[int] = []
+    for distance in lod_distances:
+        output.extend(struct.pack("<HHI", 0, distance, 0))
+        distance_offsets.append(len(output) - 4)
+
+    cursor = 0x80
+    lods: list[dict[str, object]] = []
+    lod_offsets: list[int] = []
+    for index in range(3):
+        lod_offsets.append(len(output))
+        lod, cursor, metadata = _convert_gt1_car_lod(data, cursor)
+        output.extend(lod)
+        lods.append(metadata)
+        if index != 2:
+            if cursor + 40 > len(data) or any(data[cursor : cursor + 40]):
+                raise ValueError("GT1 inter-LOD padding changed")
+            cursor += 40
+    struct.pack_into("<I", output, distance_offsets[1], lod_offsets[1])
+    struct.pack_into("<I", output, distance_offsets[2], lod_offsets[2])
+
+    shadow, cursor, shadow_metadata = _convert_gt1_car_shadow(data, cursor)
+    output.extend(shadow)
+    if cursor != len(data):
+        raise ValueError(
+            f"GT1 car model has {len(data) - cursor} trailing bytes"
+        )
+    if len(output) >= 0x5000:
+        raise ValueError(
+            f"converted GT2 car model exceeds 0x5000 bytes: {len(output):#x}"
+        )
+    if _gt2_car_model_end(output) != len(output):
+        raise ValueError("converted GT2 car model failed structural validation")
+    return bytes(output), {
+        "method": "native GT-CAR to GT2 CDO/CNO structural conversion",
+        "sourceSize": len(data),
+        "convertedSize": len(output),
+        "lodDistances": list(lod_distances),
+        "lods": lods,
+        "shadow": shadow_metadata,
+        "sourceSha256": hashlib.sha256(data).hexdigest(),
+        "convertedSha256": hashlib.sha256(output).hexdigest(),
+        "headerBasisSha256": hashlib.sha256(
+            gt2_header_basis[:0x868]
+        ).hexdigest(),
+    }
+
+
+def encode_gt2_car_id(stem: str) -> int:
+    characters = "-0123456789abcdefghijklmnopqrstuvwxyz"
+    if len(stem) != 5 or any(character not in characters for character in stem):
+        raise ValueError(f"invalid GT2 car stem: {stem!r}")
+    value = 0
+    for character in stem:
+        value = (value << 6) | characters.index(character)
+    return value
+
+
+def decode_gt2_car_id(value: int) -> str:
+    characters = "-0123456789abcdefghijklmnopqrstuvwxyz"
+    decoded = []
+    for shift in range(24, -1, -6):
+        index = (value >> shift) & 0x3F
+        if index >= len(characters):
+            raise ValueError(f"invalid packed GT2 car ID: {value:#x}")
+        decoded.append(characters[index])
+    return "".join(decoded)
+
+
+def _parse_gt2_carinfo(
+    data: bytes,
+) -> list[dict[str, object]]:
+    if data[:4].lower() != b"car\0":
+        raise ValueError("GT2 carinfo header is missing")
+    count = struct.unpack_from("<I", data, 4)[0]
+    header_end = 8 + count * 8
+    records: list[dict[str, object]] = []
+    for index in range(count):
+        car_id, encoded = struct.unpack_from("<II", data, 8 + index * 8)
+        color_count = ((encoded >> 18) & 0x1F) + 1
+        offset = encoded & 0x3FFFF
+        if offset < header_end or offset + color_count * 3 + 2 > len(data):
+            raise ValueError(f"GT2 carinfo record {index} is invalid")
+        main_colors = struct.unpack_from(
+            f"<{color_count}H", data, offset
+        )
+        color_ids_start = offset + color_count * 2
+        color_ids = tuple(
+            data[color_ids_start : color_ids_start + color_count]
+        )
+        name_length = data[color_ids_start + color_count]
+        name_start = color_ids_start + color_count + 1
+        name_end = name_start + name_length
+        if name_end >= len(data) or data[name_end] != 0:
+            raise ValueError(f"GT2 carinfo name {index} is invalid")
+        records.append(
+            {
+                "carId": car_id,
+                "stem": decode_gt2_car_id(car_id),
+                "mainColors": main_colors,
+                "colorIds": color_ids,
+                "name": data[name_start:name_end],
+                "flags": encoded & ~0x7FFFFF,
+            }
+        )
+    return records
+
+
+def _parse_gt2_carcolor(
+    data: bytes,
+    records: list[dict[str, object]],
+) -> list[tuple[int, ...]]:
+    if data[:8] != b"CCOL00\0\0":
+        raise ValueError("GT2 carcolor header is missing")
+    header_end = 8 + len(records) * 2
+    if header_end > len(data):
+        raise ValueError("GT2 carcolor offset table is truncated")
+    result: list[tuple[int, ...]] = []
+    for index, record in enumerate(records):
+        offset = struct.unpack_from("<H", data, 8 + index * 2)[0]
+        count = len(record["colorIds"])
+        if offset < header_end or offset + count * 2 > len(data):
+            raise ValueError(f"GT2 carcolor record {index} is invalid")
+        result.append(struct.unpack_from(f"<{count}H", data, offset))
+    return result
+
+
+def append_gt2_carinfo(
+    carinfo: bytes,
+    carcolor: bytes,
+    stem: str,
+    display_name: str,
+    paint_sources: tuple[tuple[int, str], ...],
+) -> tuple[bytes, bytes, dict[str, object]]:
+    records = _parse_gt2_carinfo(carinfo)
+    colors = _parse_gt2_carcolor(carcolor, records)
+    if any(record["stem"] == stem for record in records):
+        raise ValueError(f"GT2 carinfo already contains {stem}")
+    by_stem = {str(record["stem"]): index for index, record in enumerate(records)}
+    main_colors: list[int] = []
+    color_names: list[int] = []
+    color_ids: list[int] = []
+    for color_id, source_stem in paint_sources:
+        if source_stem not in by_stem:
+            raise ValueError(f"GT2 paint source is absent: {source_stem}")
+        source_index = by_stem[source_stem]
+        source = records[source_index]
+        try:
+            source_color = source["colorIds"].index(color_id)
+        except ValueError as exc:
+            raise ValueError(
+                f"GT2 paint source {source_stem} lacks ID {color_id}"
+            ) from exc
+        color_ids.append(color_id)
+        main_colors.append(source["mainColors"][source_color])
+        color_names.append(colors[source_index][source_color])
+
+    records.append(
+        {
+            "carId": encode_gt2_car_id(stem),
+            "stem": stem,
+            "mainColors": tuple(main_colors),
+            "colorIds": tuple(color_ids),
+            "name": display_name.encode("cp1252"),
+            "flags": 0,
+        }
+    )
+    colors.append(tuple(color_names))
+    combined = sorted(zip(records, colors), key=lambda item: item[0]["carId"])
+
+    info = bytearray(b"CAR\0" + struct.pack("<I", len(combined)))
+    info.extend(b"\0" * (len(combined) * 8))
+    colour = bytearray(b"CCOL00\0\0")
+    colour.extend(b"\0" * (len(combined) * 2))
+    inserted_index = -1
+    for index, (record, name_indices) in enumerate(combined):
+        while len(info) & 1:
+            info.append(0)
+        info_offset = len(info)
+        count = len(record["colorIds"])
+        info.extend(struct.pack(f"<{count}H", *record["mainColors"]))
+        info.extend(bytes(record["colorIds"]))
+        name = bytes(record["name"])
+        info.append(len(name))
+        info.extend(name + b"\0")
+        encoded = (
+            info_offset
+            | ((count - 1) << 18)
+            | int(record["flags"])
+        )
+        struct.pack_into(
+            "<II",
+            info,
+            8 + index * 8,
+            int(record["carId"]),
+            encoded,
+        )
+
+        while len(colour) & 1:
+            colour.append(0)
+        colour_offset = len(colour)
+        if colour_offset > 0xFFFF:
+            raise ValueError("GT2 carcolor escaped its 16-bit offset range")
+        struct.pack_into("<H", colour, 8 + index * 2, colour_offset)
+        colour.extend(struct.pack(f"<{count}H", *name_indices))
+        if record["stem"] == stem:
+            inserted_index = index
+
+    if inserted_index < 0:
+        raise AssertionError("new GT2 carinfo record was not serialized")
+    verified = _parse_gt2_carinfo(bytes(info))
+    _parse_gt2_carcolor(bytes(colour), verified)
+    return bytes(info), bytes(colour), {
+        "stem": stem,
+        "index": inserted_index,
+        "displayName": display_name,
+        "colorIds": color_ids,
+        "mainColors": main_colors,
+        "colorNameIndices": color_names,
+    }
+
+
+def normalize_arcade_car_logo(data: bytes) -> bytes:
+    if len(data) < 64 or struct.unpack_from("<II", data, 0) != (0x10, 8):
+        raise ValueError("GT1 Arcade car logo is not a 4-bit TIM")
+    clut_size = struct.unpack_from("<I", data, 8)[0]
+    image_offset = 8 + clut_size
+    image_size, _, _, width_words, height = struct.unpack_from(
+        "<IHHHH", data, image_offset
+    )
+    if image_offset + image_size != len(data) or width_words * 4 > 256:
+        raise ValueError("GT1 Arcade car logo TIM is malformed")
+    output = bytearray(data)
+    struct.pack_into("<HH", output, 12, 0, 0)
+    struct.pack_into("<HH", output, image_offset + 4, 0, 0)
+    return bytes(output)
+
+
+def append_arcade_car_logo(
+    archive: bytes,
+    logo: bytes,
+) -> tuple[bytes, int]:
+    if len(archive) < 8:
+        raise ValueError("GT2 arc_carlogo is truncated")
+    count = struct.unpack_from("<I", archive, 0)[0]
+    if 4 + count * 4 > len(archive):
+        raise ValueError("GT2 arc_carlogo offset table is truncated")
+    offsets = list(struct.unpack_from(f"<{count}I", archive, 4))
+    members = [
+        archive[offsets[index] : (
+            offsets[index + 1] if index + 1 < count else len(archive)
+        )]
+        for index in range(count)
+    ]
+    for index, member in enumerate(members):
+        if member == logo:
+            return archive, index
+    members.append(logo)
+    output = bytearray(struct.pack("<I", len(members)))
+    output.extend(b"\0" * (len(members) * 4))
+    for index, member in enumerate(members):
+        struct.pack_into("<I", output, 4 + index * 4, len(output))
+        output.extend(member)
+    return bytes(output), count
+
+
+def read_gt1_spec_records(carinf_path: Path) -> dict[str, bytes]:
+    outer = carinf_path.read_bytes()
+    if outer[:10] != b"@(#)GT-ARC":
+        outer = gt1_lzss_decompress(outer)
+    if outer[:10] != b"@(#)GT-ARC":
+        raise ValueError("GT1 CARINF.DAT did not expand to GT-ARC")
+    count = struct.unpack_from("<H", outer, 14)[0] & 0x7FFF
+    if count <= 13:
+        raise ValueError("GT1 CARINF.DAT has no SPEC member")
+    offset, packed_size, unpacked_size = struct.unpack_from(
+        "<III", outer, 16 + 13 * 12
+    )
+    packed = outer[offset : offset + packed_size]
+    spec_data = (
+        packed
+        if packed_size == unpacked_size
+        else gt1_lzss_decompress(packed, unpacked_size)
+    )
+    if spec_data[4:12].rstrip(b"\0") != b"SPEC":
+        raise ValueError("GT1 CARINF.DAT member 13 is not SPEC")
+    spec_count, record_size = (
+        struct.unpack_from("<H", spec_data, 14)[0],
+        struct.unpack_from("<I", spec_data, 20)[0],
+    )
+    if record_size != 0x1A8:
+        raise ValueError(f"unsupported GT1 SPEC size: {record_size:#x}")
+    records: dict[str, bytes] = {}
+    for index in range(spec_count):
+        record = spec_data[
+            24 + index * record_size : 24 + (index + 1) * record_size
+        ]
+        stem = record[:5].decode("ascii")
+        if stem in records:
+            raise ValueError(f"duplicate GT1 SPEC record: {stem}")
+        records[stem] = record
+    return records
+
+
+def read_gt1_spec_stats(
+    carinf_path: Path,
+    stem: str,
+) -> tuple[int, int, int, int, int]:
+    try:
+        record = read_gt1_spec_records(carinf_path)[stem]
+    except KeyError as exc:
+        raise ValueError(f"GT1 SPEC has no record for {stem}") from exc
+    power, power_rpm, torque, torque_rpm = struct.unpack_from(
+        "<4H", record, 0x198
+    )
+    # GT1 stores kgf-m * 100; GT2's Arcade stat panel stores whole N-m.
+    torque_nm = round(torque * 9.80665 / 100)
+    weight = struct.unpack_from("<H", record, 0x5A)[0]
+    return power, power_rpm, torque_nm, torque_rpm, weight
+
+
+def _parse_gtdt_blocks(data: bytes, expected_count: int) -> list[bytes]:
+    if data[:6] != b"GTDTl\0":
+        raise ValueError("GT2 parameter database header is missing")
+    index_count = struct.unpack_from("<H", data, 6)[0]
+    if index_count != expected_count * 2:
+        raise ValueError(
+            f"unexpected GT2 parameter index count: "
+            f"{index_count} != {expected_count * 2}"
+        )
+    header_end = 8 + index_count * 8
+    blocks: list[bytes] = []
+    previous_end = header_end
+    for index in range(expected_count):
+        start, size = struct.unpack_from("<II", data, 8 * (index + 1))
+        if start != previous_end or start + size > len(data):
+            raise ValueError(
+                f"GT2 parameter block {index} is not contiguous: "
+                f"{start:#x}+{size:#x}, expected {previous_end:#x}"
+            )
+        blocks.append(data[start : start + size])
+        previous_end = start + size
+    return blocks
+
+
+def _rebuild_arcade_gtdt(data: bytes, blocks: list[bytes]) -> bytes:
+    if len(blocks) != GT2_ARCADE_BLOCK_COUNT:
+        raise ValueError("GT2 Arcade parameter block count changed")
+    original = _parse_gtdt_blocks(data, GT2_ARCADE_BLOCK_COUNT)
+    old_tail = 8 + struct.unpack_from("<H", data, 6)[0] * 8
+    for block in original:
+        old_tail += len(block)
+    string_start, string_size = struct.unpack_from(
+        "<II", data, GT2_ARCADE_STRING_INDEX_POSITION
+    )
+    if string_start != old_tail or string_start + string_size != len(data):
+        raise ValueError("GT2 Arcade string database is not the final payload")
+
+    header_size = 8 + GT2_ARCADE_BLOCK_COUNT * 2 * 8
+    output = bytearray(data[:header_size])
+    for index, block in enumerate(blocks):
+        start = len(output)
+        output.extend(block)
+        struct.pack_into(
+            "<II", output, 8 * (index + 1), start, len(block)
+        )
+    struct.pack_into(
+        "<II",
+        output,
+        GT2_ARCADE_STRING_INDEX_POSITION,
+        len(output),
+        string_size,
+    )
+    output.extend(data[string_start:])
+    return bytes(output)
+
+
+def _find_gt2_gtdt_car(
+    block: bytes,
+    record_size: int,
+    stem: str,
+) -> bytes:
+    if len(block) % record_size:
+        raise ValueError(
+            f"GT2 car block size {len(block):#x} is not a multiple of "
+            f"{record_size:#x}"
+        )
+    car_id = encode_gt2_car_id(stem)
+    matches = [
+        block[offset : offset + record_size]
+        for offset in range(0, len(block), record_size)
+        if struct.unpack_from("<I", block, offset)[0] == car_id
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected one GT2 parameter record for {stem}, "
+            f"found {len(matches)}"
+        )
+    return matches[0]
+
+
+def _validate_gt1_arcade_roadster_physics(
+    carinf_path: Path,
+    definition: dict[str, object],
+) -> dict[str, object]:
+    records = read_gt1_spec_records(carinf_path)
+    target_stem = str(definition["stem"])
+    spec_stem = str(definition.get("physicsSpecStem", target_stem))
+    primary_stem = str(definition["physicsBasisStem"])
+    part_basis = dict(definition["physicsPartBasis"])
+    brake_stem = str(part_basis.get(0, primary_stem))
+    tire_stem = str(part_basis.get(22, primary_stem))
+    try:
+        target = records[spec_stem]
+        primary = records[primary_stem]
+        brake = records[brake_stem]
+        tire = records[tire_stem]
+    except KeyError as exc:
+        raise ValueError(f"GT1 physics basis is absent: {exc.args[0]}") from exc
+
+    # These are the complete known difference fingerprints against each
+    # closest GT1 road-car SPEC. They prove the Arcade composites have not
+    # silently changed before their GT2-native basis records are selected.
+    expected_by_stem = {
+        "a-ian": {
+            0x01,
+            0x03,
+            0x60,
+            0x61,
+            0x63,
+            0x67,
+            0x69,
+            0x6B,
+            0x184,
+            0x185,
+            0x186,
+            0x18C,
+            0x190,
+            0x192,
+        },
+        "amian": {
+            0x03,
+            0x66,
+            0x68,
+            0x6A,
+            0x184,
+            0x185,
+            0x186,
+            0x18C,
+        },
+    }
+    differences = {
+        index
+        for index, (target_value, basis_value) in enumerate(
+            zip(target, primary)
+        )
+        if target_value != basis_value
+    }
+    explicit_differences = definition.get("physicsExpectedDifferences")
+    if explicit_differences is not None:
+        expected_differences = {
+            int(offset) for offset in explicit_differences
+        }
+        if differences != expected_differences:
+            raise ValueError(
+                "GT1 car SPEC fingerprint changed: "
+                f"{sorted(differences)} != {sorted(expected_differences)}"
+            )
+    elif spec_stem == primary_stem:
+        if differences:
+            raise ValueError("GT1 direct physics basis no longer matches")
+    else:
+        if target_stem not in expected_by_stem:
+            raise ValueError(
+                f"no GT1 Arcade Roadster fingerprint for {target_stem}"
+            )
+        expected_differences = expected_by_stem[target_stem]
+        if differences != expected_differences:
+            raise ValueError(
+                "GT1 Arcade Roadster SPEC fingerprint changed: "
+                f"{sorted(differences)}"
+            )
+
+    brake_signature = (target[0x60], target[0x61], target[0x63])
+    if brake_signature != (brake[0x60], brake[0x61], brake[0x63]):
+        raise ValueError("GT1 Arcade Roadster brake basis no longer matches")
+    tire_signature = bytes(target[0x66:0x6C])
+    # `amian` is the one deliberate exception: GT1 widened its front tire to
+    # match the rear. GT2's native `amisn` conversion already uses that exact
+    # 15/195/50 size-table entry on both axles, so its serialized GT2 tire
+    # records are the desired target despite the older SPEC difference.
+    if target_stem != "amian" and tire_signature != tire[0x66:0x6C]:
+        raise ValueError("GT1 Arcade Roadster tire basis no longer matches")
+    if target[0x6C:0x184] != primary[0x6C:0x184]:
+        raise ValueError(
+            "GT1 Arcade Roadster suspension/chassis basis no longer matches"
+        )
+    u16_overrides = dict(definition.get("physicsU16Overrides", {}))
+    if u16_overrides:
+        chassis_overrides = dict(u16_overrides.get(3, {}))
+        target_weight = struct.unpack_from("<H", target, 0x5A)[0]
+        if int(chassis_overrides.get(0x0E, -1)) != target_weight:
+            raise ValueError(
+                f"GT1 {target_stem} chassis override does not preserve "
+                f"its {target_weight} kg specification"
+            )
+    return {
+        "specStem": spec_stem,
+        "primaryStem": primary_stem,
+        "brakeStem": brake_stem,
+        "tireStem": tire_stem,
+        "brakeSignature": list(brake_signature),
+        "tireSignature": list(tire_signature),
+        "sourceSpecSha256": hashlib.sha256(target).hexdigest(),
+    }
+
+
+def append_gt2_arcade_car_physics(
+    gtmode_data: bytes,
+    arcade_data: bytes,
+    definition: dict[str, object],
+) -> tuple[bytes, dict[str, object]]:
+    gtmode_blocks = _parse_gtdt_blocks(
+        gtmode_data, GT2_GTMODE_BLOCK_COUNT
+    )
+    arcade_blocks = _parse_gtdt_blocks(
+        arcade_data, GT2_ARCADE_BLOCK_COUNT
+    )
+    target_stem = str(definition["stem"])
+    target_id = encode_gt2_car_id(target_stem)
+    primary_stem = str(definition["physicsBasisStem"])
+    part_basis = {
+        int(block): str(stem)
+        for block, stem in dict(definition["physicsPartBasis"]).items()
+    }
+    u16_overrides = {
+        int(block): {
+            int(offset): int(value)
+            for offset, value in dict(overrides).items()
+        }
+        for block, overrides in dict(
+            definition.get("physicsU16Overrides", {})
+        ).items()
+    }
+
+    racing = arcade_blocks[GT2_ARCADE_RACING_BLOCK]
+    drift = arcade_blocks[GT2_ARCADE_DRIFT_BLOCK]
+    for block, label in ((racing, "racing"), (drift, "drift")):
+        if any(
+            struct.unpack_from("<I", block, offset)[0] == target_id
+            for offset in range(0, len(block), 0x3C)
+        ):
+            raise ValueError(
+                f"GT2 Arcade {label} data already contains {target_stem}"
+            )
+
+    primary_car = _find_gt2_gtdt_car(
+        gtmode_blocks[GT2_GTMODE_CAR_BLOCK],
+        0x48,
+        primary_stem,
+    )
+    _, _, rims_code = struct.unpack_from("<3H", primary_car, 0x34)
+    unknown = struct.unpack_from("<H", primary_car, 0x42)[0]
+    if rims_code > 15:
+        raise ValueError(f"invalid GT2 wheel code for {primary_stem}")
+    # Arcade normally disables the two GT Mode driver-aid references. The
+    # stock roster contains one deliberate four-wheel-steering exception;
+    # this conventional Roadster uses the standard zero pair.
+    auxiliary = (0, 0, 15 - rims_code, unknown)
+
+    # Cross-check the otherwise undocumented final four Arcade fields against
+    # every GT Mode car also present in the stock Arcade database.
+    gtmode_by_id = {
+        struct.unpack_from("<I", record, 0)[0]: record
+        for record in (
+            gtmode_blocks[GT2_GTMODE_CAR_BLOCK][
+                offset : offset + 0x48
+            ]
+            for offset in range(
+                0, len(gtmode_blocks[GT2_GTMODE_CAR_BLOCK]), 0x48
+            )
+        )
+    }
+    auxiliary_checks = 0
+    for offset in range(0, len(racing), 0x3C):
+        arcade_car = racing[offset : offset + 0x3C]
+        car_id = struct.unpack_from("<I", arcade_car, 0)[0]
+        if car_id not in gtmode_by_id:
+            continue
+        gtmode_car = gtmode_by_id[car_id]
+        _, _, gt_rims = struct.unpack_from(
+            "<3H", gtmode_car, 0x34
+        )
+        gt_unknown = struct.unpack_from("<H", gtmode_car, 0x42)[0]
+        actual = struct.unpack_from("<4H", arcade_car, 0x34)
+        expected_tail = (15 - gt_rims, gt_unknown)
+        if actual[2:] != expected_tail:
+            raise ValueError(
+                "GT2 Arcade auxiliary-field relationship changed for "
+                f"{decode_gt2_car_id(car_id)}: "
+                f"{actual[2:]} != {expected_tail}"
+            )
+        auxiliary_checks += 1
+    if auxiliary_checks < 40:
+        raise ValueError(
+            f"too few GT2 Arcade auxiliary checks: {auxiliary_checks}"
+        )
+
+    updated = [bytearray(block) for block in arcade_blocks]
+    racing_refs: list[int] = []
+    drift_refs: list[int] = []
+    block_sources: dict[str, str] = {}
+    for block_index, record_size in enumerate(GT2_GTD_PART_RECORD_SIZES):
+        basis_stem = part_basis.get(block_index, primary_stem)
+        basis_car = _find_gt2_gtdt_car(
+            gtmode_blocks[GT2_GTMODE_CAR_BLOCK],
+            0x48,
+            basis_stem,
+        )
+        reference_index = GT2_GTD_BLOCK_TO_CAR_REF[block_index]
+        basis_ref = struct.unpack_from(
+            "<H", basis_car, 4 + reference_index * 2
+        )[0]
+        source_block = gtmode_blocks[block_index]
+        source_offset = basis_ref * record_size
+        if source_offset + record_size > len(source_block):
+            raise ValueError(
+                f"GT2 {basis_stem} part {block_index} is out of range"
+            )
+        part = bytearray(
+            source_block[source_offset : source_offset + record_size]
+        )
+        struct.pack_into("<I", part, 0, target_id)
+        for field_offset, value in u16_overrides.get(
+            block_index, {}
+        ).items():
+            if (
+                field_offset < 4
+                or field_offset + 2 > record_size
+                or field_offset & 1
+                or not 0 <= value <= 0xFFFF
+            ):
+                raise ValueError(
+                    f"invalid GT2 part override: block {block_index}, "
+                    f"offset {field_offset:#x}, value {value}"
+                )
+            struct.pack_into("<H", part, field_offset, value)
+        if block_index == 5:
+            # Arcade consumes RacingModify.BodyId even for the stock body.
+            # Keep the imported car's own model/texture stem through race and
+            # replay instead of retaining its GT2 basis car's visual ID.
+            struct.pack_into("<I", part, 8, target_id)
+        new_ref = len(updated[block_index]) // record_size
+        updated[block_index].extend(part)
+        racing_refs.append(new_ref)
+        drift_refs.append(new_ref)
+        block_sources[str(block_index)] = basis_stem
+
+        if block_index not in (22, 23):
+            continue
+        drift_part = bytearray(part)
+        stage_offset = 8 if block_index == 22 else 4
+        drift_part[stage_offset] = 1
+        drift_part[stage_offset + 4] = 6 if block_index == 22 else 7
+        drift_ref = len(updated[block_index]) // record_size
+        updated[block_index].extend(drift_part)
+        drift_refs[block_index] = drift_ref
+
+    racing_serialized_refs = [
+        racing_refs[block_index]
+        for block_index in GT2_GTD_CAR_REF_BLOCKS
+    ]
+    drift_serialized_refs = [
+        drift_refs[block_index]
+        for block_index in GT2_GTD_CAR_REF_BLOCKS
+    ]
+    racing_record = struct.pack(
+        "<I28H", target_id, *racing_serialized_refs, *auxiliary
+    )
+    drift_record = struct.pack(
+        "<I28H", target_id, *drift_serialized_refs, *auxiliary
+    )
+    racing_ids = [
+        struct.unpack_from("<I", racing, offset)[0]
+        for offset in range(0, len(racing), 0x3C)
+    ]
+    drift_ids = [
+        struct.unpack_from("<I", drift, offset)[0]
+        for offset in range(0, len(drift), 0x3C)
+    ]
+    if racing_ids != sorted(racing_ids) or drift_ids != racing_ids:
+        raise ValueError("stock GT2 Arcade car-parameter order changed")
+    racing_index = bisect.bisect_left(racing_ids, target_id)
+    drift_index = bisect.bisect_left(drift_ids, target_id)
+    updated[GT2_ARCADE_RACING_BLOCK][
+        racing_index * 0x3C : racing_index * 0x3C
+    ] = racing_record
+    updated[GT2_ARCADE_DRIFT_BLOCK][
+        drift_index * 0x3C : drift_index * 0x3C
+    ] = drift_record
+    output = _rebuild_arcade_gtdt(
+        arcade_data, [bytes(block) for block in updated]
+    )
+    verified = _parse_gtdt_blocks(output, GT2_ARCADE_BLOCK_COUNT)
+    if _find_gt2_gtdt_car(
+        verified[GT2_ARCADE_RACING_BLOCK], 0x3C, target_stem
+    ) != racing_record:
+        raise ValueError("GT2 Arcade racing record failed round-trip")
+    if _find_gt2_gtdt_car(
+        verified[GT2_ARCADE_DRIFT_BLOCK], 0x3C, target_stem
+    ) != drift_record:
+        raise ValueError("GT2 Arcade drift record failed round-trip")
+    return output, {
+        "primaryStem": primary_stem,
+        "partBasis": block_sources,
+        "u16Overrides": {
+            str(block): {
+                f"{offset:#x}": value
+                for offset, value in sorted(overrides.items())
+            }
+            for block, overrides in sorted(u16_overrides.items())
+        },
+        "racingIndex": racing_index,
+        "driftIndex": drift_index,
+        "racingPartRefs": racing_serialized_refs,
+        "driftPartRefs": drift_serialized_refs,
+        "racingPartRefsByBlock": racing_refs,
+        "driftPartRefsByBlock": drift_refs,
+        "auxiliary": list(auxiliary),
+        "auxiliaryChecks": auxiliary_checks,
+        "uncompressedSha256": hashlib.sha256(output).hexdigest(),
+    }
+
+
+def stage_gt2_arcade_car_physics(
+    gt2_arcade_volume: Path,
+    patch_root: Path,
+    definition: dict[str, object],
+) -> dict[str, object]:
+    source_pairs = (
+        ("arcade_data.dat.gz", "gtmode_data.dat.gz"),
+        ("usa_arcade_data.dat.gz", "usa_gtmode_data.dat.gz"),
+    )
+    output_root = patch_root / "carparam"
+    output_root.mkdir(parents=True, exist_ok=True)
+    metadata: dict[str, object] = {}
+    for arcade_name, gtmode_name in source_pairs:
+        arcade_path = f"carparam/{arcade_name}"
+        gtmode_path = f"carparam/{gtmode_name}"
+        staged_arcade = output_root / arcade_name
+        arcade_data = (
+            gzip.decompress(staged_arcade.read_bytes())
+            if staged_arcade.is_file()
+            else read_gt2_gzip_member(gt2_arcade_volume, arcade_path)
+        )
+        converted, details = append_gt2_arcade_car_physics(
+            read_gt2_gzip_member(gt2_arcade_volume, gtmode_path),
+            arcade_data,
+            definition,
+        )
+        (output_root / arcade_name).write_bytes(
+            gzip.compress(converted, compresslevel=9, mtime=0)
+        )
+        metadata[arcade_name] = details
+    return metadata
+
+
+def stage_gt1_arcade_car(
+    disc_root: Path,
+    gt2_arcade_volume: Path,
+    patch_root: Path,
+    definition: dict[str, object],
+) -> dict[str, object]:
+    stem = str(definition["stem"])
+    model_basis = str(definition["modelBasisStem"])
+    stems = read_gt1_car_stems(disc_root / "SYSTEM.DAT")
+    day_texture, day_model, night_texture, night_model = (
+        read_gt1_car_members(disc_root / "CAR.DAT", stems, stem)
+    )
+    _, basis_day_model, _, basis_night_model = read_gt1_car_members(
+        disc_root / "CAR.DAT", stems, model_basis
+    )
+    convert_model = bool(definition.get("convertModel", False))
+    if (
+        not convert_model
+        and (day_model != basis_day_model or night_model != basis_night_model)
+    ):
+        raise ValueError(
+            f"GT1 {stem} does not share authored geometry with {model_basis}"
+        )
+
+    spec_stem = str(definition.get("physicsSpecStem", stem))
+    stats = read_gt1_spec_stats(disc_root / "CARINF.DAT", spec_stem)
+    if tuple(definition["stats"]) != stats:
+        raise ValueError(
+            f"GT1 {stem} stats changed: {stats} != "
+            f"{tuple(definition['stats'])}"
+        )
+    physics_source = _validate_gt1_arcade_roadster_physics(
+        disc_root / "CARINF.DAT", definition
+    )
+
+    car_output = patch_root / "carobj"
+    car_output.mkdir(parents=True, exist_ok=True)
+    converted_day = convert_gt1_car_texture(day_texture)
+    converted_night = convert_gt1_car_texture(night_texture)
+    (car_output / f"{stem}.cdp.gz").write_bytes(
+        gzip.compress(converted_day, compresslevel=9, mtime=0)
+    )
+    (car_output / f"{stem}.cnp.gz").write_bytes(
+        gzip.compress(converted_night, compresslevel=9, mtime=0)
+    )
+    native_model_hashes: dict[str, str] = {}
+    model_conversions: dict[str, object] = {}
+    for source_model, source_extension, output_extension in (
+        (day_model, "cdo", "cdo"),
+        (night_model, "cno", "cno"),
+    ):
+        member = read_gt2_member(
+            gt2_arcade_volume,
+            f"carobj/{model_basis}.{source_extension}.gz",
+        )
+        if convert_model:
+            converted_model, conversion = convert_gt1_car_model(
+                source_model, gzip.decompress(member)
+            )
+            staged_member = gzip.compress(
+                converted_model, compresslevel=9, mtime=0
+            )
+            model_conversions[output_extension] = conversion
+        else:
+            converted_model = gzip.decompress(member)
+            staged_member = member
+        (car_output / f"{stem}.{output_extension}.gz").write_bytes(
+            staged_member
+        )
+        native_model_hashes[output_extension] = hashlib.sha256(
+            converted_model
+        ).hexdigest()
+
+    arcade_archive, arcade_entries = read_gtarc(disc_root / "ARCADE.DAT")
+    logo_entry = int(definition["arcadeLogoEntry"])
+    if logo_entry >= len(arcade_entries):
+        raise ValueError(f"GT1 Arcade logo entry is absent: {logo_entry}")
+    source_logo = unpack_entry(arcade_archive, arcade_entries[logo_entry])
+    logo = normalize_arcade_car_logo(source_logo)
+    arcade_output = patch_root / "arcade"
+    arcade_output.mkdir(parents=True, exist_ok=True)
+    staged_logos = arcade_output / "arc_carlogo"
+    merged_logos, logo_index = append_arcade_car_logo(
+        (
+            staged_logos.read_bytes()
+            if staged_logos.is_file()
+            else read_gt2_member(gt2_arcade_volume, "arcade/arc_carlogo")
+        ),
+        logo,
+    )
+    (arcade_output / "arc_carlogo").write_bytes(merged_logos)
+
+    staged_carinfo = patch_root / ".carinfoe"
+    staged_carcolor = patch_root / ".carcolor"
+    carinfo, carcolor, carinfo_metadata = append_gt2_carinfo(
+        (
+            staged_carinfo.read_bytes()
+            if staged_carinfo.is_file()
+            else read_gt2_member(gt2_arcade_volume, ".carinfoe")
+        ),
+        (
+            staged_carcolor.read_bytes()
+            if staged_carcolor.is_file()
+            else read_gt2_member(gt2_arcade_volume, ".carcolor")
+        ),
+        stem,
+        str(definition["displayName"]),
+        tuple(definition["paintSources"]),
+    )
+    (patch_root / ".carinfoe").write_bytes(carinfo)
+    (patch_root / ".carcolor").write_bytes(carcolor)
+    arcade_physics = stage_gt2_arcade_car_physics(
+        gt2_arcade_volume, patch_root, definition
+    )
+    return {
+        "stem": stem,
+        "displayName": definition["displayName"],
+        "modelBasisStem": model_basis,
+        "modelConverted": convert_model,
+        "modelConversions": model_conversions,
+        "sourceModelPairSha256": hashlib.sha256(
+            day_model + night_model
+        ).hexdigest(),
+        "nativeModelSha256": native_model_hashes,
+        "sourceDayTextureSha256": hashlib.sha256(day_texture).hexdigest(),
+        "sourceNightTextureSha256": hashlib.sha256(
+            night_texture
+        ).hexdigest(),
+        "dayTextureSha256": hashlib.sha256(converted_day).hexdigest(),
+        "nightTextureSha256": hashlib.sha256(converted_night).hexdigest(),
+        "colorIds": list(converted_day[2 : 2 + converted_day[0]]),
+        "arcadeLogoEntry": logo_entry,
+        "arcadeLogoIndex": logo_index,
+        "arcadeLogoSha256": hashlib.sha256(logo).hexdigest(),
+        "arcadeClass": definition["arcadeClass"],
+        "manufacturerLogoIndex": definition["manufacturerLogoIndex"],
+        "ratings": list(definition["ratings"]),
+        "stats": list(stats),
+        "carinfo": carinfo_metadata,
+        "physicsSource": physics_source,
+        "arcadePhysics": arcade_physics,
+    }
+
+
+def named_tim_members(data: bytes) -> list[tuple[str, bytes]]:
+    """Return the native TIM members from one GT1 named texture package."""
+    if len(data) < 4:
+        raise ValueError("truncated GT1 texture package")
+    texture_count = struct.unpack_from("<I", data, 0)[0]
+    directory_end = 4 + texture_count * 20
+    if texture_count <= 0 or directory_end > len(data):
+        raise ValueError(
+            f"invalid GT1 texture package count: {texture_count}"
+        )
+
+    offsets: list[int] = []
+    names: list[str] = []
+    for index in range(texture_count):
+        record = 4 + index * 20
+        name_bytes = data[record : record + 16]
+        if not name_bytes.rstrip(b"\0"):
+            raise ValueError(f"GT1 texture {index} has an empty name")
+        names.append(
+            name_bytes.split(b"\0", 1)[0].decode("ascii", errors="strict")
+        )
+        offset = struct.unpack_from("<I", data, record + 16)[0]
+        if offset < directory_end or offset >= len(data):
+            raise ValueError(
+                f"GT1 texture {index} has invalid offset {offset:#x}"
+            )
+        if offsets and offset <= offsets[-1]:
+            raise ValueError("GT1 texture offsets are not strictly increasing")
+        if data[offset : offset + 4] != b"\x10\0\0\0":
+            raise ValueError(
+                f"GT1 texture {index} is not a PlayStation TIM"
+            )
+        offsets.append(offset)
+
+    return [
+        (
+            names[index],
+            data[
+                start : (
+                    offsets[index + 1]
+                    if index + 1 < len(offsets)
+                    else len(data)
+                )
+            ],
+        )
+        for index, start in enumerate(offsets)
+    ]
+
+
+def convert_gt1_sky_texture_package(data: bytes) -> bytes:
+    """Remove GT1's name table and retain its native ordered sky TIM stream."""
+    members = named_tim_members(data)
+    output = bytearray(struct.pack("<I", len(members)))
+    for _, tim in members:
+        output.extend(tim)
+    return bytes(output)
+
+
+def _shift_sky_vertex_pair(value: int, amount: int) -> int:
+    first = value & 0xFFF
+    second = (value >> 12) & 0xFFF
+    flags = value & 0xFF000000
+    first += amount
+    second += amount
+    if not (0 <= first <= 0xFFF and 0 <= second <= 0xFFF):
+        raise ValueError("GT1 sky vertex pair escaped its packed field")
+    return flags | first | (second << 12)
+
+
+def convert_gt1_sky_model(
+    reference: bytes,
+    desired: bytes,
+    gt2_template: bytes,
+) -> tuple[bytes, dict[str, int]]:
+    """Transfer GT1 dawn3's authored colours into native GT2 BSO records.
+
+    GT1's ``dawn``, ``dawn2`` and ``dawn3`` models are structurally identical;
+    only the authored Gouraud colours in two byte-identical render pools vary.
+    GT2's shipped ``dawn.bso`` is the native conversion of that same model.
+    Its compiler adds four vertices, shifts the packed vertex indices by four,
+    and expands each GT1 quad tail into two native triangle tails. Reapply that
+    exact layout to the desired GT1 variant rather than substituting GT2 art.
+    """
+    if (
+        not reference.startswith(b"@(#)GT-SKY")
+        or not desired.startswith(b"@(#)GT-SKY")
+        or struct.unpack_from("<H", reference, 14)[0] != 2
+        or struct.unpack_from("<H", desired, 14)[0] != 2
+    ):
+        raise ValueError("GT1 sky model is not supported revision-2 GT-SKY")
+    if len(reference) != 8_588 or len(desired) != len(reference):
+        raise ValueError("unexpected GT1 dawn sky model size")
+    if len(gt2_template) != 7_912 or not gt2_template.startswith(b"BG\0\0"):
+        raise ValueError("unexpected GT2 dawn BSO template")
+
+    source_pool = (0x660, 0xD40)
+    duplicate_pool = (0x1508, 0x1BE8)
+    if (
+        reference[source_pool[0] : source_pool[1]]
+        != reference[duplicate_pool[0] : duplicate_pool[1]]
+        or desired[source_pool[0] : source_pool[1]]
+        != desired[duplicate_pool[0] : duplicate_pool[1]]
+    ):
+        raise ValueError("GT1 dawn sky render pools are not exact duplicates")
+
+    reference_structure = bytearray(reference)
+    desired_structure = bytearray(desired)
+    for start, end in (source_pool, duplicate_pool):
+        reference_structure[start:end] = b"\0" * (end - start)
+        desired_structure[start:end] = b"\0" * (end - start)
+    if reference_structure != desired_structure:
+        raise ValueError("GT1 dawn variants differ outside authored colours")
+
+    output = bytearray(gt2_template)
+    source_stride = 0x2C
+    target_stride = 0x50
+    source_start = source_pool[0]
+    target_start = 0x870
+    record_count = 40
+    changed_words = 0
+    for index in range(record_count):
+        source = source_start + index * source_stride
+        target = target_start + index * target_stride
+        source_indices = struct.unpack_from("<II", reference, source)
+        expected_indices = tuple(
+            _shift_sky_vertex_pair(value, 4)
+            for value in source_indices
+        )
+        if struct.unpack_from("<II", output, target) != expected_indices:
+            raise ValueError(
+                f"GT2 dawn BSO record {index} does not match GT1 dawn"
+            )
+
+        reference_tail = reference[source + 8 : source + source_stride]
+        desired_tail = desired[source + 8 : source + source_stride]
+        if (
+            output[target + 8 : target + 0x2C] != reference_tail
+            or output[target + 0x2C : target + target_stride]
+            != reference_tail
+        ):
+            raise ValueError(
+                f"GT2 dawn BSO tail {index} does not match GT1 dawn"
+            )
+        output[target + 8 : target + 0x2C] = desired_tail
+        output[target + 0x2C : target + target_stride] = desired_tail
+        changed_words += 2 * sum(
+            reference_tail[offset : offset + 4]
+            != desired_tail[offset : offset + 4]
+            for offset in range(0, len(reference_tail), 4)
+        )
+
+    # GT2 adds one horizon-closing quad immediately before the converted
+    # forty-record pool. It inherits the first GT1 horizon colour twice.
+    reference_horizon = reference[source_start + 0x1C : source_start + 0x20]
+    desired_horizon = desired[source_start + 0x1C : source_start + 0x20]
+    horizon_offsets = [
+        offset
+        for offset in range(0x820, 0x870, 4)
+        if output[offset : offset + 4] == reference_horizon
+    ]
+    if len(horizon_offsets) != 2:
+        raise ValueError(
+            "GT2 dawn BSO does not contain two inherited horizon colours"
+        )
+    for offset in horizon_offsets:
+        output[offset : offset + 4] = desired_horizon
+    changed_words += len(horizon_offsets)
+
+    if changed_words != 242:
+        raise ValueError(
+            f"unexpected GT1 dawn3 colour transfer count: {changed_words}"
+        )
+    return bytes(output), {
+        "sourceQuadCount": record_count,
+        "nativeTriangleTailCount": record_count * 2,
+        "transferredColourWords": changed_words,
+    }
+
+
+def read_gt2_member(volume: Path, name: str) -> bytes:
+    matches = [entry for entry in read_entries(volume) if entry.name == name]
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected one GT2 member named {name!r}, found {len(matches)}"
+        )
+    entry = matches[0]
+    with volume.open("rb") as stream:
+        stream.seek(entry.offset)
+        return stream.read(entry.size)
+
+
+def read_gt2_gzip_member(volume: Path, name: str) -> bytes:
+    return gzip.decompress(read_gt2_member(volume, name))
+
+
+def _parse_4bpp_tim(data: bytes) -> tuple[bytes, int, int, list[int]]:
+    if len(data) < 64 or struct.unpack_from("<II", data, 0) != (0x10, 8):
+        raise ValueError("Arcade selection art is not a 4-bit TIM")
+    clut_size = struct.unpack_from("<I", data, 8)[0]
+    _, _, clut_width, clut_height = struct.unpack_from("<HHHH", data, 12)
+    if clut_size != 44 or (clut_width, clut_height) != (16, 1):
+        raise ValueError(
+            "Arcade selection art does not have one 16-colour CLUT"
+        )
+    image_offset = 8 + clut_size
+    image_size, _, _, width_words, height = struct.unpack_from(
+        "<IHHHH", data, image_offset
+    )
+    width = width_words * 4
+    expected_size = 12 + width * height // 2
+    if image_size != expected_size or image_offset + image_size != len(data):
+        raise ValueError("Arcade selection TIM payload size is inconsistent")
+    pixels: list[int] = []
+    for value in data[image_offset + 12 :]:
+        pixels.extend((value & 0xF, value >> 4))
+    return data[20:52], width, height, pixels
+
+
+def build_gt2_arcade_preview(
+    source_tim: bytes,
+) -> tuple[bytes, dict[str, int]]:
+    """Place GT1's exact route art in GT2's native 188x200 preview canvas."""
+    palette, source_width, source_height, source_pixels = _parse_4bpp_tim(
+        source_tim
+    )
+    target_width = 188
+    target_height = 200
+    if source_width > target_width or source_height > target_height:
+        raise ValueError("GT1 Arcade route art is larger than GT2's canvas")
+    left = (target_width - source_width) // 2
+    top = (target_height - source_height) // 2
+    target_pixels = [0] * (target_width * target_height)
+    for y in range(source_height):
+        source = y * source_width
+        target = (top + y) * target_width + left
+        target_pixels[target : target + source_width] = source_pixels[
+            source : source + source_width
+        ]
+    packed_pixels = bytes(
+        target_pixels[index] | (target_pixels[index + 1] << 4)
+        for index in range(0, len(target_pixels), 2)
+    )
+    output = bytearray(struct.pack("<II", 0x10, 8))
+    output.extend(struct.pack("<IHHHH", 44, 0, 0, 16, 1))
+    output.extend(palette)
+    output.extend(
+        struct.pack(
+            "<IHHHH",
+            12 + len(packed_pixels),
+            0,
+            0,
+            target_width // 4,
+            target_height,
+        )
+    )
+    output.extend(packed_pixels)
+    if len(output) != 0x49B0:
+        raise ValueError(
+            f"GT2 Arcade preview has wrong size: {len(output):#x}"
+        )
+    return bytes(output), {
+        "sourceWidth": source_width,
+        "sourceHeight": source_height,
+        "targetWidth": target_width,
+        "targetHeight": target_height,
+        "left": left,
+        "top": top,
+    }
+
+
+def gt2_track_id(name: str) -> int:
+    value = 0
+    for character in name.encode("ascii"):
+        value = (
+            ((value << 6) & 0xFFFFFFFF)
+            | (value >> 26)
+        )
+        value = (value + character) & 0xFFFFFFFF
+    return value
+
+
+def _append_arcade_course_maps(
+    course_map: bytes,
+    mapinfo: bytes,
+    preview_tim: bytes,
+) -> tuple[bytes, bytes, list[dict[str, int | str]]]:
+    if len(course_map) % 0x800:
+        raise ValueError("GT2 Arcade course_map is not sector aligned")
+    if len(mapinfo) < 4:
+        raise ValueError("GT2 Arcade course_mapinfo is truncated")
+    count = struct.unpack_from("<I", mapinfo, 0)[0]
+    table_end = 4 + count * 16
+    if table_end > len(mapinfo):
+        raise ValueError("GT2 Arcade course_mapinfo table is truncated")
+
+    records = [
+        list(struct.unpack_from("<IIII", mapinfo, 4 + index * 16))
+        for index in range(count)
+    ]
+    strings = mapinfo[table_end:]
+    added_specs = (
+        ("gt1_ssr11_a", 0x00),
+        ("gt1_ssr11_ar", 0x10),
+        ("gt1_ssr11_2p", 0x08),
+    )
+    new_record_bytes = len(added_specs) * 16
+    for record in records:
+        record[3] += new_record_bytes
+
+    compressed_preview = build_gt_zip(preview_tim)
+    output_map = bytearray(course_map)
+    added: list[dict[str, int | str]] = []
+    new_strings = bytearray(strings)
+    new_table_end = table_end + new_record_bytes
+    for name, flags in added_specs:
+        while len(output_map) % 0x800:
+            output_map.append(0)
+        sector = len(output_map) // 0x800
+        output_map.extend(compressed_preview)
+        name_offset = new_table_end + len(new_strings)
+        new_strings.extend(name.encode("ascii") + b"\0")
+        records.append(
+            [flags, len(compressed_preview), sector, name_offset]
+        )
+        added.append(
+            {
+                "stem": name,
+                "flags": flags,
+                "sector": sector,
+                "packedSize": len(compressed_preview),
+            }
+        )
+    while len(output_map) % 0x800:
+        output_map.append(0)
+
+    output_info = bytearray(struct.pack("<I", len(records)))
+    for record in records:
+        output_info.extend(struct.pack("<IIII", *record))
+    output_info.extend(new_strings)
+    return bytes(output_map), bytes(output_info), added
+
+
+def _merge_arcade_course_info(
+    data: bytes,
+    gt2_volume: Path,
+) -> tuple[bytes, dict[str, object]]:
+    if len(data) < 8 or data[:4] != b"CRS\0":
+        raise ValueError("GT2 .crsinfo has an invalid header")
+    version, count = struct.unpack_from("<HH", data, 4)
+    if version != 2:
+        raise ValueError(f"unsupported GT2 .crsinfo version: {version}")
+    table_end = 8 + count * 24
+    if table_end > len(data):
+        raise ValueError("GT2 .crsinfo table is truncated")
+
+    records = [
+        list(struct.unpack_from("<IIBBH6H", data, 8 + index * 24))
+        for index in range(count)
+    ]
+    strings = bytearray(data[table_end:])
+    base_sky_members = [
+        entry.name
+        for entry in read_entries(gt2_volume)
+        if entry.name.startswith("bgsobj/")
+        and entry.name.endswith(".bso.gz")
+    ]
+    base_sky_stems = [
+        Path(name).name.removesuffix(".bso.gz")
+        for name in base_sky_members
+    ]
+    if len(base_sky_stems) != 34 or len(set(base_sky_stems)) != 34:
+        raise ValueError("unexpected GT2 Arcade background directory")
+    merged_sky_stems = sorted(base_sky_stems + [GT2_SSR11_SKY_STEM])
+    ssr11_sky_index = merged_sky_stems.index(GT2_SSR11_SKY_STEM)
+    old_to_new_sky = {
+        old: merged_sky_stems.index(stem)
+        for old, stem in enumerate(base_sky_stems)
+    }
+
+    base_course_members = [
+        entry.name
+        for entry in read_entries(gt2_volume)
+        if entry.name.startswith("crsobj/")
+        and entry.name.endswith(".tro.gz")
+    ]
+    base_course_stems = [
+        Path(name).name.removesuffix(".tro.gz")
+        for name in base_course_members
+    ]
+    if len(base_course_stems) != count or len(set(base_course_stems)) != count:
+        raise ValueError(
+            "GT2 .crsinfo and crsobj directory counts do not match"
+        )
+    for index, (stem, record) in enumerate(
+        zip(base_course_stems, records)
+    ):
+        if record[1] != gt2_track_id(stem):
+            raise ValueError(
+                f"GT2 .crsinfo record {index} does not match crsobj/{stem}"
+            )
+
+    added_specs = (
+        ("gt1_ssr11", 0x41),
+        ("gt1_ssr11_2p", 0x49),
+        ("gt1_ssr11_a", 0x41),
+        ("gt1_ssr11_ar", 0x51),
+        ("gt1_ssr11_hifi", 0x41),
+        ("gt1_ssr11_r", 0x51),
+    )
+    merged_course_stems = sorted(
+        base_course_stems + [name for name, _ in added_specs]
+    )
+    record_growth = len(added_specs) * 24
+    for record in records:
+        record[0] += record_growth
+        old_sky = record[4]
+        if old_sky not in old_to_new_sky:
+            raise ValueError(
+                f"GT2 .crsinfo references unknown sky index {old_sky}"
+            )
+        record[4] = old_to_new_sky[old_sky]
+
+    source_hash = gt2_track_id("highway")
+    templates = [record for record in records if record[1] == source_hash]
+    if len(templates) != 1:
+        raise ValueError(
+            "cannot identify GT2 Special Stage Route 5 template"
+        )
+    template = templates[0]
+    string_offset = table_end + record_growth + len(strings)
+    strings.extend(b"Special Stage Route 11\0")
+    records_by_stem = dict(zip(base_course_stems, records))
+    for name, flags in added_specs:
+        record = list(template)
+        record[0] = string_offset
+        record[1] = gt2_track_id(name)
+        record[2] = flags
+        record[3] = 0
+        record[4] = ssr11_sky_index
+        records_by_stem[name] = record
+    records = [records_by_stem[name] for name in merged_course_stems]
+
+    output = bytearray(b"CRS\0")
+    output.extend(struct.pack("<HH", version, len(records)))
+    for record in records:
+        output.extend(struct.pack("<IIBBH6H", *record))
+    output.extend(strings)
+    return bytes(output), {
+        "sourceCount": count,
+        "mergedCount": len(records),
+        "skyStem": GT2_SSR11_SKY_STEM,
+        "skyIndex": ssr11_sky_index,
+        "shiftedSkyIndices": sum(
+            old != new for old, new in old_to_new_sky.items()
+        ),
+        "courseStems": [name for name, _ in added_specs],
+    }
+
+
+def integrate_ssr11_arcade_menu(
+    disc_root: Path,
+    gt2_volume: Path,
+    patch_root: Path,
+) -> dict[str, object]:
+    archive, entries = read_gtarc(disc_root / "ARCADE.DAT")
+    if GT1_ARCADE_SSR11_ENTRY >= len(entries):
+        raise ValueError("GT1 ARCADE.DAT does not contain SSR11 entry 81")
+    source_tim = unpack_entry(
+        archive, entries[GT1_ARCADE_SSR11_ENTRY]
+    )
+    preview_tim, placement = build_gt2_arcade_preview(source_tim)
+    course_map, mapinfo, added_maps = _append_arcade_course_maps(
+        read_gt2_member(gt2_volume, "arcade/course_map"),
+        read_gt2_member(gt2_volume, "arcade/course_mapinfo"),
+        preview_tim,
+    )
+    course_info, course_info_metadata = _merge_arcade_course_info(
+        read_gt2_member(gt2_volume, ".crsinfo"),
+        gt2_volume,
+    )
+    arcade_output = patch_root / "arcade"
+    arcade_output.mkdir(parents=True, exist_ok=True)
+    (arcade_output / "course_map").write_bytes(course_map)
+    (arcade_output / "course_mapinfo").write_bytes(mapinfo)
+    (patch_root / ".crsinfo").write_bytes(course_info)
+    return {
+        "sourceEntry": GT1_ARCADE_SSR11_ENTRY,
+        "sourceTimSize": len(source_tim),
+        "sourceTimSha256": hashlib.sha256(source_tim).hexdigest(),
+        "nativeTimSize": len(preview_tim),
+        "nativeTimSha256": hashlib.sha256(preview_tim).hexdigest(),
+        "placement": placement,
+        "mapEntries": added_maps,
+        "courseInfo": course_info_metadata,
+    }
+
+
+def _read_gt2_overlay_container(
+    path: Path,
+) -> tuple[list[bytes], list[bytes]]:
+    data = path.read_bytes()
+    if len(data) < 48 or struct.unpack_from("<I", data, 0)[0] != 48:
+        raise ValueError(f"GT2.OVL has an invalid header: {path}")
+    packed: list[bytes] = []
+    unpacked: list[bytes] = []
+    for index in range(6):
+        offset, size = struct.unpack_from("<II", data, index * 8)
+        if offset < 48 or size <= 0 or offset + size > len(data):
+            raise ValueError(f"GT2.OVL entry {index} is invalid: {path}")
+        member = data[offset : offset + size]
+        packed.append(member)
+        unpacked.append(gzip.decompress(member))
+    return packed, unpacked
+
+
+def _write_gt2_overlay_container(
+    destination: Path,
+    packed: list[bytes],
+) -> None:
+    if len(packed) != 6:
+        raise ValueError("GT2.OVL requires exactly six members")
+    output = bytearray(48)
+    for index, member in enumerate(packed):
+        offset = len(output)
+        struct.pack_into("<II", output, index * 8, offset, len(member))
+        output.extend(member)
+        while len(output) % 4:
+            output.append(0)
+    destination.write_bytes(output)
+
+
+def patch_ssr11_arcade_overlay(
+    source: Path,
+    destination: Path,
+    arcade_cars: tuple[dict[str, object], ...] = (),
+) -> dict[str, object]:
+    """Extend GT2's native null-terminated Arcade course tables."""
+    packed, unpacked = _read_gt2_overlay_container(source)
+    arcade = bytearray(unpacked[2])
+    if len(arcade) != 275_312:
+        raise ValueError(
+            f"unexpected GT2 Arcade overlay size: {len(arcade)}"
+        )
+    memory_base = 0x80010000
+    address_base = 0x80050000
+    table_specs = (
+        (
+            "roadForward",
+            0x40730,
+            21,
+            "gt1_ssr11_a",
+            0x00,
+            (0xD218, 0x128FC),
+        ),
+        (
+            "roadReverse",
+            0x409F0,
+            21,
+            "gt1_ssr11_ar",
+            0x10,
+            (0xD240, 0x12918),
+        ),
+        (
+            "trialForward",
+            0x40CB0,
+            23,
+            "gt1_ssr11_a",
+            0x00,
+            (0xD258, 0x12924),
+        ),
+        (
+            "trialReverse",
+            0x40FB0,
+            23,
+            "gt1_ssr11_ar",
+            0x10,
+            (0xD270, 0x12940),
+        ),
+        (
+            "twoPlayer",
+            0x413F0,
+            21,
+            "gt1_ssr11_2p",
+            0x08,
+            (0xD2A0, 0x12980),
+        ),
+    )
+    for _, start, count, _, _, _ in table_specs:
+        sentinel = start + count * 32
+        if arcade[sentinel : sentinel + 32] != b"\0" * 32:
+            raise ValueError(
+                f"GT2 Arcade course table at {start:#x} has no sentinel"
+            )
+
+    while len(arcade) % 16:
+        arcade.append(0)
+
+    def append_c_string(value: str) -> int:
+        offset = len(arcade)
+        arcade.extend(value.encode("ascii") + b"\0")
+        return memory_base + offset
+
+    stem_addresses = {
+        stem: append_c_string(stem)
+        for stem in ("gt1_ssr11_a", "gt1_ssr11_ar", "gt1_ssr11_2p")
+    }
+    display_address = append_c_string("Special Stage Route 11")
+    while len(arcade) % 4:
+        arcade.append(0)
+    stats_offset = len(arcade)
+    # Native GT1 layout: total length, elevation change, longest straight,
+    # and corner count. The exact Route 11 route/model supplies a 4.889 km
+    # lap; the remaining values are retained as conservative menu metadata
+    # until the GT1 centreline analysis is promoted into the converter.
+    arcade.extend(struct.pack("<4H", 4889, 0, 806, 20))
+    stats_address = memory_base + stats_offset
+    while len(arcade) % 16:
+        arcade.append(0)
+
+    table_metadata: list[dict[str, int | str]] = []
+    for label, source_start, count, stem, flags, instructions in table_specs:
+        source_records = arcade[
+            source_start : source_start + count * 32
+        ]
+        insertion_index = 0
+        while insertion_index < count:
+            unlock = struct.unpack_from(
+                "<I", source_records, insertion_index * 32 + 20
+            )[0]
+            if unlock != 0xFFFF:
+                break
+            insertion_index += 1
+        table_offset = len(arcade)
+        insertion_offset = insertion_index * 32
+        arcade.extend(source_records[:insertion_offset])
+        arcade.extend(
+            struct.pack(
+                "<8I",
+                stem_addresses[stem],
+                display_address,
+                stats_address,
+                flags,
+                0,
+                0xFFFF,
+                0xFFFFFFFF,
+                0,
+            )
+        )
+        arcade.extend(source_records[insertion_offset:])
+        arcade.extend(b"\0" * 32)
+        table_address = memory_base + table_offset
+        relative = table_address - address_base
+        if not (0 <= relative <= 0x7FFF):
+            raise ValueError(
+                f"extended Arcade course table escaped addiu range: "
+                f"{table_address:#x}"
+            )
+        for instruction in instructions:
+            if struct.unpack_from("<H", arcade, instruction)[0] not in (
+                0x0730,
+                0x09F0,
+                0x0CB0,
+                0x0FB0,
+                0x13F0,
+            ):
+                raise ValueError(
+                    f"GT2 Arcade table instruction changed at "
+                    f"{instruction:#x}"
+                )
+            struct.pack_into("<H", arcade, instruction, relative)
+        table_metadata.append(
+            {
+                "label": label,
+                "sourceOffset": source_start,
+                "sourceCount": count,
+                "mergedOffset": table_offset,
+                "mergedAddress": table_address,
+                "relativeAddress": relative,
+                "mergedCount": count + 1,
+                "stem": stem,
+                "insertionIndex": insertion_index,
+            }
+        )
+
+    car_roster_metadata: list[dict[str, object]] = []
+    roster_pointer_tables = (
+        (0x41F14, 4, "stemPointers"),
+        (0x41F30, 1, "unlocked"),
+        (0x41F4C, 2, "logoIndices"),
+        (0x41F68, 2, "manufacturerLogoIndices"),
+        (0x41F84, 3, "ratings"),
+        (0x41FA0, 10, "stats"),
+    )
+    for car in arcade_cars:
+        class_index = int(car["arcadeClass"])
+        if not 0 <= class_index < 7:
+            raise ValueError(f"invalid GT2 Arcade class index: {class_index}")
+        count_offset = 0x419A0 + class_index * 2
+        old_count = struct.unpack_from("<H", arcade, count_offset)[0]
+        if old_count <= 0:
+            raise ValueError(
+                f"GT2 Arcade class {class_index} has no native roster"
+            )
+
+        while len(arcade) % 4:
+            arcade.append(0)
+        stem_address = memory_base + len(arcade)
+        stem = str(car["stem"])
+        arcade.extend(stem.encode("ascii") + b"\0\0\0")
+
+        values = (
+            struct.pack("<I", stem_address),
+            b"\x01",
+            struct.pack("<H", int(car["arcadeLogoIndex"])),
+            struct.pack("<H", int(car["manufacturerLogoIndex"])),
+            bytes(int(value) for value in car["ratings"]),
+            struct.pack("<5H", *(int(value) for value in car["stats"])),
+        )
+        patched_tables: list[dict[str, object]] = []
+        for (pointer_table, stride, label), appended in zip(
+            roster_pointer_tables, values
+        ):
+            pointer_offset = pointer_table + class_index * 4
+            source_address = struct.unpack_from(
+                "<I", arcade, pointer_offset
+            )[0]
+            source_offset = source_address - memory_base
+            size = old_count * stride
+            if (
+                source_offset < 0
+                or source_offset + size > len(arcade)
+                or len(appended) != stride
+            ):
+                raise ValueError(
+                    f"GT2 Arcade {label} table is invalid for class "
+                    f"{class_index}"
+                )
+            while len(arcade) % 4:
+                arcade.append(0)
+            source_table = bytes(
+                arcade[source_offset : source_offset + size]
+            )
+            merged_offset = len(arcade)
+            arcade.extend(source_table)
+            arcade.extend(appended)
+            merged_address = memory_base + merged_offset
+            struct.pack_into("<I", arcade, pointer_offset, merged_address)
+            patched_tables.append(
+                {
+                    "label": label,
+                    "sourceAddress": source_address,
+                    "mergedAddress": merged_address,
+                    "stride": stride,
+                }
+            )
+        struct.pack_into("<H", arcade, count_offset, old_count + 1)
+        car_roster_metadata.append(
+            {
+                "stem": stem,
+                "classIndex": class_index,
+                "oldCount": old_count,
+                "newCount": old_count + 1,
+                "stemAddress": stem_address,
+                "tables": patched_tables,
+            }
+        )
+
+    packed[2] = gzip.compress(bytes(arcade), compresslevel=9, mtime=0)
+    _write_gt2_overlay_container(destination, packed)
+    _, verified = _read_gt2_overlay_container(destination)
+    if verified[2] != bytes(arcade):
+        raise ValueError("rebuilt GT2.OVL failed its round-trip check")
+    return {
+        "sourceSize": source.stat().st_size,
+        "outputSize": destination.stat().st_size,
+        "sourceArcadeOverlaySize": len(unpacked[2]),
+        "outputArcadeOverlaySize": len(arcade),
+        "displayName": "Special Stage Route 11",
+        "stats": {
+            "totalLength": 4889,
+            "elevationChange": 0,
+            "longestStraight": 806,
+            "cornerCount": 20,
+        },
+        "tables": table_metadata,
+        "carRosters": car_roster_metadata,
+    }
+
+
+def convert_gt1_texture_package(
+    data: bytes,
+) -> tuple[bytes, bytes, TextureRelocation]:
+    """Convert a named GT1 course package into native GT2 TRP/crsmap data.
+
+    The second named TIM is already the native in-race course map (the shared
+    GT1/GT2 High Speed Ring files are byte-identical), so it belongs in
+    ``crsmap`` rather than the course texture atlas. GT2 packs the remaining
+    4-bit images into twelve protected 256x256 texture pages at x=640..1023
+    and its CLUTs into x=496..703, y=496..511. Reproduce that layout and
+    return the relocation metadata needed to rewrite the real polygon packets.
+    """
+    textures: list[dict[str, object]] = []
+    for name, member in named_tim_members(data):
+        flags = struct.unpack_from("<I", member, 4)[0]
+        if flags != 8:
+            raise ValueError(
+                f"unsupported GT1 course TIM flags for {name}: "
+                f"{flags:#x}"
+            )
+        clut_block_size = struct.unpack_from("<I", member, 8)[0]
+        clut_x, clut_y, clut_width, clut_height = struct.unpack_from(
+            "<HHHH", member, 12
+        )
+        if clut_width != 16 or clut_height != 1:
+            raise ValueError(
+                f"unsupported GT1 course CLUT dimensions: "
+                f"{clut_width}x{clut_height}"
+            )
+        image_block = 8 + clut_block_size
+        image_x, image_y, image_width, image_height = struct.unpack_from(
+            "<HHHH", member, image_block + 4
+        )
+        if image_width <= 0 or image_width > 64 or image_height <= 0:
+            raise ValueError(
+                f"unsupported GT1 course image dimensions for "
+                f"{name}: {image_width}x{image_height}"
+            )
+        textures.append(
+            {
+                "name": name,
+                "data": bytearray(member),
+                "clut": (clut_x, clut_y),
+                "image": (image_x, image_y, image_width, image_height),
+            }
+        )
+
+    if len(textures) < 3:
+        raise ValueError("GT1 course package has no map/atlas payload")
+    course_map = bytes(textures[1]["data"])
+    atlas = textures[:1] + textures[2:]
+
+    unique_cluts = list(
+        dict.fromkeys(texture["clut"] for texture in atlas)
+    )
+    clut_columns = 13
+    if len(unique_cluts) > clut_columns * 16:
+        raise ValueError(
+            f"GT1 course needs {len(unique_cluts)} CLUT slots; "
+            f"GT2 bank holds {clut_columns * 16}"
+        )
+    relocated_coordinates = {
+        coordinate: (
+            496 + (index % clut_columns) * 16,
+            496 + index // clut_columns,
+        )
+        for index, coordinate in enumerate(unique_cluts)
+    }
+    clut_id_map = {
+        old_y * 64 + old_x // 16: new_y * 64 + new_x // 16
+        for (old_x, old_y), (new_x, new_y)
+        in relocated_coordinates.items()
+    }
+
+    # GT1 already packs all scenery into the same twelve x=640..1023 pages
+    # reserved by GT2. Preserve those placements exactly: overlapping source
+    # rectangles intentionally describe the final VRAM upload state, so
+    # separating/repacking every named TIM changes which pixels a polygon
+    # samples. Only ``refrect.tim`` lives in GT1's x=384 HUD page. Move that
+    # single image into the first free rectangle in the native course bank.
+    occupancy = [
+        [[False] * 256 for _ in range(64)]
+        for _ in range(12)
+    ]
+    placements: dict[str, tuple[int, int]] = {}
+    for item in atlas[1:]:
+        image_x, image_y, width, height = item["image"]
+        if (
+            image_x < 640
+            or image_x + width > 1024
+            or image_y + height > 512
+            or image_x // 64 != (image_x + width - 1) // 64
+            or image_y // 256 != (image_y + height - 1) // 256
+        ):
+            raise ValueError(
+                f"GT1 course image is outside a native GT2 texture page: "
+                f"{item['name']} at {item['image']}"
+            )
+        page = (image_y // 256) * 6 + image_x // 64 - 10
+        local_x = image_x % 64
+        local_y = image_y % 256
+        for x in range(local_x, local_x + width):
+            for y in range(local_y, local_y + height):
+                occupancy[page][x][y] = True
+        placements[item["name"]] = (image_x, image_y)
+
+    # GT2's palettes occupy x=496..703 at y=496..511, including the lower
+    # sixteen rows of the x=640 texture page.
+    for x in range(64):
+        for y in range(240, 256):
+            occupancy[6][x][y] = True
+
+    reflection = atlas[0]
+    _, _, reflection_width, reflection_height = reflection["image"]
+    reflection_placement: tuple[int, int] | None = None
+    for page in range(12):
+        for local_y in range(257 - reflection_height):
+            for local_x in range(65 - reflection_width):
+                if all(
+                    not occupancy[page][x][y]
+                    for x in range(local_x, local_x + reflection_width)
+                    for y in range(local_y, local_y + reflection_height)
+                ):
+                    reflection_placement = (
+                        640 + (page % 6) * 64 + local_x,
+                        (page // 6) * 256 + local_y,
+                    )
+                    break
+            if reflection_placement is not None:
+                break
+        if reflection_placement is not None:
+            break
+    if reflection_placement is None:
+        raise ValueError("GT1 reflection texture does not fit GT2's atlas")
+    placements[reflection["name"]] = reflection_placement
+
+    relocations: list[TextureImageRelocation] = []
+    output = bytearray(struct.pack("<I", len(atlas)))
+    for item in sorted(atlas, key=lambda texture: texture["name"].lower()):
+        texture = item["data"]
+        old_x, old_y = item["clut"]
+        new_x, new_y = relocated_coordinates[(old_x, old_y)]
+        struct.pack_into("<HH", texture, 12, new_x, new_y)
+        image_block = 8 + struct.unpack_from("<I", texture, 8)[0]
+        source_x, source_y, width, height = item["image"]
+        image_x, image_y = placements[item["name"]]
+        struct.pack_into("<HH", texture, image_block + 4, image_x, image_y)
+        output.extend(texture)
+        relocations.append(
+            TextureImageRelocation(
+                name=item["name"],
+                old_x=source_x,
+                old_y=source_y,
+                width=width,
+                height=height,
+                old_clut_id=old_y * 64 + old_x // 16,
+                new_x=image_x,
+                new_y=image_y,
+            )
+        )
+    return (
+        bytes(output),
+        course_map,
+        TextureRelocation(clut_id_map, tuple(relocations)),
+    )
+
+
+class Gt1CourseDeserializer:
+    """Rebuild the pointer metadata written by GT1's revision-28 loader.
+
+    GT1 stores course structures in traversal order and leaves their pointer
+    slots zeroed.  Its loader (SCUS-94194 0x8002452c..0x80024b14) walks those
+    structures and fills the slots before the renderer sees them.  GT2
+    revision 31 stores the same metadata as file-relative offsets and merely
+    relocates it at load time.  Replaying the GT1 walk offline therefore
+    produces a native relocatable course rather than requiring a runtime
+    compatibility hook.
+    """
+
+    OBJECT_POOL_SIZES = (12, 12, 20, 24, 12, 12, 20, 24)
+    MODEL_POOL_SIZES = (12, 12, 20, 24, 24, 24, 32, 36)
+
+    def __init__(
+        self,
+        data: bytes,
+        texture_relocation: TextureRelocation | None = None,
+    ):
+        self.data = bytearray(data)
+        self.pointer_fields: set[int] = set()
+        self.texture_relocation = texture_relocation
+        self.relocated_texture_packets = 0
+
+    def require(self, offset: int, size: int = 1) -> None:
+        if offset < 0 or size < 0 or offset + size > len(self.data):
+            raise ValueError(
+                f"GT1 course traversal escaped the payload: "
+                f"offset={offset:#x} size={size:#x} length={len(self.data):#x}"
+            )
+
+    def u16(self, offset: int) -> int:
+        self.require(offset, 2)
+        return struct.unpack_from("<H", self.data, offset)[0]
+
+    def u32(self, offset: int) -> int:
+        self.require(offset, 4)
+        return struct.unpack_from("<I", self.data, offset)[0]
+
+    def write_u32(self, offset: int, value: int) -> None:
+        self.require(offset, 4)
+        struct.pack_into("<I", self.data, offset, value & 0xFFFFFFFF)
+
+    def write_i16(self, offset: int, value: int) -> None:
+        self.require(offset, 2)
+        if value < -0x8000 or value > 0x7FFF:
+            raise ValueError(
+                f"GT1 course value escaped int16 at {offset:#x}: {value}"
+            )
+        struct.pack_into("<h", self.data, offset, value)
+
+    def write_pointer(self, offset: int, target: int) -> None:
+        self.require(target, 0)
+        self.write_u32(offset, target)
+        self.pointer_fields.add(offset)
+
+    def remap_texture_packet(self, base: int, uv_offsets: tuple[int, ...]) -> None:
+        relocation = self.texture_relocation
+        if relocation is None:
+            return
+
+        old_clut = self.u16(base + 2)
+        old_tpage = self.u16(base + 6)
+        old_page_x = (old_tpage & 0x0F) * 64
+        old_page_y = 256 if old_tpage & 0x10 else 0
+        coordinates = [
+            (
+                old_page_x * 4 + self.data[base + offset],
+                old_page_y + self.data[base + offset + 1],
+            )
+            for offset in uv_offsets
+        ]
+        candidates = [
+            image
+            for image in relocation.images
+            if image.old_clut_id == old_clut
+            and (image.old_x // 64) * 64 == old_page_x
+            and all(
+                image.old_x * 4 <= x < (image.old_x + image.width) * 4
+                and image.old_y <= y < image.old_y + image.height
+                for x, y in coordinates
+            )
+        ]
+        if not candidates:
+            raise ValueError(
+                f"cannot resolve GT1 texture packet at {base:#x}: "
+                f"clut={old_clut:#06x} tpage={old_tpage:#06x} "
+                f"uv={coordinates}"
+            )
+        image = min(
+            candidates,
+            key=lambda item: (item.width * item.height, item.name),
+        )
+        new_page_x = (image.new_x // 64) * 64
+        new_page_y = 256 if image.new_y >= 256 else 0
+        for offset, (old_x, old_y) in zip(uv_offsets, coordinates):
+            new_u = image.new_x * 4 + (old_x - image.old_x * 4)
+            new_v = image.new_y + (old_y - image.old_y)
+            new_u -= new_page_x * 4
+            new_v -= new_page_y
+            if not (0 <= new_u <= 0xFF and 0 <= new_v <= 0xFF):
+                raise ValueError(
+                    f"relocated GT1 UV escaped its texture page for "
+                    f"{image.name}: ({new_u}, {new_v})"
+                )
+            self.data[base + offset] = new_u
+            self.data[base + offset + 1] = new_v
+        new_tpage = (
+            (old_tpage & ~0x1F)
+            | ((new_page_x // 64) & 0x0F)
+            | (0x10 if new_page_y else 0)
+        )
+        struct.pack_into("<H", self.data, base + 6, new_tpage)
+        try:
+            new_clut = relocation.clut_ids[old_clut]
+        except KeyError as error:
+            raise ValueError(
+                f"GT1 texture packet uses unstaged CLUT {old_clut:#06x}"
+            ) from error
+        struct.pack_into("<H", self.data, base + 2, new_clut)
+        self.relocated_texture_packets += 1
+
+    def remap_texture_packets(self, primary: int, models: int) -> None:
+        if self.texture_relocation is None:
+            return
+
+        descriptors = self.u32(primary + 8)
+        for index in range(self.u16(primary + 6)):
+            descriptor = descriptors + index * 32
+            self.remap_texture_packet(descriptor, (0, 4, 8, 10))
+            self.remap_texture_packet(descriptor + 16, (0, 4, 8, 10))
+
+        for model_index in range(self.u32(models)):
+            model = self.u32(models + 4 + model_index * 4)
+            for pool_type in range(4, 8):
+                count = self.u16(model + 0x30 + pool_type * 2)
+                size = self.MODEL_POOL_SIZES[pool_type]
+                records = self.u32(model + 4 + pool_type * 4)
+                uv_offsets = (0, 4, 8) if pool_type < 6 else (0, 4, 8, 10)
+                for record_index in range(count):
+                    self.remap_texture_packet(
+                        records + record_index * size + 12,
+                        uv_offsets,
+                    )
+
+    def deserialize_dynamic_objects(self) -> int:
+        cursor = 0x194
+        for index in range(33):
+            self.write_pointer(0x110 + index * 4, cursor)
+            count = self.u32(cursor)
+            for object_index in range(count):
+                item = cursor + 4 + object_index * 28
+                # Common GT1/GT2 tracks preserve the first 24 bytes and
+                # negate the final signed axis coordinate.
+                self.write_u32(item + 24, -self.u32(item + 24))
+            cursor += 4 + count * 28
+            self.require(cursor, 0)
+        return cursor
+
+    def deserialize_object_pool(self, base: int) -> int:
+        cursor = base + 0x44
+        self.write_pointer(base, cursor)
+        cursor += self.u32(base + 0x2C) * 8
+        for index, item_size in enumerate(self.OBJECT_POOL_SIZES):
+            self.write_pointer(base + 4 + index * 4, cursor)
+            cursor += self.u16(base + 0x30 + index * 2) * item_size
+            self.require(cursor, 0)
+        self.write_pointer(base + 0x24, cursor)
+        cursor += self.u16(base + 0x40) * 16
+        self.write_pointer(base + 0x28, cursor)
+        cursor += self.u16(base + 0x42) * 20
+        self.require(cursor, 0)
+        return cursor
+
+    def deserialize_index_pool(self, base: int, owner: int) -> int:
+        cursor = base + 0x68
+        for index in range(16):
+            self.write_pointer(base + 0x28 + index * 4, cursor)
+            count = self.u16(base + 8 + index * 2)
+            for _ in range(count):
+                descriptor = self.u32(cursor)
+                pool_index = (descriptor >> 16) & 7
+                item_index = descriptor & 0xFFFF
+                pool = self.u32(owner + 0xA8 + pool_index * 4)
+                target = (
+                    pool
+                    + item_index * self.OBJECT_POOL_SIZES[pool_index]
+                )
+                self.write_pointer(cursor, target)
+                cursor += 4
+        return cursor
+
+    def deserialize_primary(self, base: int) -> int:
+        count = self.u16(base + 4)
+        cursor = base + 0x0C + count * 4
+        objects: list[int] = []
+        for index in range(count):
+            obj = cursor
+            objects.append(obj)
+            self.write_pointer(base + 0x0C + index * 4, obj)
+
+            pool_a = obj + 0xA4
+            pool_b = self.deserialize_object_pool(pool_a)
+            self.write_pointer(obj + 0x94, pool_b)
+            vertex_pool = self.deserialize_object_pool(pool_b)
+            self.write_pointer(obj + 0x98, vertex_pool)
+            vertex_count = self.u32(vertex_pool)
+            index_pool = vertex_pool + 4 + vertex_count * 8
+            self.require(index_pool, 0)
+            self.write_pointer(obj + 0x9C, index_pool)
+            tail = self.deserialize_index_pool(index_pool, obj)
+            self.write_pointer(obj + 0xA0, tail)
+            tail_count = self.u16(tail)
+            cursor = tail + 2 + ((tail_count | 1) * 2)
+            self.require(cursor, 0)
+
+        self.write_pointer(base + 8, cursor)
+        texture_descriptor_count = self.u16(base + 6)
+        for descriptor_index in range(texture_descriptor_count):
+            descriptor = cursor + descriptor_index * 32
+            source = bytes(self.data[descriptor : descriptor + 32])
+            # GT1 stores its distance threshold before the two GPU texture
+            # packets.  GT2's renderer indexes the same 32-byte descriptor
+            # but expects packet A first and the threshold at +0x0c.
+            #
+            # Keeping the original packets is intentional: the converted
+            # TRP retains the GT1 TIM images and their native VRAM placement,
+            # so no texture-page or CLUT remap is necessary.
+            self.data[descriptor : descriptor + 32] = (
+                source[4:16] + source[0:4] + source[16:32]
+            )
+        cursor += texture_descriptor_count * 32
+        final_count = self.u32(cursor)
+        cursor += 4 + final_count * 16
+        self.require(cursor, 0)
+
+        for obj in objects:
+            # GT1's loader expands the two u16 neighbour indices at +0x00
+            # into runtime pointers at +0x04/+0x08.  GT2 retains the indices
+            # but deliberately leaves those pointer slots null; its course
+            # selection path uses the +0xA0 neighbourhood list instead.
+            self.write_u32(obj + 4, 0)
+            self.write_u32(obj + 8, 0)
+
+            # GT2 changed the handedness of the course coordinate system.
+            # Common GT1/GT2 circuits retain byte-identical object records
+            # apart from these axis-bearing fields (for example, all 194
+            # High Speed Ring objects match after this transform).
+            for field in (
+                0x20,
+                0x38,
+                0x48,
+                0x50,
+                0x58,
+                0x60,
+                0x70,
+                0x78,
+                0x80,
+                0x88,
+            ):
+                self.write_u32(obj + field, -self.u32(obj + field))
+            for field in (0x28, 0x40):
+                value = self.u32(obj + field)
+                low = (-value) & 0xFFFF
+                self.write_u32(obj + field, (value & 0xFFFF0000) | low)
+
+            x_bias = ((self.u32(obj + 0x30) & 0x003FFFFF) >> 20) << 10
+            y_bias = (
+                ((self.u32(obj + 0x38) & 0x003FFFFF) >> 20) + 1
+            ) << 10
+            z_bias = ((self.u32(obj + 0x34) & 0x003FFFFF) >> 20) << 10
+            for pool in (obj + 0xA4, self.u32(obj + 0x94)):
+                vertices = self.u32(pool)
+                for vertex_index in range(self.u32(pool + 0x2C)):
+                    vertex = vertices + vertex_index * 8
+                    x, y, z = struct.unpack_from("<hhh", self.data, vertex)
+                    converted = (
+                        (x >> 2) + x_bias,
+                        -(y >> 2) + y_bias,
+                        (z >> 2) + z_bias,
+                    )
+                    if any(value < -0x8000 or value > 0x7FFF for value in converted):
+                        raise ValueError(
+                            f"GT1 course vertex escaped int16 at "
+                            f"object={index} vertex={vertex_index}: {converted}"
+                        )
+                    struct.pack_into("<hhh", self.data, vertex, *converted)
+
+            # GT1 bins road polygons in a 4x4 index using 1 MiB world chunks
+            # and 256-unit local coordinates. GT2's otherwise-equivalent
+            # lookup uses 4 MiB chunks and 1024-unit local coordinates. Scale
+            # the bin header alongside the vertices, then reverse its rows for
+            # the handedness change. Leaving this metadata in GT1 space makes
+            # the course render normally but causes every surface query to
+            # select an unrelated polygon list.
+            index_pool = self.u32(obj + 0x9C)
+            origin_x, origin_z, shift_x, shift_z = struct.unpack_from(
+                "<hhhh", self.data, index_pool
+            )
+            if shift_x < 2 or shift_z < 2:
+                raise ValueError(
+                    f"GT1 course collision shift is too small at "
+                    f"object={index}: ({shift_x}, {shift_z})"
+                )
+            lists = [
+                [
+                    self.u32(
+                        self.u32(index_pool + 0x28 + bin_index * 4)
+                        + item_index * 4
+                    )
+                    for item_index in range(
+                        self.u16(index_pool + 8 + bin_index * 2)
+                    )
+                ]
+                for bin_index in range(16)
+            ]
+            converted_lists = [
+                lists[(3 - row) * 4 + column]
+                for row in range(4)
+                for column in range(4)
+            ]
+            self.write_i16(index_pool, (origin_x >> 2) + x_bias)
+            self.write_i16(
+                index_pool + 2,
+                y_bias
+                - (
+                    (
+                        origin_z
+                        + 4 * (1 << shift_z)
+                        - 1
+                    )
+                    >> 2
+                ),
+            )
+            self.write_i16(index_pool + 4, shift_x - 2)
+            self.write_i16(index_pool + 6, shift_z - 2)
+            index_cursor = index_pool + 0x68
+            for bin_index, items in enumerate(converted_lists):
+                struct.pack_into(
+                    "<H", self.data, index_pool + 8 + bin_index * 2, len(items)
+                )
+                self.write_pointer(
+                    index_pool + 0x28 + bin_index * 4, index_cursor
+                )
+                for target in items:
+                    self.write_pointer(index_cursor, target)
+                    index_cursor += 4
+
+            # The separate edge block at +0x98 drives GT2's track-edge walk.
+            # Its first two words remain indices into pool A; the third signed
+            # word carries the handedness-dependent edge term. Common High
+            # Speed Ring data proves that GT2 negates only this word while
+            # preserving the indices and fourth word.
+            edge_pool = self.u32(obj + 0x98)
+            for edge_index in range(self.u32(edge_pool)):
+                edge = edge_pool + 4 + edge_index * 8
+                edge_term = struct.unpack_from("<h", self.data, edge + 4)[0]
+                struct.pack_into("<h", self.data, edge + 4, -edge_term)
+        return cursor
+
+    def deserialize_secondary(self, base: int) -> int:
+        count = self.u32(base)
+        cursor = base + 4 + count * 4
+        for index in range(count):
+            self.write_pointer(base + 4 + index * 4, cursor)
+            item_count = self.u16(cursor)
+            cursor += 4 + item_count * 8
+            self.require(cursor, 0)
+        return cursor
+
+    def deserialize_model_pool(self, base: int) -> int:
+        cursor = base + 0x58
+        self.write_pointer(base, cursor)
+        cursor += self.u16(base + 0x2C) * 8
+        for index, item_size in enumerate(self.MODEL_POOL_SIZES):
+            self.write_pointer(base + 4 + index * 4, cursor)
+            cursor += self.u16(base + 0x30 + index * 2) * item_size
+            self.require(cursor, 0)
+        self.write_pointer(base + 0x24, cursor)
+        cursor += self.u16(base + 0x40) * 28
+        self.write_pointer(base + 0x28, cursor)
+        cursor += self.u16(base + 0x42) * 20
+        self.require(cursor, 0)
+        return cursor
+
+    def deserialize_models(self, base: int) -> int:
+        count = self.u32(base)
+        cursor = base + 4 + count * 4
+        for index in range(count):
+            self.write_pointer(base + 4 + index * 4, cursor)
+            cursor = self.deserialize_model_pool(cursor)
+            cursor += 4 + self.u32(cursor) * 16
+            self.require(cursor, 0)
+        return cursor
+
+    def link_secondary_to_models(self, secondary: int, models: int) -> None:
+        model_count = self.u32(models)
+        model_pointers = [
+            self.u32(models + 4 + index * 4)
+            for index in range(model_count)
+        ]
+        for index in range(self.u32(secondary)):
+            item = self.u32(secondary + 4 + index * 4)
+            count = self.u16(item)
+            for entry_index in range(count):
+                entry = item + entry_index * 8
+                model_index = self.u32(entry + 8)
+                if model_index == 0xFFFFFFFF:
+                    continue
+                if model_index >= len(model_pointers):
+                    raise ValueError(
+                        f"GT1 secondary model index {model_index} "
+                        f"is outside {len(model_pointers)} models"
+                    )
+                self.write_pointer(entry + 8, model_pointers[model_index])
+
+    def deserialize_tail_item(self, base: int) -> int:
+        item_type = self.u16(base)
+        if item_type == 0:
+            count = self.u16(base + 2)
+            return base + 4 + count * 16
+        if item_type == 1:
+            count = self.u16(base + 2)
+            return base + 4 + count * 56
+        raise ValueError(f"unsupported GT1 tail subtype {item_type}")
+
+    def deserialize_tail(self, base: int) -> int:
+        count = self.u16(base)
+        cursor = base + 4 + count * 4
+        fixed_sizes = {1: 0x28, 2: 0x14}
+        for index in range(count):
+            self.write_pointer(base + 4 + index * 4, cursor)
+            item_type = self.u16(cursor)
+            if item_type == 0:
+                cursor = self.deserialize_tail_item(cursor + 0x18)
+            elif item_type == 3:
+                cursor = self.deserialize_tail_item(cursor + 0x1C)
+            elif item_type in fixed_sizes:
+                cursor += fixed_sizes[item_type]
+            else:
+                raise ValueError(f"unsupported GT1 tail type {item_type}")
+            self.require(cursor, 0)
+        return cursor
+
+    @staticmethod
+    def _align_four(value: int) -> int:
+        return (value + 3) & ~3
+
+    def compact_primary(
+        self,
+        primary: int,
+        secondary: int,
+        models: int,
+        tail: int,
+        final: int,
+    ) -> tuple[int, int, int, int, int, int]:
+        """Share byte-identical, immutable render pools.
+
+        GT2 reserves exactly 700,000 bytes between its course buffer and the
+        first vehicle work area.  The full-detail GT1 SSR11 payload exceeds
+        that boundary by 11,784 bytes.  GT1 serialises repeated track render
+        pools independently even when their bytes are identical.  GT2's
+        runtime follows pointers to those read-only pools, so one canonical
+        copy is sufficient and preserves the original geometry and artwork.
+        Mutable pointer tables and per-object headers remain private.
+        """
+
+        old = bytes(self.data)
+        old_pointer_fields = set(self.pointer_fields)
+        object_count = self.u16(primary + 4)
+        objects = [
+            self.u32(primary + 0x0C + index * 4)
+            for index in range(object_count)
+        ]
+        trailing = self.u32(primary + 8)
+        pool_sizes = self.OBJECT_POOL_SIZES
+
+        primary_header_size = 0x0C + object_count * 4
+        compact = bytearray(old[primary : primary + primary_header_size])
+        ranges: list[tuple[int, int, int]] = [
+            (primary, primary + primary_header_size, primary)
+        ]
+        pointer_writes: list[tuple[int, int]] = []
+
+        def reserve(size: int, *, align: bool = True) -> int:
+            if align:
+                aligned = self._align_four(len(compact))
+                compact.extend(b"\0" * (aligned - len(compact)))
+            start = len(compact)
+            compact.extend(b"\0" * size)
+            return start
+
+        def copy_range(start: int, size: int, *, align: bool = True) -> int:
+            local = reserve(size, align=align)
+            compact[local : local + size] = old[start : start + size]
+            ranges.append((start, start + size, primary + local))
+            return primary + local
+
+        object_map: dict[int, int] = {}
+        pool_a_map: dict[int, int] = {}
+        for obj in objects:
+            new_obj = copy_range(obj, 0xE8)
+            object_map[obj] = new_obj
+            pool_a_map[obj + 0xA4] = new_obj + 0xA4
+
+        pool_b_map: dict[int, int] = {}
+        for obj in objects:
+            pool_b = self.u32(obj + 0x94)
+            pool_b_map[pool_b] = copy_range(pool_b, 0x44)
+
+        canonical_arrays: dict[bytes, int] = {}
+        pool_array_targets: dict[tuple[int, int], int] = {}
+        vertex_targets: dict[int, int] = {}
+        bytes_saved = 0
+
+        def intern_array(start: int, size: int) -> int:
+            nonlocal bytes_saved
+            if size == 0:
+                return primary + self._align_four(len(compact))
+            payload = old[start : start + size]
+            target = canonical_arrays.get(payload)
+            if target is None:
+                target = copy_range(start, size)
+                canonical_arrays[payload] = target
+            else:
+                bytes_saved += size
+                ranges.append((start, start + size, target))
+            return target
+
+        def pool_spans(pool: int) -> list[tuple[int, int, int]]:
+            spans = [(0, self.u32(pool + 0x2C) * 8, self.u32(pool))]
+            spans.extend(
+                (
+                    4 + index * 4,
+                    self.u16(pool + 0x30 + index * 2) * item_size,
+                    self.u32(pool + 4 + index * 4),
+                )
+                for index, item_size in enumerate(pool_sizes)
+            )
+            spans.extend(
+                (
+                    (0x24, self.u16(pool + 0x40) * 16, self.u32(pool + 0x24)),
+                    (0x28, self.u16(pool + 0x42) * 20, self.u32(pool + 0x28)),
+                )
+            )
+            return spans
+
+        for obj in objects:
+            for pool in (obj + 0xA4, self.u32(obj + 0x94)):
+                for field, size, source in pool_spans(pool):
+                    pool_array_targets[(pool, field)] = intern_array(
+                        source, size
+                    )
+            vertex = self.u32(obj + 0x98)
+            vertex_size = 4 + self.u32(vertex) * 8
+            vertex_targets[obj] = intern_array(vertex, vertex_size)
+
+        index_targets: dict[int, int] = {}
+        for obj in objects:
+            index_pool = self.u32(obj + 0x9C)
+            index_size = 0x68 + sum(
+                self.u16(index_pool + 8 + index * 2) * 4
+                for index in range(16)
+            )
+            object_tail = index_pool + index_size
+            tail_count = self.u16(object_tail)
+            block_size = (
+                index_size + 2 + ((tail_count | 1) * 2)
+            )
+            index_targets[obj] = copy_range(index_pool, block_size)
+
+        new_trailing = copy_range(trailing, secondary - trailing)
+
+        ranges.sort()
+        range_starts = [item[0] for item in ranges]
+
+        def map_primary_target(target: int) -> int:
+            index = bisect.bisect_right(range_starts, target) - 1
+            if index >= 0:
+                start, end, replacement = ranges[index]
+                if target < end:
+                    return replacement + target - start
+            raise ValueError(
+                f"GT1 primary compaction cannot map pointer {target:#x}"
+            )
+
+        def write_compact_pointer(field: int, target: int) -> None:
+            local = field - primary
+            struct.pack_into("<I", compact, local, target & 0xFFFFFFFF)
+            pointer_writes.append((field, target))
+
+        write_compact_pointer(primary + 8, new_trailing)
+        for index, obj in enumerate(objects):
+            new_obj = object_map[obj]
+            write_compact_pointer(primary + 0x0C + index * 4, new_obj)
+            for field in (4, 8):
+                target = self.u32(obj + field)
+                write_compact_pointer(
+                    new_obj + field,
+                    0 if target == 0 else object_map[target],
+                )
+            write_compact_pointer(
+                new_obj + 0x94, pool_b_map[self.u32(obj + 0x94)]
+            )
+            write_compact_pointer(new_obj + 0x98, vertex_targets[obj])
+            write_compact_pointer(new_obj + 0x9C, index_targets[obj])
+            old_index = self.u32(obj + 0x9C)
+            index_size = 0x68 + sum(
+                self.u16(old_index + 8 + pool_index * 2) * 4
+                for pool_index in range(16)
+            )
+            write_compact_pointer(
+                new_obj + 0xA0, index_targets[obj] + index_size
+            )
+
+            for old_pool, new_pool in (
+                (obj + 0xA4, pool_a_map[obj + 0xA4]),
+                (
+                    self.u32(obj + 0x94),
+                    pool_b_map[self.u32(obj + 0x94)],
+                ),
+            ):
+                for field, _, _ in pool_spans(old_pool):
+                    write_compact_pointer(
+                        new_pool + field,
+                        pool_array_targets[(old_pool, field)],
+                    )
+
+            new_index = index_targets[obj]
+            cursor = old_index + 0x68
+            new_cursor = new_index + 0x68
+            for index in range(16):
+                write_compact_pointer(
+                    new_index + 0x28 + index * 4, new_cursor
+                )
+                for _ in range(self.u16(old_index + 8 + index * 2)):
+                    write_compact_pointer(
+                        new_cursor, map_primary_target(self.u32(cursor))
+                    )
+                    cursor += 4
+                    new_cursor += 4
+
+        delta = len(compact) - (secondary - primary)
+        combined = bytearray(old[:primary] + compact + old[secondary:])
+
+        new_pointer_fields = {
+            field for field in old_pointer_fields if field < primary
+        }
+        new_pointer_fields.update(field for field, _ in pointer_writes)
+
+        for field in sorted(old_pointer_fields):
+            if primary <= field < secondary:
+                continue
+            new_field = field if field < primary else field + delta
+            target = struct.unpack_from("<I", old, field)[0]
+            if target == 0:
+                new_target = 0
+            elif primary <= target < secondary:
+                new_target = map_primary_target(target)
+            elif target >= secondary:
+                new_target = target + delta
+            else:
+                new_target = target
+            struct.pack_into("<I", combined, new_field, new_target)
+            new_pointer_fields.add(new_field)
+
+        self.data = combined
+        self.pointer_fields = new_pointer_fields
+        return (
+            primary,
+            secondary + delta,
+            models + delta,
+            tail + delta,
+            final + delta,
+            bytes_saved,
+        )
+
+    def convert_to_revision_31(self) -> tuple[bytes, dict[str, int]]:
+        primary = self.deserialize_dynamic_objects()
+        self.write_pointer(0x10, primary)
+        secondary = self.deserialize_primary(primary)
+        self.write_pointer(0x14, secondary)
+        models = self.deserialize_secondary(secondary)
+        self.write_pointer(0x18, models)
+        tail = self.deserialize_models(models)
+        self.link_secondary_to_models(secondary, models)
+        self.remap_texture_packets(primary, models)
+        final = self.deserialize_tail(tail)
+        if final >= len(self.data):
+            raise ValueError(
+                f"GT1 final course section begins outside the payload: "
+                f"{final:#x} >= {len(self.data):#x}"
+            )
+
+        (
+            primary,
+            secondary,
+            models,
+            tail,
+            final,
+            bytes_saved,
+        ) = self.compact_primary(primary, secondary, models, tail, final)
+
+        old = self.data
+        converted = bytearray(old[:0x1C] + b"\0" * 8 + old[0x1C:])
+        for field in self.pointer_fields:
+            target = struct.unpack_from("<I", old, field)[0]
+            converted_field = field + (8 if field >= 0x1C else 0)
+            converted_target = target + (8 if target >= 0x1C else 0)
+            struct.pack_into(
+                "<I", converted, converted_field, converted_target
+            )
+
+        # The fixed course header contains the starting-grid heading at +0x50
+        # and fifteen XYZ grid records from +0x58 through +0x114.  GT2 retained
+        # their layout but reversed the third world axis.  Shared High Speed
+        # Ring data proves every other component is byte-identical while these
+        # fields are the exact signed negation.  Leaving the GT1 signs intact
+        # starts every car below/beside the converted course even though the
+        # renderer and minimap have loaded the correct track.
+        for field in (0x50, *range(0x60, 0x109, 0x0C)):
+            value = struct.unpack_from("<I", converted, field)[0]
+            struct.pack_into("<I", converted, field, (-value) & 0xFFFFFFFF)
+
+        struct.pack_into("<H", converted, 0x0E, 31)
+        struct.pack_into("<I", converted, 0x1C, tail + 8)
+        struct.pack_into("<I", converted, 0x20, final + 8)
+        return bytes(converted), {
+            "primaryOffset": primary + 8,
+            "secondaryOffset": secondary + 8,
+            "modelsOffset": models + 8,
+            "tailOffset": tail + 8,
+            "finalOffset": final + 8,
+            "payloadSize": len(converted),
+            "pointerCount": len(self.pointer_fields),
+            "sharedRenderPoolBytesSaved": bytes_saved,
+            "relocatedTexturePackets": self.relocated_texture_packets,
+        }
+
+
+def convert_gt1_geometry(
+    data: bytes,
+    texture_relocation: TextureRelocation | None = None,
+) -> tuple[bytes, dict[str, int]]:
+    if not data.startswith(b"@(#)GT-PS"):
+        raise ValueError("GT1 geometry is not native GT-PS data")
+    revision = struct.unpack_from("<H", data, 14)[0]
+    if revision != 28:
+        raise ValueError(f"unsupported GT1 geometry revision: {revision}")
+    return Gt1CourseDeserializer(
+        data, texture_relocation
+    ).convert_to_revision_31()
+
+
+def prepare_output_directory(path: Path) -> None:
+    resolved = path.resolve()
+    work_root = (REPO / "work").resolve()
+    if work_root not in resolved.parents:
+        raise ValueError(f"refusing to clean output outside work/: {resolved}")
+    if resolved.exists():
+        shutil.rmtree(resolved)
+    resolved.mkdir(parents=True)
+
+
+def convert_ssr11(
+    disc_root: Path,
+    gt2_arcade_volume: Path,
+    output: Path,
+    smoke_variant: str | None,
+    smoke_targets: list[str],
+) -> tuple[
+    list[dict[str, object]],
+    dict[str, object],
+    dict[str, object],
+]:
+    archive, entries = read_gtarc(disc_root / "COURSE.DAT")
+    background_archive, background_entries = read_gtarc(
+        disc_root / "BG.DAT"
+    )
+    course_output = output / "patch" / "crsobj"
+    map_output = output / "patch" / "crsmap"
+    background_output = output / "patch" / "bgsobj"
+    course_output.mkdir(parents=True, exist_ok=True)
+    map_output.mkdir(parents=True, exist_ok=True)
+    background_output.mkdir(parents=True, exist_ok=True)
+    converted: list[dict[str, object]] = []
+    by_stem: dict[str, tuple[bytes, bytes, bytes]] = {}
+
+    source_sky_texture = unpack_entry(
+        background_archive,
+        background_entries[GT1_SSR11_SKY_INDEX * 2],
+    )
+    source_sky_model = unpack_entry(
+        background_archive,
+        background_entries[GT1_SSR11_SKY_INDEX * 2 + 1],
+    )
+    if not source_sky_model.startswith(b"@(#)GT-SKY"):
+        raise ValueError("GT1 SSR11 background is not native GT-SKY data")
+    source_sky_revision = struct.unpack_from("<H", source_sky_model, 14)[0]
+    if source_sky_revision != 2:
+        raise ValueError(
+            f"unsupported GT1 SSR11 sky revision: {source_sky_revision}"
+        )
+
+    reference_sky_model = unpack_entry(
+        background_archive,
+        background_entries[3 * 2 + 1],
+    )
+    sky_texture = convert_gt1_sky_texture_package(source_sky_texture)
+    sky_model, sky_model_conversion = convert_gt1_sky_model(
+        reference_sky_model,
+        source_sky_model,
+        read_gt2_gzip_member(
+            gt2_arcade_volume, "bgsobj/dawn.bso.gz"
+        ),
+    )
+    (background_output / f"{GT2_SSR11_SKY_STEM}.bsp.gz").write_bytes(
+        gzip.compress(sky_texture, compresslevel=9, mtime=0)
+    )
+    (background_output / f"{GT2_SSR11_SKY_STEM}.bso.gz").write_bytes(
+        gzip.compress(sky_model, compresslevel=9, mtime=0)
+    )
+    sky_metadata: dict[str, object] = {
+        "stem": GT2_SSR11_SKY_STEM,
+        "sourceBackgroundIndex": GT1_SSR11_SKY_INDEX,
+        "sourceName": GT1_SSR11_SKY_NAME,
+        "sourceTextureSize": len(source_sky_texture),
+        "textureSize": len(sky_texture),
+        "sourceModelSize": len(source_sky_model),
+        "modelSize": len(sky_model),
+        "sourceTextureSha256": hashlib.sha256(
+            source_sky_texture
+        ).hexdigest(),
+        "textureSha256": hashlib.sha256(sky_texture).hexdigest(),
+        "sourceModelSha256": hashlib.sha256(source_sky_model).hexdigest(),
+        "modelSha256": hashlib.sha256(sky_model).hexdigest(),
+        "modelBasis": "GT2 native dawn BSO layout with GT1 dawn3 colours",
+        "modelConversion": sky_model_conversion,
+    }
+
+    for stem, course_index, label in SSR11_VARIANTS:
+        source_texture = unpack_entry(archive, entries[course_index * 2])
+        texture, course_map, relocation = convert_gt1_texture_package(
+            source_texture
+        )
+        source_geometry = unpack_entry(
+            archive, entries[course_index * 2 + 1]
+        )
+        geometry, geometry_metadata = convert_gt1_geometry(
+            source_geometry, relocation
+        )
+        texture_name = f"{stem}.trp.gz"
+        geometry_name = f"{stem}.tro.gz"
+        (course_output / texture_name).write_bytes(
+            gzip.compress(texture, compresslevel=9, mtime=0)
+        )
+        (course_output / geometry_name).write_bytes(
+            gzip.compress(geometry, compresslevel=9, mtime=0)
+        )
+        (map_output / f"{stem}.tim.gz").write_bytes(
+            gzip.compress(course_map, compresslevel=9, mtime=0)
+        )
+        by_stem[stem] = (texture, geometry, course_map)
+        converted.append(
+            {
+                "stem": stem,
+                "label": label,
+                "sourceCourseIndex": course_index,
+                "sourceTextureSize": len(source_texture),
+                "textureSize": len(texture),
+                "sourceGeometrySize": len(source_geometry),
+                "geometrySize": len(geometry),
+                "sourceTextureSha256": hashlib.sha256(
+                    source_texture
+                ).hexdigest(),
+                "textureSha256": hashlib.sha256(texture).hexdigest(),
+                "courseMapSize": len(course_map),
+                "courseMapSha256": hashlib.sha256(course_map).hexdigest(),
+                "sourceGeometrySha256": hashlib.sha256(
+                    source_geometry
+                ).hexdigest(),
+                "geometrySha256": hashlib.sha256(geometry).hexdigest(),
+                "geometryConversion": geometry_metadata,
+            }
+        )
+
+    if smoke_variant is not None:
+        if smoke_variant not in by_stem:
+            raise ValueError(f"unknown SSR11 smoke variant: {smoke_variant}")
+        texture, geometry, course_map = by_stem[smoke_variant]
+        for smoke_target in smoke_targets:
+            (course_output / f"{smoke_target}.trp.gz").write_bytes(
+                gzip.compress(texture, compresslevel=9, mtime=0)
+            )
+            (course_output / f"{smoke_target}.tro.gz").write_bytes(
+                gzip.compress(geometry, compresslevel=9, mtime=0)
+            )
+            (map_output / f"{smoke_target}.tim.gz").write_bytes(
+                gzip.compress(course_map, compresslevel=9, mtime=0)
+            )
+            print(
+                f"staged {smoke_variant} over native smoke target "
+                f"crsobj/{smoke_target}"
+            )
+        (background_output / "speedsky.bsp.gz").write_bytes(
+            gzip.compress(sky_texture, compresslevel=9, mtime=0)
+        )
+        (background_output / "speedsky.bso.gz").write_bytes(
+            gzip.compress(sky_model, compresslevel=9, mtime=0)
+        )
+        print(
+            "staged GT1 SSR11 dawn3 background over native smoke target "
+            "bgsobj/speedsky"
+        )
+    menu_metadata = integrate_ssr11_arcade_menu(
+        disc_root, gt2_arcade_volume, output / "patch"
+    )
+    return converted, sky_metadata, menu_metadata
+
+
+def default_image() -> Path:
+    for candidate in (
+        REPO / GT1_IMAGE_NAME,
+        REPO.parents[1] / GT1_IMAGE_NAME,
+    ):
+        if candidate.is_file():
+            return candidate
+    return REPO / GT1_IMAGE_NAME
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--image", type=Path, default=default_image())
+    parser.add_argument("--disc-root", type=Path, default=REPO / "work" / "gt1-disc")
+    parser.add_argument(
+        "--output", type=Path, default=REPO / "work" / "gt1-converted"
+    )
+    parser.add_argument(
+        "--gt2-arcade-volume",
+        type=Path,
+        default=REPO / "work" / "arcade-disc" / "GT2.VOL",
+    )
+    parser.add_argument(
+        "--gt2-arcade-overlay",
+        type=Path,
+        default=REPO / "work" / "arcade-disc" / "GT2.OVL",
+    )
+    parser.add_argument(
+        "--smoke-variant",
+        choices=[item[0] for item in SSR11_VARIANTS],
+    )
+    parser.add_argument(
+        "--smoke-target",
+        action="append",
+        dest="smoke_targets",
+        help="Existing GT2 course stem temporarily replaced for native smoke testing.",
+    )
+    parser.add_argument("--extract-clean", action="store_true")
+    args = parser.parse_args()
+
+    image_digest = validate_gt1_image(args.image)
+    required_present = all(
+        (args.disc_root / name).is_file() for name in REQUIRED_DISC_FILES
+    )
+    if args.extract_clean or not required_present:
+        extract_image(args.image, args.disc_root, clean=True)
+    validate_disc_root(args.disc_root)
+
+    prepare_output_directory(args.output)
+    converted, sky, arcade_menu = convert_ssr11(
+        args.disc_root,
+        args.gt2_arcade_volume,
+        args.output,
+        args.smoke_variant,
+        args.smoke_targets or ["circuit"],
+    )
+    arcade_cars = tuple(
+        stage_gt1_arcade_car(
+            args.disc_root,
+            args.gt2_arcade_volume,
+            args.output / "patch",
+            definition,
+        )
+        for definition in GT1_ARCADE_CARS
+    )
+    arcade_overlay = patch_ssr11_arcade_overlay(
+        args.gt2_arcade_overlay,
+        args.output / "GT2.OVL",
+        arcade_cars,
+    )
+    patch = args.output / "GTPATCH.VOL"
+    write_volume(patch, members_from_directory(args.output / "patch"))
+    manifest = {
+        "formatVersion": 1,
+        "source": {
+            "serial": "SCUS-94194",
+            "region": "NTSC-U",
+            "imageSize": GT1_IMAGE_SIZE,
+            "imageSha256": image_digest,
+        },
+        "ssr11": converted,
+        "ssr11ArcadeSelectionEntry": GT1_ARCADE_SSR11_ENTRY,
+        "ssr11ArcadeMenu": arcade_menu,
+        "ssr11ArcadeOverlay": arcade_overlay,
+        "ssr11Sky": sky,
+        "arcadeCars": list(arcade_cars),
+        "smokeVariant": args.smoke_variant,
+        "smokeTargets": (
+            args.smoke_targets or ["circuit"]
+            if args.smoke_variant
+            else []
+        ),
+    }
+    (args.output / "manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(f"GT1 content patch ready: {patch}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

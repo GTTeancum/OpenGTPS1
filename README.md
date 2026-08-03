@@ -43,6 +43,58 @@ and the RecompOne-specific discoveries behind it. The
 [`modern renderer architecture`](docs/MODERN_RENDERER.md) defines the shared PC
 and original-Xbox direction.
 
+## Planned unified first-run installation
+
+The completed unified release will include a first-run preparation tool. It
+may be built into `GranTurismo2PC.exe` or shipped as a separate installer
+executable. Before either game mode can run, it will ask the user to locate
+images of all three supported US discs:
+
+- Gran Turismo 2 Simulation Disc (`SCUS-94488`, NTSC-U revision 2)
+- Gran Turismo 2 Arcade Mode Disc (`SCUS-94455`, NTSC-U)
+- Gran Turismo (`SCUS-94194`, NTSC-U)
+
+The preparation tool will validate all three images, extract the required
+files, convert Gran Turismo 1-exclusive cars, liveries, and tracks to the
+native Gran Turismo 2 formats, and build the deterministic unified `GT2.VOL`
+and loose-file installation. Source disc images are treated as read-only and
+are not copied into the completed installation.
+
+`GranTurismo2PC.exe` must validate the prepared installation on startup and
+must not open the game or either mode until conversion and merging have
+succeeded. If preparation is incomplete, missing, or damaged, it directs the
+user to the preparation tool instead. Later launches use the validated
+prepared data and do not request the discs again.
+
+This is a product requirement for the unified release, not the behavior of the
+current 0.8beta package described below. The current package still uses its
+separate Simulation-Disc setup script.
+
+The development conversion pipeline now validates the US Gran Turismo image
+and imports Special Stage Route 11, all three GT1-exclusive EUNOS ROADSTER
+Arcade families, and the GT1 Civic Racer as native GT2 data. It converts all
+six Route 11 variants and
+the authored
+`dawn3` background, preserves the exact `ARCADE.DAT` entry 81 selection art,
+and adds the Roadsters as the tenth through twelfth Class C entries with their
+original wordmarks and all twenty-three authored GT1 paint/livery palettes.
+The third entry is the six-palette 145 PS `EUNOS ROADSTER RS`, whose separate
+GT1 day/night models are structurally converted to native GT2 CDO/CNO data
+without substituting GT2 body geometry. The Civic Racer is a native tenth
+Class B entry with its unique body and all three turquoise, pink, and yellow
+GT1 liveries. The GT1 DB7 Coupe is a native ninth Class A entry with its exact
+selection artwork and all three white, burgundy, and deep-purple paints. The
+deterministic
+`GTPATCH.VOL` also carries sorted native Racing and Drift parameter records
+assembled from the matching GT2 V-Special chassis/suspension, S-Special
+wheel/tire package, GT1-equivalent Mazda brake conversion, and direct Roadster
+RS and Civic specifications. Menu-to-race smokes have run the track and all
+five cars
+under GT2's native AI controller
+without an
+unmapped call, managed exception, or software fault. Remaining exclusive cars
+and livery families are the next content milestone.
+
 ## Install the 0.8beta Windows release
 
 The prebuilt release requires:

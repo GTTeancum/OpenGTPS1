@@ -1,0 +1,30 @@
+# Unified title -> Arcade single-player Road Race -> Easy -> Class B.
+600+8=CROSS,START
+1380+4=CROSS
+1980+4=CROSS
+2380+4=CROSS
+2780+4=CROSS
+3060+4=DOWN
+3660+4=CROSS
+
+# Advance to the appended tenth Class B entry.
+4100+4=RIGHT
+4220+4=RIGHT
+4340+4=RIGHT
+4460+4=RIGHT
+4580+4=RIGHT
+4700+4=RIGHT
+4820+4=RIGHT
+4940+4=RIGHT
+5060+4=RIGHT
+5500+1=CAPTURE
+
+# Capture all three authored GT1 Civic Racer liveries.
+5700+4=DOWN
+6020+1=CAPTURE
+6220+4=DOWN
+6540+1=CAPTURE
+
+# The next car step must wrap the ten-entry native roster.
+6740+4=RIGHT
+7060+1=CAPTURE

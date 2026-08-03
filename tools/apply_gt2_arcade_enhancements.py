@@ -104,6 +104,36 @@ def main() -> int:
 """,
         "Arcade course-preview MDEC DMA completion wait",
     )
+    for original, extended, label in (
+        ("730", "33C0", "road-race forward"),
+        ("9F0", "36A0", "road-race reverse"),
+        ("CB0", "3980", "time-trial forward"),
+        ("FB0", "3CA0", "time-trial reverse"),
+        ("13F0", "3FC0", "two-player road"),
+    ):
+        replace_once(
+            OVERLAY2,
+            f"""        c.A0 = 0x80050000u;
+        c.A0 = c.A0 + 0x{original}u;
+""",
+            f"""        c.A0 = 0x80050000u;
+        c.A0 = c.A0 + 0x{extended}u;
+""",
+            f"GT1 SSR11 native {label} course table",
+        )
+    for register, original, extended, label in (
+        ("c.T1 = c.V1", "730", "33C0", "road-race forward selection"),
+        ("c.T0 = c.V1", "9F0", "36A0", "road-race reverse selection"),
+        ("c.T1 = c.V1", "CB0", "3980", "time-trial forward selection"),
+        ("c.T0 = c.V1", "FB0", "3CA0", "time-trial reverse selection"),
+        ("c.T0 = c.A0", "13F0", "3FC0", "two-player road selection"),
+    ):
+        replace_once(
+            OVERLAY2,
+            f"        {register} + 0x{original}u;\n",
+            f"        {register} + 0x{extended}u;\n",
+            f"GT1 SSR11 native {label} table lookup",
+        )
     replace_once(
         OVERLAY5,
         """    public static void func_800101B4(CpuContext c, IMemory m)

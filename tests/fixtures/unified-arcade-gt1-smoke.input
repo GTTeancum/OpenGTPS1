@@ -1,0 +1,22 @@
+# Unified title -> Arcade single-player Road Race on the conversion donor slot.
+600+8=CROSS,START
+1380+4=CROSS
+1980+4=CROSS
+2380+4=CROSS
+2780+4=CROSS
+3180+4=CROSS
+3600+4=CROSS
+4200+4=CROSS
+4800+4=CROSS
+4860+4=CROSS
+
+# Keep the countdown dismissed, let native AI drive the player vehicle, and
+# capture only live-race frames (not the automatic starting-grid stage shot).
+[race_1]
+0+8500=CROSS
+300+1=CAPTURE
+1000+1=CAPTURE
+2000+1=CAPTURE
+3000+1=CAPTURE
+6000+1=CAPTURE
+9000+1=CAPTURE
