@@ -61,9 +61,19 @@ Environment.SetEnvironmentVariable(
     "RECOMPONE_LOOSE_MANIFEST",
     Path.Combine("manifests", "simulation.json"));
 
-PreloadBundledNative("SDL2.dll");
-var memory = new PSMemory();
-UnifiedEntry.Run(memory, looseRoot);
+try
+{
+    PreloadBundledNative("SDL2.dll");
+    var memory = new PSMemory();
+    UnifiedEntry.Run(memory, looseRoot);
+}
+catch (Exception exception) when (headless)
+{
+    // Deterministic smoke tests must fail through their redirected stderr and
+    // exit code, never through a desktop Windows Error Reporting dialog.
+    Console.Error.WriteLine($"[Host] fatal headless exception:{Environment.NewLine}{exception}");
+    return 1;
+}
 return 0;
 
 static void PreloadBundledNative(string fileName)

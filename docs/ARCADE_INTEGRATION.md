@@ -117,8 +117,25 @@ The current conversion includes:
   burgundy, and deep-purple paints. GT1's Arcade DB7 body is byte-identical to
   its production DB7 body, so the converter uses GT2's native DB7 CDO/CNO
   container without substituting unrelated geometry;
+- the GT1 `s-pbn` IMPREZA Sedan WRX-STi version III as a native tenth Class A
+  entry, including the exact Subaru/Impreza WRX selection artwork, all three
+  authored liveries, structurally converted day/night models, and its
+  target-owned 1,220 kg chassis record;
+- the GT1 `t-oan` SOARER 2.5GT-T VVT-i as a native eleventh Class A entry,
+  including the exact Toyota/Soarer selection artwork, structurally converted
+  day/night models, and all three authored wine-red, yellow, and purple
+  palettes;
+- the GT1 `t-pnn` SUPRA RZ as a native twelfth Class A entry, including the
+  exact Toyota/Supra selection artwork and all three authored turquoise,
+  purple, and bronze liveries. Its body is reused only because GT1 proves the
+  complete model pair is byte-identical to the production Supra RZ;
+- the GT1 `n-13n` S13 SILVIA Q's 1800cc as a native thirteenth Class C entry,
+  including the exact named `n-13.tim` GT1 menu artwork and all three authored
+  wine-red, yellow, and green palettes. Its production Q's model and physical
+  records are reused only after byte-exact GT1 comparisons;
 - sorted insertion into both native `CarArcadeRacing` and `CarArcadeDrift`
-  tables, plus independent GT2 part records for the imported packed car ID;
+  tables, plus target-owned visual/body records and stock-compatible sharing
+  of byte-identical physical part records;
 - physics assembled from GT2's native conversions of the exact GT1 component
   signatures: V-Special chassis/suspension, S-Special wheel/tire package, and
   the Mazda brake signature shared by GT1's RX-7 Type-R family. The converter
@@ -171,6 +188,35 @@ Tahiti Road: auto-drive completes lap one in 1:32.603 and enters lap two in
 third. The full smoke is clean of unmapped calls, managed exceptions, and
 software faults.
 
+`tests/fixtures/unified-arcade-impreza-sti-v3-probe.input` captures the three
+GT1 Impreza liveries and verifies the ten-entry Class A wrap.
+`tests/fixtures/unified-arcade-impreza-sti-v3-race.input` reaches Tahiti Road,
+engages the original AI racing-line controller, renders the converted car and
+a complete six-car grid, completes lap one in 1:44.903, and enters lap two in
+third place. The full 9,000-poll smoke is clean of unmapped calls, managed
+exceptions, inflater faults, and software crashes.
+
+`tests/fixtures/unified-arcade-soarer-vvti-probe.input` captures all three GT1
+Soarer palettes and verifies the eleven-entry Class A wrap.
+`tests/fixtures/unified-arcade-soarer-vvti-race.input` then runs the converted
+body on Tahiti Road: auto-drive completes lap one in 1:40.356 and enters lap
+two in fourth place. The full 9,000-poll smoke is clean of unmapped calls,
+managed exceptions, inflater faults, and software crashes.
+
+`tests/fixtures/unified-arcade-supra-rz-probe.input` captures all three GT1
+Supra liveries and verifies the twelve-entry Class A wrap.
+`tests/fixtures/unified-arcade-supra-rz-race.input` then runs the imported
+palette package on Tahiti Road: auto-drive completes lap one in 1:33.067 and
+enters lap two in first place. The full 9,000-poll smoke is clean of unmapped
+calls, managed exceptions, inflater faults, and software crashes.
+
+`tests/fixtures/unified-arcade-silvia-qs-1800-probe.input` captures all three
+GT1 Silvia palettes and verifies the thirteen-entry Class C wrap.
+`tests/fixtures/unified-arcade-silvia-qs-1800-race.input` then runs the
+imported car on Tahiti Road: auto-drive completes lap one in 1:54.118 and
+enters lap two in second place. The full 9,000-poll smoke is clean of unmapped
+calls, managed exceptions, inflater faults, and software crashes.
+
 The Racing/Drift master tables must remain sorted by packed car ID. An early
 diagnostic build appended `a-ian`, so the binary-searching race loader missed
 the otherwise valid record and left the car stationary. Ordered insertion
@@ -180,6 +226,22 @@ LSD precedes Gear, Suspension, Intercooler, and Muffler even though the GTDT
 block directory places LSD after them. Correcting that non-isomorphic order
 and rerunning all three Roadsters removed an accidentally inflated RS lap time
 while retaining clean, mutually consistent driving behavior.
+
+Arcade expands `arcade_data.dat` into a fixed `0xB000`-byte workspace. A naive
+sixth-car conversion reached 45,258 bytes, overwrote the adjacent opponent
+pool, and produced a blank second grid record before the race loader faulted.
+Stock GT2 deliberately lets different cars reference byte-identical physical
+part records. The converter now interns those records by their consumed
+payload, retains target-owned visual/body data, and rejects any output larger
+than the native workspace. After the ninth imported car, the database is
+44,494 bytes, leaving 562 bytes of verified headroom.
+
+Car selection artwork is not limited to `ARCADE.DAT`. The converter also
+validates the US disc's `MENU_RAW.ARC` name table against `MENU_IMG.ARC` and
+can import an exact named 4-bit TIM directly. The mapping is direct—including
+the real `gt.ins` member at index zero—and is rejected if a name is absent,
+ambiguous, or not native 4-bit artwork. This supports GT1-exclusive and prize
+cars without synthesized wordmarks or unrelated family logos.
 
 Remaining GT1-exclusive cars, paint schemes, prize/Arcade liveries, and wheel
 variants still need conversion through the same content layer.

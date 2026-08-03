@@ -1,0 +1,30 @@
+# Unified title -> Arcade single-player Road Race -> Easy -> Class A.
+600+8=CROSS,START
+1380+4=CROSS
+1980+4=CROSS
+2380+4=CROSS
+2780+4=CROSS
+3660+4=CROSS
+
+# Advance to the appended eleventh Class A Soarer entry.
+4100+4=RIGHT
+4220+4=RIGHT
+4340+4=RIGHT
+4460+4=RIGHT
+4580+4=RIGHT
+4700+4=RIGHT
+4820+4=RIGHT
+4940+4=RIGHT
+5060+4=RIGHT
+5180+4=RIGHT
+5620+1=CAPTURE
+
+# Capture all three authored GT1 palettes.
+5820+4=DOWN
+6140+1=CAPTURE
+6340+4=DOWN
+6660+1=CAPTURE
+
+# The next car step must wrap the eleven-entry native roster.
+6860+4=RIGHT
+7180+1=CAPTURE

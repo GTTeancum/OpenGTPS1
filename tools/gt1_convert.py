@@ -29,6 +29,8 @@ REQUIRED_DISC_FILES = {
     "CAR.DAT": 16_379_904,
     "CARINF.DAT": 135_301,
     "COURSE.DAT": 23_969_792,
+    "MENU_IMG.ARC": 121_235_456,
+    "MENU_RAW.ARC": 294_076,
     "SYSTEM.DAT": 14_768,
 }
 
@@ -85,6 +87,11 @@ GT2_ARCADE_DRIFT_BLOCK = 33
 GT2_GTMODE_BLOCK_COUNT = 31
 GT2_ARCADE_BLOCK_COUNT = 34
 GT2_ARCADE_STRING_INDEX_POSITION = 0x208
+# The Arcade frontend expands this database into a fixed 0xB000-byte
+# workspace. Crossing that boundary overwrites the opponent-pool state used
+# while the six-car grid is assembled. Preserve the stock game's shared-part
+# model and reject conversions that would exceed the native allocation.
+GT2_ARCADE_DATABASE_SAFE_SIZE = 0xB000
 GT1_FIRST_ARCADE_CAR = {
     "stem": "a-ian",
     "displayName": "EUNOS ROADSTER",
@@ -290,6 +297,103 @@ GT1_IMPREZA_STI_V3_CAR = {
         (111, "a2bin"),
     ),
 }
+GT1_SOARER_VVTI_CAR = {
+    "stem": "t-oan",
+    "displayName": "SOARER 2.5GT-T VVT-i",
+    # GT1's Arcade Soarer has its own authored model quartet rather than a
+    # renamed copy of the production car. Preserve that body and its matching
+    # texture UVs through the structural GT-CAR-to-CDO/CNO converter.
+    "modelBasisStem": "tsoan",
+    "convertModel": True,
+    "physicsBasisStem": "tsoan",
+    "physicsPartBasis": {},
+    # Its serialized physical specification is byte-identical to GT1's
+    # production Soarer. The differences are identity, price, and strings.
+    "physicsExpectedDifferences": (
+        0x01,
+        0x184,
+        0x185,
+        0x186,
+        0x190,
+        0x192,
+    ),
+    "arcadeLogoEntry": 23,
+    "arcadeClass": 1,
+    "manufacturerLogoIndex": 31,
+    "ratings": (10, 8, 8),
+    "stats": (280, 6200, 378, 2400, 1560),
+    # Preserve the GT1 texture's wine-red, yellow, and purple palette IDs.
+    # These GT2 records provide matching native menu swatches/name records;
+    # the actual body palettes remain the converted GT1-authored CLUTs.
+    "paintSources": (
+        (101, "tsoan"),
+        (104, "tmr2n"),
+        (117, "t2vzr"),
+    ),
+}
+GT1_SUPRA_RZ_CAR = {
+    "stem": "t-pnn",
+    "displayName": "SUPRA RZ",
+    # GT1's Arcade Supra and production Supra RZ share the complete authored
+    # model pair. The imported value is its separate three-palette texture
+    # package and exact Arcade selection treatment.
+    "modelBasisStem": "tspnn",
+    "physicsBasisStem": "tspnn",
+    "physicsPartBasis": {},
+    # The serialized physical specification is byte-identical. Differences
+    # are limited to identity, price, and string-table references.
+    "physicsExpectedDifferences": (
+        0x01,
+        0x184,
+        0x185,
+        0x186,
+        0x190,
+        0x192,
+    ),
+    "arcadeLogoEntry": 22,
+    "arcadeClass": 1,
+    "manufacturerLogoIndex": 31,
+    "ratings": (10, 8, 8),
+    "stats": (280, 5600, 431, 3600, 1510),
+    # The actual turquoise, purple, and bronze body palettes come from GT1.
+    # These records provide native GT2 menu metadata for the same palette IDs;
+    # they do not replace or recolour the imported GT1-authored CLUTs.
+    "paintSources": (
+        (103, "t2m2n"),
+        (111, "t-rdr"),
+        (119, "t2vzr"),
+    ),
+}
+GT1_SILVIA_QS_1800_CAR = {
+    "stem": "n-13n",
+    "displayName": "S13 SILVIA Q's 1800cc",
+    # GT1 proves this Arcade composite shares the production Q's complete
+    # authored model pair. Its separate value is the three-palette texture
+    # package and original named GT Mode logo.
+    "modelBasisStem": "nq13n",
+    "physicsBasisStem": "nq13n",
+    "physicsPartBasis": {},
+    "physicsExpectedDifferences": (
+        0x01,
+        0x184,
+        0x185,
+        0x186,
+        0x188,
+        0x190,
+        0x192,
+        0x1A0,
+    ),
+    "menuLogoName": "n-13.tim",
+    "arcadeClass": 3,
+    "manufacturerLogoIndex": 20,
+    "ratings": (6, 8, 8),
+    "stats": (135, 6400, 159, 5200, 1090),
+    "paintSources": (
+        (101, "nq13n"),
+        (104, "nq23n"),
+        (108, "nq13n"),
+    ),
+}
 GT1_ARCADE_CARS = (
     GT1_FIRST_ARCADE_CAR,
     GT1_ROADSTER_ARCADE_CAR,
@@ -297,6 +401,9 @@ GT1_ARCADE_CARS = (
     GT1_CIVIC_RACER_CAR,
     GT1_DB7_COUPE_CAR,
     GT1_IMPREZA_STI_V3_CAR,
+    GT1_SOARER_VVTI_CAR,
+    GT1_SUPRA_RZ_CAR,
+    GT1_SILVIA_QS_1800_CAR,
 )
 
 SSR11_VARIANTS = (
@@ -498,10 +605,12 @@ def build_gt_zip(data: bytes) -> bytes:
     return b"@(#)GT-ZIP\0\0" + struct.pack("<I", len(data)) + compressed
 
 
-def read_gtarc(path: Path) -> tuple[bytes, list[GtArcEntry]]:
-    data = path.read_bytes()
+def parse_gtarc(
+    data: bytes,
+    source: str = "<memory>",
+) -> tuple[bytes, list[GtArcEntry]]:
     if data[:10] != b"@(#)GT-ARC":
-        raise ValueError(f"not an uncompressed GT-ARC archive: {path}")
+        raise ValueError(f"not an uncompressed GT-ARC archive: {source}")
     raw_file_count = struct.unpack_from("<H", data, 14)[0]
     # BG.DAT sets the archive flag in bit 15 while retaining the entry count
     # in the lower fifteen bits. COURSE.DAT leaves the flag clear.
@@ -520,11 +629,15 @@ def read_gtarc(path: Path) -> tuple[bytes, list[GtArcEntry]]:
             or offset + packed_size > len(data)
             or unpacked_size <= 0
         ):
-            raise ValueError(f"invalid GT-ARC entry {index} in {path}")
+            raise ValueError(f"invalid GT-ARC entry {index} in {source}")
         entries.append(
             GtArcEntry(index, offset, packed_size, unpacked_size)
         )
     return data, entries
+
+
+def read_gtarc(path: Path) -> tuple[bytes, list[GtArcEntry]]:
+    return parse_gtarc(path.read_bytes(), str(path))
 
 
 def unpack_entry(archive: bytes, entry: GtArcEntry) -> bytes:
@@ -532,6 +645,41 @@ def unpack_entry(archive: bytes, entry: GtArcEntry) -> bytes:
         archive[entry.offset : entry.offset + entry.packed_size],
         entry.unpacked_size,
     )
+
+
+def read_gt1_menu_car_logo(disc_root: Path, name: str) -> bytes:
+    """Read one original named GT1 car-logo TIM from the US menu archives."""
+
+    raw_archive, raw_entries = read_gtarc(disc_root / "MENU_RAW.ARC")
+    names_entry = raw_entries[1]
+    if names_entry.packed_size != names_entry.unpacked_size:
+        raise ValueError("GT1 menu-name table unexpectedly became compressed")
+    names_data = raw_archive[
+        names_entry.offset : names_entry.offset + names_entry.packed_size
+    ]
+    names = names_data.decode("ascii").splitlines()
+    matches = [index for index, candidate in enumerate(names) if candidate == name]
+    if len(matches) != 1 or matches[0] == 0:
+        raise ValueError(f"GT1 named car logo is absent or ambiguous: {name}")
+    # `gt.ins` is a real inner member at index zero. The name list therefore
+    # maps directly to inner archive indices; only its final empty line has no
+    # member.
+    image_index = matches[0]
+
+    outer, outer_entries = read_gtarc(disc_root / "MENU_IMG.ARC")
+    if len(outer_entries) != 6:
+        raise ValueError("GT1 MENU_IMG.ARC locale-bank count changed")
+    bank = outer_entries[0]
+    if bank.packed_size != bank.unpacked_size:
+        raise ValueError("GT1 menu image bank unexpectedly became compressed")
+    inner_data = outer[bank.offset : bank.offset + bank.packed_size]
+    inner, inner_entries = parse_gtarc(inner_data, "MENU_IMG.ARC bank 0")
+    if image_index >= len(inner_entries):
+        raise ValueError(f"GT1 named car logo index is absent: {name}")
+    logo = unpack_entry(inner, inner_entries[image_index])
+    if logo[:8] != b"\x10\0\0\0\x08\0\0\0":
+        raise ValueError(f"GT1 named car logo is not a 4-bit TIM: {name}")
+    return logo
 
 
 def convert_gt1_car_texture(data: bytes) -> bytes:
@@ -1676,6 +1824,35 @@ def append_gt2_arcade_car_physics(
     racing_refs: list[int] = []
     drift_refs: list[int] = []
     block_sources: dict[str, str] = {}
+    reused_part_records = 0
+    new_part_records = 0
+
+    def intern_part_record(
+        block_index: int,
+        record_size: int,
+        part: bytearray,
+    ) -> int:
+        """Reuse GT2-identical parts, ignoring the owning car identifier.
+
+        Stock GT2 Arcade cars deliberately share most physical part records;
+        their CarArcade references routinely point at a record owned by a
+        different car. Only the bytes after the four-byte identifier define
+        the consumed part. Mirroring that layout keeps the converted database
+        within the frontend's fixed workspace.
+        """
+
+        nonlocal reused_part_records, new_part_records
+        block = updated[block_index]
+        payload = bytes(part[4:])
+        for offset in range(0, len(block), record_size):
+            if block[offset + 4 : offset + record_size] == payload:
+                reused_part_records += 1
+                return offset // record_size
+        reference = len(block) // record_size
+        block.extend(part)
+        new_part_records += 1
+        return reference
+
     for block_index, record_size in enumerate(GT2_GTD_PART_RECORD_SIZES):
         basis_stem = part_basis.get(block_index, primary_stem)
         basis_car = _find_gt2_gtdt_car(
@@ -1716,8 +1893,7 @@ def append_gt2_arcade_car_physics(
             # Keep the imported car's own model/texture stem through race and
             # replay instead of retaining its GT2 basis car's visual ID.
             struct.pack_into("<I", part, 8, target_id)
-        new_ref = len(updated[block_index]) // record_size
-        updated[block_index].extend(part)
+        new_ref = intern_part_record(block_index, record_size, part)
         racing_refs.append(new_ref)
         drift_refs.append(new_ref)
         block_sources[str(block_index)] = basis_stem
@@ -1728,8 +1904,9 @@ def append_gt2_arcade_car_physics(
         stage_offset = 8 if block_index == 22 else 4
         drift_part[stage_offset] = 1
         drift_part[stage_offset + 4] = 6 if block_index == 22 else 7
-        drift_ref = len(updated[block_index]) // record_size
-        updated[block_index].extend(drift_part)
+        drift_ref = intern_part_record(
+            block_index, record_size, drift_part
+        )
         drift_refs[block_index] = drift_ref
 
     racing_serialized_refs = [
@@ -1767,6 +1944,12 @@ def append_gt2_arcade_car_physics(
     output = _rebuild_arcade_gtdt(
         arcade_data, [bytes(block) for block in updated]
     )
+    if len(output) > GT2_ARCADE_DATABASE_SAFE_SIZE:
+        raise ValueError(
+            "converted GT2 Arcade parameter database exceeds its native "
+            f"0x{GT2_ARCADE_DATABASE_SAFE_SIZE:X}-byte workspace: "
+            f"{len(output)} bytes"
+        )
     verified = _parse_gtdt_blocks(output, GT2_ARCADE_BLOCK_COUNT)
     if _find_gt2_gtdt_car(
         verified[GT2_ARCADE_RACING_BLOCK], 0x3C, target_stem
@@ -1794,6 +1977,10 @@ def append_gt2_arcade_car_physics(
         "driftPartRefsByBlock": drift_refs,
         "auxiliary": list(auxiliary),
         "auxiliaryChecks": auxiliary_checks,
+        "reusedPartRecords": reused_part_records,
+        "newPartRecords": new_part_records,
+        "databaseSize": len(output),
+        "databaseSafeSize": GT2_ARCADE_DATABASE_SAFE_SIZE,
         "uncompressedSha256": hashlib.sha256(output).hexdigest(),
     }
 
@@ -1904,11 +2091,24 @@ def stage_gt1_arcade_car(
             converted_model
         ).hexdigest()
 
-    arcade_archive, arcade_entries = read_gtarc(disc_root / "ARCADE.DAT")
-    logo_entry = int(definition["arcadeLogoEntry"])
-    if logo_entry >= len(arcade_entries):
-        raise ValueError(f"GT1 Arcade logo entry is absent: {logo_entry}")
-    source_logo = unpack_entry(arcade_archive, arcade_entries[logo_entry])
+    menu_logo_name = definition.get("menuLogoName")
+    logo_entry = definition.get("arcadeLogoEntry")
+    if menu_logo_name is not None:
+        source_logo = read_gt1_menu_car_logo(
+            disc_root, str(menu_logo_name)
+        )
+    else:
+        arcade_archive, arcade_entries = read_gtarc(
+            disc_root / "ARCADE.DAT"
+        )
+        logo_entry = int(logo_entry)
+        if logo_entry >= len(arcade_entries):
+            raise ValueError(
+                f"GT1 Arcade logo entry is absent: {logo_entry}"
+            )
+        source_logo = unpack_entry(
+            arcade_archive, arcade_entries[logo_entry]
+        )
     logo = normalize_arcade_car_logo(source_logo)
     arcade_output = patch_root / "arcade"
     arcade_output.mkdir(parents=True, exist_ok=True)
@@ -1963,6 +2163,7 @@ def stage_gt1_arcade_car(
         "nightTextureSha256": hashlib.sha256(converted_night).hexdigest(),
         "colorIds": list(converted_day[2 : 2 + converted_day[0]]),
         "arcadeLogoEntry": logo_entry,
+        "menuLogoName": menu_logo_name,
         "arcadeLogoIndex": logo_index,
         "arcadeLogoSha256": hashlib.sha256(logo).hexdigest(),
         "arcadeClass": definition["arcadeClass"],

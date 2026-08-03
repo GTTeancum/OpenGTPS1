@@ -39,7 +39,23 @@
     Civic Racer is integrated as a native tenth Class B entry with all three
     liveries and clean menu/race proof. The GT1 DB7 Coupe is integrated as a
     native ninth Class A entry with its exact selection artwork, all three
-    paints, correct nine-entry roster wrap, and clean full-lap AI smoke.
+    paints, correct nine-entry roster wrap, and clean full-lap AI smoke. The
+    GT1 IMPREZA Sedan WRX-STi version III is integrated as the tenth Class A
+    entry with its exact selection artwork, all three liveries, converted
+    day/night models, and a clean full-lap AI smoke. The GT1 SOARER 2.5GT-T
+    VVT-i is integrated as the eleventh Class A entry with exact selection
+    artwork, all three palettes, converted day/night models, correct
+    eleven-entry roster wrap, and a clean full-lap AI smoke. The GT1 SUPRA RZ
+    is integrated as the twelfth Class A entry with exact selection artwork,
+    all three liveries, correct twelve-entry roster wrap, and a clean full-lap
+    AI smoke. The GT1 S13 SILVIA Q's 1800cc is integrated as the thirteenth
+    Class C entry using its exact named GT1 menu TIM, all three palettes,
+    correct thirteen-entry roster wrap, and a clean full-lap AI smoke.
+    Imported Arcade physics must remain within the original `0xB000`-byte
+    database workspace by preserving GT2's native sharing of byte-identical
+    physical part records. Named GT1 car artwork must be imported directly
+    from the validated `MENU_RAW.ARC`/`MENU_IMG.ARC` pair; synthesized
+    wordmarks remain prohibited.
     Complete the remaining GT1-exclusive cars,
   prize and Arcade liveries, paint schemes, and wheel variants through the
   same deterministic `GTPATCH.VOL` layer.
