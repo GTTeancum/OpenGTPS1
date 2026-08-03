@@ -235,6 +235,16 @@ beyond the stock workspace boundary; it retains a complete six-car grid and
 exits cleanly without an unmapped call, managed exception, inflater fault, or
 software crash.
 
+`tests/fixtures/unified-arcade-celica-ssii-probe.input` captures the exact
+named Toyota/Celica GT1 art, the authored teal, purple, and yellow palettes,
+and the twelve-entry Class B wrap. The native structural converter preserves
+the GT1 model's UV layout rather than projecting it against GT2's later
+Celica texture package. `tests/fixtures/unified-arcade-celica-ssii-race.input`
+then completes lap one on Tahiti Road in 1:42.230 and enters lap two in third
+place. The full 9,000-poll smoke, plus a separate run through the interactive
+exception path, both exit cleanly without an unmapped call, managed exception,
+inflater fault, or software crash.
+
 The Racing/Drift master tables must remain sorted by packed car ID. An early
 diagnostic build appended `a-ian`, so the binary-searching race loader missed
 the otherwise valid record and left the car stationary. Ordered insertion
@@ -259,10 +269,12 @@ persistent database to a dedicated 1 MiB arena at
 `0x80200000`-`0x802FFFFF`, wholly above the retail game's first 2 MiB and
 below the other unified-runtime reservations. The same destination is applied
 to the recompiled guest source, and the converter rejects output larger than
-that arena. The eleventh imported car produces a 45,106-byte database, leaving
-1,003,470 bytes of deterministic expansion capacity. Its clean full-race
-smoke directly exercises the first 50 bytes that previously corrupted the
-opponent pool.
+that arena. The twelfth imported car produces a 45,518-byte database, leaving
+1,003,058 bytes of deterministic expansion capacity. Its clean full-race
+smoke exercises 462 bytes beyond the stock boundary without corrupting the
+opponent pool. The converter also refuses to grow a normal Arcade class beyond
+the highest proven thirteen-entry frontend capacity until the corresponding
+native arrays and call sites are explicitly audited.
 
 Car selection artwork is not limited to `ARCADE.DAT`. The converter also
 validates the US disc's `MENU_RAW.ARC` name table against `MENU_IMG.ARC` and

@@ -94,6 +94,10 @@ GT2_ARCADE_STRING_INDEX_POSITION = 0x208
 # and recompiled guest enhancement both relocate the loader destination.
 GT2_ARCADE_DATABASE_ADDRESS = 0x80200000
 GT2_ARCADE_DATABASE_SAFE_SIZE = 0x100000
+# Classes A-C have now been exercised with thirteen entries through complete
+# races. Later imports must not silently exceed that proven native frontend
+# capacity without an explicit array and call-site audit.
+GT2_ARCADE_PROVEN_CLASS_CAPACITY = 13
 GT1_FIRST_ARCADE_CAR = {
     "stem": "a-ian",
     "displayName": "EUNOS ROADSTER",
@@ -458,6 +462,47 @@ GT1_ALCYONE_SVX_S4_CAR = {
         (117, "sipzr"),
     ),
 }
+GT1_CELICA_SSII_CAR = {
+    "stem": "t-eln",
+    "displayName": "CELICA SS-II",
+    # GT1's Arcade Celica shares the production `tceln` model pair. Its
+    # separate value is the authored three-palette texture package and exact
+    # named menu treatment.
+    "modelBasisStem": "tceln",
+    # GT2's production Celica compiler uses different UV/layout assumptions
+    # despite the byte-identical GT1 source geometry. Preserve the GT1 packet
+    # UVs through the structural model converter so its Arcade texture maps
+    # correctly instead of projecting against GT2's later texture layout.
+    "convertModel": True,
+    "physicsBasisStem": "tceln",
+    "physicsPartBasis": {},
+    # The serialized physical payload is production-identical except for
+    # GT1's deliberate 1,220 kg chassis. The final differences are displayed
+    # power/torque statistics rather than consumed GT2 part data.
+    "physicsExpectedDifferences": (
+        0x01,
+        0x5A,
+        0x184,
+        0x185,
+        0x186,
+        0x190,
+        0x192,
+        0x198,
+        0x19A,
+        0x19B,
+    ),
+    "physicsU16Overrides": {3: {0x0E: 1220}},
+    "menuLogoName": "t-el.tim",
+    "arcadeClass": 2,
+    "manufacturerLogoIndex": 31,
+    "ratings": (7, 8, 8),
+    "stats": (170, 6600, 191, 4800, 1220),
+    "paintSources": (
+        (104, "tmr2n"),
+        (112, "m2lgn"),
+        (119, "t2vzr"),
+    ),
+}
 GT1_ARCADE_CARS = (
     GT1_FIRST_ARCADE_CAR,
     GT1_ROADSTER_ARCADE_CAR,
@@ -470,6 +515,7 @@ GT1_ARCADE_CARS = (
     GT1_SILVIA_QS_1800_CAR,
     GT1_LANCER_EVO_IV_GSR_CAR,
     GT1_ALCYONE_SVX_S4_CAR,
+    GT1_CELICA_SSII_CAR,
 )
 
 SSR11_VARIANTS = (
@@ -2972,6 +3018,15 @@ def patch_ssr11_arcade_overlay(
         if old_count <= 0:
             raise ValueError(
                 f"GT2 Arcade class {class_index} has no native roster"
+            )
+        if (
+            class_index <= 3
+            and old_count >= GT2_ARCADE_PROVEN_CLASS_CAPACITY
+        ):
+            raise ValueError(
+                f"GT2 Arcade class {class_index} already has {old_count} "
+                "cars; native frontend capacity above "
+                f"{GT2_ARCADE_PROVEN_CLASS_CAPACITY} is not proven"
             )
 
         while len(arcade) % 4:

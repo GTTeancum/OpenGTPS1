@@ -95,12 +95,15 @@ artwork and three wine-red, yellow, and green palettes. The GT1 Lancer
 Evolution IV GSR is the thirteenth Class A entry with its exact named logo and
 yellow, teal, and purple palettes. The GT1 Alcyone SVX S4 is the eleventh
 Class B entry with its exact named logo and white, blue, and purple palettes.
+The GT1 Celica SS-II is the twelfth Class B entry with its exact named menu
+art, structurally converted body/UV data, teal, purple, and yellow palettes,
+and target-owned 1,220 kg chassis record.
 The deterministic
 `GTPATCH.VOL` also carries sorted native Racing and Drift parameter records
 assembled from the matching GT2 V-Special chassis/suspension, S-Special
 wheel/tire package, GT1-equivalent Mazda brake conversion, and direct Roadster
-RS, Civic, DB7, Impreza, Soarer, Supra, Silvia, Lancer, and Alcyone
-specifications. Menu-to-race smokes have run the track and all eleven cars
+RS, Civic, DB7, Impreza, Soarer, Supra, Silvia, Lancer, Alcyone, and Celica
+specifications. Menu-to-race smokes have run the track and all twelve cars
 under GT2's native AI controller
 without an
 unmapped call, managed exception, or software fault. Remaining exclusive cars
