@@ -87,11 +87,13 @@ GT2_ARCADE_DRIFT_BLOCK = 33
 GT2_GTMODE_BLOCK_COUNT = 31
 GT2_ARCADE_BLOCK_COUNT = 34
 GT2_ARCADE_STRING_INDEX_POSITION = 0x208
-# The Arcade frontend expands this database into a fixed 0xB000-byte
-# workspace. Crossing that boundary overwrites the opponent-pool state used
-# while the six-car grid is assembled. Preserve the stock game's shared-part
-# model and reject conversions that would exceed the native allocation.
-GT2_ARCADE_DATABASE_SAFE_SIZE = 0xB000
+# Stock Arcade expands this database at 0x800F84C0, immediately before live
+# frontend state at 0x801034C0. The unified PC runtime already exposes the
+# original guest to an 8 MiB devkit RAM map, so reserve a dedicated 1 MiB
+# native guest arena above the retail 2 MiB address space. The overlay patch
+# and recompiled guest enhancement both relocate the loader destination.
+GT2_ARCADE_DATABASE_ADDRESS = 0x80200000
+GT2_ARCADE_DATABASE_SAFE_SIZE = 0x100000
 GT1_FIRST_ARCADE_CAR = {
     "stem": "a-ian",
     "displayName": "EUNOS ROADSTER",
@@ -394,6 +396,68 @@ GT1_SILVIA_QS_1800_CAR = {
         (108, "nq13n"),
     ),
 }
+GT1_LANCER_EVO_IV_GSR_CAR = {
+    "stem": "m-nnn",
+    "displayName": "LANCER Evolution IV GSR",
+    # The Arcade composite shares the production Evolution IV's complete
+    # authored model pair. Its exclusive content is the three-palette GT1
+    # texture package and its original named menu logo.
+    "modelBasisStem": "mlnnn",
+    "physicsBasisStem": "mlnnn",
+    "physicsPartBasis": {},
+    # The serialized physical specification is byte-identical. Differences
+    # are limited to identity, price, and string-table references.
+    "physicsExpectedDifferences": (
+        0x01,
+        0x184,
+        0x185,
+        0x186,
+        0x190,
+        0x192,
+    ),
+    "menuLogoName": "m-nn.tim",
+    "arcadeClass": 1,
+    "manufacturerLogoIndex": 19,
+    "ratings": (9, 10, 10),
+    "stats": (280, 6500, 353, 3000, 1350),
+    # Preserve the exact GT1 palette IDs. These Mitsubishi records supply
+    # matching native GT2 menu swatches and colour-name references only.
+    "paintSources": (
+        (104, "m2g5n"),
+        (112, "m2lgn"),
+        (119, "mgagn"),
+    ),
+}
+GT1_ALCYONE_SVX_S4_CAR = {
+    "stem": "s-v4n",
+    "displayName": "ALCYONE SVX S4",
+    # GT1's Arcade entry shares the production SVX S4's authored geometry.
+    # Preserve its separate three-palette texture package and original logo.
+    "modelBasisStem": "ssv4n",
+    "physicsBasisStem": "ssv4n",
+    "physicsPartBasis": {},
+    # The physical payload is byte-identical. The remaining differences are
+    # identity, price/string references, and a displayed-statistic field.
+    "physicsExpectedDifferences": (
+        0x01,
+        0x184,
+        0x185,
+        0x186,
+        0x190,
+        0x192,
+        0x1A0,
+    ),
+    "menuLogoName": "s-v4.tim",
+    "arcadeClass": 2,
+    "manufacturerLogoIndex": 28,
+    "ratings": (8, 7, 7),
+    "stats": (240, 6000, 309, 4800, 1590),
+    "paintSources": (
+        (49, "ssvxn"),
+        (115, "slgnn"),
+        (117, "sipzr"),
+    ),
+}
 GT1_ARCADE_CARS = (
     GT1_FIRST_ARCADE_CAR,
     GT1_ROADSTER_ARCADE_CAR,
@@ -404,6 +468,8 @@ GT1_ARCADE_CARS = (
     GT1_SOARER_VVTI_CAR,
     GT1_SUPRA_RZ_CAR,
     GT1_SILVIA_QS_1800_CAR,
+    GT1_LANCER_EVO_IV_GSR_CAR,
+    GT1_ALCYONE_SVX_S4_CAR,
 )
 
 SSR11_VARIANTS = (
@@ -1837,8 +1903,8 @@ def append_gt2_arcade_car_physics(
         Stock GT2 Arcade cars deliberately share most physical part records;
         their CarArcade references routinely point at a record owned by a
         different car. Only the bytes after the four-byte identifier define
-        the consumed part. Mirroring that layout keeps the converted database
-        within the frontend's fixed workspace.
+        the consumed part. Mirroring that layout avoids needless database
+        growth even with the unified port's expanded native guest arena.
         """
 
         nonlocal reused_part_records, new_part_records
@@ -2721,6 +2787,34 @@ def patch_ssr11_arcade_overlay(
         )
     memory_base = 0x80010000
     address_base = 0x80050000
+
+    # Stock code at 0x80013DDC constructs 0x800F84C0 with LUI/ADDIU before
+    # expanding `arcade_data.dat`. Relocate that persistent database into the
+    # unified port's reserved devkit-RAM arena. The following A1=0xB000 delay
+    # slot is intentionally unchanged: func_80076D14 overwrites A1 with A0
+    # before its first call, so it never acts as a size bound.
+    database_lui_offset = 0x3DDC
+    database_addiu_offset = 0x3DE0
+    expected_database_instructions = (0x3C048010, 0x248484C0)
+    actual_database_instructions = struct.unpack_from(
+        "<2I", arcade, database_lui_offset
+    )
+    if actual_database_instructions != expected_database_instructions:
+        raise ValueError(
+            "GT2 Arcade database destination instructions changed: "
+            f"{tuple(hex(value) for value in actual_database_instructions)}"
+        )
+    database_hi = (GT2_ARCADE_DATABASE_ADDRESS >> 16) & 0xFFFF
+    database_lo = GT2_ARCADE_DATABASE_ADDRESS & 0xFFFF
+    if database_lo >= 0x8000:
+        database_hi = (database_hi + 1) & 0xFFFF
+    struct.pack_into(
+        "<2I",
+        arcade,
+        database_lui_offset,
+        0x3C040000 | database_hi,
+        0x24840000 | database_lo,
+    )
     table_specs = (
         (
             "roadForward",
@@ -2962,6 +3056,15 @@ def patch_ssr11_arcade_overlay(
         },
         "tables": table_metadata,
         "carRosters": car_roster_metadata,
+        "arcadeDatabaseArena": {
+            "stockAddress": 0x800F84C0,
+            "address": GT2_ARCADE_DATABASE_ADDRESS,
+            "size": GT2_ARCADE_DATABASE_SAFE_SIZE,
+            "instructionOffsets": [
+                database_lui_offset,
+                database_addiu_offset,
+            ],
+        },
     }
 
 

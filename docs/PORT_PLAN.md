@@ -51,11 +51,21 @@
     AI smoke. The GT1 S13 SILVIA Q's 1800cc is integrated as the thirteenth
     Class C entry using its exact named GT1 menu TIM, all three palettes,
     correct thirteen-entry roster wrap, and a clean full-lap AI smoke.
-    Imported Arcade physics must remain within the original `0xB000`-byte
-    database workspace by preserving GT2's native sharing of byte-identical
-    physical part records. Named GT1 car artwork must be imported directly
-    from the validated `MENU_RAW.ARC`/`MENU_IMG.ARC` pair; synthesized
-    wordmarks remain prohibited.
+    The GT1 LANCER Evolution IV GSR is integrated as the thirteenth Class A
+    entry with its exact named menu TIM, all three palettes, correct roster
+    wrap, and a clean 9,000-poll race smoke. The GT1 ALCYONE SVX S4 is
+    integrated as the eleventh Class B entry with its exact named menu TIM,
+    all three palettes, correct roster wrap, and a clean 9,000-poll race
+    smoke.
+    Imported Arcade physics preserve GT2's native sharing of byte-identical
+    physical part records. The original `0xB000` database workspace has been
+    relocated into a dedicated 1 MiB native guest arena at `0x80200000`,
+    within the PC runtime's existing 8 MiB devkit RAM map and clear of retail
+    game state. The 45,106-byte eleven-car database has completed a full race
+    smoke 50 bytes beyond the old corruption boundary. Named GT1 car artwork
+    must be imported directly from the
+    validated `MENU_RAW.ARC`/`MENU_IMG.ARC` pair; synthesized wordmarks remain
+    prohibited.
     Complete the remaining GT1-exclusive cars,
   prize and Arcade liveries, paint schemes, and wheel variants through the
   same deterministic `GTPATCH.VOL` layer.

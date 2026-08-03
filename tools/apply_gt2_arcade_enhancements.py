@@ -93,6 +93,19 @@ def main() -> int:
     )
     replace_once(
         OVERLAY2,
+        """        c.A0 = 0x80100000u;
+        c.A0 = c.A0 - 0x7B40u;
+        c.A1 = 0u | 0xB000u;
+""",
+        """        // The unified runtime reserves one MiB of devkit guest RAM
+        // for the persistent merged Arcade parameter database.
+        c.A0 = 0x80200000u;
+        c.A1 = 0u | 0xB000u;
+""",
+        "Expanded Arcade parameter database arena",
+    )
+    replace_once(
+        OVERLAY2,
         """        L800266F4: ;
         c.V0 = m.ReadU8((c.S0 + 0x2Cu));
 """,

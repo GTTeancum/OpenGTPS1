@@ -217,6 +217,24 @@ imported car on Tahiti Road: auto-drive completes lap one in 1:54.118 and
 enters lap two in second place. The full 9,000-poll smoke is clean of unmapped
 calls, managed exceptions, inflater faults, and software crashes.
 
+`tests/fixtures/unified-arcade-lancer-evo-iv-gsr-probe.input` captures the
+exact named GT1 logo and all three yellow, teal, and purple Lancer palettes,
+then verifies the thirteen-entry Class A wrap.
+`tests/fixtures/unified-arcade-lancer-evo-iv-gsr-race.input` completes lap one
+on Tahiti Road in 1:39.859 and enters lap two with a complete six-car grid.
+The full 9,000-poll smoke is clean of unmapped calls, managed exceptions,
+inflater faults, and software crashes.
+
+`tests/fixtures/unified-arcade-alcyone-svx-s4-probe.input` captures the exact
+named GT1 logo and all three white, blue, and purple Alcyone palettes, then
+verifies the eleven-entry Class B wrap.
+`tests/fixtures/unified-arcade-alcyone-svx-s4-race.input` completes lap one on
+Tahiti Road in 1:43.229 and enters lap two in fifth place. This is the first
+full 9,000-poll race smoke with a 45,106-byte parameter database, 50 bytes
+beyond the stock workspace boundary; it retains a complete six-car grid and
+exits cleanly without an unmapped call, managed exception, inflater fault, or
+software crash.
+
 The Racing/Drift master tables must remain sorted by packed car ID. An early
 diagnostic build appended `a-ian`, so the binary-searching race loader missed
 the otherwise valid record and left the car stationary. Ordered insertion
@@ -227,14 +245,24 @@ block directory places LSD after them. Correcting that non-isomorphic order
 and rerunning all three Roadsters removed an accidentally inflated RS lap time
 while retaining clean, mutually consistent driving behavior.
 
-Arcade expands `arcade_data.dat` into a fixed `0xB000`-byte workspace. A naive
-sixth-car conversion reached 45,258 bytes, overwrote the adjacent opponent
-pool, and produced a blank second grid record before the race loader faulted.
-Stock GT2 deliberately lets different cars reference byte-identical physical
-part records. The converter now interns those records by their consumed
-payload, retains target-owned visual/body data, and rejects any output larger
-than the native workspace. After the ninth imported car, the database is
-44,494 bytes, leaving 562 bytes of verified headroom.
+Stock Arcade expands `arcade_data.dat` at `0x800F84C0` into a fixed
+`0xB000`-byte workspace. A naive sixth-car conversion reached 45,258 bytes,
+overwrote the adjacent opponent pool, and produced a blank second grid record
+before the race loader faulted. Stock GT2 deliberately lets different cars
+reference byte-identical physical part records. The converter now interns
+those records by their consumed payload and retains target-owned visual/body
+data.
+
+The unified PC runtime already supplies the original guest with an 8 MiB
+devkit RAM map. Its patched native Arcade overlay therefore relocates the
+persistent database to a dedicated 1 MiB arena at
+`0x80200000`-`0x802FFFFF`, wholly above the retail game's first 2 MiB and
+below the other unified-runtime reservations. The same destination is applied
+to the recompiled guest source, and the converter rejects output larger than
+that arena. The eleventh imported car produces a 45,106-byte database, leaving
+1,003,470 bytes of deterministic expansion capacity. Its clean full-race
+smoke directly exercises the first 50 bytes that previously corrupted the
+opponent pool.
 
 Car selection artwork is not limited to `ARCADE.DAT`. The converter also
 validates the US disc's `MENU_RAW.ARC` name table against `MENU_IMG.ARC` and

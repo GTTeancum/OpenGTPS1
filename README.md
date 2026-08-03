@@ -91,12 +91,16 @@ day/night body, and all three wine-red, yellow, and purple palettes. The GT1
 Supra RZ is the twelfth Class A entry with its exact selection artwork and
 three turquoise, purple, and bronze GT1 liveries. The GT1 S13 Silvia Q's
 1800cc is a native thirteenth Class C entry with its original named menu
-artwork and three wine-red, yellow, and green palettes. The deterministic
+artwork and three wine-red, yellow, and green palettes. The GT1 Lancer
+Evolution IV GSR is the thirteenth Class A entry with its exact named logo and
+yellow, teal, and purple palettes. The GT1 Alcyone SVX S4 is the eleventh
+Class B entry with its exact named logo and white, blue, and purple palettes.
+The deterministic
 `GTPATCH.VOL` also carries sorted native Racing and Drift parameter records
 assembled from the matching GT2 V-Special chassis/suspension, S-Special
 wheel/tire package, GT1-equivalent Mazda brake conversion, and direct Roadster
-RS, Civic, DB7, Impreza, Soarer, Supra, and Silvia specifications.
-Menu-to-race smokes have run the track and all nine cars
+RS, Civic, DB7, Impreza, Soarer, Supra, Silvia, Lancer, and Alcyone
+specifications. Menu-to-race smokes have run the track and all eleven cars
 under GT2's native AI controller
 without an
 unmapped call, managed exception, or software fault. Remaining exclusive cars
