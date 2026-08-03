@@ -94,6 +94,18 @@ GT2_ARCADE_STRING_INDEX_POSITION = 0x208
 # and recompiled guest enhancement both relocate the loader destination.
 GT2_ARCADE_DATABASE_ADDRESS = 0x80200000
 GT2_ARCADE_DATABASE_SAFE_SIZE = 0x100000
+# Keep the native car-selection archive and its four adjacent frontend
+# descriptors together inside a separate devkit-RAM MiB. The original
+# 0x66000-byte loader allocation is now too small for the thirteenth Class B
+# car: h-rxn grows arc_carlogo to 0x6630C bytes.
+GT2_ARCADE_FRONTEND_ANCHOR = 0x80410000
+GT2_ARCADE_FRONTEND_ARCHIVE_ADDRESS = (
+    GT2_ARCADE_FRONTEND_ANCHOR - 0x6AE0
+)
+GT2_ARCADE_FRONTEND_DESCRIPTOR_ADDRESS = (
+    GT2_ARCADE_FRONTEND_ANCHOR - 0x6B20
+)
+GT2_ARCADE_FRONTEND_ARCHIVE_SAFE_SIZE = 0xF0000
 # Classes A-C have now been exercised with thirteen entries through complete
 # races. Later imports must not silently exceed that proven native frontend
 # capacity without an explicit array and call-site audit.
@@ -238,6 +250,11 @@ GT1_CRX_91_SI_CAR = {
     "stem": "h-rxn",
     "displayName": "CIVIC CR-X '91 Si",
     "modelBasisStem": "hcrxn",
+    # The GT1 Arcade and production geometry is byte-identical, but GT2's
+    # production compiler uses a later texture/UV layout. Preserve the GT1
+    # packet UVs through the structural converter so the exclusive palette
+    # package maps to the authored body.
+    "convertModel": True,
     "physicsBasisStem": "hcrxn",
     "physicsPartBasis": {},
     # GT1's Arcade CR-X shares the production car's complete serialized
@@ -258,7 +275,7 @@ GT1_CRX_91_SI_CAR = {
     # GT2 Chassis records store vehicle weight as a u16 at byte 0x0E.
     # Author a target-owned record rather than retaining the 986 kg source.
     "physicsU16Overrides": {3: {0x0E: 970}},
-    "arcadeLogoEntry": 5,
+    "menuLogoName": "h-rx.tim",
     "arcadeClass": 2,
     "manufacturerLogoIndex": 10,
     "ratings": (6, 10, 9),
@@ -516,6 +533,7 @@ GT1_ARCADE_CARS = (
     GT1_LANCER_EVO_IV_GSR_CAR,
     GT1_ALCYONE_SVX_S4_CAR,
     GT1_CELICA_SSII_CAR,
+    GT1_CRX_91_SI_CAR,
 )
 
 SSR11_VARIANTS = (
@@ -2233,6 +2251,12 @@ def stage_gt1_arcade_car(
         ),
         logo,
     )
+    if len(merged_logos) > GT2_ARCADE_FRONTEND_ARCHIVE_SAFE_SIZE:
+        raise ValueError(
+            f"GT2 Arcade logo archive is {len(merged_logos):#x} bytes, "
+            "larger than the reserved native frontend arena "
+            f"{GT2_ARCADE_FRONTEND_ARCHIVE_SAFE_SIZE:#x}"
+        )
     (arcade_output / "arc_carlogo").write_bytes(merged_logos)
 
     staged_carinfo = patch_root / ".carinfoe"
@@ -2861,6 +2885,70 @@ def patch_ssr11_arcade_overlay(
         0x3C040000 | database_hi,
         0x24840000 | database_lo,
     )
+
+    # The stock frontend keeps arc_carlogo at 0x80129520 and four related
+    # descriptors immediately below it. Its loader allows exactly 0x66000
+    # bytes. The thirteenth Class B car grows the native archive to 0x6630C,
+    # so merely increasing the byte count would overwrite retail game state.
+    # Relocate the complete address family, not only the loader destination,
+    # into a dedicated devkit-RAM MiB and raise the loader bound to 0xF0000.
+    frontend_lui_instructions = (
+        (0x36FC, 0x3C028013),
+        (0x3888, 0x3C058013),
+        (0x3AE8, 0x3C048013),
+        (0x3B14, 0x3C048013),
+        (0x3B38, 0x3C048013),
+        (0x3CFC, 0x3C108013),
+        (0x3E54, 0x3C048013),
+        (0x3F28, 0x3C148013),
+        (0x3FBC, 0x3C038013),
+        (0x3FE8, 0x3C038013),
+        (0x4040, 0x3C038013),
+        (0x4440, 0x3C048013),
+        (0x45FC, 0x3C048013),
+        (0x4918, 0x3C058013),
+        (0x5174, 0x3C058013),
+        (0x8720, 0x3C058013),
+        (0x12A68, 0x3C058013),
+    )
+    frontend_anchor_hi = (
+        GT2_ARCADE_FRONTEND_ANCHOR >> 16
+    ) & 0xFFFF
+    for instruction_offset, expected_instruction in (
+        frontend_lui_instructions
+    ):
+        actual_instruction = struct.unpack_from(
+            "<I", arcade, instruction_offset
+        )[0]
+        if actual_instruction != expected_instruction:
+            raise ValueError(
+                "GT2 Arcade frontend address instruction changed at "
+                f"{instruction_offset:#x}: {actual_instruction:#x}"
+            )
+        struct.pack_into(
+            "<I",
+            arcade,
+            instruction_offset,
+            (actual_instruction & 0xFFFF0000) | frontend_anchor_hi,
+        )
+
+    frontend_size_instructions = (
+        (0x4920, 0x3C060006, 0x3C06000F),
+        (0x4928, 0x34C66000, 0x34C60000),
+    )
+    for instruction_offset, expected_instruction, replacement in (
+        frontend_size_instructions
+    ):
+        actual_instruction = struct.unpack_from(
+            "<I", arcade, instruction_offset
+        )[0]
+        if actual_instruction != expected_instruction:
+            raise ValueError(
+                "GT2 Arcade frontend size instruction changed at "
+                f"{instruction_offset:#x}: {actual_instruction:#x}"
+            )
+        struct.pack_into("<I", arcade, instruction_offset, replacement)
+
     table_specs = (
         (
             "roadForward",
@@ -3118,6 +3206,23 @@ def patch_ssr11_arcade_overlay(
             "instructionOffsets": [
                 database_lui_offset,
                 database_addiu_offset,
+            ],
+        },
+        "arcadeFrontendArena": {
+            "stockArchiveAddress": 0x80129520,
+            "stockArchiveSize": 0x66000,
+            "descriptorAddress": GT2_ARCADE_FRONTEND_DESCRIPTOR_ADDRESS,
+            "archiveAddress": GT2_ARCADE_FRONTEND_ARCHIVE_ADDRESS,
+            "archiveSize": GT2_ARCADE_FRONTEND_ARCHIVE_SAFE_SIZE,
+            "archiveEnd": (
+                GT2_ARCADE_FRONTEND_ARCHIVE_ADDRESS
+                + GT2_ARCADE_FRONTEND_ARCHIVE_SAFE_SIZE
+            ),
+            "addressInstructionOffsets": [
+                offset for offset, _ in frontend_lui_instructions
+            ],
+            "sizeInstructionOffsets": [
+                offset for offset, _, _ in frontend_size_instructions
             ],
         },
     }

@@ -61,15 +61,22 @@
     exact named menu TIM, all three authored palettes, structurally converted
     UV-preserving body, target-owned 1,220 kg chassis, correct roster wrap,
     and a clean 9,000-poll race smoke.
+    The GT1 CIVIC CR-X '91 Si is integrated as the thirteenth Class B entry
+    with its exact named menu TIM, all three authored palettes, structurally
+    converted UV-preserving body, target-owned 970 kg chassis, correct roster
+    wrap, and a clean 9,000-poll race smoke.
     Imported Arcade physics preserve GT2's native sharing of byte-identical
     physical part records. The original `0xB000` database workspace has been
     relocated into a dedicated 1 MiB native guest arena at `0x80200000`,
     within the PC runtime's existing 8 MiB devkit RAM map and clear of retail
-    game state. The 45,518-byte twelve-car database has completed a full race
-    smoke 462 bytes beyond the old corruption boundary. Normal Arcade classes
-    are capped at the proven thirteen-entry frontend size until their native
-    arrays are explicitly expanded. Named GT1 car artwork
-    must be imported directly from the
+    game state. The 45,930-byte thirteen-car database has completed a full
+    race smoke 874 bytes beyond the old corruption boundary. Normal Arcade
+    classes are capped at the proven thirteen-entry frontend size until their
+    arrays are explicitly expanded. The complete native `arc_carlogo`
+    frontend address family is relocated into the free `0x80400000`
+    devkit-RAM MiB with a validated `0xF0000` archive bound; this removes the
+    stock `0x66000` overflow exposed by the thirteenth Class B car. Named GT1
+    car artwork must be imported directly from the
     validated `MENU_RAW.ARC`/`MENU_IMG.ARC` pair; synthesized wordmarks remain
     prohibited.
     Complete the remaining GT1-exclusive cars,

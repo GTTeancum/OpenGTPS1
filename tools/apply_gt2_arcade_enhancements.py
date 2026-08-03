@@ -40,6 +40,45 @@ def replace_once(
     path.write_text(source.replace(old, new, 1), encoding="utf-8")
 
 
+def replace_exact_count(
+    path: Path,
+    old: str,
+    new: str,
+    expected_count: int,
+    description: str,
+) -> None:
+    source = path.read_text(encoding="utf-8")
+    matches = source.count(old)
+    if matches != expected_count:
+        raise RuntimeError(
+            f"{description}: expected {expected_count} source matches in "
+            f"{path}, found {matches}"
+        )
+    path.write_text(source.replace(old, new), encoding="utf-8")
+
+
+def apply_frontend_arena() -> None:
+    replace_exact_count(
+        OVERLAY2,
+        "0x80130000u",
+        "0x80410000u",
+        18,
+        "Expanded Arcade frontend address family",
+    )
+    replace_once(
+        OVERLAY2,
+        """        c.A2 = 0x00060000u;
+        c.A2 = c.A2 | 0x6000u;
+""",
+        """        // The merged native car-logo archive and its adjacent
+        // descriptors live in a dedicated devkit-RAM MiB.
+        c.A2 = 0x000F0000u;
+        c.A2 = c.A2 | 0x0000u;
+""",
+        "Expanded Arcade frontend archive bound",
+    )
+
+
 def main() -> int:
     replace_once(
         ENTRY,
@@ -104,6 +143,7 @@ def main() -> int:
 """,
         "Expanded Arcade parameter database arena",
     )
+    apply_frontend_arena()
     replace_once(
         OVERLAY2,
         """        L800266F4: ;

@@ -98,13 +98,16 @@ Class B entry with its exact named logo and white, blue, and purple palettes.
 The GT1 Celica SS-II is the twelfth Class B entry with its exact named menu
 art, structurally converted body/UV data, teal, purple, and yellow palettes,
 and target-owned 1,220 kg chassis record.
+The GT1 Civic CR-X '91 Si is the thirteenth Class B entry with its exact named
+Honda/CR-X art, structurally converted UV-preserving body, black, yellow, and
+purple palettes, and target-owned 970 kg chassis record.
 The deterministic
 `GTPATCH.VOL` also carries sorted native Racing and Drift parameter records
 assembled from the matching GT2 V-Special chassis/suspension, S-Special
 wheel/tire package, GT1-equivalent Mazda brake conversion, and direct Roadster
-RS, Civic, DB7, Impreza, Soarer, Supra, Silvia, Lancer, Alcyone, and Celica
-specifications. Menu-to-race smokes have run the track and all twelve cars
-under GT2's native AI controller
+RS, Civic, DB7, Impreza, Soarer, Supra, Silvia, Lancer, Alcyone, Celica, and
+CR-X specifications. Menu-to-race smokes have run the track and all thirteen
+cars under GT2's native AI controller
 without an
 unmapped call, managed exception, or software fault. Remaining exclusive cars
 and livery families are the next content milestone.

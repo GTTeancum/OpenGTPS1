@@ -245,6 +245,17 @@ place. The full 9,000-poll smoke, plus a separate run through the interactive
 exception path, both exit cleanly without an unmapped call, managed exception,
 inflater fault, or software crash.
 
+`tests/fixtures/unified-arcade-crx-91-si-probe.input` captures the exact named
+Honda/CR-X GT1 art, the authored black, yellow, and purple palettes, and the
+thirteen-entry Class B wrap. GT1 proves that `h-rxn` and production `hcrxn`
+share byte-identical day/night geometry; structural conversion is still
+required to preserve GT1's packet UVs against its exclusive texture package.
+`tests/fixtures/unified-arcade-crx-91-si-race.input` then completes lap one on
+Tahiti Road in 1:44.516 and enters lap two in fourth place with a complete
+six-car grid. The full 9,000-poll smoke and a separate uncaught interactive
+path both exit cleanly without an unmapped call, managed exception, inflater
+fault, or software crash.
+
 The Racing/Drift master tables must remain sorted by packed car ID. An early
 diagnostic build appended `a-ian`, so the binary-searching race loader missed
 the otherwise valid record and left the car stationary. Ordered insertion
@@ -269,12 +280,26 @@ persistent database to a dedicated 1 MiB arena at
 `0x80200000`-`0x802FFFFF`, wholly above the retail game's first 2 MiB and
 below the other unified-runtime reservations. The same destination is applied
 to the recompiled guest source, and the converter rejects output larger than
-that arena. The twelfth imported car produces a 45,518-byte database, leaving
-1,003,058 bytes of deterministic expansion capacity. Its clean full-race
-smoke exercises 462 bytes beyond the stock boundary without corrupting the
-opponent pool. The converter also refuses to grow a normal Arcade class beyond
+that arena. The thirteenth imported car produces a 45,930-byte database,
+leaving 1,002,646 bytes of deterministic expansion capacity. Its clean
+full-race smoke exercises 874 bytes beyond the stock boundary without
+corrupting the opponent pool. The converter also refuses to grow a normal
+Arcade class beyond
 the highest proven thirteen-entry frontend capacity until the corresponding
 native arrays and call sites are explicitly audited.
+
+Stock Arcade loads `arcade/arc_carlogo` at `0x80129520` with a
+`0x66000`-byte bound and keeps four related frontend descriptors in the
+immediately preceding 64 bytes. Adding the CR-X grows the native archive to
+`0x6630C`; the overrun visibly corrupts `CAR SELECTION` art and persists after
+wrapping to a stock car. The unified native overlay relocates the complete
+17-reference address family—not only the loader destination—into the free
+`0x80400000` devkit-RAM MiB. Descriptors begin at `0x804094E0`, the archive
+begins at `0x80409520`, and its validated `0xF0000`-byte bound ends at
+`0x804F9520`. The recompiled guest applies the same relocation, and the
+converter rejects a logo archive larger than the reserved bound. The
+corrected CR-X menu, stock-car wrap, full race, and uncaught interactive-path
+smokes are all clean.
 
 Car selection artwork is not limited to `ARCADE.DAT`. The converter also
 validates the US disc's `MENU_RAW.ARC` name table against `MENU_IMG.ARC` and
