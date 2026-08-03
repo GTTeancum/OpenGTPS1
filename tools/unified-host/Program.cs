@@ -67,14 +67,45 @@ try
     var memory = new PSMemory();
     UnifiedEntry.Run(memory, looseRoot);
 }
-catch (Exception exception) when (headless)
+catch (Exception exception)
 {
-    // Deterministic smoke tests must fail through their redirected stderr and
-    // exit code, never through a desktop Windows Error Reporting dialog.
-    Console.Error.WriteLine($"[Host] fatal headless exception:{Environment.NewLine}{exception}");
+    // Keep all managed failures out of Windows' opaque 0xC0434352 dialog.
+    // Interactive and headless runs both leave a durable diagnostic containing
+    // the exception type, message, inner exceptions, and complete stack trace.
+    string diagnostic = $"[Host] fatal {(headless ? "headless" : "interactive")} exception:" +
+        $"{Environment.NewLine}{exception}";
+    Console.Error.WriteLine(diagnostic);
+    WriteCrashDiagnostic(diagnostic);
     return 1;
 }
 return 0;
+
+static void WriteCrashDiagnostic(string diagnostic)
+{
+    try
+    {
+        string logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
+        Directory.CreateDirectory(logDirectory);
+        string timestamp = DateTimeOffset.Now.ToString("yyyyMMdd-HHmmss-fff");
+        string report =
+            $"UTC: {DateTimeOffset.UtcNow:O}{Environment.NewLine}" +
+            $"Command line: {Environment.CommandLine}{Environment.NewLine}" +
+            $"Runtime: {Environment.Version}{Environment.NewLine}" +
+            $"OS: {Environment.OSVersion}{Environment.NewLine}" +
+            $"{diagnostic}{Environment.NewLine}";
+        File.WriteAllText(
+            Path.Combine(logDirectory, $"GranTurismo2PC-crash-{timestamp}.log"),
+            report);
+        File.WriteAllText(
+            Path.Combine(logDirectory, "GranTurismo2PC-crash-latest.log"),
+            report);
+    }
+    catch
+    {
+        // The original exception is authoritative. Never replace it with a
+        // secondary failure while attempting to persist diagnostics.
+    }
+}
 
 static void PreloadBundledNative(string fileName)
 {
