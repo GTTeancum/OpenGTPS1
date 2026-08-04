@@ -240,16 +240,15 @@ Runtime proof currently stands at:
 | `s-pbn` | Pass | Pending dedicated GT Mode race | Pass |
 | `t-oan` | Pass | Pending dedicated GT Mode race | Pass |
 | `t-eln` | Pass | Pending dedicated GT Mode race | Pass |
-| `h-rxn` | Pending new GT Mode launch | Pending dedicated GT Mode race | Pass |
+| `h-rxn` | Pass | Pending dedicated GT Mode race | Pass |
 
 The Roadster proof uses the original dealer, garage, upgrade, event, physics,
 AI racing-line, result, and replay code. It completed cleanly with no unmapped
 call, managed exception, software fault, or persistent test-save mutation.
-The other four completed purchase proofs show their exact GT1 wordmarks,
+The other five completed purchase proofs show their exact GT1 wordmarks,
 archive-derived specs and 20,000-credit price, then the purchased identity as
-the active garage car. CR-X GT Mode launch is still pending because the local
-process runner was blocked before execution; its existing Arcade selection and
-full-race proof remains valid but is not represented as GT Mode proof.
+the active garage car. Each uses a transient test save and restores the
+original memory-card bytes after capture.
 
 Before release, each accepted distinct car must still have a complete
 Gran Turismo Mode upgrade applicability, event eligibility/class, results,

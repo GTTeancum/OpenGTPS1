@@ -9,9 +9,12 @@ param(
     [string]$ArtifactName,
     [ValidateSet('PS1 Quality', 'Enhanced', 'Custom')]
     [string]$Preset = 'Enhanced',
+    [ValidateSet('simulation', 'arcade')]
+    [string]$ExpectedGuest = 'arcade',
     [switch]$AiAutoDrive,
     [ValidateRange(2, 64)]
-    [int]$AiAutoDriveMaxEngagements = 2
+    [int]$AiAutoDriveMaxEngagements = 2,
+    [switch]$CreateTestSave
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,29 +75,47 @@ $env:RECOMPONE_UNTHROTTLED = '1'
 $env:RECOMPONE_GRAPHICS_PRESET_OVERRIDE = $Preset
 $env:RECOMPONE_EXIT_AFTER_INPUT_POLL = $ExitPoll.ToString()
 $env:RECOMPONE_NATIVE_WORLD_RENDERER = '0'
+if ($CreateTestSave) {
+    $env:RECOMPONE_GT2_CREATE_TEST_SAVE = '1'
+}
 if ($AiAutoDrive) {
     $env:RECOMPONE_GT2_AI_AUTODRIVE = '1'
     $env:RECOMPONE_GT2_AI_AUTODRIVE_MAX_ENGAGEMENTS =
         $AiAutoDriveMaxEngagements.ToString()
 }
 
+$cardAPath = Join-Path $runtimeDirectory 'carda.sav'
+$cardAOriginal = if ($CreateTestSave -and
+    (Test-Path -LiteralPath $cardAPath -PathType Leaf)) {
+    [IO.File]::ReadAllBytes($cardAPath)
+} else {
+    $null
+}
 $process = [Diagnostics.Process]::Start($start)
 $stdoutTask = $process.StandardOutput.ReadToEndAsync()
 $stderrTask = $process.StandardError.ReadToEndAsync()
 if (-not $process.WaitForExit(600000)) {
     $process.Kill($true)
     $process.WaitForExit()
+    if ($null -ne $cardAOriginal) {
+        [IO.File]::WriteAllBytes($cardAPath, $cardAOriginal)
+    }
     throw 'Unified fixture capture timed out'
 }
 $stdout = $stdoutTask.Result
 $stderr = $stderrTask.Result
+if ($null -ne $cardAOriginal) {
+    [IO.File]::WriteAllBytes($cardAPath, $cardAOriginal)
+}
 [IO.File]::WriteAllText((Join-Path $artifact 'stdout.log'), $stdout)
 [IO.File]::WriteAllText((Join-Path $artifact 'stderr.log'), $stderr)
 if ($process.ExitCode -ne 0) {
     throw "Unified fixture capture exited with code $($process.ExitCode)"
 }
-if ($stdout -notmatch '\[Host\] native unified guest=arcade ') {
-    throw 'Unified fixture did not hand off to the native Arcade guest'
+if ($stdout -notmatch (
+        '\[Host\] native unified guest=' + [regex]::Escape($ExpectedGuest) + ' ')) {
+    throw (
+        "Unified fixture did not hand off to the expected $ExpectedGuest guest")
 }
 if ($stderr -match 'unmapped call|Unhandled exception|unknown software exception') {
     throw "Unified fixture reported a runtime failure:`n$stderr"
@@ -130,7 +151,8 @@ if ($copied -eq 0) {
 Write-Output (
     "fixture=$fixturePath preset=$Preset captures=$copied artifact=$artifact")
 Write-Output (
-    "native_arcade=true auto_drive=$($AiAutoDrive.IsPresent) exit=$($process.ExitCode)")
+    "native_$ExpectedGuest=true auto_drive=$($AiAutoDrive.IsPresent) " +
+    "test_save=$($CreateTestSave.IsPresent) exit=$($process.ExitCode)")
 
 foreach ($name in @(
         'RECOMPONE_INPUT_FILE',
@@ -140,6 +162,7 @@ foreach ($name in @(
         'RECOMPONE_GRAPHICS_PRESET_OVERRIDE',
         'RECOMPONE_EXIT_AFTER_INPUT_POLL',
         'RECOMPONE_NATIVE_WORLD_RENDERER',
+        'RECOMPONE_GT2_CREATE_TEST_SAVE',
         'RECOMPONE_GT2_AI_AUTODRIVE',
         'RECOMPONE_GT2_AI_AUTODRIVE_MAX_ENGAGEMENTS')) {
     Remove-Item "Env:$name" -ErrorAction SilentlyContinue

@@ -89,7 +89,7 @@
     Gran Turismo Mode layer containing all 24 owned part families, stock and
     Racing Modification bodies, all seven localized databases and exact GT1
     wordmarks, and all 60 rotations of each regional used-car roster under
-    the correct manufacturer and color IDs. Five have clean GT Mode purchase
+    the correct manufacturer and color IDs. All six have clean GT Mode purchase
     and garage proof; the EUNOS Roadster additionally has clean upgrade,
     two-lap auto-drive, result, and replay proof. Full per-car eligibility,
     upgrade, save, and reload coverage remains a release gate. Complete the
