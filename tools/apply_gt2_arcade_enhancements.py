@@ -19,6 +19,12 @@ OVERLAY2 = (
     / "arcade-recompiled"
     / "gt2_arcade_overlay_2.cs"
 )
+OVERLAY4 = (
+    REPO
+    / "generated"
+    / "arcade-recompiled"
+    / "gt2_arcade_overlay_4.cs"
+)
 OVERLAY5 = (
     REPO
     / "generated"
@@ -113,6 +119,56 @@ def main() -> int:
         c.RA = m.ReadU32((c.SP + 0x10u));
 """,
         "Arcade CD DMA initialization",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.A0 = m.ReadU32(c.S1);
+        c.S2 = m.ReadU32((c.S1 + 0x4u));
+        c.RA = 0x80028E78u;
+""",
+        """        c.A0 = m.ReadU32(c.S1);
+        c.S2 = m.ReadU32((c.S1 + 0x4u));
+        RecompOne.Runtime.Sdk.GT2Compat.ResolveLiveryBodyAndPaletteA0S2(c);
+        c.RA = 0x80028E78u;
+""",
+        "Arcade race alternate native livery body and palette",
+    )
+    replace_once(
+        OVERLAY2,
+        """        c.S0 = m.ReadU32((c.V0 + 0x8Cu));
+        c.S3 = m.ReadU32((c.V0 + 0x4u));
+        c.S5 = m.ReadU32((c.V0 + 0x8u));
+        c.A2 = c.S0 + 0u;
+""",
+        """        c.S0 = m.ReadU32((c.V0 + 0x8Cu));
+        c.S3 = m.ReadU32((c.V0 + 0x4u));
+        c.S5 = m.ReadU32((c.V0 + 0x8u));
+        c.S0 = RecompOne.Runtime.Sdk.GT2Compat.ResolveLiveryBodyForColorId(
+            c.S0, c.S3);
+        c.A2 = c.S0 + 0u;
+""",
+        "Arcade frontend alternate native livery body",
+    )
+    replace_once(
+        OVERLAY4,
+        """        c.S6 = c.A0 + 0u;
+        m.WriteU32((c.SP + 0xBCu), c.S1);
+        c.S1 = c.A2 + 0u;
+        m.WriteU32((c.SP + 0xCCu), c.S5);
+        c.S5 = c.A3 + 0u;
+        m.WriteU32((c.SP + 0xE4u), c.A1);
+        c.A0 = c.A1 + 0u;
+""",
+        """        c.S6 = c.A0 + 0u;
+        RecompOne.Runtime.Sdk.GT2Compat.ResolveLiveryBodyAndPaletteA1A2(c);
+        m.WriteU32((c.SP + 0xBCu), c.S1);
+        c.S1 = c.A2 + 0u;
+        m.WriteU32((c.SP + 0xCCu), c.S5);
+        c.S5 = c.A3 + 0u;
+        m.WriteU32((c.SP + 0xE4u), c.A1);
+        c.A0 = c.A1 + 0u;
+""",
+        "Arcade showroom and replay alternate native livery body and palette",
     )
     replace_once(
         OVERLAY0,

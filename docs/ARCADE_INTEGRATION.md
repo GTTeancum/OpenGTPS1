@@ -77,6 +77,26 @@ Special Stage Route 11, and writes a deterministic `GTPATCH.VOL`. The patch is
 then materialized into Arcade's native `GT2.VOL`; it is not a host-rendered
 replacement or a runtime donor-course switch.
 
+Arcade remains the quickest native body/race conversion harness, but it is not
+the release data model by itself. The converter now also emits the gated
+`GTPATCH.GT1CARS.SIMULATION.VOL` layer. It contains six archive-proven
+distinct GT1 identities with native GT Mode car, part, color, used-car,
+day/night body, Racing Modification body, and localized wordmark records.
+Every imported identity is therefore acquired and owned through the original
+Gran Turismo Mode data path rather than a wrapper switch or Arcade-only alias.
+Archive-derived identity classification and livery-fold evidence are recorded
+in `docs/GT1_CONTENT_AUDIT.md`.
+
+The installer accepts independent ordered Simulation and Arcade patch-volume
+lists and computes the second native volume's source offset from the
+materialized Simulation volume size. This is required because GT Mode and
+Arcade databases are not interchangeable. Same-car livery folds are generated
+separately as gated
+`GTPATCH.LIVERY.ARCADE.VOL`/`GTPATCH.LIVERY.SIMULATION.VOL` layers. Its
+cross-mode native alternate-body resolver is implemented in the frontend,
+race, showroom, and replay paths; default activation remains gated on
+rebuilt-host interactive smoke coverage.
+
 The current conversion includes:
 
 - forward, reverse, Arcade forward, Arcade reverse, two-player, and HiFi

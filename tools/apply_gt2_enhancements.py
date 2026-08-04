@@ -22,6 +22,7 @@ def main() -> int:
     race = GENERATED / "gt2_overlay_0.cs"
     track = GENERATED / "gt2_overlay_2.cs"
     title = GENERATED / "gt2_overlay_1.cs"
+    showroom = GENERATED / "gt2_overlay_4.cs"
     entry = GENERATED / "Entry.cs"
 
     replace_once(
@@ -118,6 +119,59 @@ def main() -> int:
             m, c.S0, c.A0);
 """,
         "unified title selection dispatch",
+    )
+
+    replace_once(
+        race,
+        """        c.A0 = m.ReadU32(c.S1);
+        c.S2 = m.ReadU32((c.S1 + 0x4u));
+        c.RA = 0x80028ECCu;
+""",
+        """        c.A0 = m.ReadU32(c.S1);
+        c.S2 = m.ReadU32((c.S1 + 0x4u));
+        RecompOne.Runtime.Sdk.GT2Compat.ResolveLiveryBodyAndPaletteA0S2(c);
+        c.RA = 0x80028ECCu;
+""",
+        "race alternate native livery body and palette",
+    )
+
+    replace_once(
+        track,
+        """        c.S0 = m.ReadU32((c.V0 + 0x8Cu));
+        c.S3 = m.ReadU32((c.V0 + 0x4u));
+        c.S5 = m.ReadU32((c.V0 + 0x8u));
+        c.A2 = c.S0 + 0u;
+""",
+        """        c.S0 = m.ReadU32((c.V0 + 0x8Cu));
+        c.S3 = m.ReadU32((c.V0 + 0x4u));
+        c.S5 = m.ReadU32((c.V0 + 0x8u));
+        c.S0 = RecompOne.Runtime.Sdk.GT2Compat.ResolveLiveryBodyForColorId(
+            c.S0, c.S3);
+        c.A2 = c.S0 + 0u;
+""",
+        "frontend alternate native livery body",
+    )
+
+    replace_once(
+        showroom,
+        """        c.S6 = c.A0 + 0u;
+        m.WriteU32((c.SP + 0xBCu), c.S1);
+        c.S1 = c.A2 + 0u;
+        m.WriteU32((c.SP + 0xCCu), c.S5);
+        c.S5 = c.A3 + 0u;
+        m.WriteU32((c.SP + 0xE4u), c.A1);
+        c.A0 = c.A1 + 0u;
+""",
+        """        c.S6 = c.A0 + 0u;
+        RecompOne.Runtime.Sdk.GT2Compat.ResolveLiveryBodyAndPaletteA1A2(c);
+        m.WriteU32((c.SP + 0xBCu), c.S1);
+        c.S1 = c.A2 + 0u;
+        m.WriteU32((c.SP + 0xCCu), c.S5);
+        c.S5 = c.A3 + 0u;
+        m.WriteU32((c.SP + 0xE4u), c.A1);
+        c.A0 = c.A1 + 0u;
+""",
+        "showroom and replay alternate native livery body and palette",
     )
 
     replace_once(

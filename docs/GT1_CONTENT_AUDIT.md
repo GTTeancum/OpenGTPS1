@@ -1,0 +1,269 @@
+# GT1 content audit
+
+## Authority
+
+Gran Turismo 1 content is approved for conversion only when it is present in
+the supplied US disc archives and can be compared directly with the supplied
+US Gran Turismo 2 archives. Web lists, recollections, screenshots, and
+hand-authored compatibility lists are not evidence for an import.
+
+The reproducible audit is implemented by
+`tools/gt1_gt2_vol_inventory.py`. Its current source set is:
+
+| Source | Size | SHA-256 |
+| --- | ---: | --- |
+| GT1 `CARINF.DAT` | 135,301 | `0f98c1c75391adb064eceae901065bc38dcea9985fc62b3a0bc4a6ed9ce25f22` |
+| GT1 `CAR.DAT` | 16,379,904 | `674f872d6a71a6e0d1d0fea08918970db2d903f2e25de80d4e0ded7c1ef83792` |
+| GT2 Simulation `GT2.VOL` | 488,241,152 | `9630aad04cabf50ad702a3dbbce77069153748385bcffc02015797a0c708eedd` |
+| GT2 Arcade `GT2.VOL` | 213,596,160 | `8d441307bc5dd11e36b8098f971bcbcfb4047fa3b7bcd8d291d0a5e9810e2f1f` |
+
+The tool reads GT1's SPEC and COLOR records from `CARINF.DAT`, all day/night
+model and texture members from `CAR.DAT`, and GT2's `.carinfoe`, `.carcolor`,
+`.cclatain`, GT Mode parameter database, Arcade parameter database, and
+`carobj` members from both volumes. It hashes the archive payloads and decoded
+or converted model, bitmap, and palette data. A generated detailed JSON report
+is kept under `work/gt1-vol-audit/` and is deliberately not a hand-maintained
+source list.
+
+Current database counts are 178 GT1 SPEC records, 344 GT1 graphic stems, 1,110
+GT2 car-info records, 618 GT2 GT Mode car records, and 63 stock GT2 Arcade car
+records. GT1 and GT2 share 302 `carobj` stems.
+
+## Classification rules
+
+Each candidate must be placed into one of these implementation classes before
+conversion:
+
+1. **Existing GT2 car with additional GT1 visual payloads.** Keep one
+   purchasable/prize/garage identity. Extend that car's color/livery choices
+   and preserve the GT1 body, indexed bitmap, and palettes needed by those
+   choices. Do not create a duplicate customer-visible car.
+2. **Different GT1 stem with physically and geometrically equivalent GT2
+   target.** Fold the GT1 visual choices into the proven target car. Matching
+   names are not sufficient; the GT1 physical fingerprint and authored model
+   relationship must support the fold.
+3. **Distinct car candidate.** Create a new GT2 car only after its GT1 SPEC
+   record and visual members prove that it is not merely another color or
+   livery of an existing GT2 car.
+4. **Graphics-only record.** Do not expose it as a car until a consumed GT1
+   specification or a proven GT2 body relationship establishes its role.
+
+For the same car identity, a GT1 color ID absent from that GT2 entry is the
+authoritative signal that the GT1 choice must be ported. This applies whether
+the entry is a production, LM, race, or prize car. Texture, bitmap, palette,
+and model comparisons determine whether the additional choice can be appended
+to GT2's existing CDP or requires an alternate native body; they do not veto a
+database-qualified color.
+
+The current source databases produce 34 same-car folds containing 51 GT1-only
+color IDs:
+
+| Stem | GT1 IDs | GT2 IDs | IDs to port |
+| --- | --- | --- | --- |
+| `aminn` | 49, 52, 53, 98, 108, 112, 114, 116 | 49, 52, 54, 98, 104, 109, 112, 114, 116 | 53, 108 |
+| `amisn` | 49, 53, 98, 101, 110, 113, 114, 115 | 49, 54, 98, 101, 109, 113, 114, 115 | 53, 110 |
+| `as16n` | 53, 98 | 54, 98 | 53 |
+| `d-phr` | 104, 117 | 52 | 104, 117 |
+| `dvpgn` | 98, 113 | 52, 54, 98 | 113 |
+| `dvprn` | 98, 113 | 54, 98 | 113 |
+| `hcrxn` | 49, 54, 98, 108 | 49, 54, 98, 109 | 108 |
+| `hpnen` | 49, 51, 52, 54, 98, 101, 109, 115 | 49, 50, 53, 54, 98, 100, 101, 108, 109, 113, 115 | 51, 52 |
+| `hpnvn` | 49, 51, 52, 54, 98, 101 | 49, 50, 53, 54, 98, 100 | 51, 52, 101 |
+| `ld7cn` | 52, 53, 54, 98, 101, 104, 109 | 52, 53, 54, 98, 101, 109 | 104 |
+| `ld7vn` | 52, 53, 54, 98, 101, 104, 109 | 52, 53, 54, 98, 101, 109 | 104 |
+| `mgnon` | 49, 52, 54, 98, 108, 113 | 49, 52, 54, 98, 109 | 108, 113 |
+| `mgntn` | 49, 52, 54, 98, 108, 113 | 49, 52, 54, 98, 109 | 108, 113 |
+| `mgoon` | 49, 52, 54, 98, 101, 113 | 49, 52, 54, 98, 101, 115 | 113 |
+| `mgotn` | 49, 52, 54, 98, 101, 113 | 49, 52, 54, 98, 101, 115 | 113 |
+| `mmgrn` | 49, 52, 54, 98, 101, 109, 113 | 49, 53, 54, 98, 101, 108, 113 | 52, 109 |
+| `n180n` | 49, 53, 54, 98, 113 | 49, 53, 54, 98 | 113 |
+| `nm32n` | 49, 52, 53, 54, 98, 111, 115 | 49, 52, 54, 55, 98, 109, 111, 115 | 53 |
+| `nt32n` | 49, 50, 52, 53, 54, 98, 111, 115 | 49, 51, 52, 53, 54, 55, 98, 109, 111, 115 | 50 |
+| `sipan` | 49, 52, 54, 98, 113 | 49, 52, 54, 101, 115 | 98, 113 |
+| `sipbn` | 49, 52, 54, 112 | 49, 52, 54 | 112 |
+| `sipcn` | 52, 54, 98, 113 | 52, 54, 101, 115 | 98, 113 |
+| `sipdn` | 49, 52, 54, 112, 113 | 49, 52, 54, 115 | 112, 113 |
+| `siprn` | 49, 104, 113 | 49, 104, 115 | 113 |
+| `sipsn` | 49, 52, 98 | 49, 52, 101 | 98 |
+| `siptn` | 49, 52, 98 | 49, 52, 101 | 98 |
+| `sipwn` | 52, 54, 98, 113 | 52, 54, 101, 115 | 98, 113 |
+| `sipzn` | 49, 52, 54, 98, 113 | 49, 52, 54, 101, 115 | 98, 113 |
+| `tcegn` | 49, 52, 53, 54, 98, 109 | 49, 52, 54, 98, 107, 113 | 53, 109 |
+| `tceln` | 49, 52, 53, 54, 98, 109 | 49, 52, 54, 98, 107, 113 | 53, 109 |
+| `tlvon` | 49, 54, 98 | 49, 98 | 54 |
+| `tsplr` | 108, 113 | 108 | 113 |
+| `ttron` | 49, 54, 98 | 49, 98 | 54 |
+| `v-rbr` | 99, 109 | 98, 108 | 99, 109 |
+
+## Proven folds
+
+The following five current Arcade imports have a GT1 physical fingerprint and
+authored model relationship that point to an existing GT2 GT Mode car. Their
+GT1 paints/liveries must be folded into the target rather than remain separate
+customer-visible cars:
+
+| GT1 stem and archive name | Existing GT2 target | GT1 embedded paint IDs |
+| --- | --- | --- |
+| `l-7cn` DB7 COUPE | `ld7cn` | 49, 101, 117 |
+| `m-nnn` LANCER EvolutionlV GSR | `mlnnn` | 104, 112, 119 |
+| `n-13n` S13 SILVIA Q's 1800cc | `nq13n` | 101, 104, 108 |
+| `s-v4n` ALCYONE SVX S4 | `ssv4n` | 49, 115, 117 |
+| `t-pnn` SUPRA RZ | `tspnn` | 103, 111, 119 |
+
+Their existing separate Arcade entries are conversion prototypes, not the
+final unified data model.
+
+## Cerbera LM finding
+
+The supplied archives confirm the overlooked Cerbera LM artwork:
+
+- GT1 stem `v-rbr` is `Cerbera LM Edition` and contains two embedded visual
+  choices with IDs 99 and 109.
+- GT2 stem `v-rbr` is `[R]TVR Cerbera LM Edition` and contains two choices
+  with IDs 98 and 108.
+- Neither converted GT1 day palette matches either native GT2 day palette.
+- The converted GT1 and native GT2 indexed body bitmaps are different.
+- Only 4,875 of 57,344 decoded body-bitmap pixels (8.50%) retain the same
+  four-bit index. Every GT2 pixel index maps to all 16 GT1 indices somewhere
+  in the bitmap, ruling out a global palette/index permutation.
+- The GT1 model converts successfully, but is not byte-identical to GT2's
+  model.
+- The Simulation and Arcade volumes contain the same GT2 `v-rbr` assets, so
+  the missing GT1 artwork is not hiding on the other GT2 disc.
+
+Therefore the GT1 `v-rbr` package is additional authored livery/body artwork
+for the existing GT2 Cerbera LM. It must be exposed as extra livery choices
+on that car. It must not overwrite GT2's artwork and must not become a second
+Cerbera LM entry.
+
+GT2's native CDP texture stores one shared indexed bitmap plus multiple
+palettes. Since both the bitmap and model differ here, appending two palettes
+to GT2's existing CDP would not reproduce the GT1 liveries. The integrated
+implementation needs an alternate native body/texture asset selected by the
+extended livery index while retaining one car identity and one saved-garage
+record.
+
+The converter now produces that data shape for all 34 entries in gated
+`GTPATCH.LIVERY.ARCADE.VOL` and `GTPATCH.LIVERY.SIMULATION.VOL` layers:
+
+- `v-rbr` remains the only customer-visible car identity; a hidden `v1rbr`
+  car-info record gives GT2's original archive loader a native index for the
+  alternate body without adding a dealership, prize, garage, or Arcade entry;
+- its two original GT2 choices remain first and GT1 IDs 99 and 109 are
+  appended as choices three and four;
+- the exact converted GT1 day/night texture and model members are stored under
+  hidden body stem `v1rbr`;
+- `.gtlivery` version 3 contains 51 explicit mappings from each extended car
+  color index and authoritative color ID to its hidden body and original GT1
+  palette index. For `v-rbr`, indices 2 and 3 map to `v1rbr` palettes 0 and
+  1; and
+- the converted day and night models are 20,032 and 21,004 bytes,
+  respectively, both within the original frontend's audited `0x6000`-byte
+  native model slot.
+
+The native resolver is now wired into both executables' frontend color-ID
+path, race body/palette path, and showroom/replay body/palette path. The
+installer enables the layers atomically for Simulation and Arcade, requires
+their 51-record tables to be byte-identical, and installs the validated table
+as `GTLIVERY.BIN`. The fold layers remain excluded from the default unified
+install until the rebuilt host passes the required interactive smoke matrix.
+This gate prevents an older executable from treating color indices 2 and 3 as
+out-of-range palettes on its original two-palette `v-rbr` body.
+
+The same database rule imports `tsplr` ID 113 as the second Castrol Supra GT
+choice and covers the other 48 variants listed above. Each gated layer now
+contains 136 converted day/night car assets, 34 hidden loader-only car-info
+records, the 34 extended customer-visible records, `.carcolor`, and the
+51-record `.gtlivery` table. Conversion fails unless every target index and
+hidden-body palette resolves back to the same authoritative color ID.
+
+## Distinct-car Gran Turismo Mode layer
+
+The archive comparison produces 16 distinct-car candidates:
+
+`a-ian`, `amian`, `h-rxn`, `h-vrn`, `hnslr`, `n-15r`, `n-32n`, `n-33n`,
+`nl33r`, `s-pbn`, `t-eln`, `t-hvr`, `t-oan`, `t-plr`, `t-ron`, and `tceen`.
+
+Six candidates have a consumed GT1 SPEC record, complete day/night assets,
+nonzero archive price, and already-proven native Arcade body/race conversion.
+They are now generated in gated
+`GTPATCH.GT1CARS.SIMULATION.VOL`:
+
+| GT1 stem | Archive identity | GT2 price | Authoritative color IDs | Native manufacturer |
+| --- | --- | ---: | --- | --- |
+| `a-ian` | EUNOS ROADSTER | 20,000 | 104, 105, 114 | Mazda |
+| `h-vrn` | CIVIC (Racer) | 20,000 | 104, 111, 118 | Honda |
+| `s-pbn` | IMPREZA Sedan WRX-STi version III | 20,000 | 103, 104, 111 | Subaru |
+| `t-oan` | SOARER 2.5GT-T VVT-i | 20,000 | 101, 104, 117 | Toyota |
+| `t-eln` | CELICA SS-II | 20,000 | 104, 112, 119 | Toyota |
+| `h-rxn` | CIVIC CR-X '91 Si | 20,000 | 54, 104, 113 | Honda |
+
+The GT1 price field is 2,000,000 in its smaller currency unit; the exact GT2
+conversion is 20,000 credits. `amian` remains excluded because its supplied
+record has zero archive price and no proven prize/acquisition path. The other
+nine candidates remain review work rather than silently invented dealership
+entries.
+
+For each accepted car, the converter:
+
+- clones every owned record in all 24 GT Mode part blocks, changes only the
+  owner ID or archive-proven visual/body reference, re-sorts the blocks, and
+  rewrites every original and imported absolute part reference;
+- adds stock and Racing Modification day/night CDP/CNP/CDO/CNO members;
+- adds the stock and Racing Modification wordmarks to every GT2 GT Mode
+  locale/context archive using the exact supplied US GT1 4-bit TIM pixels and
+  palette, with only native VRAM placement normalized;
+- updates all seven localized GT Mode database/string-database pairs;
+- writes all 60 complete dealer rotations in `.usedcar`, `.usedcar_jpn`, and
+  `.usedcar_usa`, under the correct manufacturer, price-sorted, at 20,000
+  credits, cycling the three archive color IDs without renumbering them; and
+- keeps the Simulation car patch separate from Arcade and same-car livery
+  layers so the installer can validate and apply the native data sets in an
+  explicit order.
+
+The used-car format was derived from the archive, not guessed from a web list:
+gzip payload `UCAR`, 60 rotations, 39 manufacturer descriptors per rotation,
+and eight-byte records containing `CarId`, 16-bit price, flags, and `ColorId`.
+Normal output contains exactly 60 occurrences of each imported car in each
+regional roster. The converter rejects a wrong count, manufacturer, price,
+color ID, block order, unresolved reference, missing body, or missing logo.
+An explicit `--smoke-gtmode-car` option may place one target in Mazda row one
+to reuse a deterministic controller fixture; that alias exists only in smoke
+output and is never emitted by normal conversion.
+
+Runtime proof currently stands at:
+
+| Car | GT Mode detail/purchase/garage | GT Mode upgrade/race | Prior Arcade full race |
+| --- | --- | --- | --- |
+| `a-ian` | Pass | Pass: Turbo Stage 1, two-lap race, result and replay | Pass |
+| `h-vrn` | Pass | Pending dedicated GT Mode race | Pass |
+| `s-pbn` | Pass | Pending dedicated GT Mode race | Pass |
+| `t-oan` | Pass | Pending dedicated GT Mode race | Pass |
+| `t-eln` | Pass | Pending dedicated GT Mode race | Pass |
+| `h-rxn` | Pending new GT Mode launch | Pending dedicated GT Mode race | Pass |
+
+The Roadster proof uses the original dealer, garage, upgrade, event, physics,
+AI racing-line, result, and replay code. It completed cleanly with no unmapped
+call, managed exception, software fault, or persistent test-save mutation.
+The other four completed purchase proofs show their exact GT1 wordmarks,
+archive-derived specs and 20,000-credit price, then the purchased identity as
+the active garage car. CR-X GT Mode launch is still pending because the local
+process runner was blocked before execution; its existing Arcade selection and
+full-race proof remains valid but is not represented as GT Mode proof.
+
+Before release, each accepted distinct car must still have a complete
+Gran Turismo Mode upgrade applicability, event eligibility/class, results,
+save, and reload matrix. Arcade success and a frontend purchase alone do not
+satisfy that gate.
+
+## Required validation
+
+Every converted car or folded livery must pass:
+
+- deterministic source hash and record-fingerprint checks;
+- native day/night model and texture conversion checks;
+- Arcade selection, livery cycling, race load, auto-drive, and result flow;
+- Gran Turismo Mode acquisition, garage display, upgrade purchase and install,
+  eligible race load, auto-drive, result flow, save, and reload;
+- screenshot capture at selection and on track; and
+- no unmapped call, managed exception, software fault, or archive overflow.

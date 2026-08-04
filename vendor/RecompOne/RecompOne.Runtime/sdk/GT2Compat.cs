@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Threading;
 using RecompOne.Runtime.Context;
 using RecompOne.Runtime.Memory;
 
@@ -13,6 +15,9 @@ public sealed class GT2VariantSwitch(string variant) : Exception
 /// </summary>
 public static class GT2Compat
 {
+    readonly record struct LiverySelection(
+        uint BodyId, byte BodyPaletteIndex, byte ColorId);
+
     private sealed class NonLocalJump(
         uint target, bool returnTrampoline = false) : Exception
     {
@@ -109,6 +114,129 @@ public static class GT2Compat
     static string _overlayPrefix = "gt2_overlay";
     static bool _unifiedTitleInstalled;
     static bool _unifiedArcadeTransition;
+    static readonly object LiveryTableLock = new();
+    static Dictionary<ulong, LiverySelection>? _liveriesByPalette;
+    static Dictionary<ulong, LiverySelection>? _liveriesByColorId;
+
+    static ulong LiveryKey(uint bodyId, uint selector) =>
+        ((ulong)bodyId << 32) | selector;
+
+    static void EnsureLiveryTable()
+    {
+        if (Volatile.Read(ref _liveriesByPalette) != null)
+            return;
+        lock (LiveryTableLock)
+        {
+            if (Volatile.Read(ref _liveriesByPalette) != null)
+                return;
+
+            var byPalette = new Dictionary<ulong, LiverySelection>();
+            var byColorId = new Dictionary<ulong, LiverySelection>();
+            string? root = Runtime.ResolveLoosePath();
+            string? path = root == null
+                ? null
+                : Path.Combine(root, "GTLIVERY.BIN");
+            if (path != null && File.Exists(path))
+            {
+                byte[] data = File.ReadAllBytes(path);
+                if (data.Length < 8 ||
+                    !data.AsSpan(0, 4).SequenceEqual("GTLV"u8))
+                    throw new InvalidDataException(
+                        $"Invalid GT2 livery table header: {path}");
+                ushort version = BinaryPrimitives.ReadUInt16LittleEndian(
+                    data.AsSpan(4, 2));
+                ushort count = BinaryPrimitives.ReadUInt16LittleEndian(
+                    data.AsSpan(6, 2));
+                if (version != 3 || data.Length != 8 + count * 12)
+                    throw new InvalidDataException(
+                        "Unsupported GT2 livery table: " +
+                        $"version={version}, records={count}, " +
+                        $"bytes={data.Length}");
+
+                for (int index = 0; index < count; index++)
+                {
+                    int offset = 8 + index * 12;
+                    uint targetBody =
+                        BinaryPrimitives.ReadUInt32LittleEndian(
+                            data.AsSpan(offset, 4));
+                    uint alternateBody =
+                        BinaryPrimitives.ReadUInt32LittleEndian(
+                            data.AsSpan(offset + 4, 4));
+                    byte targetPalette = data[offset + 8];
+                    byte bodyPalette = data[offset + 9];
+                    ushort encodedColorId =
+                        BinaryPrimitives.ReadUInt16LittleEndian(
+                            data.AsSpan(offset + 10, 2));
+                    if (encodedColorId > byte.MaxValue)
+                        throw new InvalidDataException(
+                            $"GT2 livery record {index} has an invalid color ID");
+                    var selection = new LiverySelection(
+                        alternateBody, bodyPalette, (byte)encodedColorId);
+                    if (!byPalette.TryAdd(
+                            LiveryKey(targetBody, targetPalette), selection) ||
+                        !byColorId.TryAdd(
+                            LiveryKey(targetBody, encodedColorId), selection))
+                        throw new InvalidDataException(
+                            $"GT2 livery record {index} is duplicated");
+                }
+                Console.WriteLine(
+                    "[GT2] native alternate-livery table loaded: " +
+                    $"{count} body/palette mappings");
+            }
+            _liveriesByColorId = byColorId;
+            // Publish the palette table last. Readers use it as the
+            // initialization sentinel, so observing it also makes the
+            // color-ID table and all populated dictionary entries visible.
+            Volatile.Write(ref _liveriesByPalette, byPalette);
+        }
+    }
+
+    /// <summary>
+    /// Resolve an added color choice to its native alternate car-object body
+    /// and that body's original palette. The low 32 bits are the body ID and
+    /// the high 32 bits are the palette index.
+    /// </summary>
+    public static ulong ResolveLiveryBodyAndPalette(
+        uint bodyId, uint paletteIndex)
+    {
+        EnsureLiveryTable();
+        var byPalette = Volatile.Read(ref _liveriesByPalette)!;
+        if (byPalette.TryGetValue(
+                LiveryKey(bodyId, paletteIndex), out var selection))
+            return selection.BodyId |
+                ((ulong)selection.BodyPaletteIndex << 32);
+        return bodyId | ((ulong)paletteIndex << 32);
+    }
+
+    public static void ResolveLiveryBodyAndPaletteA0S2(CpuContext c)
+    {
+        ulong resolved = ResolveLiveryBodyAndPalette(c.A0, c.S2);
+        c.A0 = (uint)resolved;
+        c.S2 = (uint)(resolved >> 32);
+    }
+
+    public static void ResolveLiveryBodyAndPaletteA1A2(CpuContext c)
+    {
+        ulong resolved = ResolveLiveryBodyAndPalette(c.A1, c.A2);
+        c.A1 = (uint)resolved;
+        c.A2 = (uint)(resolved >> 32);
+    }
+
+    /// <summary>
+    /// Frontend records carry the database color ID rather than its palette
+    /// slot. Swap only the native body here; the original frontend then finds
+    /// that same color ID in the hidden body's carinfo record and derives its
+    /// correct local palette normally.
+    /// </summary>
+    public static uint ResolveLiveryBodyForColorId(
+        uint bodyId, uint colorId)
+    {
+        EnsureLiveryTable();
+        return _liveriesByColorId!.TryGetValue(
+                LiveryKey(bodyId, colorId), out var selection)
+            ? selection.BodyId
+            : bodyId;
+    }
 
     const uint UnifiedTitleList = 0x8004BC28u;
     const uint UnifiedArcadeDescriptor = 0x803FF000u;

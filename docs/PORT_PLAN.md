@@ -26,7 +26,11 @@
   already produces one generated volume and unified installation while
   preserving each disc's exact original payloads and game flow.
 - Continue automatically extracting, converting, and merging Gran Turismo
-  1-exclusive content into the generated `GT2.VOL`. Special Stage Route 11 is
+  1-exclusive content into the generated `GT2.VOL`. The supplied archives and
+  their embedded databases are the sole authority for this work; see
+  `docs/GT1_CONTENT_AUDIT.md`. A shared car with GT1-only paint or livery
+  artwork must gain those choices under its existing GT2 identity rather than
+  appear as a duplicate car. Special Stage Route 11 is
   now implemented as native forward, reverse, Arcade, two-player, and HiFi
   course data, including its `dawn3` background and exact `ARCADE.DAT` entry
     81 selection art. The first car family is also implemented: GT1's
@@ -79,9 +83,28 @@
     car artwork must be imported directly from the
     validated `MENU_RAW.ARC`/`MENU_IMG.ARC` pair; synthesized wordmarks remain
     prohibited.
-    Complete the remaining GT1-exclusive cars,
-  prize and Arcade liveries, paint schemes, and wheel variants through the
-  same deterministic `GTPATCH.VOL` layer.
+    These completed Arcade conversions remain the native body/race validation
+    harness. Six archive-proven distinct identities (`a-ian`, `h-vrn`,
+    `s-pbn`, `t-oan`, `t-eln`, and `h-rxn`) now also have a generated gated
+    Gran Turismo Mode layer containing all 24 owned part families, stock and
+    Racing Modification bodies, all seven localized databases and exact GT1
+    wordmarks, and all 60 rotations of each regional used-car roster under
+    the correct manufacturer and color IDs. Five have clean GT Mode purchase
+    and garage proof; the EUNOS Roadster additionally has clean upgrade,
+    two-lap auto-drive, result, and replay proof. Full per-car eligibility,
+    upgrade, save, and reload coverage remains a release gate. Complete the
+    remaining GT1-exclusive cars, prize and Arcade liveries, paint schemes,
+    and wheel variants through the same deterministic `GTPATCH.VOL` layer.
+    The Cerbera LM `v-rbr` and Castrol Supra GT `tsplr` are explicit same-car
+    livery-fold cases; their differing GT1 body bitmaps cannot be reduced to
+    palette-only edits. Database-derived color-ID comparison currently
+    authorizes 51 GT1-only choices across 34 same-car identities. Both
+    mode-specific gated patch layers now contain their converted day/night
+    bodies, extended car-info records, and explicit
+    target-color-to-body-palette mappings. The data-driven native resolver is
+    wired into both executables' selection, race, showroom, and replay paths,
+    and the installer validates/activates both mode layers atomically.
+    Default activation still awaits a successful rebuilt-host smoke matrix.
 - Provide first-start BIN/CUE-to-loose-file conversion. The program prompts
   for the user's own Gran Turismo 2 Simulation Disc, Gran Turismo 2 Arcade
   Mode Disc, and Gran Turismo 1 disc, validates all three supported images,

@@ -46,7 +46,6 @@ INSTALL = Path(
 UNIFIED_VOLUME_LBA = 473
 UNIFIED_VOLUME_SIZE = 488241152
 ARCADE_ORIGINAL_VOLUME_SIZE = 213596160
-ARCADE_VOLUME_SOURCE_OFFSET = UNIFIED_VOLUME_SIZE
 UNIFIED_MUSIC_LBA = 238872
 UNIFIED_MUSIC_SIZE = 85262336
 UNIFIED_ARCADE_STREAM_LBA = 280504
@@ -69,16 +68,35 @@ TITLE_PALETTE = (
 )
 
 
-def configured_patch_volumes() -> list[Path]:
-    configured = os.environ.get("GT2_PATCH_VOLUMES")
+def configured_patch_volumes(mode: str) -> list[Path]:
+    if mode not in ("simulation", "arcade"):
+        raise ValueError(f"unsupported GT2 patch target: {mode}")
+    configured = os.environ.get(f"GT2_{mode.upper()}_PATCH_VOLUMES")
     if configured is not None:
         return [
             Path(item).resolve()
             for item in configured.split(os.pathsep)
             if item.strip()
         ]
-    default = REPO / "work" / "gt1-converted" / "GTPATCH.VOL"
-    return [default.resolve()] if default.is_file() else []
+    # GT2_PATCH_VOLUMES was the original Arcade-only setting. Preserve it as
+    # an Arcade alias, but never apply it to Simulation: the existing layer
+    # replaces Arcade-specific databases which are incompatible with GT Mode.
+    if mode == "arcade":
+        legacy = os.environ.get("GT2_PATCH_VOLUMES")
+        if legacy is not None:
+            return [
+                Path(item).resolve()
+                for item in legacy.split(os.pathsep)
+                if item.strip()
+            ]
+    patch_root = REPO / "work" / "gt1-converted"
+    targeted = patch_root / f"GTPATCH.{mode.upper()}.VOL"
+    if targeted.is_file():
+        return [targeted.resolve()]
+    legacy_default = patch_root / "GTPATCH.VOL"
+    if mode == "arcade" and legacy_default.is_file():
+        return [legacy_default.resolve()]
+    return []
 
 
 def sha256(path: Path) -> str:
@@ -103,19 +121,70 @@ def copy_if_needed(source: Path, destination: Path) -> None:
     print(f"copied {source.name}: {destination}")
 
 
+def read_gtfs_member(volume: Path, name: str) -> bytes | None:
+    matches = [entry for entry in read_entries(volume) if entry.name == name]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise ValueError(f"{volume} has duplicate GTFS member {name}")
+    entry = matches[0]
+    with volume.open("rb") as stream:
+        stream.seek(entry.offset)
+        return stream.read(entry.size)
+
+
+def install_livery_resolver_table(
+    simulation_volume: Path,
+    arcade_volume: Path,
+) -> None:
+    """Install the alternate-body table only when both modes carry its assets."""
+
+    tables = (
+        read_gtfs_member(simulation_volume, ".gtlivery"),
+        read_gtfs_member(arcade_volume, ".gtlivery"),
+    )
+    destination = INSTALL / "GTLIVERY.BIN"
+    if tables == (None, None):
+        if destination.is_file():
+            destination.unlink()
+            print(f"removed inactive livery resolver table: {destination}")
+        return
+    if tables[0] is None or tables[1] is None:
+        raise ValueError(
+            "GT1 livery integration must be enabled atomically for both "
+            "Simulation and Arcade modes"
+        )
+    if tables[0] != tables[1]:
+        raise ValueError(
+            "Simulation and Arcade GT1 livery resolver tables differ"
+        )
+    table = tables[0]
+    if table is None or len(table) < 8:
+        raise ValueError("GT1 livery resolver table is truncated")
+    magic, version, count = struct.unpack_from("<4sHH", table)
+    expected_size = 8 + count * 12
+    if magic != b"GTLV" or version != 3 or len(table) != expected_size:
+        raise ValueError(
+            "GT1 livery resolver table has an unsupported format: "
+            f"magic={magic!r}, version={version}, "
+            f"size={len(table)}, expected={expected_size}"
+        )
+    destination.write_bytes(table)
+    print(
+        "installed native GT1 livery resolver table: "
+        f"{count} body/palette mappings"
+    )
+
+
 def merge_native_volumes(
     simulation_volume: Path,
     arcade_volume: Path,
     destination: Path,
-) -> None:
+) -> int:
     """Store the Simulation and materialized Arcade GTFS members together."""
+    simulation_size = simulation_volume.stat().st_size
     arcade_size = arcade_volume.stat().st_size
-    expected = UNIFIED_VOLUME_SIZE + arcade_size
-    if simulation_volume.stat().st_size != UNIFIED_VOLUME_SIZE:
-        raise ValueError(
-            "unexpected Simulation GT2.VOL size: "
-            f"{simulation_volume.stat().st_size} != {UNIFIED_VOLUME_SIZE}"
-        )
+    expected = simulation_size + arcade_size
 
     temporary = destination.with_suffix(destination.suffix + ".tmp")
     with temporary.open("wb") as output:
@@ -129,28 +198,33 @@ def merge_native_volumes(
     os.replace(temporary, destination)
     print(
         "merged native GT2.VOL members: "
-        f"Simulation@0+{UNIFIED_VOLUME_SIZE}, "
-        f"Arcade@{ARCADE_VOLUME_SOURCE_OFFSET}+{arcade_size}"
+        f"Simulation@0+{simulation_size}, "
+        f"Arcade@{simulation_size}+{arcade_size}"
     )
+    return simulation_size
 
 
-def materialize_arcade_volume() -> Path:
-    if ARCADE_VOLUME.stat().st_size != ARCADE_ORIGINAL_VOLUME_SIZE:
+def materialize_volume(
+    mode: str,
+    base: Path,
+    expected_original_size: int,
+) -> Path:
+    if base.stat().st_size != expected_original_size:
         raise ValueError(
-            "unexpected original Arcade GT2.VOL size: "
-            f"{ARCADE_VOLUME.stat().st_size} != {ARCADE_ORIGINAL_VOLUME_SIZE}"
+            f"unexpected original {mode.title()} GT2.VOL size: "
+            f"{base.stat().st_size} != {expected_original_size}"
         )
-    patches = configured_patch_volumes()
+    patches = configured_patch_volumes(mode)
     if not patches:
-        return ARCADE_VOLUME
+        return base
     missing = [path for path in patches if not path.is_file()]
     if missing:
         raise FileNotFoundError(
-            "configured GTPATCH volume is missing: "
+            f"configured {mode.title()} GTPATCH volume is missing: "
             + ", ".join(str(path) for path in missing)
         )
-    materialized = INSTALL / "arcade.materialized.vol"
-    apply_patches(ARCADE_VOLUME, patches, materialized)
+    materialized = INSTALL / f"{mode}.materialized.vol"
+    apply_patches(base, patches, materialized)
     return materialized
 
 
@@ -167,22 +241,32 @@ def materialized_arcade_overlay() -> Path:
     return default.resolve() if default.is_file() else ARCADE_ROOT / "GT2.OVL"
 
 
-def write_arcade_manifest(destination: Path, arcade_volume_size: int) -> None:
-    template = REPO / "tools" / "recompone.arcade.unified.json"
+def write_volume_manifest(
+    mode: str,
+    destination: Path,
+    source_offset: int,
+    volume_size: int,
+) -> None:
+    template = REPO / "tools" / f"recompone.{mode}.unified.json"
     data = json.loads(template.read_text(encoding="utf-8"))
     matches = [item for item in data["files"] if item["path"] == "GT2.VOL"]
     if len(matches) != 1:
-        raise ValueError("Arcade unified manifest has no unique GT2.VOL entry")
+        raise ValueError(
+            f"{mode.title()} unified manifest has no unique GT2.VOL entry"
+        )
     entry = matches[0]
-    entry["sourceOffset"] = ARCADE_VOLUME_SOURCE_OFFSET
-    entry["sourceLength"] = arcade_volume_size
-    entry["size"] = arcade_volume_size
+    entry["sourceOffset"] = source_offset
+    entry["sourceLength"] = volume_size
+    entry["size"] = volume_size
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(
         json.dumps(data, indent=2) + "\n",
         encoding="utf-8",
     )
-    print(f"wrote Arcade manifest for materialized volume size {arcade_volume_size}")
+    print(
+        f"wrote {mode.title()} manifest: "
+        f"GT2.VOL@{source_offset}+{volume_size}"
+    )
 
 
 def relocate_iso_file(
@@ -355,8 +439,19 @@ def patch_unified_title_texture(volume: Path) -> None:
 
 def main() -> int:
     INSTALL.mkdir(parents=True, exist_ok=True)
-    arcade_volume = materialize_arcade_volume()
+    simulation_volume = materialize_volume(
+        "simulation",
+        SIMULATION_ROOT / "GT2.VOL",
+        UNIFIED_VOLUME_SIZE,
+    )
+    arcade_volume = materialize_volume(
+        "arcade",
+        ARCADE_VOLUME,
+        ARCADE_ORIGINAL_VOLUME_SIZE,
+    )
+    simulation_volume_size = simulation_volume.stat().st_size
     arcade_volume_size = arcade_volume.stat().st_size
+    install_livery_resolver_table(simulation_volume, arcade_volume)
 
     simulation_files = (
         "DISC_META.DAT",
@@ -383,7 +478,11 @@ def main() -> int:
             INSTALL / mode / "DISC_META.DAT",
             b"GT2.VOL;1",
             UNIFIED_VOLUME_LBA,
-            UNIFIED_VOLUME_SIZE if mode == "simulation" else arcade_volume_size,
+            (
+                simulation_volume_size
+                if mode == "simulation"
+                else arcade_volume_size
+            ),
         )
     relocate_iso_file(
         INSTALL / "arcade" / "DISC_META.DAT",
@@ -410,19 +509,26 @@ def main() -> int:
     # Keep both Sony GTFS volumes byte-for-byte in one physical container.
     # The loose manifests expose the matching member at the original disc LBA,
     # so neither executable receives the other disc's incompatible payloads.
-    merge_native_volumes(
-        SIMULATION_ROOT / "GT2.VOL",
+    arcade_source_offset = merge_native_volumes(
+        simulation_volume,
         arcade_volume,
         unified_volume,
     )
     patch_unified_title_texture(unified_volume)
 
     manifest_root = INSTALL / "manifests"
-    copy_if_needed(
-        REPO / "tools" / "recompone.simulation.unified.json",
+    write_volume_manifest(
+        "simulation",
         manifest_root / "simulation.json",
+        0,
+        simulation_volume_size,
     )
-    write_arcade_manifest(manifest_root / "arcade.json", arcade_volume_size)
+    write_volume_manifest(
+        "arcade",
+        manifest_root / "arcade.json",
+        arcade_source_offset,
+        arcade_volume_size,
+    )
     (INSTALL / "music").mkdir(exist_ok=True)
     print(f"Unified native Simulation/Arcade install ready: {INSTALL}")
     return 0
