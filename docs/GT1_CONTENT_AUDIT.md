@@ -177,16 +177,69 @@ records, the 34 extended customer-visible records, `.carcolor`, and the
 51-record `.gtlivery` table. Conversion fails unless every target index and
 hidden-body palette resolves back to the same authoritative color ID.
 
-## Distinct-car Gran Turismo Mode layer
+## Cross-stem identity review and Gran Turismo Mode scaffold
 
-The archive comparison produces 16 distinct-car candidates:
+The mechanical archive comparison produces 16
+`distinct-car-candidate` rows:
 
 `a-ian`, `amian`, `h-rxn`, `h-vrn`, `hnslr`, `n-15r`, `n-32n`, `n-33n`,
 `nl33r`, `s-pbn`, `t-eln`, `t-hvr`, `t-oan`, `t-plr`, `t-ron`, and `tceen`.
 
-Six candidates have a consumed GT1 SPEC record, complete day/night assets,
-nonzero archive price, and already-proven native Arcade body/race conversion.
-They are now generated in gated
+That label means only that the first audit found no same-stem GT2 GT Mode
+record and no byte-exact physical-and-model fold. It does **not** establish a
+unique customer-visible car. GT1 uses shorter Arcade aliases, separate
+Arcade/Simulation specifications, and separate stock/Racing Modification body
+stems. Cross-stem name, specification, body, color-ID, and acquisition
+relationships must be checked before adding a new identity.
+
+The supplied archives already establish these counterpart relationships:
+
+| GT1 row | GT2 identity/body target | Archive evidence and required action |
+| --- | --- | --- |
+| `h-vrn` | `hcvrn` | Same `CIVIC (Racer)` name and 185 PS/1,050 kg specification. Fold the Arcade artwork and color IDs; do not retain a duplicate GT Mode car. |
+| `t-oan` | `tsoan` | Same `SOARER 2.5GT-T VVT-i` name and 280 PS/1,560 kg specification. Fold. |
+| `h-rxn` | `hcrxn` | Same `CIVIC CR-X '91 Si` name and byte-identical GT1 geometry; the Arcade record carries a deliberate weight difference and exclusive texture package. Preserve those assets without creating a second road-car identity. |
+| `t-eln` | `tceln` | Same `CELICA SS-II` name and model peer. Treat its Arcade-tuned specification and artwork as variants of the existing identity pending year/trim confirmation. |
+| `s-pbn` | `sipbn` | GT1/GT2 Version III Impreza counterpart already used as its native part/model basis. Fold the authored Arcade body and colors into that identity. |
+| `n-32n` | `nr32n` | Exact `R32SKYLINE '91 GT-R` name and 280 PS/1,480 kg specification. Fold its IDs 101/104/113 and alternate body as required. |
+| `t-ron` | `ttron` | Exact `AE86 SPRINTER TRUENO GT-APEX` name and 130 PS/925 kg specification. Fold GT1-only IDs 97/111 into the GT2 '85 identity. |
+| `tceen` | `tcegn` | Exact `CELICA GT-FOUR` name, 255 PS/1,380 kg specification, paint set, and mutual model-peer relationship. This is an alias, not a new car. |
+| `t-plr` | `tsplr` | Both GT1 records are `CASTROL SUPRA GT`, 665 PS/1,150 kg, with IDs 108/113, but carry different model and texture packages. GT2 has `tsplr` with ID 108 only. Fold every authored GT1 body/livery combination into one GT2 identity. |
+| `nl33r` | `nl33n` Racing Modification | GT2 already contains `nl33r` car-info and day/night body assets with IDs 113/118; it is the Racing Modification of the Nismo GT-R LM Road Car, not another purchasable car. |
+
+The following relationships are strong leads but still require a complete
+archive linkage proof:
+
+- `a-ian` and zero-price `amian` belong to the EUNOS Roadster family; their
+  exact trim/acquisition targets must be resolved across `aminn`, `amisn`,
+  `amivn`, `an16n`, `as16n`, and `av16n`.
+- `n-33n` is the 305 PS/1,580 kg NISMO GT-R LM road/Arcade record and is
+  expected to fold into GT2's `nl33n` road-car identity, while `nl33r`
+  remains its Racing Modification.
+- `t-hvr` is the 600 PS/1,260 kg CHASER LM Edition and is expected to become
+  the authored Racing Modification body/livery of the Chaser Tourer V family,
+  not a separate dealership entry.
+- `hnslr` is the NSX-R LM GT2. Secondary catalog evidence identifies it as a
+  planned GT2 Racing Modification/hidden car, but the supplied US GT2 volume
+  has no same-stem car-info or body quartet. Its actual surviving target body
+  must be located in the archive before folding.
+- `n-15r` S14 SILVIA LM Edition has no final US GT2 identity or body quartet
+  found so far and remains the clearest genuinely GT1-exclusive car candidate.
+
+The Gran Turismo Wiki is used only as a secondary naming/history index. Its
+[Castrol Supra page](https://gran-turismo.fandom.com/wiki/Toyota_Castrol_SUPRA_GT_%28JGTC%29_%2796)
+identifies the Grand Valley prize as a black version and records the regular
+and black presentations; the supplied archives, not that page, authorize the
+conversion. The hard-data finding is that GT1 `t-plr` and `tsplr` have the
+same two color IDs but different body bitmaps/models, whereas GT2 retains only
+one body and ID 108. Therefore color-ID comparison alone is insufficient for
+this cross-stem alternate-body case. The existing fold imports `tsplr` ID 113,
+but the `t-plr` body package still needs a same-identity representation that
+can distinguish duplicate IDs across alternate bodies.
+
+Six rows have a consumed GT1 SPEC record, complete day/night assets, nonzero
+archive price, and already-proven native Arcade body/race conversion. They are
+currently generated as a gated **standalone GT Mode conversion scaffold** in
 `GTPATCH.GT1CARS.SIMULATION.VOL`:
 
 | GT1 stem | Archive identity | GT2 price | Authoritative color IDs | Native manufacturer |
@@ -198,13 +251,14 @@ They are now generated in gated
 | `t-eln` | CELICA SS-II | 20,000 | 104, 112, 119 | Toyota |
 | `h-rxn` | CIVIC CR-X '91 Si | 20,000 | 54, 104, 113 | Honda |
 
-The GT1 price field is 2,000,000 in its smaller currency unit; the exact GT2
-conversion is 20,000 credits. `amian` remains excluded because its supplied
-record has zero archive price and no proven prize/acquisition path. The other
-nine candidates remain review work rather than silently invented dealership
-entries.
+The scaffold proves that the converted bodies, wordmarks, colors, database
+records, dealer acquisition, garage ownership, upgrades, and races can pass
+through native GT2 systems. It is not the final identity model: the counterpart
+rows above must be folded into existing cars, and the temporary 20,000-credit
+standalone entries removed. `amian` remains excluded because its supplied
+record has zero archive price and no proven prize/acquisition path.
 
-For each accepted car, the converter:
+For each scaffold car, the converter:
 
 - clones every owned record in all 24 GT Mode part blocks, changes only the
   owner ID or archive-proven visual/body reference, re-sorts the blocks, and
@@ -250,10 +304,13 @@ archive-derived specs and 20,000-credit price, then the purchased identity as
 the active garage car. Each uses a transient test save and restores the
 original memory-card bytes after capture.
 
-Before release, each accepted distinct car must still have a complete
-Gran Turismo Mode upgrade applicability, event eligibility/class, results,
-save, and reload matrix. Arcade success and a frontend purchase alone do not
-satisfy that gate.
+The 24 populated GT2 part blocks are functional target-owned clones of selected
+GT2 basis cars. They are not yet a record-for-record conversion of GT1's 13
+`EQUIP` databases and 24 authored part databases in `CARINF.DAT`. Before
+release, every final folded or genuinely distinct identity must receive its
+archive-derived acquisition, upgrade applicability, event eligibility/class,
+results, save, and reload matrix. Arcade success and a standalone frontend
+purchase alone do not satisfy that gate.
 
 ## Required validation
 

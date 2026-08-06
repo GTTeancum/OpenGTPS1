@@ -84,15 +84,19 @@
     validated `MENU_RAW.ARC`/`MENU_IMG.ARC` pair; synthesized wordmarks remain
     prohibited.
     These completed Arcade conversions remain the native body/race validation
-    harness. Six archive-proven distinct identities (`a-ian`, `h-vrn`,
-    `s-pbn`, `t-oan`, `t-eln`, and `h-rxn`) now also have a generated gated
-    Gran Turismo Mode layer containing all 24 owned part families, stock and
-    Racing Modification bodies, all seven localized databases and exact GT1
-    wordmarks, and all 60 rotations of each regional used-car roster under
-    the correct manufacturer and color IDs. All six have clean GT Mode purchase
-    and garage proof; the EUNOS Roadster additionally has clean upgrade,
-    two-lap auto-drive, result, and replay proof. Full per-car eligibility,
-    upgrade, save, and reload coverage remains a release gate. Complete the
+    harness. Six cross-stem candidates (`a-ian`, `h-vrn`, `s-pbn`, `t-oan`,
+    `t-eln`, and `h-rxn`) now also have a generated gated standalone GT Mode
+    scaffold containing all 24 GT2 part families, stock and Racing
+    Modification bodies, all seven localized databases and exact GT1
+    wordmarks, and all 60 rotations of each regional used-car roster. All six
+    have clean GT Mode purchase and garage proof; the EUNOS Roadster
+    additionally has clean upgrade, two-lap auto-drive, result, and replay
+    proof. Cross-stem review now shows that these are mostly Arcade aliases or
+    tuned visual variants of existing GT2 identities, so the standalone
+    acquisition entries are conversion proof rather than the final data
+    model. Fold them into their archive-proven targets, replace GT2-basis part
+    clones with decoded GT1 `EQUIP`/part records where applicable, and complete
+    per-car eligibility, upgrade, save, and reload coverage. Complete the
     remaining GT1-exclusive cars, prize and Arcade liveries, paint schemes,
     and wheel variants through the same deterministic `GTPATCH.VOL` layer.
     The Cerbera LM `v-rbr` and Castrol Supra GT `tsplr` are explicit same-car
@@ -105,6 +109,15 @@
     wired into both executables' selection, race, showroom, and replay paths,
     and the installer validates/activates both mode layers atomically.
     Default activation still awaits a successful rebuilt-host smoke matrix.
+- Mine supported Gran Turismo 2 demo builds for demo-exclusive LM colors,
+  liveries, and alternate body/texture packages, then fold them into the
+  corresponding retail GT2 identities. Treat each user-supplied demo image as
+  an optional, hash-validated first-run source: compare its car database color
+  IDs and native model/texture payloads directly against both retail GT2
+  volumes, preserve every authored demo-only combination without replacing
+  retail artwork, and record conflicts where duplicate color IDs select
+  different bodies. Web catalogs may identify candidates, but only the demo
+  archive data authorizes conversion.
 - Provide first-start BIN/CUE-to-loose-file conversion. The program prompts
   for the user's own Gran Turismo 2 Simulation Disc, Gran Turismo 2 Arcade
   Mode Disc, and Gran Turismo 1 disc, validates all three supported images,
