@@ -332,6 +332,18 @@ GT1_ARCADE_LIVERY_SMOKE_CARS = {
         "manufacturerLogoIndex": 31,
         "ratings": (10, 10, 10),
     },
+    "v-rbr": {
+        "displayName": "Cerbera LM Edition",
+        "menuLogoName": "v-rb.tim",
+        "physicsBasisStem": "v-rbr",
+        "physicsPartBasis": {},
+        # Keep the alternate-body proof in the same already-proven Class A
+        # replacement slot used by the Castrol smoke. The production Arcade
+        # roster remains unchanged.
+        "arcadeClass": 1,
+        "manufacturerLogoIndex": 32,
+        "ratings": (10, 10, 10),
+    },
 }
 GT1_IMPREZA_STI_V3_CAR = {
     "stem": "s-pbn",
@@ -3289,14 +3301,13 @@ def stage_gt2_simulation_used_cars(
                         "existing livery smoke car unexpectedly appears "
                         f"in {name}: {smoke_existing['stem']}"
                     )
-                color_ids = tuple(smoke_existing["colorIds"])
                 manufacturers[18].insert(
                     0,
                     (
                         car_id,
                         int(smoke_existing["smokePrice"]),
                         0,
-                        int(color_ids[rotation_index % len(color_ids)]),
+                        int(smoke_existing["smokeColorId"]),
                     ),
                 )
         converted = _build_gt2_used_car_database(rotations)
@@ -3330,13 +3341,13 @@ def stage_gt2_simulation_used_cars(
                 )
         if smoke_existing is not None:
             car_id = int(smoke_existing["carId"])
-            color_ids = set(int(value) for value in smoke_existing["colorIds"])
             actual = [rotation[18][0] for rotation in verified]
             if (
                 {record[0] for record in actual} != {car_id}
                 or {record[1] for record in actual}
                 != {int(smoke_existing["smokePrice"])}
-                or {record[3] for record in actual} != color_ids
+                or {record[3] for record in actual}
+                != {int(smoke_existing["smokeColorId"])}
             ):
                 raise ValueError(
                     "existing GT2 livery smoke placement failed "
@@ -3376,6 +3387,11 @@ def stage_gt2_simulation_used_cars(
             "smokeDealerSlot": (
                 1
                 if smoke_stem is not None or smoke_existing is not None
+                else None
+            ),
+            "smokeColorId": (
+                int(smoke_existing["smokeColorId"])
+                if smoke_existing is not None
                 else None
             ),
         }
@@ -3429,6 +3445,10 @@ def build_gt2_existing_livery_smoke_car(
         # fixture able to acquire the existing prize/race identity.
         "smokePrice": 20_000,
         "colorIds": tuple(color_ids),
+        # A prize/race identity has no ordinary used-car color picker. Keep
+        # this developer-only alias pinned to the newest imported paint so a
+        # fresh-save smoke proves the alternate native body deterministically.
+        "smokeColorId": color_ids[-1],
     }
 
 

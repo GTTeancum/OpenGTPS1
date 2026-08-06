@@ -7,6 +7,12 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 ENTRY = REPO / "generated" / "arcade-recompiled" / "Entry.cs"
 MAIN = REPO / "generated" / "arcade-recompiled" / "main.cs"
+PROJECT = (
+    REPO
+    / "generated"
+    / "arcade-recompiled"
+    / "GranTurismo2ArcadePC.csproj"
+)
 OVERLAY0 = (
     REPO
     / "generated"
@@ -63,6 +69,21 @@ def replace_exact_count(
     path.write_text(source.replace(old, new), encoding="utf-8")
 
 
+def include_livery_preview_helper() -> None:
+    replace_once(
+        PROJECT,
+        """  <ItemGroup>
+    <ProjectReference Include="..\\..\\vendor\\RecompOne\\RecompOne.Runtime\\RecompOne.Runtime.csproj" />
+""",
+        """  <ItemGroup>
+    <Compile Include="..\\..\\tools\\unified-host\\ArcadeLiveryPreview.cs"
+             Link="ArcadeLiveryPreview.cs" />
+    <ProjectReference Include="..\\..\\vendor\\RecompOne\\RecompOne.Runtime\\RecompOne.Runtime.csproj" />
+""",
+        "Arcade alternate-livery preview helper project include",
+    )
+
+
 def apply_frontend_arena() -> None:
     replace_exact_count(
         OVERLAY2,
@@ -85,7 +106,129 @@ def apply_frontend_arena() -> None:
     )
 
 
+def apply_livery_preview_reload() -> None:
+    replace_once(
+        OVERLAY2,
+        """        m.WriteU32((c.SP + 0x214u), c.RA);
+        c.V0 = (uint)(sbyte)m.ReadU8((c.S0 + 0xDu));
+        L80015DD4: ;
+        c.A0 = c.SP + 0x10u;
+        c.A2 = 0u + 0u;
+        c.A1 = c.V0 << 3;
+""",
+        """        m.WriteU32((c.SP + 0x214u), c.RA);
+        c.V0 = (uint)(sbyte)m.ReadU8((c.S0 + 0xDu));
+        L80015DD4: ;
+        uint targetLiveryPalette = c.V0;
+        c.V0 = (uint)(
+            RecompOne.Runtime.Sdk.GT2Compat.ResolveLiveryBodyAndPalette(
+                m.ReadU32((c.S0 + 0x8u)), targetLiveryPalette) >> 32);
+        c.A0 = c.SP + 0x10u;
+        c.A2 = 0u + 0u;
+        c.A1 = c.V0 << 3;
+""",
+        "Arcade preview alternate-body local palette upload",
+    )
+    replace_once(
+        OVERLAY2,
+        """        m.WriteU8((c.S0 + 0xDu), (byte)c.V0);
+        c.V0 = m.ReadU32((c.S0 + 0x44u));
+""",
+        """        m.WriteU8((c.S0 + 0xDu), (byte)targetLiveryPalette);
+        c.V0 = m.ReadU32((c.S0 + 0x44u));
+""",
+        "Arcade preview customer-facing palette persistence",
+    )
+    replace_once(
+        OVERLAY2,
+        """        c.V0 = m.ReadU32((c.A0 + 0x44u));
+        c.V0 = m.ReadU16(c.V0);
+        return;
+""",
+        """        c.V0 = m.ReadU32((c.A0 + 0x44u));
+        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.ResolveLiveryChoiceCount(
+            m.ReadU32((c.A0 + 0x8u)), m.ReadU16(c.V0));
+        return;
+""",
+        "Arcade preview extended livery choice count",
+    )
+    replace_once(
+        OVERLAY2,
+        """        c.A1 = 0xFFFFFFFFu;
+        c.RA = 0x8001ECB4u;
+        GranTurismo2ArcadePC.func_80015E9C(c, m);
+        c.V0 = c.S0 & 0x0002u;
+""",
+        """        c.A1 = 0xFFFFFFFFu;
+        c.RA = 0x8001ECB4u;
+        GranTurismo2ArcadePC.func_80015E9C(c, m);
+        GranTurismo2ArcadePC.ReloadLiveryPreview(
+            c, m, m.ReadU32((c.S5 + 0x228u)), c.S5);
+        c.V0 = c.S0 & 0x0002u;
+""",
+        "Arcade one-player previous-livery body reload",
+    )
+    replace_once(
+        OVERLAY2,
+        """        c.A1 = 0x00000001u;
+        c.RA = 0x8001ECCCu;
+        GranTurismo2ArcadePC.func_80015E9C(c, m);
+        c.V0 = c.S0 & 0x0003u;
+""",
+        """        c.A1 = 0x00000001u;
+        c.RA = 0x8001ECCCu;
+        GranTurismo2ArcadePC.func_80015E9C(c, m);
+        GranTurismo2ArcadePC.ReloadLiveryPreview(
+            c, m, m.ReadU32((c.S5 + 0x228u)), c.S5);
+        c.V0 = c.S0 & 0x0003u;
+""",
+        "Arcade one-player next-livery body reload",
+    )
+    replace_once(
+        OVERLAY2,
+        """        c.A1 = 0xFFFFFFFFu;
+        c.RA = 0x80021AC8u;
+        GranTurismo2ArcadePC.func_80015E9C(c, m);
+        L80021AC8: ;
+""",
+        """        c.A1 = 0xFFFFFFFFu;
+        c.RA = 0x80021AC8u;
+        GranTurismo2ArcadePC.func_80015E9C(c, m);
+        GranTurismo2ArcadePC.ReloadLiveryPreview(
+            c,
+            m,
+            m.ReadU32(
+                (m.ReadU32((c.SP + 0x70u)) + c.S5 * 4u) + 0x228u),
+            m.ReadU32((c.SP + 0x70u)));
+        L80021AC8: ;
+""",
+        "Arcade two-player previous-livery body reload",
+    )
+    replace_once(
+        OVERLAY2,
+        """        c.A1 = 0x00000001u;
+        c.RA = 0x80021AECu;
+        GranTurismo2ArcadePC.func_80015E9C(c, m);
+        L80021AEC: ;
+""",
+        """        c.A1 = 0x00000001u;
+        c.RA = 0x80021AECu;
+        GranTurismo2ArcadePC.func_80015E9C(c, m);
+        GranTurismo2ArcadePC.ReloadLiveryPreview(
+            c,
+            m,
+            m.ReadU32(
+                (m.ReadU32((c.SP + 0x70u)) + c.S5 * 4u) + 0x228u),
+            m.ReadU32((c.SP + 0x70u)));
+        L80021AEC: ;
+""",
+        "Arcade two-player next-livery body reload",
+    )
+
+
 def main() -> int:
+    include_livery_preview_helper()
+
     replace_once(
         ENTRY,
         """        Dispatcher.Call(c, m, 0x8005D570u);
@@ -222,6 +365,7 @@ def main() -> int:
 """,
         "Arcade showroom and replay alternate native livery body and palette",
     )
+    apply_livery_preview_reload()
     replace_once(
         OVERLAY0,
         """    public static void func_8003E070(CpuContext c, IMemory m)

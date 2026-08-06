@@ -168,9 +168,32 @@ palette index is required when two body packages reuse one color ID. The
 installer enables the layers atomically for Simulation and Arcade, requires
 their 54-record tables to be byte-identical, and installs the validated table
 as `GTLIVERY.BIN`. The fold layers remain excluded from the default unified
-install until the rebuilt host passes the required interactive smoke matrix.
-This gate prevents an older executable from treating color indices 2 and 3 as
-out-of-range palettes on its original two-palette `v-rbr` body.
+install until the complete 35-target interactive smoke matrix passes. This
+gate prevents an older executable from treating extended color indices as
+out-of-range palettes on each target's original body.
+
+The representative alternate-body gate now passes for Cerbera LM in both
+native executables. Clean regeneration reapplies the resolver and preview
+reload hooks, and the standalone Simulation, standalone Arcade, and unified
+projects all compile. Arcade presents one `Cerbera LM Edition` entry with the
+two retail GT2 colors followed by GT1 grey/red and grey/green. A fifth color
+input wraps to the first retail choice. Selecting grey/green resolves customer
+body `v-rbr`, choice 3 to hidden loader body `v1rbr`, local palette 1, then
+loads and auto-drives that native body through a normal race with no unmapped
+call, managed exception, or software fault.
+
+The transient GT Mode acquisition smoke pins its developer-only used-car alias
+to authoritative color ID 109 so a fresh save deterministically exercises the
+newest imported paint instead of depending on the dealer-rotation day. Its
+listing, information preview, purchase/active-garage state, race, result, and
+replay all complete, and the preview trace resolves `v-rbr` choice 3 to
+`v1rbr` palette 1. The alias is intentionally non-shipping and lives in the
+Mazda test roster; that borrowed dealer screen still shows Mazda's
+`RX-7 A-Spec LM` information-page wordmark even though the listing, car,
+specification, and garage identity are Cerbera LM. The current generic upgrade
+fixture also enters the Tommy Kaira special-model page rather than proving a
+Cerbera upgrade purchase. Those two smoke-scaffold presentation/navigation
+issues remain open and are not counted as production GT Mode parity.
 
 The same database rule imports `tsplr` ID 113 as the second Castrol Supra GT
 choice and covers the other 48 variants listed above. Cross-stem archive

@@ -6,6 +6,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 GENERATED = REPO / "generated" / "recompiled"
+PROJECT = GENERATED / "GranTurismo2PC.csproj"
 
 
 def replace_once(path: Path, old: str, new: str, description: str) -> None:
@@ -18,12 +19,149 @@ def replace_once(path: Path, old: str, new: str, description: str) -> None:
     path.write_text(source.replace(old, new, 1), encoding="utf-8")
 
 
+def include_livery_preview_helper() -> None:
+    replace_once(
+        PROJECT,
+        """  <ItemGroup>
+    <ProjectReference Include="..\\..\\vendor\\RecompOne\\RecompOne.Runtime\\RecompOne.Runtime.csproj" />
+""",
+        """  <ItemGroup>
+    <Compile Include="..\\..\\tools\\unified-host\\SimulationLiveryPreview.cs"
+             Link="SimulationLiveryPreview.cs" />
+    <ProjectReference Include="..\\..\\vendor\\RecompOne\\RecompOne.Runtime\\RecompOne.Runtime.csproj" />
+""",
+        "Simulation alternate-livery preview helper project include",
+    )
+
+
+def apply_livery_preview_reload(track: Path) -> None:
+    replace_once(
+        track,
+        """        m.WriteU32((c.SP + 0x214u), c.RA);
+        c.V0 = (uint)(sbyte)m.ReadU8((c.S0 + 0xDu));
+        L80015DF0: ;
+        c.A0 = c.SP + 0x10u;
+        c.A2 = 0u + 0u;
+        c.A1 = c.V0 << 3;
+""",
+        """        m.WriteU32((c.SP + 0x214u), c.RA);
+        c.V0 = (uint)(sbyte)m.ReadU8((c.S0 + 0xDu));
+        L80015DF0: ;
+        uint targetLiveryPalette = c.V0;
+        c.V0 = (uint)(
+            RecompOne.Runtime.Sdk.GT2Compat.ResolveLiveryBodyAndPalette(
+                m.ReadU32((c.S0 + 0x8u)), targetLiveryPalette) >> 32);
+        c.A0 = c.SP + 0x10u;
+        c.A2 = 0u + 0u;
+        c.A1 = c.V0 << 3;
+""",
+        "Simulation preview alternate-body local palette upload",
+    )
+    replace_once(
+        track,
+        """        m.WriteU8((c.S0 + 0xDu), (byte)c.V0);
+        c.V0 = m.ReadU32((c.S0 + 0x44u));
+""",
+        """        m.WriteU8((c.S0 + 0xDu), (byte)targetLiveryPalette);
+        c.V0 = m.ReadU32((c.S0 + 0x44u));
+""",
+        "Simulation preview customer-facing palette persistence",
+    )
+    replace_once(
+        track,
+        """        c.V0 = m.ReadU32((c.A0 + 0x44u));
+        c.V0 = m.ReadU16(c.V0);
+        return;
+""",
+        """        c.V0 = m.ReadU32((c.A0 + 0x44u));
+        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.ResolveLiveryChoiceCount(
+            m.ReadU32((c.A0 + 0x8u)), m.ReadU16(c.V0));
+        return;
+""",
+        "Simulation preview extended livery choice count",
+    )
+    replace_once(
+        track,
+        """        c.A1 = 0xFFFFFFFFu;
+        c.RA = 0x8001ECD0u;
+        GranTurismo2PC.func_80015EB8(c, m);
+        c.V0 = c.S0 & 0x0002u;
+""",
+        """        c.A1 = 0xFFFFFFFFu;
+        c.RA = 0x8001ECD0u;
+        GranTurismo2PC.func_80015EB8(c, m);
+        GranTurismo2PC.ReloadLiveryPreview(
+            c, m, m.ReadU32((c.S5 + 0x228u)), c.S5);
+        c.V0 = c.S0 & 0x0002u;
+""",
+        "Simulation one-player previous-livery body reload",
+    )
+    replace_once(
+        track,
+        """        c.A1 = 0x00000001u;
+        c.RA = 0x8001ECE8u;
+        GranTurismo2PC.func_80015EB8(c, m);
+        c.V0 = c.S0 & 0x0003u;
+""",
+        """        c.A1 = 0x00000001u;
+        c.RA = 0x8001ECE8u;
+        GranTurismo2PC.func_80015EB8(c, m);
+        GranTurismo2PC.ReloadLiveryPreview(
+            c, m, m.ReadU32((c.S5 + 0x228u)), c.S5);
+        c.V0 = c.S0 & 0x0003u;
+""",
+        "Simulation one-player next-livery body reload",
+    )
+    replace_once(
+        track,
+        """        c.A1 = 0xFFFFFFFFu;
+        c.RA = 0x80021AE4u;
+        GranTurismo2PC.func_80015EB8(c, m);
+        L80021AE4: ;
+""",
+        """        c.A1 = 0xFFFFFFFFu;
+        c.RA = 0x80021AE4u;
+        GranTurismo2PC.func_80015EB8(c, m);
+        GranTurismo2PC.ReloadLiveryPreview(
+            c,
+            m,
+            m.ReadU32(
+                (m.ReadU32((c.SP + 0x70u)) + c.S5 * 4u) + 0x228u),
+            m.ReadU32((c.SP + 0x70u)));
+        L80021AE4: ;
+""",
+        "Simulation two-player previous-livery body reload",
+    )
+    replace_once(
+        track,
+        """        c.A1 = 0x00000001u;
+        c.RA = 0x80021B08u;
+        GranTurismo2PC.func_80015EB8(c, m);
+        L80021B08: ;
+""",
+        """        c.A1 = 0x00000001u;
+        c.RA = 0x80021B08u;
+        GranTurismo2PC.func_80015EB8(c, m);
+        GranTurismo2PC.ReloadLiveryPreview(
+            c,
+            m,
+            m.ReadU32(
+                (m.ReadU32((c.SP + 0x70u)) + c.S5 * 4u) + 0x228u),
+            m.ReadU32((c.SP + 0x70u)));
+        L80021B08: ;
+""",
+        "Simulation two-player next-livery body reload",
+    )
+
+
 def main() -> int:
     race = GENERATED / "gt2_overlay_0.cs"
     track = GENERATED / "gt2_overlay_2.cs"
     title = GENERATED / "gt2_overlay_1.cs"
     showroom = GENERATED / "gt2_overlay_4.cs"
     entry = GENERATED / "Entry.cs"
+
+    include_livery_preview_helper()
 
     replace_once(
         entry,
@@ -228,6 +366,7 @@ def main() -> int:
 """,
         "showroom and replay alternate native livery body and palette",
     )
+    apply_livery_preview_reload(track)
 
     replace_once(
         race,

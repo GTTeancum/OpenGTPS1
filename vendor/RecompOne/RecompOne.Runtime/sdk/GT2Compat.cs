@@ -69,6 +69,8 @@ public static class GT2Compat
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_VEHICLE_LOD") == "1";
     static readonly bool TraceAiDrivers =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_AI_DRIVERS") == "1";
+    static readonly bool TraceLiveries =
+        Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_LIVERIES") == "1";
     static readonly bool AiAutoDrive =
         Environment.GetEnvironmentVariable("RECOMPONE_GT2_AI_AUTODRIVE") == "1";
     static readonly int AiAutoDriveMaxEngagements =
@@ -117,6 +119,9 @@ public static class GT2Compat
     static readonly object LiveryTableLock = new();
     static Dictionary<ulong, LiverySelection>? _liveriesByPalette;
     static Dictionary<ulong, LiverySelection>? _liveriesByColorId;
+    static Dictionary<uint, uint>? _liveryChoiceCounts;
+    static int _liveryPaletteTraceCount;
+    static int _liveryColorTraceCount;
 
     static ulong LiveryKey(uint bodyId, uint selector) =>
         ((ulong)bodyId << 32) | selector;
@@ -132,6 +137,7 @@ public static class GT2Compat
 
             var byPalette = new Dictionary<ulong, LiverySelection>();
             var byColorId = new Dictionary<ulong, LiverySelection>();
+            var choiceCounts = new Dictionary<uint, uint>();
             var ambiguousColorIds = new HashSet<ulong>();
             string? root = Runtime.ResolveLoosePath();
             string? path = root == null
@@ -177,6 +183,9 @@ public static class GT2Compat
                             LiveryKey(targetBody, targetPalette), selection))
                         throw new InvalidDataException(
                             $"GT2 livery record {index} is duplicated");
+                    choiceCounts[targetBody] = Math.Max(
+                        choiceCounts.GetValueOrDefault(targetBody),
+                        (uint)targetPalette + 1);
                     ulong colorKey =
                         LiveryKey(targetBody, encodedColorId);
                     if (!ambiguousColorIds.Contains(colorKey))
@@ -205,6 +214,7 @@ public static class GT2Compat
                     $"{count} body/palette mappings, " +
                     $"{ambiguousColorIds.Count} ambiguous color IDs");
             }
+            _liveryChoiceCounts = choiceCounts;
             _liveriesByColorId = byColorId;
             // Publish the palette table last. Readers use it as the
             // initialization sentinel, so observing it also makes the
@@ -223,11 +233,20 @@ public static class GT2Compat
     {
         EnsureLiveryTable();
         var byPalette = Volatile.Read(ref _liveriesByPalette)!;
-        if (byPalette.TryGetValue(
-                LiveryKey(bodyId, paletteIndex), out var selection))
-            return selection.BodyId |
-                ((ulong)selection.BodyPaletteIndex << 32);
-        return bodyId | ((ulong)paletteIndex << 32);
+        bool mapped = byPalette.TryGetValue(
+            LiveryKey(bodyId, paletteIndex), out var selection);
+        uint resolvedBody = mapped ? selection.BodyId : bodyId;
+        uint resolvedPalette = mapped
+            ? selection.BodyPaletteIndex
+            : paletteIndex;
+        if (TraceLiveries &&
+            Interlocked.Increment(ref _liveryPaletteTraceCount) <= 256)
+            Console.WriteLine(
+                "[GT2-Livery] palette " +
+                $"body=0x{bodyId:X8} index={paletteIndex} " +
+                $"mapped={mapped} -> body=0x{resolvedBody:X8} " +
+                $"index={resolvedPalette}");
+        return resolvedBody | ((ulong)resolvedPalette << 32);
     }
 
     public static void ResolveLiveryBodyAndPaletteA0S2(CpuContext c)
@@ -253,6 +272,15 @@ public static class GT2Compat
         uint bodyId, uint paletteIndex) =>
         (uint)ResolveLiveryBodyAndPalette(bodyId, paletteIndex);
 
+    public static uint ResolveLiveryChoiceCount(
+        uint bodyId, uint nativeCount)
+    {
+        EnsureLiveryTable();
+        return Math.Max(
+            nativeCount,
+            _liveryChoiceCounts!.GetValueOrDefault(bodyId));
+    }
+
     /// <summary>
     /// Frontend records carry the database color ID rather than its palette
     /// slot. Swap only the native body here; the original frontend then finds
@@ -263,10 +291,16 @@ public static class GT2Compat
         uint bodyId, uint colorId)
     {
         EnsureLiveryTable();
-        return _liveriesByColorId!.TryGetValue(
-                LiveryKey(bodyId, colorId), out var selection)
-            ? selection.BodyId
-            : bodyId;
+        bool mapped = _liveriesByColorId!.TryGetValue(
+            LiveryKey(bodyId, colorId), out var selection);
+        uint resolvedBody = mapped ? selection.BodyId : bodyId;
+        if (TraceLiveries &&
+            Interlocked.Increment(ref _liveryColorTraceCount) <= 256)
+            Console.WriteLine(
+                "[GT2-Livery] color " +
+                $"body=0x{bodyId:X8} id={colorId} mapped={mapped} " +
+                $"-> body=0x{resolvedBody:X8}");
+        return resolvedBody;
     }
 
     const uint UnifiedTitleList = 0x8004BC28u;

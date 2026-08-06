@@ -1,0 +1,54 @@
+# Unified title -> Arcade single-player Road Race -> Easy -> Class A.
+600+8=CROSS,START
+1380+4=CROSS
+1980+4=CROSS
+2380+4=CROSS
+2780+4=CROSS
+3660+4=CROSS
+
+# Advance to the transient thirteenth Class A Cerbera LM replacement.
+4100+4=RIGHT
+4220+4=RIGHT
+4340+4=RIGHT
+4460+4=RIGHT
+4580+4=RIGHT
+4700+4=RIGHT
+4820+4=RIGHT
+4940+4=RIGHT
+5060+4=RIGHT
+5180+4=RIGHT
+5300+4=RIGHT
+5420+4=RIGHT
+5860+1=CAPTURE
+
+# Capture the two retail GT2 colors followed by GT1's alternate-body
+# grey/red and grey/green liveries. A fourth step must wrap to retail.
+6060+4=DOWN
+6380+1=CAPTURE
+6580+4=DOWN
+6900+1=CAPTURE
+7100+4=DOWN
+7420+1=CAPTURE
+7620+4=DOWN
+7940+1=CAPTURE
+
+# Return to GT1 grey/green, select it, then choose automatic transmission and
+# the default Tahiti Road course.
+8060+4=UP
+8380+1=CAPTURE
+8580+4=CROSS
+9180+4=CROSS
+9780+4=CROSS
+9840+1=CAPTURE
+9900+4=CROSS
+
+# Exercise the hidden native GT1 body and local palette through the normal
+# race hand-off. Auto-drive uses GT2's original racing-line controller.
+[race_1]
+0+9000=CROSS
+300+1=CAPTURE
+1000+1=CAPTURE
+2000+1=CAPTURE
+3000+1=CAPTURE
+6000+1=CAPTURE
+9000+1=CAPTURE

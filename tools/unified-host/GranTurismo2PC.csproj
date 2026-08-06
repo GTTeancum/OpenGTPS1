@@ -11,6 +11,8 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="UnifiedEntry.cs" />
+    <Compile Include="ArcadeLiveryPreview.cs" />
+    <Compile Include="SimulationLiveryPreview.cs" />
     <Compile Include="..\..\generated\recompiled\*.cs"
              Exclude="..\..\generated\recompiled\Program.cs" />
     <Compile Include="..\..\generated\arcade-recompiled\*.cs"
