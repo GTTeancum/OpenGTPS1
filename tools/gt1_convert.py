@@ -326,10 +326,9 @@ GT1_ARCADE_LIVERY_SMOKE_CARS = {
         "menuLogoName": "tspl.tim",
         "physicsBasisStem": "tsplr",
         "physicsPartBasis": {},
-        # Class S is not extended by the production GT1 Arcade imports, so
-        # this developer-only proof entry cannot exceed the proven A-C roster
-        # capacity.
-        "arcadeClass": 0,
+        # The explicit smoke overlay replaces the last accessible Class A
+        # slot instead of growing its already-proven thirteen-entry roster.
+        "arcadeClass": 1,
         "manufacturerLogoIndex": 31,
         "ratings": (10, 10, 10),
     },
@@ -1792,6 +1791,74 @@ def extend_gt2_carinfo(
     }
 
 
+GT2_LOCALIZED_CARINFO_DATABASES = (
+    ".carinfoa",
+    ".carinfoe",
+    ".carinfoj",
+)
+
+
+def update_gt2_localized_carinfo(
+    gt2_volume: Path,
+    patch_root: Path,
+    transform,
+) -> dict[str, object]:
+    """Apply one structural car-info edit to every native locale database.
+
+    The US executables query `.carinfoa`; `.carinfoe` had historically been
+    the converter's only target and therefore produced correct offline proofs
+    that the live game could not see. All three archives contain the same
+    ordered car identities and share one `.carcolor` table, so each localized
+    car-info stream must be transformed from the same pre-edit color table.
+    """
+
+    staged_carcolor = patch_root / ".carcolor"
+    source_carcolor = (
+        staged_carcolor.read_bytes()
+        if staged_carcolor.is_file()
+        else read_gt2_member(gt2_volume, ".carcolor")
+    )
+    transformed_color: bytes | None = None
+    metadata_by_locale: dict[str, dict[str, object]] = {}
+    digests: dict[str, str] = {}
+    for name in GT2_LOCALIZED_CARINFO_DATABASES:
+        staged_carinfo = patch_root / name
+        source_carinfo = (
+            staged_carinfo.read_bytes()
+            if staged_carinfo.is_file()
+            else read_gt2_member(gt2_volume, name)
+        )
+        carinfo, carcolor, metadata = transform(
+            source_carinfo, source_carcolor
+        )
+        if transformed_color is None:
+            transformed_color = carcolor
+        elif carcolor != transformed_color:
+            raise ValueError(
+                "GT2 localized car-info edits produced different shared "
+                f"carcolor tables at {name}"
+            )
+        staged_carinfo.write_bytes(carinfo)
+        metadata_by_locale[name] = metadata
+        digests[name] = hashlib.sha256(carinfo).hexdigest()
+
+    if transformed_color is None:
+        raise AssertionError("GT2 localized car-info list is empty")
+    staged_carcolor.write_bytes(transformed_color)
+    canonical = metadata_by_locale[".carinfoa"]
+    for name, metadata in metadata_by_locale.items():
+        if metadata != canonical:
+            raise ValueError(
+                "GT2 localized car-info metadata diverged at "
+                f"{name}: {metadata!r} != {canonical!r}"
+            )
+    return {
+        **canonical,
+        "localizedCarinfoSha256": digests,
+        "carcolorSha256": hashlib.sha256(transformed_color).hexdigest(),
+    }
+
+
 def _gt2_livery_table_records(
     folds: list[dict[str, object]],
 ) -> list[dict[str, object]]:
@@ -3110,6 +3177,7 @@ def stage_gt2_simulation_used_cars(
     patch_root: Path,
     cars: tuple[dict[str, object], ...],
     smoke_stem: str | None = None,
+    smoke_existing: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Make every imported older GT1 identity natively purchasable.
 
@@ -3138,6 +3206,8 @@ def stage_gt2_simulation_used_cars(
                 "colorIds": color_ids,
             }
         )
+    if smoke_stem is not None and smoke_existing is not None:
+        raise ValueError("only one GT Mode used-car smoke target is allowed")
     if smoke_stem is not None and smoke_stem not in {
         str(addition["stem"]) for addition in additions
     }:
@@ -3208,6 +3278,27 @@ def stage_gt2_simulation_used_cars(
                 if manufacturer_id == 18:
                     records.pop(index)
                 smoke_records.insert(0, record)
+            elif smoke_existing is not None:
+                car_id = int(smoke_existing["carId"])
+                if any(
+                    record[0] == car_id
+                    for records in manufacturers
+                    for record in records
+                ):
+                    raise ValueError(
+                        "existing livery smoke car unexpectedly appears "
+                        f"in {name}: {smoke_existing['stem']}"
+                    )
+                color_ids = tuple(smoke_existing["colorIds"])
+                manufacturers[18].insert(
+                    0,
+                    (
+                        car_id,
+                        int(smoke_existing["smokePrice"]),
+                        0,
+                        int(color_ids[rotation_index % len(color_ids)]),
+                    ),
+                )
         converted = _build_gt2_used_car_database(rotations)
         output = patch_root / name
         output.write_bytes(
@@ -3237,6 +3328,20 @@ def stage_gt2_simulation_used_cars(
                     f"GT2 {addition['stem']} used-car rotation failed "
                     f"round-trip in {name}"
                 )
+        if smoke_existing is not None:
+            car_id = int(smoke_existing["carId"])
+            color_ids = set(int(value) for value in smoke_existing["colorIds"])
+            actual = [rotation[18][0] for rotation in verified]
+            if (
+                {record[0] for record in actual} != {car_id}
+                or {record[1] for record in actual}
+                != {int(smoke_existing["smokePrice"])}
+                or {record[3] for record in actual} != color_ids
+            ):
+                raise ValueError(
+                    "existing GT2 livery smoke placement failed "
+                    f"round-trip in {name}"
+                )
         metadata[name] = {
             "rotationCount": len(verified),
             "manufacturerCount": len(verified[0]),
@@ -3254,13 +3359,77 @@ def stage_gt2_simulation_used_cars(
                 }
                 for addition in additions
             ],
-            "smokeFeaturedStem": smoke_stem,
-            "smokeDealerManufacturerId": (
-                18 if smoke_stem is not None else None
+            "smokeFeaturedStem": (
+                smoke_stem
+                if smoke_stem is not None
+                else (
+                    str(smoke_existing["stem"])
+                    if smoke_existing is not None
+                    else None
+                )
             ),
-            "smokeDealerSlot": 1 if smoke_stem is not None else None,
+            "smokeDealerManufacturerId": (
+                18
+                if smoke_stem is not None or smoke_existing is not None
+                else None
+            ),
+            "smokeDealerSlot": (
+                1
+                if smoke_stem is not None or smoke_existing is not None
+                else None
+            ),
         }
     return metadata
+
+
+def build_gt2_existing_livery_smoke_car(
+    gt2_simulation_volume: Path,
+    definitions: list[dict[str, object]],
+    stem: str,
+) -> dict[str, object]:
+    """Describe one existing GT2 identity for a transient purchase smoke."""
+
+    target_definitions = [
+        definition
+        for definition in definitions
+        if str(definition["targetStem"]) == stem
+    ]
+    if not target_definitions:
+        raise ValueError(f"GT2 livery smoke target is absent: {stem}")
+    records = _parse_gt2_carinfo(
+        read_gt2_member(gt2_simulation_volume, ".carinfoa")
+    )
+    target = next(
+        (record for record in records if record["stem"] == stem),
+        None,
+    )
+    if target is None:
+        raise ValueError(f"GT2 livery smoke carinfo is absent: {stem}")
+    color_ids = list(int(value) for value in target["colorIds"])
+    for definition in target_definitions:
+        color_ids.extend(
+            int(item[0]) for item in definition["paintSources"]
+        )
+    gtmode = read_gt2_gzip_member(
+        gt2_simulation_volume, "carparam/usa_gtmode_data.dat.gz"
+    )
+    car = _find_gt2_gtdt_car(
+        _parse_gtdt_blocks(
+            gtmode, GT2_GTMODE_BLOCK_COUNT
+        )[GT2_GTMODE_CAR_BLOCK],
+        0x48,
+        stem,
+    )
+    return {
+        "stem": stem,
+        "carId": encode_gt2_car_id(stem),
+        "manufacturerId": struct.unpack_from("<H", car, 0x3A)[0],
+        "nativePrice": struct.unpack_from("<I", car, 0x44)[0],
+        # Development output only: keep the deterministic 100,000-credit
+        # fixture able to acquire the existing prize/race identity.
+        "smokePrice": 20_000,
+        "colorIds": tuple(color_ids),
+    }
 
 
 def stage_gt2_simulation_car_physics(
@@ -3448,25 +3617,17 @@ def stage_gt1_simulation_car(
             "models": models,
         }
 
-    staged_carinfo = patch_root / ".carinfoe"
-    staged_carcolor = patch_root / ".carcolor"
-    carinfo, carcolor, carinfo_metadata = append_gt2_carinfo(
-        (
-            staged_carinfo.read_bytes()
-            if staged_carinfo.is_file()
-            else read_gt2_member(gt2_simulation_volume, ".carinfoe")
+    carinfo_metadata = update_gt2_localized_carinfo(
+        gt2_simulation_volume,
+        patch_root,
+        lambda carinfo, carcolor: append_gt2_carinfo(
+            carinfo,
+            carcolor,
+            target_stem,
+            str(definition["displayName"]),
+            tuple(definition["paintSources"]),
         ),
-        (
-            staged_carcolor.read_bytes()
-            if staged_carcolor.is_file()
-            else read_gt2_member(gt2_simulation_volume, ".carcolor")
-        ),
-        target_stem,
-        str(definition["displayName"]),
-        tuple(definition["paintSources"]),
     )
-    staged_carinfo.write_bytes(carinfo)
-    staged_carcolor.write_bytes(carcolor)
     gtmode_logo = stage_gt2_gtmode_car_logos(
         disc_root,
         patch_root,
@@ -3592,25 +3753,17 @@ def stage_gt1_arcade_car(
         )
     (arcade_output / "arc_carlogo").write_bytes(merged_logos)
 
-    staged_carinfo = patch_root / ".carinfoe"
-    staged_carcolor = patch_root / ".carcolor"
-    carinfo, carcolor, carinfo_metadata = append_gt2_carinfo(
-        (
-            staged_carinfo.read_bytes()
-            if staged_carinfo.is_file()
-            else read_gt2_member(gt2_arcade_volume, ".carinfoe")
+    carinfo_metadata = update_gt2_localized_carinfo(
+        gt2_arcade_volume,
+        patch_root,
+        lambda carinfo, carcolor: append_gt2_carinfo(
+            carinfo,
+            carcolor,
+            stem,
+            str(definition["displayName"]),
+            tuple(definition["paintSources"]),
         ),
-        (
-            staged_carcolor.read_bytes()
-            if staged_carcolor.is_file()
-            else read_gt2_member(gt2_arcade_volume, ".carcolor")
-        ),
-        stem,
-        str(definition["displayName"]),
-        tuple(definition["paintSources"]),
     )
-    (patch_root / ".carinfoe").write_bytes(carinfo)
-    (patch_root / ".carcolor").write_bytes(carcolor)
     arcade_physics = stage_gt2_arcade_car_physics(
         gt2_arcade_volume, patch_root, definition
     )
@@ -3708,40 +3861,38 @@ def stage_gt1_livery_fold(
         model_conversions[extension] = details
         model_hashes[extension] = hashlib.sha256(converted).hexdigest()
 
-    staged_carinfo = patch_root / ".carinfoe"
-    staged_carcolor = patch_root / ".carcolor"
-    carinfo = (
-        staged_carinfo.read_bytes()
-        if staged_carinfo.is_file()
-        else read_gt2_member(gt2_volume, ".carinfoe")
+    def fold_carinfo(
+        carinfo: bytes, carcolor: bytes
+    ) -> tuple[bytes, bytes, dict[str, object]]:
+        carinfo, carcolor, body_metadata = append_gt2_carinfo(
+            carinfo,
+            carcolor,
+            body_stem,
+            "delete",
+            tuple(definition["bodyPaintSources"]),
+        )
+        carinfo, carcolor, target_metadata = extend_gt2_carinfo(
+            carinfo,
+            carcolor,
+            target_stem,
+            tuple(definition["paintSources"]),
+            allow_duplicate_color_ids=bool(
+                definition.get("allowDuplicateColorIds", False)
+            ),
+        )
+        return carinfo, carcolor, {
+            "body": body_metadata,
+            "target": target_metadata,
+        }
+
+    localized_metadata = update_gt2_localized_carinfo(
+        gt2_volume, patch_root, fold_carinfo
     )
-    carcolor = (
-        staged_carcolor.read_bytes()
-        if staged_carcolor.is_file()
-        else read_gt2_member(gt2_volume, ".carcolor")
+    body_carinfo_metadata = dict(localized_metadata["body"])
+    color_metadata = dict(localized_metadata["target"])
+    localized_digests = dict(
+        localized_metadata["localizedCarinfoSha256"]
     )
-    carinfo, carcolor, body_carinfo_metadata = append_gt2_carinfo(
-        carinfo,
-        carcolor,
-        body_stem,
-        "delete",
-        tuple(definition["bodyPaintSources"]),
-    )
-    carinfo, carcolor, color_metadata = extend_gt2_carinfo(
-        (
-            carinfo
-        ),
-        (
-            carcolor
-        ),
-        target_stem,
-        tuple(definition["paintSources"]),
-        allow_duplicate_color_ids=bool(
-            definition.get("allowDuplicateColorIds", False)
-        ),
-    )
-    staged_carinfo.write_bytes(carinfo)
-    staged_carcolor.write_bytes(carcolor)
     body_mappings = [
         {
             "colorId": color_id,
@@ -3758,6 +3909,8 @@ def stage_gt1_livery_fold(
         "description": definition["description"],
         "bodyCarinfo": body_carinfo_metadata,
         **color_metadata,
+        "localizedCarinfoSha256": localized_digests,
+        "carcolorSha256": localized_metadata["carcolorSha256"],
         "bodyMappings": body_mappings,
         "sourceDayTextureSha256": hashlib.sha256(day_texture).hexdigest(),
         "sourceNightTextureSha256": hashlib.sha256(
@@ -3765,6 +3918,195 @@ def stage_gt1_livery_fold(
         ).hexdigest(),
         "dayTextureSha256": hashlib.sha256(converted_day).hexdigest(),
         "nightTextureSha256": hashlib.sha256(converted_night).hexdigest(),
+        "modelConversions": model_conversions,
+        "modelSha256": model_hashes,
+    }
+
+
+def merge_gt2_car_texture_palettes(
+    primary: bytes,
+    additions: tuple[tuple[bytes, int], ...],
+) -> bytes:
+    """Append authored palettes when native GT2 textures share one bitmap."""
+
+    if len(primary) != 0xB3A0 or not 1 <= primary[0] <= 16:
+        raise ValueError("primary GT2 car texture is malformed")
+    output = bytearray(primary)
+    color_ids = list(primary[2 : 2 + primary[0]])
+    for texture, palette_index in additions:
+        if (
+            len(texture) != len(primary)
+            or not 0 <= palette_index < texture[0]
+        ):
+            raise ValueError("added GT2 car texture palette is malformed")
+        if texture[0x43A0:] != primary[0x43A0:]:
+            raise ValueError(
+                "GT2 car texture palettes do not share their authored bitmap"
+            )
+        if len(color_ids) >= 16:
+            raise ValueError("GT2 car texture exceeds sixteen palettes")
+        source = 0x20 + palette_index * 0x240
+        target = 0x20 + len(color_ids) * 0x240
+        output[target : target + 0x240] = texture[
+            source : source + 0x240
+        ]
+        color_ids.append(texture[2 + palette_index])
+    output[0] = len(color_ids)
+    output[2:18] = bytes(color_ids) + bytes(16 - len(color_ids))
+    return bytes(output)
+
+
+def stage_gt1_castrol_supra_palette_fold(
+    disc_root: Path,
+    gt2_volume: Path,
+    patch_root: Path,
+    same_stem_definition: dict[str, object],
+    black_definition: dict[str, object],
+) -> dict[str, object]:
+    """Fold all four accepted Supra liveries into one native GT2 body."""
+
+    if (
+        same_stem_definition["targetStem"] != "tsplr"
+        or same_stem_definition["sourceStem"] != "tsplr"
+        or black_definition["targetStem"] != "tsplr"
+        or black_definition["sourceStem"] != "t-plr"
+    ):
+        raise ValueError("Castrol Supra native-palette definitions changed")
+
+    stems = read_gt1_car_stems(disc_root / "SYSTEM.DAT")
+    white_members = read_gt1_car_members(
+        disc_root / "CAR.DAT", stems, "tsplr"
+    )
+    black_members = read_gt1_car_members(
+        disc_root / "CAR.DAT", stems, "t-plr"
+    )
+    white_day = convert_gt1_car_texture(white_members[0])
+    white_night = convert_gt1_car_texture(white_members[2])
+    black_day = convert_gt1_car_texture(black_members[0])
+    black_night = convert_gt1_car_texture(black_members[2])
+    if (
+        list(white_day[2 : 2 + white_day[0]]) != [108, 113]
+        or list(white_night[2 : 2 + white_night[0]]) != [108, 113]
+        or list(black_day[2 : 2 + black_day[0]]) != [108, 113]
+        or list(black_night[2 : 2 + black_night[0]]) != [108, 113]
+    ):
+        raise ValueError("GT1 Castrol Supra palette IDs changed")
+
+    merged_day = merge_gt2_car_texture_palettes(
+        white_day, ((black_day, 0), (black_day, 1))
+    )
+    merged_night = merge_gt2_car_texture_palettes(
+        white_night, ((black_night, 0), (black_night, 1))
+    )
+    expected_ids = [108, 113, 108, 113]
+    if (
+        list(merged_day[2:6]) != expected_ids
+        or list(merged_night[2:6]) != expected_ids
+    ):
+        raise AssertionError("Castrol Supra four-palette merge failed")
+
+    car_output = patch_root / "carobj"
+    car_output.mkdir(parents=True, exist_ok=True)
+    (car_output / "tsplr.cdp.gz").write_bytes(
+        gzip.compress(merged_day, compresslevel=9, mtime=0)
+    )
+    (car_output / "tsplr.cnp.gz").write_bytes(
+        gzip.compress(merged_night, compresslevel=9, mtime=0)
+    )
+    model_conversions: dict[str, object] = {}
+    model_hashes: dict[str, str] = {}
+    for source_model, extension in (
+        (white_members[1], "cdo"),
+        (white_members[3], "cno"),
+    ):
+        basis = read_gt2_gzip_member(
+            gt2_volume, f"carobj/tsplr.{extension}.gz"
+        )
+        converted, details = convert_gt1_car_model(source_model, basis)
+        (car_output / f"tsplr.{extension}.gz").write_bytes(
+            gzip.compress(converted, compresslevel=9, mtime=0)
+        )
+        model_conversions[extension] = details
+        model_hashes[extension] = hashlib.sha256(converted).hexdigest()
+
+    paint_sources = (
+        tuple(same_stem_definition["paintSources"])
+        + tuple(black_definition["paintSources"])
+    )
+    localized_metadata = update_gt2_localized_carinfo(
+        gt2_volume,
+        patch_root,
+        lambda carinfo, carcolor: extend_gt2_carinfo(
+            carinfo,
+            carcolor,
+            "tsplr",
+            paint_sources,
+            allow_duplicate_color_ids=True,
+        ),
+    )
+    first_index = int(localized_metadata["firstColorIndex"])
+    body_mappings = [
+        {
+            "colorId": color_id,
+            "targetColorIndex": first_index + index,
+            "bodyPaletteIndex": first_index + index,
+        }
+        for index, color_id in enumerate((113, 108, 113))
+    ]
+    return {
+        "targetStem": "tsplr",
+        "sourceStem": "tsplr+t-plr",
+        "sourceStems": ["tsplr", "t-plr"],
+        "bodyStem": "tsplr",
+        "modelBasisStem": "tsplr",
+        "description": (
+            "GT1 Castrol Supra white/blue, black/green, and black/blue "
+            "palettes folded into the existing GT2 white/green body"
+        ),
+        "nativePaletteFold": True,
+        **localized_metadata,
+        "bodyMappings": body_mappings,
+        "acceptedVisualChoices": [
+            "white/green",
+            "white/blue",
+            "black/green",
+            "black/blue",
+        ],
+        "paletteSources": [
+            {
+                "targetPaletteIndex": 0,
+                "sourceStem": "tsplr",
+                "sourcePaletteIndex": 0,
+                "colorId": 108,
+                "retailEquivalent": True,
+            },
+            {
+                "targetPaletteIndex": 1,
+                "sourceStem": "tsplr",
+                "sourcePaletteIndex": 1,
+                "colorId": 113,
+            },
+            {
+                "targetPaletteIndex": 2,
+                "sourceStem": "t-plr",
+                "sourcePaletteIndex": 0,
+                "colorId": 108,
+            },
+            {
+                "targetPaletteIndex": 3,
+                "sourceStem": "t-plr",
+                "sourcePaletteIndex": 1,
+                "colorId": 113,
+            },
+        ],
+        "dayTextureSha256": hashlib.sha256(merged_day).hexdigest(),
+        "nightTextureSha256": hashlib.sha256(merged_night).hexdigest(),
+        "sharedDayBitmapSha256": hashlib.sha256(
+            merged_day[0x43A0:]
+        ).hexdigest(),
+        "sharedNightBitmapSha256": hashlib.sha256(
+            merged_night[0x43A0:]
+        ).hexdigest(),
         "modelConversions": model_conversions,
         "modelSha256": model_hashes,
     }
@@ -4015,12 +4357,33 @@ def stage_gt1_livery_folds(
     patch_root: Path,
     definitions: list[dict[str, object]],
 ) -> list[dict[str, object]]:
+    supra_definitions = {
+        str(definition["sourceStem"]): definition
+        for definition in definitions
+        if str(definition["targetStem"]) == "tsplr"
+    }
+    if set(supra_definitions) != {"tsplr", "t-plr"}:
+        raise ValueError("Castrol Supra livery sources are incomplete")
+    regular_definitions = [
+        definition
+        for definition in definitions
+        if str(definition["targetStem"]) != "tsplr"
+    ]
     folds = [
         stage_gt1_livery_fold(
             disc_root, gt2_volume, patch_root, definition
         )
-        for definition in definitions
+        for definition in regular_definitions
     ]
+    folds.append(
+        stage_gt1_castrol_supra_palette_fold(
+            disc_root,
+            gt2_volume,
+            patch_root,
+            supra_definitions["tsplr"],
+            supra_definitions["t-plr"],
+        )
+    )
     (patch_root / ".gtlivery").write_bytes(
         build_gt2_livery_body_table(folds)
     )
@@ -4034,38 +4397,48 @@ def validate_gt2_livery_layer(
 ) -> None:
     """Prove every resolver record agrees with both native carinfo records."""
 
-    records = _parse_gt2_carinfo((patch_root / ".carinfoe").read_bytes())
-    by_stem = {str(record["stem"]): record for record in records}
-    for fold in folds:
-        target_stem = str(fold["targetStem"])
-        body_stem = str(fold["bodyStem"])
-        target = by_stem.get(target_stem)
-        body = by_stem.get(body_stem)
-        if target is None or body is None:
-            raise ValueError(
-                f"GT2 livery carinfo records are missing: "
-                f"{target_stem}, {body_stem}"
-            )
-        for extension in ("cdp", "cnp", "cdo", "cno"):
-            if not (patch_root / "carobj" / f"{body_stem}.{extension}.gz").is_file():
+    for locale_name in GT2_LOCALIZED_CARINFO_DATABASES:
+        records = _parse_gt2_carinfo(
+            (patch_root / locale_name).read_bytes()
+        )
+        by_stem = {
+            str(record["stem"]): record for record in records
+        }
+        for fold in folds:
+            target_stem = str(fold["targetStem"])
+            body_stem = str(fold["bodyStem"])
+            target = by_stem.get(target_stem)
+            body = by_stem.get(body_stem)
+            if target is None or body is None:
                 raise ValueError(
-                    f"GT2 livery body asset is missing: "
-                    f"{body_stem}.{extension}.gz"
+                    f"GT2 livery carinfo records are missing from "
+                    f"{locale_name}: {target_stem}, {body_stem}"
                 )
-        for mapping in fold["bodyMappings"]:
-            color_id = int(mapping["colorId"])
-            target_index = int(mapping["targetColorIndex"])
-            body_index = int(mapping["bodyPaletteIndex"])
-            if (
-                target_index >= len(target["colorIds"])
-                or int(target["colorIds"][target_index]) != color_id
-                or body_index >= len(body["colorIds"])
-                or int(body["colorIds"][body_index]) != color_id
-            ):
-                raise ValueError(
-                    "GT2 livery mapping does not preserve its database "
-                    f"color ID: {target_stem} ID {color_id}"
-                )
+            for extension in ("cdp", "cnp", "cdo", "cno"):
+                if not (
+                    patch_root
+                    / "carobj"
+                    / f"{body_stem}.{extension}.gz"
+                ).is_file():
+                    raise ValueError(
+                        f"GT2 livery body asset is missing: "
+                        f"{body_stem}.{extension}.gz"
+                    )
+            for mapping in fold["bodyMappings"]:
+                color_id = int(mapping["colorId"])
+                target_index = int(mapping["targetColorIndex"])
+                body_index = int(mapping["bodyPaletteIndex"])
+                if (
+                    target_index >= len(target["colorIds"])
+                    or int(target["colorIds"][target_index]) != color_id
+                    or body_index >= len(body["colorIds"])
+                    or int(body["colorIds"][body_index]) != color_id
+                ):
+                    raise ValueError(
+                        "GT2 livery mapping does not preserve its "
+                        f"{locale_name} database color ID: "
+                        f"{target_stem} ID {color_id}"
+                    )
     expected_mappings = len(_gt2_livery_table_records(folds))
     table = (patch_root / ".gtlivery").read_bytes()
     magic, version, count = struct.unpack_from("<4sHH", table)
@@ -4077,37 +4450,24 @@ def validate_gt2_livery_layer(
     ):
         raise ValueError("GT2 livery resolver table failed layer validation")
 
-    # These three archive-authored Castrol Supra presentations are accepted
+    # These four archive-authored Castrol Supra presentations are accepted
     # content, not color-ID aliases that may be deduplicated. Lock their exact
     # resolver shape so future inventory work cannot silently drop one.
-    supra_folds = {
-        str(fold["sourceStem"]): fold
+    supra_folds = [
+        fold
         for fold in folds
         if str(fold["targetStem"]) == "tsplr"
-    }
+    ]
     if supra_folds:
-        same_stem = supra_folds.get("tsplr")
-        black_body = supra_folds.get("t-plr")
-        if same_stem is None or black_body is None:
-            raise ValueError("accepted Castrol Supra body families are missing")
-
-        def mapping_for(
-            fold: dict[str, object], color_id: int
-        ) -> dict[str, object]:
-            matches = [
-                mapping
-                for mapping in fold["bodyMappings"]
-                if int(mapping["colorId"]) == color_id
-            ]
-            if len(matches) != 1:
-                raise ValueError(
-                    "accepted Castrol Supra livery mapping is missing or "
-                    f"ambiguous: {fold['sourceStem']} ID {color_id}"
-                )
-            return matches[0]
-
-        white_blue = mapping_for(same_stem, 113)
-        black_blue = mapping_for(black_body, 113)
+        if len(supra_folds) != 1:
+            raise ValueError("Castrol Supra must be one native palette fold")
+        supra = supra_folds[0]
+        if (
+            not supra.get("nativePaletteFold")
+            or list(supra["finalColorIds"]) != [108, 113, 108, 113]
+            or str(supra["bodyStem"]) != "tsplr"
+        ):
+            raise ValueError("Castrol Supra four-palette body changed")
         actual_records = {
             (
                 str(record["targetStem"]),
@@ -4120,24 +4480,13 @@ def validate_gt2_livery_layer(
         }
         required_records = {
             ("tsplr", "tsplr", 0, 0, 108),
-            (
-                "tsplr",
-                str(same_stem["bodyStem"]),
-                int(white_blue["targetColorIndex"]),
-                int(white_blue["bodyPaletteIndex"]),
-                113,
-            ),
-            (
-                "tsplr",
-                str(black_body["bodyStem"]),
-                int(black_blue["targetColorIndex"]),
-                int(black_blue["bodyPaletteIndex"]),
-                113,
-            ),
+            ("tsplr", "tsplr", 1, 1, 113),
+            ("tsplr", "tsplr", 2, 2, 108),
+            ("tsplr", "tsplr", 3, 3, 113),
         }
         if not required_records.issubset(actual_records):
             raise ValueError(
-                "accepted retail, GT1 white/blue, or GT1 black/blue "
+                "accepted white/green, white/blue, black/green, or black/blue "
                 "Castrol Supra resolver choice was dropped"
             )
 
@@ -4929,6 +5278,9 @@ def patch_ssr11_arcade_overlay(
     )
     for car in arcade_cars:
         class_index = int(car["arcadeClass"])
+        replace_for_livery_smoke = bool(
+            car.get("developerLiverySmoke", False)
+        )
         if not 0 <= class_index < 7:
             raise ValueError(f"invalid GT2 Arcade class index: {class_index}")
         count_offset = 0x419A0 + class_index * 2
@@ -4938,7 +5290,8 @@ def patch_ssr11_arcade_overlay(
                 f"GT2 Arcade class {class_index} has no native roster"
             )
         if (
-            class_index <= 3
+            not replace_for_livery_smoke
+            and class_index <= 3
             and old_count >= GT2_ARCADE_PROVEN_CLASS_CAPACITY
         ):
             raise ValueError(
@@ -4986,8 +5339,16 @@ def patch_ssr11_arcade_overlay(
                 arcade[source_offset : source_offset + size]
             )
             merged_offset = len(arcade)
-            arcade.extend(source_table)
-            arcade.extend(appended)
+            if replace_for_livery_smoke:
+                merged_table = bytearray(source_table)
+                replacement_offset = (old_count - 1) * stride
+                merged_table[
+                    replacement_offset : replacement_offset + stride
+                ] = appended
+                arcade.extend(merged_table)
+            else:
+                arcade.extend(source_table)
+                arcade.extend(appended)
             merged_address = memory_base + merged_offset
             struct.pack_into("<I", arcade, pointer_offset, merged_address)
             patched_tables.append(
@@ -4996,15 +5357,25 @@ def patch_ssr11_arcade_overlay(
                     "sourceAddress": source_address,
                     "mergedAddress": merged_address,
                     "stride": stride,
+                    "replacementIndex": (
+                        old_count - 1
+                        if replace_for_livery_smoke
+                        else None
+                    ),
                 }
             )
-        struct.pack_into("<H", arcade, count_offset, old_count + 1)
+        new_count = old_count if replace_for_livery_smoke else old_count + 1
+        struct.pack_into("<H", arcade, count_offset, new_count)
         car_roster_metadata.append(
             {
                 "stem": stem,
                 "classIndex": class_index,
                 "oldCount": old_count,
-                "newCount": old_count + 1,
+                "newCount": new_count,
+                "developerReplacement": replace_for_livery_smoke,
+                "replacementIndex": (
+                    old_count - 1 if replace_for_livery_smoke else None
+                ),
                 "stemAddress": stem_address,
                 "tables": patched_tables,
             }
@@ -6211,6 +6582,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--smoke-gtmode-livery",
+        choices=sorted(GT1_ARCADE_LIVERY_SMOKE_CARS),
+        help=(
+            "Place one existing livery-fold target in Mazda dealer row one "
+            "at a temporary 20,000-credit price for deterministic native "
+            "purchase, upgrade, save, and race validation. Normal conversion "
+            "does not alter that car's acquisition path or price."
+        ),
+    )
+    parser.add_argument(
         "--smoke-arcade-livery",
         choices=sorted(GT1_ARCADE_LIVERY_SMOKE_CARS),
         help=(
@@ -6269,17 +6650,33 @@ def main() -> int:
         )
         for definition in GT1_GTMODE_DISTINCT_CARS
     )
+    arcade_livery_definitions = discover_gt1_livery_folds(
+        args.disc_root, args.gt2_arcade_volume
+    )
+    simulation_livery_definitions = discover_gt1_livery_folds(
+        args.disc_root, args.gt2_simulation_volume
+    )
+    smoke_existing_livery = (
+        build_gt2_existing_livery_smoke_car(
+            args.gt2_simulation_volume,
+            simulation_livery_definitions,
+            args.smoke_gtmode_livery,
+        )
+        if args.smoke_gtmode_livery is not None
+        else None
+    )
     simulation_used_cars = stage_gt2_simulation_used_cars(
         args.gt2_simulation_volume,
         simulation_patch_root,
         simulation_cars,
         args.smoke_gtmode_car,
+        smoke_existing_livery,
     )
     # The Arcade base patch already has appended carinfo records. Seed the
     # gated fold layer from that result so applying it after the base layer
     # preserves every current Arcade import.
     arcade_livery_root.mkdir(parents=True, exist_ok=True)
-    for name in (".carinfoe", ".carcolor"):
+    for name in (*GT2_LOCALIZED_CARINFO_DATABASES, ".carcolor"):
         (arcade_livery_root / name).write_bytes(
             (arcade_patch_root / name).read_bytes()
         )
@@ -6287,16 +6684,10 @@ def main() -> int:
     # Seed it from that staged database so neither layer can erase the
     # other's appended native carinfo records.
     simulation_livery_root.mkdir(parents=True, exist_ok=True)
-    for name in (".carinfoe", ".carcolor"):
+    for name in (*GT2_LOCALIZED_CARINFO_DATABASES, ".carcolor"):
         (simulation_livery_root / name).write_bytes(
             (simulation_patch_root / name).read_bytes()
         )
-    arcade_livery_definitions = discover_gt1_livery_folds(
-        args.disc_root, args.gt2_arcade_volume
-    )
-    simulation_livery_definitions = discover_gt1_livery_folds(
-        args.disc_root, args.gt2_simulation_volume
-    )
     definition_signature = lambda definitions: [
         (
             definition["targetStem"],
@@ -6392,6 +6783,7 @@ def main() -> int:
         },
         "smokeVariant": args.smoke_variant,
         "smokeGtModeCar": args.smoke_gtmode_car,
+        "smokeGtModeLivery": args.smoke_gtmode_livery,
         "smokeArcadeLivery": args.smoke_arcade_livery,
         "smokeTargets": (
             args.smoke_targets or ["circuit"]

@@ -1,0 +1,51 @@
+# Title -> Gran Turismo Mode -> East City -> Mazda used-car row one.
+600+4=DOWN
+640+8=CROSS,START
+760+3=RIGHT
+780+3=RIGHT
+820+4=CROSS
+920+4=CROSS
+1040+3=RIGHT
+1060+4=CROSS
+1140+4=CROSS
+1180+4=CROSS
+
+# Buy the transient smoke-only Castrol Supra listing and make it active.
+1260+3=RIGHT
+1280+3=RIGHT
+1300+4=CROSS
+1340+4=CIRCLE
+1420+4=CIRCLE
+1500+4=TRIANGLE
+1580+4=SQUARE
+1620+4=DOWN
+1660+4=CROSS
+1700+1=CAPTURE
+
+# Enter Mazda Tune. Probe every transition while deriving the native path
+# for an existing race-car identity rather than assuming the Roadster layout.
+1780+3=RIGHT
+1800+3=RIGHT
+1840+4=CROSS
+1900+1=CAPTURE
+1980+3=UP
+2000+3=UP
+2040+4=CROSS
+2100+1=CAPTURE
+2200+4=SQUARE
+2240+4=DOWN
+2280+4=CROSS
+2320+1=CAPTURE
+2400+4=UP
+2420+4=UP
+2440+4=RIGHT
+2460+4=RIGHT
+2500+4=CROSS
+2540+1=CAPTURE
+2640+4=RIGHT
+2660+4=RIGHT
+2700+4=CROSS
+2740+1=CAPTURE
+2780+4=CIRCLE
+2860+4=CIRCLE
+2940+1=CAPTURE

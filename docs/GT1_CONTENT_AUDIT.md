@@ -239,27 +239,42 @@ same two color IDs but different body bitmaps/models, whereas GT2 retains only
 one body and ID 108. Therefore color-ID comparison alone is insufficient for
 this cross-stem alternate-body case.
 
-That representation is now implemented. GT2 `tsplr` remains the sole visible,
-purchasable, upgradeable identity and exposes four archive-authored visual
-choices in order: retail GT2 ID 108, GT1 `tsplr` ID 113, then GT1 `t-plr` IDs
-108 and 113. Hidden body `z0tpl` contains the converted `t-plr` day/night
-models and textures. The resolver uses target palette indices 2 and 3 to
-select `z0tpl` palettes 0 and 1. Because IDs 108 and 113 are each shared by
-multiple bodies, ID-only fallback deliberately retains the retail identity
-instead of guessing. A direct rebuilt-host validation proves all four
-body/palette results and both ambiguous-ID no-op results against the generated
-54-record table. The two patch layers regenerate byte-for-byte
-deterministically; interactive selection, race, save/reload, and screenshot
-proof for all four choices remain part of the required smoke matrix before
-default activation.
+That representation is now implemented as one native four-palette body. GT2
+`tsplr` remains the sole visible, purchasable, upgradeable identity. Its
+converted day and night textures contain, in order, GT1 `tsplr` IDs 108 and
+113 followed by GT1 `t-plr` IDs 108 and 113. The two GT1 source packages have
+byte-identical indexed bitmaps, so their authored palette blocks can be
+combined without resampling or synthesizing pixels. The GT1 `tsplr` ID 108
+white/green presentation is visually identical to retail GT2 and replaces
+that single slot rather than appearing twice. No hidden Supra body and no
+runtime body swap are involved: GT2's original palette selector cycles all
+four choices, and the car identity used by Arcade rosters, GT Mode ownership,
+upgrades, saves, and races never changes.
 
-The accepted visual proof set explicitly includes all three reviewed
-presentations: retail GT2 white/green, GT1 `tsplr` white/blue, and GT1
-`t-plr` black/blue. All three are resolver-backed choices under `tsplr`;
-database color-ID deduplication is not permitted to discard any of them.
-The remaining source palettes stay in the comparison inventory so smaller
-decal, sponsor, or number revisions can be reviewed from archive data before
-being collapsed.
+The rebuilt native Arcade host completed the deterministic five-capture
+selector smoke: all four choices rendered distinctly, and a fifth Down input
+wrapped to white/green without an exception. The generated table retains four
+identity/disambiguation records for the repeated IDs, so palette-index lookup
+is exact while ambiguous ID-only lookup cannot select the wrong presentation.
+The two patch layers regenerate byte-for-byte deterministically.
+
+A transient, non-shipping GT Mode used-car alias then exercised the same
+`tsplr` identity through native acquisition, active-garage state, Sunday Cup
+race loading, AI auto-drive, results, and replay. The car finished second by
+0.116 seconds; the run exited normally with no unmapped call, managed
+exception, software fault, or memory-card mutation. The alias changes only its
+test listing to 20,000 credits so the existing 100,000-credit deterministic
+fixture can buy it; normal conversion preserves GT2's 1,000,000-credit record
+and original acquisition path. GT2 correctly reports that this purpose-built
+race car cannot be tuned at Mazda. That rejection is the native applicability
+rule for the existing identity, not a missing cloned part family.
+
+The accepted visual set contains four presentations: white/green, white/blue,
+black/green, and black/blue. All four are native palette choices under
+`tsplr`; database color-ID deduplication is not permitted to discard any of
+them. The retail GT2 and GT1 `tsplr` white/green source records render
+identically, so they collapse to one customer-facing choice. Their separate
+archive hashes remain recorded as provenance.
 
 Six rows have a consumed GT1 SPEC record, complete day/night assets, nonzero
 archive price, and already-proven native Arcade body/race conversion. They are
@@ -355,6 +370,10 @@ renderer uses the same corrected native quad order as the WebGL path, so proof
 images do not depend on browser automation. This is an audit accelerator, not
 a replacement for the required Arcade and Gran Turismo Mode race, save, and
 reload smokes.
+
+The default viewer contains only customer-facing choices. Pass
+`--include-source-duplicates` to retain visually duplicate raw archive records
+for hash/provenance review without adding them to the game-facing inventory.
 
 ## Required validation
 

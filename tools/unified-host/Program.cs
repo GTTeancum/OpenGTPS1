@@ -139,19 +139,16 @@ static void PreloadBundledNative(string fileName)
 
 static void ValidateLiveryResolver()
 {
-    // Archive-derived Castrol Supra package map:
-    // target tsplr palette 0 = native GT2 body;
-    // palette 1 = GT1 tsplr body;
-    // palettes 2/3 = GT1 t-plr body.
+    // Archive-derived Castrol Supra package map. The GT1 tsplr and t-plr
+    // textures share one indexed bitmap, so all four accepted choices are
+    // native palettes in the sole visible/persisted tsplr body.
     const uint target = 0x1E75A59Cu;
-    const uint gt1TsplrBody = 0x24041060u;
-    const uint gt1ShortStemBody = 0x2405E696u;
     (uint Body, uint Palette)[] expected =
     [
         (target, 0),
-        (gt1TsplrBody, 1),
-        (gt1ShortStemBody, 0),
-        (gt1ShortStemBody, 1),
+        (target, 1),
+        (target, 2),
+        (target, 3),
     ];
     for (uint palette = 0; palette < expected.Length; palette++)
     {
@@ -167,8 +164,8 @@ static void ValidateLiveryResolver()
                 $"{expected[palette].Palette}");
     }
 
-    // Both IDs are intentionally shared by more than one body. ID-only
-    // fallback must retain the retail identity instead of guessing.
+    // Both IDs are intentionally shared by more than one palette. ID-only
+    // fallback must retain the sole body identity instead of guessing.
     foreach (uint colorId in new uint[] { 108, 113 })
     {
         uint resolved =

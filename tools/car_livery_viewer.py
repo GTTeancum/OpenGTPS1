@@ -9,6 +9,7 @@ import gzip
 import hashlib
 import json
 import math
+import shutil
 import struct
 import zlib
 from pathlib import Path
@@ -422,10 +423,13 @@ def parse_livery_table(data: bytes) -> list[dict[str, int | str]]:
     return records
 
 
-def source_body_names(manifest: Path, target: str) -> dict[str, str]:
+def source_body_names(
+    manifest: Path, target: str
+) -> tuple[dict[str, str], dict[int, str]]:
     names = {target: f"Retail GT2 {target}"}
+    palette_names: dict[int, str] = {}
     if not manifest.is_file():
-        return names
+        return names, palette_names
     data = json.loads(manifest.read_text(encoding="utf-8"))
     folds = data.get("liveryFolds", {}).get("simulation", [])
     for fold in folds:
@@ -433,7 +437,13 @@ def source_body_names(manifest: Path, target: str) -> dict[str, str]:
             names[str(fold["bodyStem"])] = (
                 f"GT1 {fold['sourceStem']}"
             )
-    return names
+            for source in fold.get("paletteSources", []):
+                index = int(source["targetPaletteIndex"])
+                label = f"GT1 {source['sourceStem']}"
+                if source.get("retailEquivalent"):
+                    label += " (retail-equivalent)"
+                palette_names[index] = label
+    return names, palette_names
 
 
 def html_document(payload: dict[str, object]) -> str:
@@ -564,9 +574,32 @@ def main() -> int:
         type=Path,
         default=REPO / "artifacts" / "car-livery-viewer",
     )
+    parser.add_argument(
+        "--include-source-duplicates",
+        action="store_true",
+        help=(
+            "Include archive source palettes intentionally omitted from the "
+            "customer-facing resolver as visual duplicates."
+        ),
+    )
+    parser.add_argument(
+        "--carinfo-database",
+        choices=(".carinfoa", ".carinfoe", ".carinfoj"),
+        default=".carinfoa",
+        help=(
+            "Localized native car database to audit. NTSC-U runtime parity "
+            "uses .carinfoa."
+        ),
+    )
     args = parser.parse_args()
 
-    carinfo = _parse_gt2_carinfo(read_member(args.volume, ".carinfoe"))
+    render_root = args.output / "renders"
+    if render_root.is_dir():
+        shutil.rmtree(render_root)
+
+    carinfo = _parse_gt2_carinfo(
+        read_member(args.volume, args.carinfo_database)
+    )
     targets = {
         str(record["stem"]): record for record in carinfo
     }
@@ -584,7 +617,9 @@ def main() -> int:
         (str(record["body"]), int(record["bodyPalette"])): record
         for record in mappings
     }
-    body_names = source_body_names(args.manifest, args.stem)
+    body_names, palette_names = source_body_names(
+        args.manifest, args.stem
+    )
     bodies = [args.stem] + sorted(
         {
             str(record["body"])
@@ -617,14 +652,22 @@ def main() -> int:
             target_palette = (
                 int(mapping["targetPalette"]) if mapping is not None else None
             )
-            if body == args.stem and paint_index == 0:
-                source_label = f"Retail GT2 {args.stem}"
-            else:
-                source_label = body_names.get(body, body)
+            source_label = palette_names.get(
+                paint_index,
+                (
+                    f"Retail GT2 {args.stem}"
+                    if body == args.stem and paint_index == 0
+                    else body_names.get(body, body)
+                ),
+            )
             status = (
                 f"Integrated choice {target_palette + 1}"
                 if target_palette is not None
-                else "Source-only duplicate-ID comparison"
+                else (
+                    "Native target choice"
+                    if body == args.stem
+                    else "Source-only duplicate-ID comparison"
+                )
             )
             label = (
                 f"{source_label} · palette {paint_index} · ID {color_id}"
@@ -661,6 +704,13 @@ def main() -> int:
             if record["body"] != args.stem
         },
     }
+    if not args.include_source_duplicates:
+        variants = [
+            variant
+            for variant in variants
+            if variant["status"]
+            != "Source-only duplicate-ID comparison"
+        ]
     variants.sort(
         key=lambda item: (
             order.get(
@@ -756,6 +806,7 @@ def main() -> int:
         "formatVersion": 1,
         "targetStem": args.stem,
         "volume": str(args.volume.resolve()),
+        "carinfoDatabase": args.carinfo_database,
         "variants": [
             {key: value for key, value in item.items() if key != "texture"}
             for item in variants
@@ -767,7 +818,7 @@ def main() -> int:
     )
     print(
         f"car viewer ready: {html} "
-        f"({len(models)} bodies, {len(variants)} source palettes)"
+        f"({len(models)} bodies, {len(variants)} visual choices)"
     )
     return 0
 
