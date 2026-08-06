@@ -304,6 +304,22 @@ GT1_LIVERY_FOLD_OVERRIDES = {
         ),
     },
 }
+
+# GT1 also contains authored body packages whose short archive stem differs
+# from the corresponding retail GT2 identity.  These are not additional cars:
+# discovery verifies the source texture IDs directly, appends those choices to
+# the existing target identity, and keeps the alternate body hidden.
+GT1_CROSS_STEM_LIVERY_FOLDS = (
+    {
+        "sourceStem": "t-plr",
+        "targetStem": "tsplr",
+        "bodyStem": "z0tpl",
+        "modelBasisStem": "tsplr",
+        "description": (
+            "GT1 t-plr alternate CASTROL SUPRA GT body/livery package"
+        ),
+    },
+)
 GT1_IMPREZA_STI_V3_CAR = {
     "stem": "s-pbn",
     "displayName": "IMPREZA Sedan WRX-STi version III",
@@ -1644,6 +1660,8 @@ def extend_gt2_carinfo(
     carcolor: bytes,
     stem: str,
     paint_sources: tuple[tuple[int, str], ...],
+    *,
+    allow_duplicate_color_ids: bool = False,
 ) -> tuple[bytes, bytes, dict[str, object]]:
     """Append visual choices to one existing car identity.
 
@@ -1666,7 +1684,7 @@ def extend_gt2_carinfo(
     new_color_names = list(colors[target_index])
     appended: list[dict[str, object]] = []
     for color_id, source_stem in paint_sources:
-        if color_id in new_color_ids:
+        if color_id in new_color_ids and not allow_duplicate_color_ids:
             raise ValueError(
                 f"GT2 {stem} already exposes color ID {color_id}"
             )
@@ -1760,23 +1778,71 @@ def extend_gt2_carinfo(
     }
 
 
+def _gt2_livery_table_records(
+    folds: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Return alternate-body records plus required identity disambiguators."""
+
+    records = [
+        {
+            "targetStem": str(fold["targetStem"]),
+            "bodyStem": str(fold["bodyStem"]),
+            **mapping,
+        }
+        for fold in folds
+        for mapping in list(fold["bodyMappings"])
+    ]
+
+    # A reused color ID is ambiguous even when only one of its occurrences
+    # needs an alternate body. Emit an explicit identity record for every
+    # otherwise-unmapped occurrence so the runtime can detect that ID-only
+    # lookup is unsafe. Palette-index lookup remains exact.
+    final_ids_by_target: dict[str, list[int]] = {}
+    mapped_indices_by_target: dict[str, set[int]] = {}
+    for fold in folds:
+        target_stem = str(fold["targetStem"])
+        final_ids = [int(item) for item in fold["finalColorIds"]]
+        if len(final_ids) >= len(final_ids_by_target.get(target_stem, [])):
+            final_ids_by_target[target_stem] = final_ids
+        mapped_indices_by_target.setdefault(target_stem, set()).update(
+            int(mapping["targetColorIndex"])
+            for mapping in fold["bodyMappings"]
+        )
+    for target_stem, final_ids in final_ids_by_target.items():
+        counts = {
+            color_id: final_ids.count(color_id)
+            for color_id in set(final_ids)
+        }
+        mapped_indices = mapped_indices_by_target.get(target_stem, set())
+        for palette_index, color_id in enumerate(final_ids):
+            if counts[color_id] <= 1 or palette_index in mapped_indices:
+                continue
+            records.append(
+                {
+                    "targetStem": target_stem,
+                    "bodyStem": target_stem,
+                    "colorId": color_id,
+                    "targetColorIndex": palette_index,
+                    "bodyPaletteIndex": palette_index,
+                    "identityDisambiguator": True,
+                }
+            )
+    return records
+
+
 def build_gt2_livery_body_table(
     folds: list[dict[str, object]],
 ) -> bytes:
     """Serialize the data-driven alternate native body selection table."""
 
-    mappings = [
-        (fold, mapping)
-        for fold in folds
-        for mapping in list(fold["bodyMappings"])
-    ]
+    mappings = _gt2_livery_table_records(folds)
     if len(mappings) > 0xFFFF:
         raise ValueError("too many GT2 livery body mappings")
     output = bytearray(struct.pack("<4sHH", b"GTLV", 3, len(mappings)))
     seen: set[tuple[int, int]] = set()
-    for fold, mapping in mappings:
-        target_id = encode_gt2_car_id(str(fold["targetStem"]))
-        body_id = encode_gt2_car_id(str(fold["bodyStem"]))
+    for mapping in mappings:
+        target_id = encode_gt2_car_id(str(mapping["targetStem"]))
+        body_id = encode_gt2_car_id(str(mapping["bodyStem"]))
         target_color = int(mapping["targetColorIndex"])
         body_palette = int(mapping["bodyPaletteIndex"])
         if not 0 <= target_color <= 0xFF or not 0 <= body_palette <= 0xFF:
@@ -3594,6 +3660,9 @@ def stage_gt1_livery_fold(
         ),
         target_stem,
         tuple(definition["paintSources"]),
+        allow_duplicate_color_ids=bool(
+            definition.get("allowDuplicateColorIds", False)
+        ),
     )
     staged_carinfo.write_bytes(carinfo)
     staged_carcolor.write_bytes(carcolor)
@@ -3794,6 +3863,73 @@ def discover_gt1_livery_folds(
             "GT1/GT2 same-car color-ID inventory changed: "
             f"{len(definitions)} cars, {variant_count} variants"
         )
+
+    for cross_fold in GT1_CROSS_STEM_LIVERY_FOLDS:
+        source_stem = str(cross_fold["sourceStem"])
+        target_stem = str(cross_fold["targetStem"])
+        body_stem = str(cross_fold["bodyStem"])
+        model_basis = str(cross_fold["modelBasisStem"])
+        if source_stem not in stems:
+            raise ValueError(
+                f"GT1 cross-stem livery source is absent: {source_stem}"
+            )
+        if target_stem not in gtmode_stems or target_stem not in by_stem:
+            raise ValueError(
+                f"GT2 cross-stem livery target is absent: {target_stem}"
+            )
+        if model_basis not in by_stem:
+            raise ValueError(
+                f"GT2 cross-stem model basis is absent: {model_basis}"
+            )
+        if body_stem in used_stems:
+            raise ValueError(
+                f"GT2 cross-stem hidden body collides: {body_stem}"
+            )
+        used_stems.add(body_stem)
+
+        source_texture = read_gt1_car_members(
+            disc_root / "CAR.DAT", stems, source_stem
+        )[0]
+        converted_source = convert_gt1_car_texture(source_texture)
+        source_ids = list(
+            converted_source[2 : 2 + converted_source[0]]
+        )
+        if not source_ids:
+            raise ValueError(
+                f"GT1 cross-stem livery has no palettes: {source_stem}"
+            )
+        paint_sources = tuple(
+            (
+                color_id,
+                _select_gt2_paint_source(
+                    records, target_stem, color_id
+                ),
+            )
+            for color_id in source_ids
+        )
+        definitions.append(
+            {
+                "targetStem": target_stem,
+                "sourceStem": source_stem,
+                "bodyStem": body_stem,
+                "modelBasisStem": model_basis,
+                "paintSources": paint_sources,
+                "bodyPaintSources": paint_sources,
+                "gt1PaintIds": source_ids,
+                "gt2PaintIds": list(by_stem[target_stem]["colorIds"]),
+                "allowDuplicateColorIds": True,
+                "description": str(cross_fold["description"]),
+            }
+        )
+
+    total_variant_count = sum(
+        len(definition["paintSources"]) for definition in definitions
+    )
+    if len(definitions) != 35 or total_variant_count != 53:
+        raise ValueError(
+            "GT1 livery fold inventory changed after cross-stem analysis: "
+            f"{len(definitions)} cars, {total_variant_count} variants"
+        )
     return definitions
 
 
@@ -3824,7 +3960,6 @@ def validate_gt2_livery_layer(
 
     records = _parse_gt2_carinfo((patch_root / ".carinfoe").read_bytes())
     by_stem = {str(record["stem"]): record for record in records}
-    expected_mappings = 0
     for fold in folds:
         target_stem = str(fold["targetStem"])
         body_stem = str(fold["bodyStem"])
@@ -3855,8 +3990,7 @@ def validate_gt2_livery_layer(
                     "GT2 livery mapping does not preserve its database "
                     f"color ID: {target_stem} ID {color_id}"
                 )
-            expected_mappings += 1
-
+    expected_mappings = len(_gt2_livery_table_records(folds))
     table = (patch_root / ".gtlivery").read_bytes()
     magic, version, count = struct.unpack_from("<4sHH", table)
     if (

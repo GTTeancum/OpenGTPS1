@@ -153,6 +153,61 @@ def main() -> int:
     )
 
     replace_once(
+        track,
+        """        c.V1 = m.ReadU32((c.S5 + 0xA8u));
+        c.A3 = c.S3 + 0x3u;
+        m.WriteU32((c.SP + 0x18u), c.V0);
+        m.WriteU32((c.SP + 0x1Cu), c.S1);
+        m.WriteU32((c.SP + 0x14u), c.V1);
+""",
+        """        c.V1 = RecompOne.Runtime.Sdk.GT2Compat.ResolveLiveryBodyForPalette(
+            m.ReadU32((c.S5 + 0xA8u)),
+            (uint)(short)m.ReadU16((c.S4 + 0xB2u)));
+        c.A3 = c.S3 + 0x3u;
+        m.WriteU32((c.SP + 0x18u), c.V0);
+        m.WriteU32((c.SP + 0x1Cu), c.S1);
+        m.WriteU32((c.SP + 0x14u), c.V1);
+""",
+        "frontend primary record palette-index livery body",
+    )
+
+    replace_once(
+        track,
+        """        c.V1 = m.ReadU32((c.FP + 0x10u));
+        c.A3 = 0x00000003u;
+        m.WriteU32((c.SP + 0x18u), c.V0);
+        m.WriteU32((c.SP + 0x1Cu), c.S0);
+        m.WriteU32((c.SP + 0x14u), c.V1);
+""",
+        """        c.V1 = RecompOne.Runtime.Sdk.GT2Compat.ResolveLiveryBodyForPalette(
+            m.ReadU32((c.FP + 0x10u)),
+            (uint)(short)m.ReadU16((c.FP + 0x16u)));
+        c.A3 = 0x00000003u;
+        m.WriteU32((c.SP + 0x18u), c.V0);
+        m.WriteU32((c.SP + 0x1Cu), c.S0);
+        m.WriteU32((c.SP + 0x14u), c.V1);
+""",
+        "frontend secondary record palette-index livery body",
+    )
+
+    replace_once(
+        track,
+        """        c.V0 = m.ReadU32((c.FP + 0x10u));
+        m.WriteU32((c.SP + 0x128u), c.V0);
+        c.A0 = m.ReadU32((c.FP + 0x10u));
+        c.A1 = (uint)(short)m.ReadU16((c.FP + 0x16u));
+""",
+        """        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.ResolveLiveryBodyForPalette(
+            m.ReadU32((c.FP + 0x10u)),
+            (uint)(short)m.ReadU16((c.FP + 0x16u)));
+        m.WriteU32((c.SP + 0x128u), c.V0);
+        c.A0 = m.ReadU32((c.FP + 0x10u));
+        c.A1 = (uint)(short)m.ReadU16((c.FP + 0x16u));
+""",
+        "frontend temporary record palette-index livery body",
+    )
+
+    replace_once(
         showroom,
         """        c.S6 = c.A0 + 0u;
         m.WriteU32((c.SP + 0xBCu), c.S1);

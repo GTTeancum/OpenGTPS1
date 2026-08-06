@@ -8,10 +8,15 @@ bool headless = args.Any(arg =>
     arg.Equals("--headless", StringComparison.OrdinalIgnoreCase));
 bool mute = args.Any(arg =>
     arg.Equals("--mute", StringComparison.OrdinalIgnoreCase));
+bool validateLiveries = args.Any(arg =>
+    arg.Equals("--validate-liveries", StringComparison.OrdinalIgnoreCase));
 
 string[] positionalArgs = args.Where(arg =>
     !arg.Equals("--headless", StringComparison.OrdinalIgnoreCase) &&
-    !arg.Equals("--mute", StringComparison.OrdinalIgnoreCase)).ToArray();
+    !arg.Equals("--mute", StringComparison.OrdinalIgnoreCase) &&
+    !arg.Equals(
+        "--validate-liveries",
+        StringComparison.OrdinalIgnoreCase)).ToArray();
 if (headless)
 {
     Environment.SetEnvironmentVariable("RECOMPONE_WINDOW_VISIBLE", "0");
@@ -60,6 +65,12 @@ Environment.SetEnvironmentVariable("RECOMPONE_LOOSE_DIR", looseRoot);
 Environment.SetEnvironmentVariable(
     "RECOMPONE_LOOSE_MANIFEST",
     Path.Combine("manifests", "simulation.json"));
+
+if (validateLiveries)
+{
+    ValidateLiveryResolver();
+    return 0;
+}
 
 try
 {
@@ -124,4 +135,51 @@ static void PreloadBundledNative(string fileName)
         Console.WriteLine($"[Host] preloaded bundled native library: {fileName}");
         return;
     }
+}
+
+static void ValidateLiveryResolver()
+{
+    // Archive-derived Castrol Supra package map:
+    // target tsplr palette 0 = native GT2 body;
+    // palette 1 = GT1 tsplr body;
+    // palettes 2/3 = GT1 t-plr body.
+    const uint target = 0x1E75A59Cu;
+    const uint gt1TsplrBody = 0x24041060u;
+    const uint gt1ShortStemBody = 0x2405E696u;
+    (uint Body, uint Palette)[] expected =
+    [
+        (target, 0),
+        (gt1TsplrBody, 1),
+        (gt1ShortStemBody, 0),
+        (gt1ShortStemBody, 1),
+    ];
+    for (uint palette = 0; palette < expected.Length; palette++)
+    {
+        ulong resolved =
+            RecompOne.Runtime.Sdk.GT2Compat.ResolveLiveryBodyAndPalette(
+                target, palette);
+        var actual = ((uint)resolved, (uint)(resolved >> 32));
+        if (actual != expected[palette])
+            throw new InvalidDataException(
+                "Castrol Supra livery resolver mismatch: " +
+                $"palette={palette}, actual=0x{actual.Item1:X8}/{actual.Item2}, " +
+                $"expected=0x{expected[palette].Body:X8}/" +
+                $"{expected[palette].Palette}");
+    }
+
+    // Both IDs are intentionally shared by more than one body. ID-only
+    // fallback must retain the retail identity instead of guessing.
+    foreach (uint colorId in new uint[] { 108, 113 })
+    {
+        uint resolved =
+            RecompOne.Runtime.Sdk.GT2Compat.ResolveLiveryBodyForColorId(
+                target, colorId);
+        if (resolved != target)
+            throw new InvalidDataException(
+                "Ambiguous Castrol Supra color ID selected a body: " +
+                $"id={colorId}, body=0x{resolved:X8}");
+    }
+    Console.WriteLine(
+        "[Host] livery resolver validation passed: " +
+        "Castrol Supra palettes=4, duplicate IDs=108/113");
 }

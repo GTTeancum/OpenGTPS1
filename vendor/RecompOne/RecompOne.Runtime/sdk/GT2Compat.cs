@@ -132,6 +132,7 @@ public static class GT2Compat
 
             var byPalette = new Dictionary<ulong, LiverySelection>();
             var byColorId = new Dictionary<ulong, LiverySelection>();
+            var ambiguousColorIds = new HashSet<ulong>();
             string? root = Runtime.ResolveLoosePath();
             string? path = root == null
                 ? null
@@ -173,15 +174,36 @@ public static class GT2Compat
                     var selection = new LiverySelection(
                         alternateBody, bodyPalette, (byte)encodedColorId);
                     if (!byPalette.TryAdd(
-                            LiveryKey(targetBody, targetPalette), selection) ||
-                        !byColorId.TryAdd(
-                            LiveryKey(targetBody, encodedColorId), selection))
+                            LiveryKey(targetBody, targetPalette), selection))
                         throw new InvalidDataException(
                             $"GT2 livery record {index} is duplicated");
+                    ulong colorKey =
+                        LiveryKey(targetBody, encodedColorId);
+                    if (!ambiguousColorIds.Contains(colorKey))
+                    {
+                        if (byColorId.TryGetValue(
+                                colorKey, out var existing) &&
+                            existing != selection)
+                        {
+                            // Retail assumes a color ID uniquely identifies a
+                            // palette. GT1's alternate Castrol Supra packages
+                            // disprove that assumption: the same authored ID
+                            // selects different native bodies. Palette-index
+                            // hooks retain the exact choice; ID-only fallback
+                            // deliberately becomes a no-op for ambiguity.
+                            byColorId.Remove(colorKey);
+                            ambiguousColorIds.Add(colorKey);
+                        }
+                        else
+                        {
+                            byColorId[colorKey] = selection;
+                        }
+                    }
                 }
                 Console.WriteLine(
                     "[GT2] native alternate-livery table loaded: " +
-                    $"{count} body/palette mappings");
+                    $"{count} body/palette mappings, " +
+                    $"{ambiguousColorIds.Count} ambiguous color IDs");
             }
             _liveriesByColorId = byColorId;
             // Publish the palette table last. Readers use it as the
@@ -221,6 +243,15 @@ public static class GT2Compat
         c.A1 = (uint)resolved;
         c.A2 = (uint)(resolved >> 32);
     }
+
+    /// <summary>
+    /// Resolve only the body half of a palette-index choice while a frontend
+    /// record is being authored. Keeping that resolved body in the record
+    /// preserves packages that intentionally reuse another package's color ID.
+    /// </summary>
+    public static uint ResolveLiveryBodyForPalette(
+        uint bodyId, uint paletteIndex) =>
+        (uint)ResolveLiveryBodyAndPalette(bodyId, paletteIndex);
 
     /// <summary>
     /// Frontend records carry the database color ID rather than its palette

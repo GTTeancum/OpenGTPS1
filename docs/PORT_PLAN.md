@@ -101,14 +101,19 @@
     and wheel variants through the same deterministic `GTPATCH.VOL` layer.
     The Cerbera LM `v-rbr` and Castrol Supra GT `tsplr` are explicit same-car
     livery-fold cases; their differing GT1 body bitmaps cannot be reduced to
-    palette-only edits. Database-derived color-ID comparison currently
-    authorizes 51 GT1-only choices across 34 same-car identities. Both
-    mode-specific gated patch layers now contain their converted day/night
-    bodies, extended car-info records, and explicit
-    target-color-to-body-palette mappings. The data-driven native resolver is
-    wired into both executables' selection, race, showroom, and replay paths,
-    and the installer validates/activates both mode layers atomically.
-    Default activation still awaits a successful rebuilt-host smoke matrix.
+    palette-only edits. Database-derived color-ID comparison authorizes 51
+    GT1-only choices across 34 same-stem identities; archive-proven cross-stem
+    comparison adds both `t-plr` Castrol body choices, for 53 imported choices
+    across 35 folds. Both mode-specific gated patch layers now contain their
+    converted day/night bodies, extended car-info records, and explicit
+    target-color-to-body-palette mappings. A 54th identity mapping marks the
+    retail Castrol palette so duplicate IDs 108/113 cannot select the wrong
+    body. The data-driven native resolver is wired into both executables'
+    palette-index selection construction, color-ID fallback, race, showroom,
+    and replay paths, and the installer validates/activates both mode layers
+    atomically. The direct resolver validation and ordinary Arcade frontend
+    regression pass; interactive four-choice Castrol selection, race,
+    save/reload, and screenshot proof remain before default activation.
 - Mine supported Gran Turismo 2 demo builds for demo-exclusive LM colors,
   liveries, and alternate body/texture packages, then fold them into the
   corresponding retail GT2 identities. Treat each user-supplied demo image as

@@ -143,7 +143,7 @@ implementation needs an alternate native body/texture asset selected by the
 extended livery index while retaining one car identity and one saved-garage
 record.
 
-The converter now produces that data shape for all 34 entries in gated
+The converter now produces that data shape for all 35 entries in gated
 `GTPATCH.LIVERY.ARCADE.VOL` and `GTPATCH.LIVERY.SIMULATION.VOL` layers:
 
 - `v-rbr` remains the only customer-visible car identity; a hidden `v1rbr`
@@ -153,29 +153,33 @@ The converter now produces that data shape for all 34 entries in gated
   appended as choices three and four;
 - the exact converted GT1 day/night texture and model members are stored under
   hidden body stem `v1rbr`;
-- `.gtlivery` version 3 contains 51 explicit mappings from each extended car
+- `.gtlivery` version 3 contains 53 explicit mappings from each extended car
   color index and authoritative color ID to its hidden body and original GT1
-  palette index. For `v-rbr`, indices 2 and 3 map to `v1rbr` palettes 0 and
-  1; and
+  palette index, plus one identity disambiguator for the retail Castrol
+  palette. For `v-rbr`, indices 2 and 3 map to `v1rbr` palettes 0 and 1; and
 - the converted day and night models are 20,032 and 21,004 bytes,
   respectively, both within the original frontend's audited `0x6000`-byte
   native model slot.
 
-The native resolver is now wired into both executables' frontend color-ID
-path, race body/palette path, and showroom/replay body/palette path. The
+The native resolver is now wired into both executables' frontend palette-index
+record construction, color-ID fallback, race body/palette path, and
+showroom/replay body/palette path. Resolving while GT2 still carries the
+palette index is required when two body packages reuse one color ID. The
 installer enables the layers atomically for Simulation and Arcade, requires
-their 51-record tables to be byte-identical, and installs the validated table
+their 54-record tables to be byte-identical, and installs the validated table
 as `GTLIVERY.BIN`. The fold layers remain excluded from the default unified
 install until the rebuilt host passes the required interactive smoke matrix.
 This gate prevents an older executable from treating color indices 2 and 3 as
 out-of-range palettes on its original two-palette `v-rbr` body.
 
 The same database rule imports `tsplr` ID 113 as the second Castrol Supra GT
-choice and covers the other 48 variants listed above. Each gated layer now
-contains 136 converted day/night car assets, 34 hidden loader-only car-info
-records, the 34 extended customer-visible records, `.carcolor`, and the
-51-record `.gtlivery` table. Conversion fails unless every target index and
-hidden-body palette resolves back to the same authoritative color ID.
+choice and covers the other 48 variants listed above. Cross-stem archive
+comparison additionally folds both `t-plr` IDs 108 and 113 into that same
+identity. Each gated layer now contains 140 converted day/night car assets, 35
+hidden loader-only car-info records, the extended customer-visible records,
+`.carcolor`, and the 54-record `.gtlivery` table. Conversion fails unless every
+target index and hidden-body palette resolves back to the same authoritative
+color ID.
 
 ## Cross-stem identity review and Gran Turismo Mode scaffold
 
@@ -233,9 +237,21 @@ and black presentations; the supplied archives, not that page, authorize the
 conversion. The hard-data finding is that GT1 `t-plr` and `tsplr` have the
 same two color IDs but different body bitmaps/models, whereas GT2 retains only
 one body and ID 108. Therefore color-ID comparison alone is insufficient for
-this cross-stem alternate-body case. The existing fold imports `tsplr` ID 113,
-but the `t-plr` body package still needs a same-identity representation that
-can distinguish duplicate IDs across alternate bodies.
+this cross-stem alternate-body case.
+
+That representation is now implemented. GT2 `tsplr` remains the sole visible,
+purchasable, upgradeable identity and exposes four archive-authored visual
+choices in order: retail GT2 ID 108, GT1 `tsplr` ID 113, then GT1 `t-plr` IDs
+108 and 113. Hidden body `z0tpl` contains the converted `t-plr` day/night
+models and textures. The resolver uses target palette indices 2 and 3 to
+select `z0tpl` palettes 0 and 1. Because IDs 108 and 113 are each shared by
+multiple bodies, ID-only fallback deliberately retains the retail identity
+instead of guessing. A direct rebuilt-host validation proves all four
+body/palette results and both ambiguous-ID no-op results against the generated
+54-record table. The two patch layers regenerate byte-for-byte
+deterministically; interactive selection, race, save/reload, and screenshot
+proof for all four choices remain part of the required smoke matrix before
+default activation.
 
 Six rows have a consumed GT1 SPEC record, complete day/night assets, nonzero
 archive price, and already-proven native Arcade body/race conversion. They are
