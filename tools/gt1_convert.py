@@ -320,6 +320,20 @@ GT1_CROSS_STEM_LIVERY_FOLDS = (
         ),
     },
 )
+GT1_ARCADE_LIVERY_SMOKE_CARS = {
+    "tsplr": {
+        "displayName": "CASTROL SUPRA GT",
+        "menuLogoName": "tspl.tim",
+        "physicsBasisStem": "tsplr",
+        "physicsPartBasis": {},
+        # Class S is not extended by the production GT1 Arcade imports, so
+        # this developer-only proof entry cannot exceed the proven A-C roster
+        # capacity.
+        "arcadeClass": 0,
+        "manufacturerLogoIndex": 31,
+        "ratings": (10, 10, 10),
+    },
+}
 GT1_IMPREZA_STI_V3_CAR = {
     "stem": "s-pbn",
     "displayName": "IMPREZA Sedan WRX-STi version III",
@@ -2867,6 +2881,68 @@ def stage_gt2_arcade_car_physics(
     return metadata
 
 
+def stage_gt2_arcade_livery_smoke_car(
+    disc_root: Path,
+    gt2_arcade_volume: Path,
+    patch_root: Path,
+    stem: str,
+) -> dict[str, object]:
+    """Expose one existing GT2 identity in Arcade for livery visual proof.
+
+    This developer-only entry adds no car identity or body. It reuses the
+    target's native GT Mode physics and the livery layer's exact car-info and
+    body packages so the ordinary Arcade selector can render and cycle every
+    authored choice.
+    """
+
+    definition = {
+        "stem": stem,
+        **GT1_ARCADE_LIVERY_SMOKE_CARS[stem],
+    }
+    source_logo = read_gt1_menu_car_logo(
+        disc_root, str(definition["menuLogoName"])
+    )
+    logo = normalize_arcade_car_logo(source_logo)
+    arcade_output = patch_root / "arcade"
+    arcade_output.mkdir(parents=True, exist_ok=True)
+    staged_logos = arcade_output / "arc_carlogo"
+    merged_logos, logo_index = append_arcade_car_logo(
+        (
+            staged_logos.read_bytes()
+            if staged_logos.is_file()
+            else read_gt2_member(
+                gt2_arcade_volume, "arcade/arc_carlogo"
+            )
+        ),
+        logo,
+    )
+    if len(merged_logos) > GT2_ARCADE_FRONTEND_ARCHIVE_SAFE_SIZE:
+        raise ValueError(
+            "GT2 Arcade livery-smoke logo archive exceeds its "
+            "reserved frontend arena"
+        )
+    staged_logos.write_bytes(merged_logos)
+
+    stats = read_gt1_spec_stats(
+        disc_root / "CARINF.DAT", stem
+    )
+    arcade_physics = stage_gt2_arcade_car_physics(
+        gt2_arcade_volume, patch_root, definition
+    )
+    return {
+        "stem": stem,
+        "displayName": definition["displayName"],
+        "arcadeLogoIndex": logo_index,
+        "arcadeLogoSha256": hashlib.sha256(logo).hexdigest(),
+        "arcadeClass": definition["arcadeClass"],
+        "manufacturerLogoIndex": definition["manufacturerLogoIndex"],
+        "ratings": list(definition["ratings"]),
+        "stats": list(stats),
+        "arcadePhysics": arcade_physics,
+        "developerLiverySmoke": True,
+    }
+
+
 GT2_GTMODE_LOCALIZED_DATABASES = (
     ("gtmode_data.dat.gz", "jpn_unistrdb.dat.gz"),
     ("eng_gtmode_data.dat.gz", "eng_unistrdb.dat.gz"),
@@ -4000,6 +4076,70 @@ def validate_gt2_livery_layer(
         or len(table) != 8 + expected_mappings * 12
     ):
         raise ValueError("GT2 livery resolver table failed layer validation")
+
+    # These three archive-authored Castrol Supra presentations are accepted
+    # content, not color-ID aliases that may be deduplicated. Lock their exact
+    # resolver shape so future inventory work cannot silently drop one.
+    supra_folds = {
+        str(fold["sourceStem"]): fold
+        for fold in folds
+        if str(fold["targetStem"]) == "tsplr"
+    }
+    if supra_folds:
+        same_stem = supra_folds.get("tsplr")
+        black_body = supra_folds.get("t-plr")
+        if same_stem is None or black_body is None:
+            raise ValueError("accepted Castrol Supra body families are missing")
+
+        def mapping_for(
+            fold: dict[str, object], color_id: int
+        ) -> dict[str, object]:
+            matches = [
+                mapping
+                for mapping in fold["bodyMappings"]
+                if int(mapping["colorId"]) == color_id
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    "accepted Castrol Supra livery mapping is missing or "
+                    f"ambiguous: {fold['sourceStem']} ID {color_id}"
+                )
+            return matches[0]
+
+        white_blue = mapping_for(same_stem, 113)
+        black_blue = mapping_for(black_body, 113)
+        actual_records = {
+            (
+                str(record["targetStem"]),
+                str(record["bodyStem"]),
+                int(record["targetColorIndex"]),
+                int(record["bodyPaletteIndex"]),
+                int(record["colorId"]),
+            )
+            for record in _gt2_livery_table_records(folds)
+        }
+        required_records = {
+            ("tsplr", "tsplr", 0, 0, 108),
+            (
+                "tsplr",
+                str(same_stem["bodyStem"]),
+                int(white_blue["targetColorIndex"]),
+                int(white_blue["bodyPaletteIndex"]),
+                113,
+            ),
+            (
+                "tsplr",
+                str(black_body["bodyStem"]),
+                int(black_blue["targetColorIndex"]),
+                int(black_blue["bodyPaletteIndex"]),
+                113,
+            ),
+        }
+        if not required_records.issubset(actual_records):
+            raise ValueError(
+                "accepted retail, GT1 white/blue, or GT1 black/blue "
+                "Castrol Supra resolver choice was dropped"
+            )
 
 
 def named_tim_members(data: bytes) -> list[tuple[str, bytes]]:
@@ -6070,6 +6210,15 @@ def main() -> int:
             "retains native price ordering."
         ),
     )
+    parser.add_argument(
+        "--smoke-arcade-livery",
+        choices=sorted(GT1_ARCADE_LIVERY_SMOKE_CARS),
+        help=(
+            "Expose one existing GT2 identity in the native Arcade selector "
+            "to render and cycle its converted livery choices. This entry is "
+            "emitted only in explicit smoke output."
+        ),
+    )
     parser.add_argument("--extract-clean", action="store_true")
     args = parser.parse_args()
 
@@ -6099,6 +6248,15 @@ def main() -> int:
         for definition in GT1_ARCADE_CARS
     )
     arcade_patch_root = args.output / "patch"
+    arcade_livery_smoke_car = None
+    if args.smoke_arcade_livery is not None:
+        arcade_livery_smoke_car = stage_gt2_arcade_livery_smoke_car(
+            args.disc_root,
+            args.gt2_arcade_volume,
+            arcade_patch_root,
+            args.smoke_arcade_livery,
+        )
+        arcade_cars += (arcade_livery_smoke_car,)
     arcade_livery_root = args.output / "livery-arcade-patch"
     simulation_patch_root = args.output / "gt1-cars-simulation-patch"
     simulation_livery_root = args.output / "livery-simulation-patch"
@@ -6234,6 +6392,7 @@ def main() -> int:
         },
         "smokeVariant": args.smoke_variant,
         "smokeGtModeCar": args.smoke_gtmode_car,
+        "smokeArcadeLivery": args.smoke_arcade_livery,
         "smokeTargets": (
             args.smoke_targets or ["circuit"]
             if args.smoke_variant

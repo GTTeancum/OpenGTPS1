@@ -25,9 +25,13 @@ public static class Runtime
         Environment.GetEnvironmentVariable("RECOMPONE_GT2_SOAK_UNLOCK_ALL_RACES") == "1";
     static readonly bool TraceGt2Save =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_SAVE") == "1";
+    static readonly uint? TraceGt2CarId = ParseHexEnvironment(
+        "RECOMPONE_TRACE_GT2_CAR_ID");
     static bool _testSavePatchReported;
     static bool _soakEventUnlockReported;
     static bool _saveTraceReported;
+    static bool _carIdTraceReported;
+    static int _lastCarIdTracePoll = -1;
     static long _performanceStarted;
     static long _performanceHostTicks;
     static long _performanceWaitTicks;
@@ -97,6 +101,7 @@ public static class Runtime
         ApplyGt2TestSavePatch();
         ApplyGt2SoakEventUnlock();
         ReportGt2SaveState();
+        ReportGt2CarLocations();
         if (TraceVSync && traceFrame < 10) Console.Error.WriteLine($"[VSync] present {traceFrame}: window");
         if (Gpu != null && _lastDisplayEnabled != Gpu.DisplayEnabled)
         {
@@ -228,6 +233,62 @@ public static class Runtime
     {
         if (Cpu != null && Mem != null)
             Interrupts.Deliver(irq, Cpu, Mem);
+    }
+
+    static uint? ParseHexEnvironment(string name)
+    {
+        string? text = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+        if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            text = text[2..];
+        return uint.TryParse(
+            text,
+            System.Globalization.NumberStyles.HexNumber,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out uint value)
+            ? value
+            : null;
+    }
+
+    static void ReportGt2CarLocations()
+    {
+        if (TraceGt2CarId is not uint carId ||
+            _carIdTraceReported ||
+            InputManager.CurrentPoll < 1000 ||
+            InputManager.CurrentPoll % 100 != 0 ||
+            InputManager.CurrentPoll == _lastCarIdTracePoll ||
+            Mem is not PSMemory psMemory)
+            return;
+
+        _lastCarIdTracePoll = InputManager.CurrentPoll;
+        ReadOnlySpan<byte> ram = psMemory.Ram;
+        int reported = 0;
+        int firstOffset = Math.Min(0x1C0000, ram.Length);
+        int endOffset = Math.Min(0x1D8000, ram.Length);
+        for (int offset = firstOffset;
+             offset <= endOffset - sizeof(uint);
+             offset++)
+        {
+            if (System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(
+                    ram[offset..]) != carId)
+                continue;
+
+            int start = Math.Max(0, offset - 16);
+            int length = Math.Min(160, ram.Length - start);
+            Console.Error.WriteLine(
+                $"[GT2-CarTrace] id=0x{carId:X8} " +
+                $"address=0x{0x80000000u + (uint)offset:X8} " +
+                $"bytes={Convert.ToHexString(ram.Slice(start, length))}");
+            if (++reported == 64)
+                break;
+        }
+        if (reported != 0 || InputManager.CurrentPoll >= 3000)
+        {
+            _carIdTraceReported = true;
+            Console.Error.WriteLine(
+                $"[GT2-CarTrace] id=0x{carId:X8} occurrences={reported}");
+        }
     }
 
     static int _irqDeferralDepth;

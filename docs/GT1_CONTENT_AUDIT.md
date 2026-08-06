@@ -253,6 +253,14 @@ deterministically; interactive selection, race, save/reload, and screenshot
 proof for all four choices remain part of the required smoke matrix before
 default activation.
 
+The accepted visual proof set explicitly includes all three reviewed
+presentations: retail GT2 white/green, GT1 `tsplr` white/blue, and GT1
+`t-plr` black/blue. All three are resolver-backed choices under `tsplr`;
+database color-ID deduplication is not permitted to discard any of them.
+The remaining source palettes stay in the comparison inventory so smaller
+decal, sponsor, or number revisions can be reviewed from archive data before
+being collapsed.
+
 Six rows have a consumed GT1 SPEC record, complete day/night assets, nonzero
 archive price, and already-proven native Arcade body/race conversion. They are
 currently generated as a gated **standalone GT Mode conversion scaffold** in
@@ -327,6 +335,26 @@ release, every final folded or genuinely distinct identity must receive its
 archive-derived acquisition, upgrade applicability, event eligibility/class,
 results, save, and reload matrix. Arcade success and a standalone frontend
 purchase alone do not satisfy that gate.
+
+## Native car and livery viewer
+
+`tools/car_livery_viewer.py` removes menu navigation from the visual-audit
+loop. It reads the materialized native GT2 volume and `.gtlivery` table,
+decodes LOD0 CDO geometry plus the CDP four-bit indexed bitmap and all CLUT
+subpalettes, and writes a self-contained WebGL viewer:
+
+```powershell
+python tools/car_livery_viewer.py --stem tsplr
+```
+
+The default output is `artifacts/car-livery-viewer/index.html`. It includes
+body/palette switching, turntable and pitch controls, source hashes, resolver
+status, downloadable three-quarter/profile PNGs, a profile comparison sheet,
+and a machine-readable `viewer_manifest.json`. The deterministic offline PNG
+renderer uses the same corrected native quad order as the WebGL path, so proof
+images do not depend on browser automation. This is an audit accelerator, not
+a replacement for the required Arcade and Gran Turismo Mode race, save, and
+reload smokes.
 
 ## Required validation
 
