@@ -10,6 +10,7 @@ import hashlib
 import json
 import shutil
 import struct
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -3040,6 +3041,23 @@ GT2_USED_CAR_DATABASES = (
 )
 
 
+GT2_GTMODE_MENU_LANGUAGES = ("usa", "fra", "ger", "ita", "spa")
+GT2_TVR_NEW_CAR_LAYOUT_FROM_END = 1088
+GT2_TVR_SPECIAL_LAYOUT_FROM_END = 1059
+GT2_TVR_SPEED_12_ID = 0x207420D8
+GT2_TVR_TUSCAN_SPEED_SIX_ID = 0x2075E1D8
+GT2_TVR_NEW_CAR_IDS = (
+    0x2035C318,  # vcrbn - Cerbera 4.2
+    0x2034F198,  # vce5n - Cerbera 4.5
+    0x2035D1D8,  # vcs6n - Cerbera Speed 6
+    0x203520D8,  # vch2n - Chimaera 4.0
+    0x2045C418,  # vgrfn - Griffith Blackpool B340
+    0x2045C198,  # vgr5n - Griffith 500
+    0x20346058,  # vc50n - Chimaera 5.0
+    0x20352198,  # vch5n - Chimaera 4.5
+)
+
+
 def _parse_gt2_used_car_database(
     data: bytes,
 ) -> list[list[list[tuple[int, int, int, int]]]]:
@@ -3226,7 +3244,6 @@ def stage_gt2_simulation_used_cars(
         raise ValueError(
             f"unknown GT Mode used-car smoke target: {smoke_stem}"
         )
-
     metadata: dict[str, object] = {}
     for name in GT2_USED_CAR_DATABASES:
         source = gzip.decompress(read_gt2_member(
@@ -3450,6 +3467,520 @@ def build_gt2_existing_livery_smoke_car(
         # fresh-save smoke proves the alternate native body deterministically.
         "smokeColorId": color_ids[-1],
     }
+
+
+def _unpack_gtmenu_asset(data: bytes) -> bytes:
+    """Inflate the first gzip member from a GT Mode menu-data slot."""
+
+    inflater = zlib.decompressobj(31)
+    unpacked = inflater.decompress(data) + inflater.flush()
+    if not unpacked or not inflater.eof:
+        raise ValueError("GT Mode menu asset is not a complete gzip member")
+    return unpacked
+
+
+def _gtmenu_offsets(index: bytes) -> tuple[int, list[int]]:
+    if len(index) < 12 or (len(index) - 8) % 4:
+        raise ValueError("GT Mode menu index size is invalid")
+    count = struct.unpack_from("<I", index, 0)[0]
+    if len(index) != 4 + (count + 1) * 4:
+        raise ValueError(
+            f"GT Mode menu index count is inconsistent: {count}"
+        )
+    offsets = list(struct.unpack_from(f"<{count + 1}I", index, 4))
+    aligned = [offset & ~3 for offset in offsets]
+    if aligned != sorted(aligned) or len(set(aligned)) != len(aligned):
+        raise ValueError("GT Mode menu index offsets are not increasing")
+    return count, offsets
+
+
+def _gtmenu_records(
+    asset: bytes,
+) -> tuple[list[tuple[int, int]], int, int, list[tuple[int, bytes]]]:
+    """Return GM groups, trailing-record metadata, and all 0x4c records."""
+
+    if len(asset) < 12 or asset[:2] != b"GM":
+        raise ValueError("GT Mode menu layout has no GM header")
+    cursor = 8
+    groups: list[tuple[int, int]] = []
+    records: list[tuple[int, bytes]] = []
+    for group_index in range(struct.unpack_from("<I", asset, 4)[0]):
+        if cursor + 4 > len(asset):
+            raise ValueError(
+                f"GT Mode menu group {group_index} header is truncated"
+            )
+        header_count, record_count = struct.unpack_from(
+            "<HH", asset, cursor
+        )
+        count_offset = cursor + 2
+        cursor += 4 + header_count * 0x0C
+        end = cursor + record_count * 0x4C
+        if end > len(asset):
+            raise ValueError(
+                f"GT Mode menu group {group_index} records are truncated"
+            )
+        groups.append((count_offset, record_count))
+        records.extend(
+            (cursor + index * 0x4C, asset[
+                cursor + index * 0x4C : cursor + (index + 1) * 0x4C
+            ])
+            for index in range(record_count)
+        )
+        cursor = end
+    if cursor + 4 > len(asset):
+        raise ValueError("GT Mode menu trailing-record count is missing")
+    trailing_count_offset = cursor
+    trailing_count = struct.unpack_from("<I", asset, cursor)[0]
+    cursor += 4
+    trailing_records_offset = cursor
+    end = cursor + trailing_count * 0x4C
+    if end > len(asset):
+        raise ValueError("GT Mode menu trailing records are truncated")
+    records.extend(
+        (cursor + index * 0x4C, asset[
+            cursor + index * 0x4C : cursor + (index + 1) * 0x4C
+        ])
+        for index in range(trailing_count)
+    )
+    return (
+        groups,
+        trailing_count_offset,
+        trailing_records_offset,
+        records,
+    )
+
+
+def _tvr_new_car_records(asset: bytes) -> tuple[
+    int,
+    int,
+    list[tuple[int, bytes]],
+]:
+    (
+        _,
+        trailing_count_offset,
+        trailing_records_offset,
+        records,
+    ) = _gtmenu_records(asset)
+    native_records: dict[int, tuple[int, bytes]] = {}
+    for offset, record in records:
+        flags = struct.unpack_from("<I", record, 8)[0]
+        record_car_id = struct.unpack_from("<I", record, 0x10)[0]
+        if (flags & 0xFFFF) == 6 and record_car_id in GT2_TVR_NEW_CAR_IDS:
+            if record_car_id in native_records:
+                raise ValueError(
+                    f"duplicate TVR new-car record {record_car_id:08X}"
+                )
+            native_records[record_car_id] = (offset, record)
+    if set(native_records) != set(GT2_TVR_NEW_CAR_IDS):
+        found = ", ".join(f"{value:08X}" for value in native_records)
+        raise ValueError(
+            f"TVR new-car layout roster changed; found [{found}]"
+        )
+    ordered = sorted(native_records.values())
+    expected_offsets = list(
+        range(ordered[0][0], ordered[0][0] + 8 * 0x4C, 0x4C)
+    )
+    if [offset for offset, _ in ordered] != expected_offsets:
+        raise ValueError("TVR new-car records are no longer contiguous")
+    trailing_count = struct.unpack_from("<I", asset, trailing_count_offset)[0]
+    first_trailing_index = (
+        ordered[0][0] - trailing_records_offset
+    ) // 0x4C
+    if (
+        ordered[0][0] < trailing_records_offset
+        or first_trailing_index < 0
+        or first_trailing_index + 8 > trailing_count
+    ):
+        raise ValueError("TVR new-car roster is not in the trailing layout")
+    return trailing_count_offset, trailing_records_offset, ordered
+
+
+def _insert_cerbera_lm_after_speed_12(
+    asset: bytes,
+    tuscan_layout_id: int,
+    cerbera_layout_id: int,
+    car_id: int,
+) -> bytes:
+    _, _, _, records = _gtmenu_records(asset)
+    matches = [
+        (offset, record)
+        for offset, record in records
+        if struct.unpack_from("<I", record, 0x0C)[0]
+        == tuscan_layout_id
+        and struct.unpack_from("<I", record, 0x10)[0]
+        == GT2_TVR_TUSCAN_SPEED_SIX_ID
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"TVR Speed 12 page expected one native Tuscan link, found "
+            f"{len(matches)}"
+        )
+    output = bytearray(asset)
+    offset, _ = matches[0]
+    # Use the ordinary purchasable-new-car transition so the cloned destination
+    # renders GT2's native NEW CAR / INFORMATION page with an active BUY action.
+    struct.pack_into("<I", output, offset + 8, 0x05000006)
+    struct.pack_into("<I", output, offset + 0x0C, cerbera_layout_id)
+    struct.pack_into("<I", output, offset + 0x10, car_id)
+    _, _, _, verified_records = _gtmenu_records(bytes(output))
+    verified = [
+        record
+        for _, record in verified_records
+        if struct.unpack_from("<I", record, 0x0C)[0]
+        == cerbera_layout_id
+    ]
+    if (
+        len(verified) != 1
+        or struct.unpack_from("<I", verified[0], 8)[0] != 0x05000006
+        or struct.unpack_from("<I", verified[0], 0x10)[0] != car_id
+    ):
+        raise ValueError("Cerbera LM Special-page link failed round-trip")
+    return bytes(output)
+
+
+def _retarget_gtmenu_back_link(
+    asset: bytes,
+    old_target: int,
+    new_target: int,
+) -> bytes:
+    _, _, _, records = _gtmenu_records(asset)
+    matches = [
+        offset
+        for offset, record in records
+        if struct.unpack_from("<I", record, 8)[0] == 0x01000000
+        and struct.unpack_from("<I", record, 0x0C)[0] == old_target
+        and struct.unpack_from("<I", record, 0x10)[0] == 0
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"GT Mode detail page expected one back link to {old_target}, "
+            f"found {len(matches)}"
+        )
+    output = bytearray(asset)
+    struct.pack_into("<I", output, matches[0] + 0x0C, new_target)
+    _, _, _, verified_records = _gtmenu_records(bytes(output))
+    if sum(
+        struct.unpack_from("<I", record, 0x0C)[0] == new_target
+        and struct.unpack_from("<I", record, 8)[0] == 0x01000000
+        for _, record in verified_records
+    ) != 1:
+        raise ValueError("GT Mode detail-page back link failed round-trip")
+    return bytes(output)
+
+
+def _replace_gtmenu_asset(
+    data: bytes,
+    index: bytes,
+    asset_index: int,
+    replacement: bytes,
+) -> tuple[bytes, bytes, dict[str, int]]:
+    count, offsets = _gtmenu_offsets(index)
+    if not 0 <= asset_index < count:
+        raise ValueError(
+            f"GT Mode menu asset index is out of range: {asset_index}"
+        )
+    start = offsets[asset_index] & ~3
+    end = offsets[asset_index + 1] & ~3
+    original = _unpack_gtmenu_asset(data[start:end])
+    packed = gzip.compress(replacement, compresslevel=9, mtime=0)
+    padded = packed + b"\0" * ((-len(packed)) & 3)
+    delta = len(padded) - (end - start)
+    if delta % 4:
+        raise ValueError("GT Mode menu replacement is not word-aligned")
+    rebuilt_data = data[:start] + padded + data[end:]
+    adjusted = offsets[:]
+    for offset_index in range(asset_index + 1, len(adjusted)):
+        flags = adjusted[offset_index] & 3
+        aligned = (adjusted[offset_index] & ~3) + delta
+        adjusted[offset_index] = aligned | flags
+    rebuilt_index = bytearray(index)
+    struct.pack_into(
+        f"<{len(adjusted)}I", rebuilt_index, 4, *adjusted
+    )
+    verify_count, verify_offsets = _gtmenu_offsets(bytes(rebuilt_index))
+    verify_start = verify_offsets[asset_index] & ~3
+    verify_end = verify_offsets[asset_index + 1] & ~3
+    if (
+        verify_count != count
+        or _unpack_gtmenu_asset(rebuilt_data[verify_start:verify_end])
+        != replacement
+    ):
+        raise ValueError("GT Mode menu replacement failed round-trip")
+    return bytes(rebuilt_data), bytes(rebuilt_index), {
+        "assetIndex": asset_index,
+        "originalPackedAllocation": end - start,
+        "replacementPackedSize": len(packed),
+        "replacementPackedAllocation": len(padded),
+        "originalUnpackedSize": len(original),
+        "replacementUnpackedSize": len(replacement),
+        "dataSizeDelta": delta,
+    }
+
+
+def _append_gtmenu_asset_clone(
+    data: bytes,
+    index: bytes,
+    source_asset_index: int,
+) -> tuple[bytes, bytes, dict[str, int]]:
+    count, offsets = _gtmenu_offsets(index)
+    if not 0 <= source_asset_index < count:
+        raise ValueError(
+            f"GT Mode menu clone source is out of range: "
+            f"{source_asset_index}"
+        )
+    source_start = offsets[source_asset_index] & ~3
+    source_end = offsets[source_asset_index + 1] & ~3
+    final_offset = offsets[-1] & ~3
+    if final_offset != len(data):
+        raise ValueError(
+            f"GT Mode menu data has an unindexed tail: "
+            f"{len(data) - final_offset} bytes"
+        )
+    payload = data[source_start:source_end]
+    source_layout = _unpack_gtmenu_asset(payload)
+    new_asset_index = count
+    new_end = final_offset + len(payload)
+    new_offsets = offsets[:-1] + [
+        final_offset | (offsets[source_asset_index] & 3),
+        new_end | (offsets[-1] & 3),
+    ]
+    rebuilt_index = bytearray(4 + len(new_offsets) * 4)
+    struct.pack_into("<I", rebuilt_index, 0, count + 1)
+    struct.pack_into(
+        f"<{len(new_offsets)}I", rebuilt_index, 4, *new_offsets
+    )
+    rebuilt_data = data + payload
+    verify_count, verify_offsets = _gtmenu_offsets(bytes(rebuilt_index))
+    verify_start = verify_offsets[new_asset_index] & ~3
+    verify_end = verify_offsets[new_asset_index + 1] & ~3
+    if (
+        verify_count != count + 1
+        or _unpack_gtmenu_asset(rebuilt_data[verify_start:verify_end])
+        != source_layout
+    ):
+        raise ValueError("GT Mode menu asset clone failed round-trip")
+    return rebuilt_data, bytes(rebuilt_index), {
+        "sourceAssetIndex": source_asset_index,
+        "newAssetIndex": new_asset_index,
+        "packedAllocation": len(payload),
+        "unpackedSize": len(source_layout),
+    }
+
+
+def _stage_cerbera_lm_tvr_new_car_layouts(
+    gt2_simulation_volume: Path,
+    patch_root: Path,
+    car_id: int,
+) -> dict[str, object]:
+    localized: dict[str, object] = {}
+    for language in GT2_GTMODE_MENU_LANGUAGES:
+        data_name = f"gtmenu/{language}/gtmenudat.dat"
+        index_name = f"gtmenu/{language}/gtmenudat.idx"
+        data = read_gt2_member(gt2_simulation_volume, data_name)
+        index = read_gt2_member(gt2_simulation_volume, index_name)
+        count, offsets = _gtmenu_offsets(index)
+        new_car_asset_index = count - GT2_TVR_NEW_CAR_LAYOUT_FROM_END
+        new_car_detail_asset_index = new_car_asset_index + 1
+        special_asset_index = count - GT2_TVR_SPECIAL_LAYOUT_FROM_END
+        tuscan_asset_index = special_asset_index + 1
+        new_car_start = offsets[new_car_asset_index] & ~3
+        new_car_end = offsets[new_car_asset_index + 1] & ~3
+        new_car_layout = _unpack_gtmenu_asset(
+            data[new_car_start:new_car_end]
+        )
+        _tvr_new_car_records(new_car_layout)
+        special_start = offsets[special_asset_index] & ~3
+        special_end = offsets[special_asset_index + 1] & ~3
+        special_layout = _unpack_gtmenu_asset(
+            data[special_start:special_end]
+        )
+        detail_start = offsets[new_car_detail_asset_index] & ~3
+        detail_end = offsets[new_car_detail_asset_index + 1] & ~3
+        new_car_detail_layout = _unpack_gtmenu_asset(
+            data[detail_start:detail_end]
+        )
+        converted_data, converted_index, clone_metadata = (
+            _append_gtmenu_asset_clone(
+                data,
+                index,
+                new_car_detail_asset_index,
+            )
+        )
+        cerbera_asset_index = clone_metadata["newAssetIndex"]
+        converted_special = _insert_cerbera_lm_after_speed_12(
+            special_layout,
+            tuscan_asset_index,
+            cerbera_asset_index,
+            car_id,
+        )
+        converted_data, converted_index, special_metadata = (
+            _replace_gtmenu_asset(
+                converted_data,
+                converted_index,
+                special_asset_index,
+                converted_special,
+            )
+        )
+        converted_cerbera_detail = _retarget_gtmenu_back_link(
+            new_car_detail_layout,
+            new_car_asset_index,
+            special_asset_index,
+        )
+        converted_data, converted_index, detail_metadata = (
+            _replace_gtmenu_asset(
+                converted_data,
+                converted_index,
+                cerbera_asset_index,
+                converted_cerbera_detail,
+            )
+        )
+        data_path = patch_root / data_name
+        index_path = patch_root / index_name
+        data_path.parent.mkdir(parents=True, exist_ok=True)
+        data_path.write_bytes(converted_data)
+        index_path.write_bytes(converted_index)
+        localized[language] = {
+            "cerberaPageClone": clone_metadata,
+            "speed12Page": special_metadata,
+            "cerberaDetailPage": detail_metadata,
+            "nativeLineupAssetIndex": new_car_asset_index,
+            "nativeNewCarDetailAssetIndex": new_car_detail_asset_index,
+            "speed12AssetIndex": special_asset_index,
+            "tuscanAssetIndex": tuscan_asset_index,
+            "cerberaAssetIndex": cerbera_asset_index,
+            "speed12LayoutSha256": hashlib.sha256(
+                converted_special
+            ).hexdigest(),
+            "cerberaDetailLayoutSha256": hashlib.sha256(
+                converted_cerbera_detail
+            ).hexdigest(),
+            "dataSha256": hashlib.sha256(converted_data).hexdigest(),
+            "indexSha256": hashlib.sha256(converted_index).hexdigest(),
+        }
+    return {
+        "carId": car_id,
+        "speed12CarId": GT2_TVR_SPEED_12_ID,
+        "tuscanSpeedSixCarId": GT2_TVR_TUSCAN_SPEED_SIX_ID,
+        "nativeRoster": list(GT2_TVR_NEW_CAR_IDS),
+        "localizedMenus": localized,
+    }
+
+
+def stage_gt2_existing_livery_new_car_smoke(
+    gt2_simulation_volume: Path,
+    patch_root: Path,
+    smoke: dict[str, object],
+) -> dict[str, object]:
+    """Expose one existing TVR identity in TVR's native new-car lineup.
+
+    TVR has no used-car page, and its authored lineup is an explicit eight-car
+    GM layout rather than a scan of the GT Mode database. This transient smoke
+    layer preserves that lineup and temporarily links Speed 12 to a cloned
+    native new-car detail page for Cerbera LM. It marks the Cerbera as a
+    purchasable new car and lowers its smoke price. The original car ID,
+    names, manufacturer, parts, body, and livery data remain intact. Normal
+    conversion never calls this helper; the smoke-only link temporarily
+    bypasses Tuscan Speed Six without changing its data or production path.
+    """
+
+    stem = str(smoke["stem"])
+    smoke_price = int(smoke["smokePrice"])
+    metadata: dict[str, object] = {
+        "stem": stem,
+        "manufacturerId": int(smoke["manufacturerId"]),
+        "nativePrice": int(smoke["nativePrice"]),
+        "smokePrice": smoke_price,
+        "smokeColorId": int(smoke["smokeColorId"]),
+        "localizedDatabases": {},
+    }
+    if int(smoke["manufacturerId"]) != 34 or stem != "v-rbr":
+        raise ValueError(
+            "native new-car livery smoke currently supports only TVR v-rbr"
+        )
+    metadata["dealerLayouts"] = _stage_cerbera_lm_tvr_new_car_layouts(
+        gt2_simulation_volume,
+        patch_root,
+        int(smoke["carId"]),
+    )
+    for database_name, _ in GT2_GTMODE_LOCALIZED_DATABASES:
+        database_path = patch_root / "carparam" / database_name
+        gtmode_data = (
+            gzip.decompress(database_path.read_bytes())
+            if database_path.is_file()
+            else read_gt2_gzip_member(
+                gt2_simulation_volume,
+                f"carparam/{database_name}",
+            )
+        )
+        blocks = _parse_gtdt_blocks(
+            gtmode_data, GT2_GTMODE_BLOCK_COUNT
+        )
+        car_block = blocks[GT2_GTMODE_CAR_BLOCK]
+        cars = [
+            bytearray(car_block[offset : offset + 0x48])
+            for offset in range(0, len(car_block), 0x48)
+        ]
+        target_id = int(smoke["carId"])
+        matches = [
+            car
+            for car in cars
+            if struct.unpack_from("<I", car, 0)[0] == target_id
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"GT2 new-car livery smoke expected one {stem} record "
+                f"in {database_name}, found {len(matches)}"
+            )
+        target = matches[0]
+        original_acquisition_flag = target[0x40]
+        original_manufacturer = struct.unpack_from("<H", target, 0x3A)[0]
+        original_price = struct.unpack_from("<I", target, 0x44)[0]
+        if (
+            original_acquisition_flag == 0
+            or original_manufacturer != int(smoke["manufacturerId"])
+            or original_price != int(smoke["nativePrice"])
+        ):
+            raise ValueError(
+                f"GT2 {stem} acquisition record changed in {database_name}: "
+                f"flag={original_acquisition_flag}, "
+                f"manufacturer={original_manufacturer}, price={original_price}"
+            )
+        target[0x40] = 0
+        struct.pack_into("<I", target, 0x44, smoke_price)
+        updated_blocks = list(blocks)
+        updated_blocks[GT2_GTMODE_CAR_BLOCK] = b"".join(
+            bytes(car) for car in cars
+        )
+        converted = _rebuild_gtmode_gtdt(gtmode_data, updated_blocks)
+        verified = _find_gt2_gtdt_car(
+            _parse_gtdt_blocks(
+                converted, GT2_GTMODE_BLOCK_COUNT
+            )[GT2_GTMODE_CAR_BLOCK],
+            0x48,
+            stem,
+        )
+        if (
+            verified[0x40] != 0
+            or struct.unpack_from("<H", verified, 0x3A)[0]
+            != original_manufacturer
+            or struct.unpack_from("<I", verified, 0x44)[0]
+            != smoke_price
+        ):
+            raise ValueError(
+                f"GT2 {stem} new-car smoke failed round-trip in "
+                f"{database_name}"
+            )
+        database_path.parent.mkdir(parents=True, exist_ok=True)
+        database_path.write_bytes(
+            gzip.compress(converted, compresslevel=9, mtime=0)
+        )
+        metadata["localizedDatabases"][database_name] = {
+            "originalAcquisitionFlag": original_acquisition_flag,
+            "smokeAcquisitionFlag": 0,
+            "uncompressedSize": len(converted),
+            "uncompressedSha256": hashlib.sha256(converted).hexdigest(),
+        }
+    return metadata
 
 
 def stage_gt2_simulation_car_physics(
@@ -6605,7 +7136,7 @@ def main() -> int:
         "--smoke-gtmode-livery",
         choices=sorted(GT1_ARCADE_LIVERY_SMOKE_CARS),
         help=(
-            "Place one existing livery-fold target in Mazda dealer row one "
+            "Place one existing livery-fold target in a native dealer lineup "
             "at a temporary 20,000-credit price for deterministic native "
             "purchase, upgrade, save, and race validation. Normal conversion "
             "does not alter that car's acquisition path or price."
@@ -6685,12 +7216,21 @@ def main() -> int:
         if args.smoke_gtmode_livery is not None
         else None
     )
+    simulation_new_car_smoke = (
+        stage_gt2_existing_livery_new_car_smoke(
+            args.gt2_simulation_volume,
+            simulation_patch_root,
+            smoke_existing_livery,
+        )
+        if smoke_existing_livery is not None
+        else None
+    )
     simulation_used_cars = stage_gt2_simulation_used_cars(
         args.gt2_simulation_volume,
         simulation_patch_root,
         simulation_cars,
         args.smoke_gtmode_car,
-        smoke_existing_livery,
+        None,
     )
     # The Arcade base patch already has appended carinfo records. Seed the
     # gated fold layer from that result so applying it after the base layer
@@ -6787,6 +7327,7 @@ def main() -> int:
         "ssr11Sky": sky,
         "arcadeCars": list(arcade_cars),
         "simulationCars": list(simulation_cars),
+        "simulationNewCarSmoke": simulation_new_car_smoke,
         "simulationUsedCars": simulation_used_cars,
         "liveryFolds": {
             "arcade": arcade_livery_folds,

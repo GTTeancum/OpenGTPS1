@@ -1,0 +1,42 @@
+# Title -> Gran Turismo Mode -> fresh native city map.
+560+1=CAPTURE
+600+4=DOWN
+640+8=CROSS,START
+760+3=RIGHT
+780+3=RIGHT
+820+4=CROSS
+880+1=CAPTURE
+920+4=SQUARE
+1000+1=CAPTURE
+1040+4=UP
+1080+1=CAPTURE
+1120+4=CROSS
+1200+1=CAPTURE
+1240+4=RIGHT
+1280+1=CAPTURE
+1320+4=RIGHT
+1360+1=CAPTURE
+1400+4=CROSS
+1480+1=CAPTURE
+1520+4=RIGHT
+1540+4=RIGHT
+1580+4=CROSS
+1700+1=CAPTURE
+1740+4=RIGHT
+1820+1=CAPTURE
+1860+4=CROSS
+1980+1=CAPTURE
+
+# Purchase the Cerbera LM through TVR's native new-car flow, then make it the
+# active garage car. The explicit smoke layer lowers only this car to 20,000
+# credits; its permanent production price and acquisition data are untouched.
+2020+3=RIGHT
+2040+3=RIGHT
+2060+4=CROSS
+2100+4=CIRCLE
+2180+4=CIRCLE
+2260+4=TRIANGLE
+2340+4=SQUARE
+2380+4=DOWN
+2420+4=CROSS
+2460+1=CAPTURE

@@ -111,9 +111,14 @@
     body. The data-driven native resolver is wired into both executables'
     palette-index selection construction, color-ID fallback, race, showroom,
     and replay paths, and the installer validates/activates both mode layers
-    atomically. The direct resolver validation and ordinary Arcade frontend
-    regression pass; interactive four-choice Castrol selection, race,
-    save/reload, and screenshot proof remain before default activation.
+    atomically. Direct resolver validation, ordinary Arcade frontend
+    regression, Castrol Supra four-choice selection/race proof, and Cerbera LM
+    alternate-body Arcade/GT Mode proof all pass. Default activation still
+    remains gated on the other 33 fold targets passing their rebuilt-host
+    interactive smoke matrix, plus final save/reload proof for repeated-ID
+    liveries and promotion of validated new-car dealer integration without
+    displacing any native entries. TVR is new-car-only in the merged design;
+    Cerbera LM must be sold as a new TVR and never enter used-car rotations.
 - Mine supported Gran Turismo 2 demo builds for demo-exclusive LM colors,
   liveries, and alternate body/texture packages, then fold them into the
   corresponding retail GT2 identities. Treat each user-supplied demo image as

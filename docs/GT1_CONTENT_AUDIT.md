@@ -182,18 +182,26 @@ body `v-rbr`, choice 3 to hidden loader body `v1rbr`, local palette 1, then
 loads and auto-drives that native body through a normal race with no unmapped
 call, managed exception, or software fault.
 
-The transient GT Mode acquisition smoke pins its developer-only used-car alias
-to authoritative color ID 109 so a fresh save deterministically exercises the
-newest imported paint instead of depending on the dealer-rotation day. Its
-listing, information preview, purchase/active-garage state, race, result, and
-replay all complete, and the preview trace resolves `v-rbr` choice 3 to
-`v1rbr` palette 1. The alias is intentionally non-shipping and lives in the
-Mazda test roster; that borrowed dealer screen still shows Mazda's
-`RX-7 A-Spec LM` information-page wordmark even though the listing, car,
-specification, and garage identity are Cerbera LM. The current generic upgrade
-fixture also enters the Tommy Kaira special-model page rather than proving a
-Cerbera upgrade purchase. Those two smoke-scaffold presentation/navigation
-issues remain open and are not counted as production GT Mode parity.
+TVR is a new-car-only manufacturer in the integrated design. The Cerbera LM is
+therefore classified as a new TVR; it must never be inserted into a used-car
+rotation. The explicit `--smoke-gtmode-livery v-rbr` layer now applies that
+rule in every localized GT Mode database, preserves TVR's original eight-car
+new-car lineup, clones GT2's native `NEW CAR / INFORMATION` page, and links it
+from TVR's Special Model flow. A clean converter regeneration displays the
+correct Cerbera LM wordmark and alternate body on that original Sony page,
+enables BUY at the transient 20,000-credit smoke price, and completes purchase
+to the active-garage state without an unmapped call, managed exception, or
+software fault. The preview resolves `v-rbr` choice 3 to hidden body `v1rbr`,
+palette 1; no borrowed Mazda artwork or used-car alias remains in this proof.
+
+That link remains a non-shipping smoke scaffold: it temporarily replaces the
+native Speed 12-to-Tuscan Speed Six transition. Production activation requires
+a native three-entry Special Model navigation path that keeps Speed 12,
+Tuscan Speed Six, and the Cerbera LM simultaneously reachable. Normal
+conversion therefore still preserves the retail Cerbera price and acquisition
+path. A clean Cerbera-specific upgrade purchase is also pending; the older
+generic fixture entered Tommy Kaira's special-model page and is not accepted
+as upgrade parity.
 
 The same database rule imports `tsplr` ID 113 as the second Castrol Supra GT
 choice and covers the other 48 variants listed above. Cross-stem archive
