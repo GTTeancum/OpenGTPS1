@@ -384,3 +384,141 @@ visible and repeatable in the packaged build at:
 
 - Resolution selection remains outside the quality preset system.
 - Widescreen and its associated resolution work are for a future build.
+
+## Version 2.0 - PSP asset glow-up and track geometry modernization
+
+- [ ] Build an owner-supplied Gran Turismo PSP asset-import pipeline.
+  - Use GTPSPVolTools or an equivalent reproducible extractor for the PSP
+    volume, then decode ModelSet3/MDL3 models, texture sets, materials, model
+    setup commands, course packs, and associated metadata.
+  - Convert decoded data into a documented, versioned intermediate format
+    shared by cars and tracks. Preserve source identifiers and transformation
+    metadata so every converted asset can be traced and rebuilt.
+  - Prefer host-side replacement assets loaded by the recompiled runtime over
+    forcing the higher-detail data back through original PS1 file limits.
+  - Create stable manifests that map each GT2 car and course ID to its PSP
+    replacement, conversion settings, known differences, and original fallback.
+  - Make conversion deterministic and cacheable, with validation for malformed
+    offsets, unsupported commands, missing textures, invalid indices, and
+    out-of-range geometry before an asset reaches the game.
+  - Ship importer/converter code and manifests, not copyrighted donor data.
+    Require users to build the optional asset pack from their own game files.
+
+- [ ] Replace GT2 car models with their Gran Turismo PSP counterparts where a
+  suitable match exists.
+  - Import all useful PSP LODs, body meshes, wheels, glass, lights, badges,
+    shadows, materials, diffuse textures, and specular data.
+  - Translate wheel centers, axle positions, scale, origin, ride height, camera
+    anchors, and other attachment points into GT2's coordinate conventions
+    without changing the car's simulation data.
+  - Preserve GT2 paint-color selection and any required race-number, light,
+    brake-light, and reflection behavior through explicit material mappings.
+  - Use bounded texture filtering and mip generation that retain the PSP visual
+    character instead of producing mismatched modern materials.
+  - Fall back cleanly to the original GT2 model for cars without a decoded,
+    verified, or sufficiently close PSP donor.
+  - Validate model scale, wheel contact, steering, suspension motion, culling,
+    reflections, lighting, opponent rendering, garage views, races, and replays
+    across representative body styles.
+
+- [ ] Replace GT2 courses with their Gran Turismo PSP counterparts where the
+  same or an acceptably equivalent layout exists.
+  - Decode and import the visible course mesh, textures, materials, collision
+    runway, sectors, boundaries, checkpoints, grid and pit positions, cameras,
+    scenery objects, visibility data, minimap, and road-surface assignments.
+  - Keep rendered geometry and collision coincident, and translate coordinates
+    and units without altering the intended course length, width, banking, or
+    elevation profile.
+  - Adapt PSP sector and visibility information to the Version 2.0 renderer so
+    complete courses remain practical without introducing streaming cracks or
+    excessive per-frame geometry submission.
+  - Map PSP surface properties to GT2 tire, curb, grass, sand, wall, and runoff
+    behavior explicitly; do not infer gameplay surfaces from texture names.
+  - Re-anchor start lights, signs, pits, cameras, scenery, and minimap data to
+    the imported course and verify start/finish closure and lap timing.
+  - Retain the original GT2 course as the fallback whenever the PSP conversion
+    is incomplete or fails validation.
+
+- [ ] Decode and translate PSP racing-line and AI-driving data independently
+  from course geometry.
+  - Identify the actual AI path, progress, speed/braking targets, boundaries,
+    overtaking or alternate-line data, and direction metadata rather than
+    confusing a visible driving aid with the AI controller's route.
+  - Convert the PSP path into a neutral centerline-relative representation,
+    then generate or adapt the data consumed by GT2's native mode-2 driver.
+  - Reproject path heights onto the final collision surface while preserving
+    lateral position, ordering, lap closure, and checkpoint progression.
+  - When PSP AI data cannot be decoded completely, reconstruct an initial path
+    from the collision runway and refine it using deterministic auto-drive
+    telemetry instead of embedding hand-authored controller input.
+  - Validate multiple vehicle speeds and performance levels for wall contact,
+    missed checkpoints, oscillation, inappropriate braking, pit entry errors,
+    and repeatable race completion.
+
+- [ ] Integrate the PSP replacements as an optional Version 2.0 asset pack.
+  - Add wrapper controls for original GT2 assets, the complete PSP glow-up, and
+    per-car or per-track fallback while the pack is under development.
+  - Detect missing, corrupt, incompatible, or partially generated asset packs
+    at startup and report the exact asset and corrective action without
+    preventing the original game from running.
+  - Version the pack format separately from saved games and runtime settings so
+    asset revisions do not invalidate player progress.
+  - Verify every replacement in garage, race, replay, split-screen or other
+    supported views, including loading, draw distance, LOD, frame pacing,
+    collision, AI, timing, and natural replay completion.
+  - Produce matched original/PSP screenshots and full-lap auto-drive telemetry
+    for each completed course before enabling it by default.
+  - Use decoded GT3/GTC assets, then verified GT4-family assets, only as
+    owner-supplied gap-fillers where no suitable PSP donor exists; keep these
+    converters and provenance mappings separate because their model, runway,
+    and AI formats have different levels of support.
+
+- [ ] Build a constrained track-mesh smoothing pipeline for the remaining
+  original PS1 courses.
+  - Use Red Rock Valley Speedway as the first proof-of-concept.
+  - Smooth the rendered road and its collision surface together so the visual
+    surface and tire contact remain coincident.
+  - Infer the course direction and corresponding road cross-sections, then
+    remove high-frequency height changes primarily along the direction of
+    travel. Do not apply an unconstrained uniform or isotropic mesh smooth.
+  - Preserve the original lateral road profile, corner radius, camber, banking,
+    crests, major elevation changes, curbs, walls, boundaries, surface types,
+    sector seams, and start/finish closure.
+  - Begin by retaining the original topology and horizontal vertex positions,
+    adjusting only road height where practical. Add longitudinal subdivisions
+    and rebuild affected collision triangles only if the original sampling is
+    too sparse for a smooth result.
+  - Apply identical displacement to duplicated seam vertices and verify that
+    smoothing does not create cracks, overlaps, inverted triangles, collision
+    holes, or abrupt normal changes at streamed-section boundaries.
+  - Reproject AI-line heights and road-anchored objects onto the resulting
+    collision surface without changing the intended racing line in plan view.
+  - Keep the operation deterministic and parameterized so its strength and
+    locked features can be tuned per course without requiring manual edits to
+    every road vertex.
+
+- [ ] Validate the Red Rock Valley smoothed-course pilot before processing
+  other tracks.
+  - Complete repeatable native mode-2 auto-drive races and natural replays on
+    both the original and smoothed course using the same car and setup.
+  - Confirm that tire contact, collision, sector transitions, checkpoints,
+    timing, AI progress, and race completion continue to function normally.
+  - Record suspension travel, vertical acceleration/jerk, tire-contact loss,
+    steering, speed, lap time, and racing-line deviation over matched runs.
+  - Require a clear reduction in unintended high-frequency vertical motion
+    without materially flattening deliberate banking or changing the course's
+    driving line.
+  - Inspect the full lap and replay for visible road cracks, floating scenery,
+    buried or floating curbs, texture discontinuities, and vehicle reactions at
+    every modified section.
+  - Export the smoothed result in a form suitable for later manual texture
+    remapping and replacement of trackside objects with higher-detail assets.
+
+- [ ] Generalize the accepted Red Rock pipeline to every PS1 course that is not
+  replaced by a higher-generation donor track.
+  - Store per-track smoothing masks, locked features, and strength overrides as
+    source-controlled data rather than hard-coded track-specific behavior.
+  - Batch-check topology, seams, collision coverage, AI-line projection, and
+    deterministic output before packaging each converted course.
+  - Retain the untouched original course data so Version 2.0 can offer a safe
+    comparison/fallback path during development and validation.
