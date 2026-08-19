@@ -39,6 +39,8 @@ opengt::render::WorldDrawVertex vertex(
     result.clip_w = 256.0F;
     result.screen_x = x + geometric_bias;
     result.screen_y = y;
+    result.authored_screen_x = x;
+    result.authored_screen_y = y;
     result.u = static_cast<float>(x);
     result.v = static_cast<float>(y);
     result.r = result.g = result.b = 128;
@@ -180,6 +182,44 @@ int main() {
         list.track_commands == list.commands.size(),
         "refresh draw-list category counts");
 
+    // More than four copies exercise the inline occurrence bucket's overflow
+    // while preserving canonical authored-boundary selection and iteration.
+    WorldDrawList occurrence_overflow_list{};
+    for (std::uint32_t index = 0; index < 5; ++index) {
+        occurrence_overflow_list.commands.push_back(triangle(
+            vertex(
+                40,
+                40,
+                0,
+                0x7000 + index * 0x100,
+                static_cast<float>(index) * 0.125F),
+            vertex(
+                static_cast<std::int16_t>(50 + index * 2),
+                40,
+                0,
+                0x7014 + index * 0x100),
+            vertex(
+                40,
+                static_cast<std::int16_t>(50 + index * 2),
+                0,
+                0x7028 + index * 0x100),
+            0x81000000 + index * 0x1000,
+            100 + index));
+    }
+    occurrence_overflow_list.track_commands = 5;
+    WorldTopologyStats occurrence_overflow_stats{};
+    okay &= expect(
+        apply_world_topology(
+            &occurrence_overflow_list,
+            WorldTopologyOptions{true, false, false},
+            &occurrence_overflow_stats) == WorldTopologyResult::success,
+        "apply occurrence overflow topology");
+    okay &= expect(
+        occurrence_overflow_stats.exact_position_groups >= 1 &&
+        occurrence_overflow_stats.authored_boundary_groups >= 1 &&
+        occurrence_overflow_stats.adjusted_vertex_instances == 4,
+        "canonicalize all five inline and overflow occurrences");
+
     // Adjacent track sections can submit the same authored boundary through
     // differently scaled GTE transforms. Continuous projection preserves the
     // subpixel result, and topology must then give both copies one exact
@@ -228,6 +268,164 @@ int main() {
         projection_list.commands[0].vertices[2].screen_x == 80.0F &&
         projection_list.commands[1].vertices[2].screen_x == 120.0F,
         "leave non-boundary vertices unchanged");
+
+    // Two proven-adjacent sections may tessellate a shared visible edge with
+    // different intermediate 3D vertices. At enhanced resolution their
+    // subpixel projection difference exposes the background, so mutually
+    // nearest boundary endpoints in the same material layer are joined.
+    WorldDrawList seam_list{};
+    seam_list.display_width = 320;
+    seam_list.display_height = 240;
+    seam_list.continuous_projection = true;
+    auto seam_left = triangle(
+        vertex(100, 0, 0, 0x9000),
+        vertex(100, 20, 0, 0x9014),
+        vertex(80, 10, 0, 0x9028),
+        0x80009000,
+        20);
+    auto seam_right = triangle(
+        vertex(100, 0, 0, 0xA000),
+        vertex(100, 20, 0, 0xA014),
+        vertex(120, 10, 0, 0xA028),
+        0x8000A000,
+        21);
+    seam_left.vertices[2].screen_x = 90.20F;
+    seam_right.vertices[2].screen_x = 90.70F;
+    seam_list.commands.push_back(seam_left);
+    seam_list.commands.push_back(seam_right);
+    seam_list.track_commands = 2;
+    WorldTopologyStats seam_stats{};
+    okay &= expect(
+        apply_world_topology(
+            &seam_list,
+            WorldTopologyOptions{false, false, false},
+            &seam_stats) == WorldTopologyResult::success,
+        "apply projected seam join");
+    okay &= expect(
+        seam_stats.projected_seam_groups == 1 &&
+        seam_stats.adjusted_seam_instances == 1 &&
+        seam_list.commands[0].vertices[2].screen_x ==
+            seam_list.commands[1].vertices[2].screen_x,
+        "join a proven subpixel boundary seam");
+
+    // Integer GTE rounding can leave an intermediate vertex slightly off a
+    // neighboring triangle's long edge in exact view space. It is still the
+    // same authored track object/material/layer, and continuous projection
+    // should snap only that vertex's subpixel screen position to the edge.
+    WorldDrawList projected_t_list{};
+    projected_t_list.display_width = 320;
+    projected_t_list.display_height = 240;
+    projected_t_list.continuous_projection = true;
+    auto projected_t_edge = triangle(
+        vertex(0, 0, 0, 0xB000),
+        vertex(10, 0, 1, 0xB014),
+        vertex(0, 10, 0, 0xB028),
+        0x8000B000,
+        30);
+    auto projected_t_point = triangle(
+        vertex(5, 0, 0, 0xC000),
+        vertex(5, -5, 0, 0xC014),
+        vertex(10, -5, 0, 0xC028),
+        0x8000B000,
+        31);
+    projected_t_edge.object_id = 99;
+    projected_t_point.object_id = 99;
+    projected_t_point.vertices[0].screen_y = 0.10F;
+    projected_t_list.commands.push_back(projected_t_edge);
+    projected_t_list.commands.push_back(projected_t_point);
+    projected_t_list.track_commands = 2;
+    WorldTopologyStats projected_t_stats{};
+    okay &= expect(
+        apply_world_topology(
+            &projected_t_list,
+            WorldTopologyOptions{false, false, false},
+            &projected_t_stats) == WorldTopologyResult::success,
+        "apply projected T-junction join");
+    okay &= expect(
+        projected_t_stats.projected_t_junctions >= 1 &&
+        projected_t_stats.adjusted_projected_t_junction_instances >= 1 &&
+        std::fabs(
+            projected_t_list.commands[1].vertices[0].screen_y) < 0.001F,
+        "close a bounded projected vertex-to-edge T-junction");
+
+    // A GT2 road LOD can describe the same original raster edge at a
+    // different view-space scale. Preserve the authored integer SXY as proof
+    // that it was a continuous 320x240 boundary, then remove only the
+    // sub-half-pixel divergence introduced by continuous reprojection.
+    WorldDrawList lod_t_list{};
+    lod_t_list.display_width = 320;
+    lod_t_list.display_height = 240;
+    lod_t_list.continuous_projection = true;
+    auto lod_edge = triangle(
+        vertex(-418, 197, 1158, 0xD000),
+        vertex(-100, 212, 1155, 0xD014),
+        vertex(-365, 199, 1981, 0xD028),
+        0x8000D000,
+        40);
+    auto lod_point = triangle(
+        vertex(-2069, 1641, 9252, 0xE000),
+        // Y is nine guest units from the exact 8x endpoint. This is the
+        // measured GT2 road residual that must still prove the LOD relation.
+        vertex(-3340, 1585, 9264, 0xE014),
+        vertex(-798, 1702, 9240, 0xE028),
+        0x8000D000,
+        41);
+    lod_edge.object_id = 100;
+    lod_point.object_id = 100;
+    lod_edge.transform_id = 0x1234;
+    lod_point.transform_id = 0x1234;
+    lod_edge.vertices[0].screen_x = 82.031F;
+    lod_edge.vertices[0].screen_y = 396.746F;
+    lod_edge.vertices[0].authored_screen_x = 82;
+    lod_edge.vertices[0].authored_screen_y = 396;
+    lod_edge.vertices[1].screen_x = 141.299F;
+    lod_edge.vertices[1].screen_y = 399.647F;
+    lod_edge.vertices[1].authored_screen_x = 141;
+    lod_edge.vertices[1].authored_screen_y = 399;
+    lod_point.vertices[0].screen_x = 111.697F;
+    lod_point.vertices[0].screen_y = 398.311F;
+    lod_point.vertices[0].authored_screen_x = 111;
+    lod_point.vertices[0].authored_screen_y = 398;
+    // This endpoint reproduces the measured live road seam divergence:
+    // roughly 0.60 native px diagonally from the matching lower-LOD endpoint.
+    // It is still safely bounded by the exact 8x view-space relationship and
+    // identical authored SXY proof.
+    lod_point.vertices[1].screen_x = 82.356F;
+    lod_point.vertices[1].screen_y = 397.244F;
+    lod_point.vertices[1].authored_screen_x = 82;
+    lod_point.vertices[1].authored_screen_y = 396;
+    lod_point.vertices[2].screen_x = 141.345F;
+    lod_point.vertices[2].screen_y = 399.787F;
+    lod_point.vertices[2].authored_screen_x = 141;
+    lod_point.vertices[2].authored_screen_y = 399;
+    lod_t_list.commands.push_back(lod_edge);
+    lod_t_list.commands.push_back(lod_point);
+    lod_t_list.track_commands = 2;
+    WorldTopologyStats lod_t_stats{};
+    okay &= expect(
+        apply_world_topology(
+            &lod_t_list,
+            WorldTopologyOptions{false, false, false},
+            &lod_t_stats) == WorldTopologyResult::success,
+        "apply projected road LOD join");
+    const float lod_dx =
+        lod_t_list.commands[0].vertices[1].screen_x -
+        lod_t_list.commands[0].vertices[0].screen_x;
+    const float lod_dy =
+        lod_t_list.commands[0].vertices[1].screen_y -
+        lod_t_list.commands[0].vertices[0].screen_y;
+    const float lod_px =
+        lod_t_list.commands[1].vertices[0].screen_x -
+        lod_t_list.commands[0].vertices[0].screen_x;
+    const float lod_py =
+        lod_t_list.commands[1].vertices[0].screen_y -
+        lod_t_list.commands[0].vertices[0].screen_y;
+    okay &= expect(
+        lod_t_stats.projected_t_junctions >= 1 &&
+        lod_t_stats.authored_raster_groups >= 2 &&
+        lod_t_stats.adjusted_authored_raster_instances >= 2 &&
+        std::fabs(lod_px * lod_dy - lod_py * lod_dx) < 0.001F,
+        "close an authored-raster-proven road LOD boundary");
 
     if (!okay)
         return 1;

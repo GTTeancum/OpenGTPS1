@@ -321,6 +321,47 @@ GT1_CROSS_STEM_LIVERY_FOLDS = (
         ),
     },
 )
+
+# The complete model-referenced-texel census of the supplied US GT1 and GT2
+# archives proves these GT1 Racing Modification bodies contain paints with no
+# visible GT2 counterpart. Their customer identity is the archive-derived
+# stock stem obtained by replacing the terminal `r` with `n`; only the body
+# and its two authored paints are additional. FTO's corresponding packages
+# deliberately are not listed: all ten RM paints have the same IDs and exact
+# RGBA values on every texel referenced by either native high-LOD model.
+GT1_PROVEN_DISTINCT_RACING_MODIFICATION_STEMS = (
+    "dvprr",
+    "hpnvr",
+    "mgnor",
+    "mgntr",
+    "mgoor",
+    "mgotr",
+    "mgtmr",
+    "mgtor",
+    "mgttr",
+    "mlnnr",
+    "mlnor",
+    "mmgor",
+    "mmgrr",
+    "nn32r",
+    "nplor",
+    "nr02r",
+    "nr32r",
+    "ns13r",
+    "nv12r",
+    "nv22r",
+    "nzx2r",
+    "nzx3r",
+    "nzxsr",
+    "nzxvr",
+    "tcelr",
+    "tmrlr",
+    "tsonr",
+    "tsorr",
+    "tspnr",
+    "tsprr",
+    "vcrbr",
+)
 GT1_ARCADE_LIVERY_SMOKE_CARS = {
     "tsplr": {
         "displayName": "CASTROL SUPRA GT",
@@ -344,6 +385,69 @@ GT1_ARCADE_LIVERY_SMOKE_CARS = {
         "arcadeClass": 1,
         "manufacturerLogoIndex": 32,
         "ratings": (10, 10, 10),
+    },
+    "mgnon": {
+        "displayName": "GTO SR",
+        "menuLogoName": "mgno.tim",
+        "physicsBasisStem": "mgnon",
+        "physicsPartBasis": {},
+        "arcadeClass": 1,
+        "manufacturerLogoIndex": 19,
+        "ratings": (9, 8, 7),
+    },
+    "mgntn": {
+        "displayName": "GTO TWIN TURBO",
+        "menuLogoName": "mgnt.tim",
+        "physicsBasisStem": "mgntn",
+        "physicsPartBasis": {},
+        "arcadeClass": 1,
+        "manufacturerLogoIndex": 19,
+        "ratings": (9, 8, 7),
+    },
+    "mgoon": {
+        "displayName": "GTO '92",
+        "menuLogoName": "mgoo.tim",
+        "physicsBasisStem": "mgoon",
+        "physicsPartBasis": {},
+        "arcadeClass": 1,
+        "manufacturerLogoIndex": 19,
+        "ratings": (9, 8, 7),
+    },
+    "mgotn": {
+        "displayName": "GTO '92 TWIN TURBO",
+        "menuLogoName": "mgot.tim",
+        "physicsBasisStem": "mgotn",
+        "physicsPartBasis": {},
+        "arcadeClass": 1,
+        "manufacturerLogoIndex": 19,
+        "ratings": (9, 8, 7),
+    },
+    "mgtmn": {
+        "displayName": "GTO '95 MR",
+        "menuLogoName": "mgtm.tim",
+        "physicsBasisStem": "mgtmn",
+        "physicsPartBasis": {},
+        "arcadeClass": 1,
+        "manufacturerLogoIndex": 19,
+        "ratings": (9, 8, 7),
+    },
+    "mgton": {
+        "displayName": "GTO '95 SR",
+        "menuLogoName": "mgto.tim",
+        "physicsBasisStem": "mgton",
+        "physicsPartBasis": {},
+        "arcadeClass": 1,
+        "manufacturerLogoIndex": 19,
+        "ratings": (9, 8, 7),
+    },
+    "mgttn": {
+        "displayName": "GTO '95 TWIN TURBO",
+        "menuLogoName": "mgtt.tim",
+        "physicsBasisStem": "mgttn",
+        "physicsPartBasis": {},
+        "arcadeClass": 1,
+        "manufacturerLogoIndex": 19,
+        "ratings": (9, 8, 7),
     },
 }
 GT1_IMPREZA_STI_V3_CAR = {
@@ -4824,12 +4928,77 @@ def discover_gt1_livery_folds(
             }
         )
 
+    for source_stem in GT1_PROVEN_DISTINCT_RACING_MODIFICATION_STEMS:
+        target_stem = source_stem[:-1] + "n"
+        if source_stem not in stems:
+            raise ValueError(
+                "proven GT1 Racing Modification source is absent: "
+                f"{source_stem}"
+            )
+        if source_stem not in by_stem:
+            raise ValueError(
+                "GT2 Racing Modification model basis is absent: "
+                f"{source_stem}"
+            )
+        if target_stem not in gtmode_stems or target_stem not in by_stem:
+            raise ValueError(
+                "GT2 Racing Modification customer identity is absent: "
+                f"{target_stem}"
+            )
+
+        source_texture = read_gt1_car_members(
+            disc_root / "CAR.DAT", stems, source_stem
+        )[0]
+        converted_source = convert_gt1_car_texture(source_texture)
+        source_ids = list(
+            converted_source[2 : 2 + converted_source[0]]
+        )
+        if len(source_ids) != 2 or len(set(source_ids)) != 2:
+            raise ValueError(
+                f"GT1 {source_stem} Racing Modification paint set changed: "
+                f"{source_ids}"
+            )
+        paint_sources = tuple(
+            (
+                color_id,
+                _select_gt2_paint_source(
+                    records, target_stem, color_id
+                ),
+            )
+            for color_id in source_ids
+        )
+        while True:
+            body_stem = _hidden_livery_body_stem(generated_body_index)
+            generated_body_index += 1
+            if body_stem not in used_stems:
+                break
+        used_stems.add(body_stem)
+        definitions.append(
+            {
+                "targetStem": target_stem,
+                "sourceStem": source_stem,
+                "bodyStem": body_stem,
+                "modelBasisStem": source_stem,
+                "paintSources": paint_sources,
+                "bodyPaintSources": paint_sources,
+                "gt1PaintIds": source_ids,
+                "gt2PaintIds": list(by_stem[target_stem]["colorIds"]),
+                "allowDuplicateColorIds": True,
+                "racingModificationBody": True,
+                "description": (
+                    "GT1-authored Racing Modification body and paints for "
+                    f"existing GT2 identity {target_stem}"
+                ),
+            }
+        )
+
     variant_count = sum(
         len(definition["paintSources"]) for definition in definitions
     )
-    if len(definitions) != 34 or variant_count != 51:
+    if len(definitions) != 65 or variant_count != 113:
         raise ValueError(
-            "GT1/GT2 same-car color-ID inventory changed: "
+            "GT1/GT2 color-ID and proven Racing Modification inventory "
+            "changed: "
             f"{len(definitions)} cars, {variant_count} variants"
         )
 
@@ -4894,7 +5063,7 @@ def discover_gt1_livery_folds(
     total_variant_count = sum(
         len(definition["paintSources"]) for definition in definitions
     )
-    if len(definitions) != 35 or total_variant_count != 53:
+    if len(definitions) != 66 or total_variant_count != 115:
         raise ValueError(
             "GT1 livery fold inventory changed after cross-stem analysis: "
             f"{len(definitions)} cars, {total_variant_count} variants"
@@ -6161,16 +6330,21 @@ class Gt1CourseDeserializer:
 
     OBJECT_POOL_SIZES = (12, 12, 20, 24, 12, 12, 20, 24)
     MODEL_POOL_SIZES = (12, 12, 20, 24, 24, 24, 32, 36)
+    IMPORTED_SCREEN_BILLBOARD_MARKER = 0x31525353  # "SSR1"
 
     def __init__(
         self,
         data: bytes,
         texture_relocation: TextureRelocation | None = None,
+        mark_imported_screen_billboards: bool = False,
     ):
         self.data = bytearray(data)
         self.pointer_fields: set[int] = set()
         self.texture_relocation = texture_relocation
+        self.mark_imported_screen_billboards = mark_imported_screen_billboards
         self.relocated_texture_packets = 0
+        self.converted_auxiliary_anchors = 0
+        self.marked_screen_billboards = 0
 
     def require(self, offset: int, size: int = 1) -> None:
         if offset < 0 or size < 0 or offset + size > len(self.data):
@@ -6435,6 +6609,52 @@ class Gt1CourseDeserializer:
                             f"object={index} vertex={vertex_index}: {converted}"
                         )
                     struct.pack_into("<hhh", self.data, vertex, *converted)
+
+                # These pools hold camera-facing course props. The 16-byte
+                # records describe authored quads; the 20-byte records begin
+                # with the GTE anchor used to build light flares and tree
+                # billboards in screen space. They share the normal vertex
+                # coordinate system. Native GT1/GT2 High Speed Ring records
+                # match exactly after this same scale, handedness, and object
+                # bias conversion.
+                for pointer_field, count_field, record_size in (
+                    (0x24, 0x40, 16),
+                    (0x28, 0x42, 20),
+                ):
+                    records = self.u32(pool + pointer_field)
+                    for record_index in range(self.u16(pool + count_field)):
+                        record = records + record_index * record_size
+                        x, y, z = struct.unpack_from("<hhh", self.data, record)
+                        converted = (
+                            (x >> 2) + x_bias,
+                            -(y >> 2) + y_bias,
+                            (z >> 2) + z_bias,
+                        )
+                        if any(
+                            value < -0x8000 or value > 0x7FFF
+                            for value in converted
+                        ):
+                            raise ValueError(
+                                f"GT1 course auxiliary anchor escaped int16 at "
+                                f"object={index} record={record_index}: "
+                                f"{converted}"
+                            )
+                        struct.pack_into(
+                            "<hhh", self.data, record, *converted
+                        )
+                        self.converted_auxiliary_anchors += 1
+                        if record_size == 20 and self.mark_imported_screen_billboards:
+                            # GT2's flare routine leaves +8..+15 unread. Mark
+                            # imported anchors so modern projection can undo
+                            # the 4x apparent-radius increase caused by the
+                            # exact GT1 -> GT2 quarter-scale world conversion.
+                            struct.pack_into(
+                                "<I",
+                                self.data,
+                                record + 8,
+                                self.IMPORTED_SCREEN_BILLBOARD_MARKER,
+                            )
+                            self.marked_screen_billboards += 1
 
             # GT1 bins road polygons in a 4x4 index using 1 MiB world chunks
             # and 256-unit local coordinates. GT2's otherwise-equivalent
@@ -6885,12 +7105,15 @@ class Gt1CourseDeserializer:
             "pointerCount": len(self.pointer_fields),
             "sharedRenderPoolBytesSaved": bytes_saved,
             "relocatedTexturePackets": self.relocated_texture_packets,
+            "convertedAuxiliaryAnchors": self.converted_auxiliary_anchors,
+            "markedScreenBillboards": self.marked_screen_billboards,
         }
 
 
 def convert_gt1_geometry(
     data: bytes,
     texture_relocation: TextureRelocation | None = None,
+    mark_imported_screen_billboards: bool = False,
 ) -> tuple[bytes, dict[str, int]]:
     if not data.startswith(b"@(#)GT-PS"):
         raise ValueError("GT1 geometry is not native GT-PS data")
@@ -6898,7 +7121,7 @@ def convert_gt1_geometry(
     if revision != 28:
         raise ValueError(f"unsupported GT1 geometry revision: {revision}")
     return Gt1CourseDeserializer(
-        data, texture_relocation
+        data, texture_relocation, mark_imported_screen_billboards
     ).convert_to_revision_31()
 
 
@@ -6997,7 +7220,9 @@ def convert_ssr11(
             archive, entries[course_index * 2 + 1]
         )
         geometry, geometry_metadata = convert_gt1_geometry(
-            source_geometry, relocation
+            source_geometry,
+            relocation,
+            mark_imported_screen_billboards=True,
         )
         texture_name = f"{stem}.trp.gz"
         geometry_name = f"{stem}.tro.gz"

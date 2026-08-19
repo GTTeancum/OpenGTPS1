@@ -230,8 +230,8 @@ int main(int argc, char** argv) {
         }
         std::fprintf(
             csv,
-            "command,source_command,object_kind,object_id,model_pointer,"
-            "material,primitive_flags,texture_page,clut,ordering_table,"
+            "command,source_command,object_kind,object_id,model_pointer,channel,"
+            "transform_id,material,primitive_flags,texture_page,clut,ordering_table,"
             "vertex,model_x,model_y,model_z,world_x,world_y,world_z,"
             "view_x,view_y,view_z,screen_x,screen_y,u,v,r,g,b,"
             "source_identity\n");
@@ -245,7 +245,7 @@ int main(int argc, char** argv) {
                 const auto& vertex = command.vertices[vertex_index];
                 std::fprintf(
                     csv,
-                    "%zu,%u,%u,%u,%u,%u,%u,%u,%u,%d,%d,%d,%d,%d,"
+                    "%zu,%u,%u,%u,%u,%u,%llu,%u,%u,%u,%u,%d,%d,%d,%d,%d,"
                     "%.6f,%.6f,%.6f,%.0f,%.0f,%.0f,%.6f,%.6f,"
                     "%.6f,%.6f,%u,%u,%u,%u\n",
                     command_index,
@@ -253,6 +253,8 @@ int main(int argc, char** argv) {
                     command.object_kind,
                     command.object_id,
                     command.model_pointer,
+                    static_cast<unsigned>(command.channel),
+                    static_cast<unsigned long long>(command.transform_id),
                     command.material_index,
                     material.primitive_flags,
                     material.texture_page,
@@ -305,7 +307,10 @@ int main(int argc, char** argv) {
         "topologyEligible=%u topologyMissingProvenance=%u "
         "topologyPositionGroups=%u topologyBoundaryGroups=%u "
         "topologyAdjusted=%u topologyProjectionGroups=%u "
-        "topologyProjectionAdjusted=%u topologyBoundaryEdges=%u "
+        "topologyProjectionAdjusted=%u topologySeamGroups=%u "
+        "topologySeamAdjusted=%u topologyProjectedTJunctions=%u "
+        "topologyRasterGroups=%u topologyRasterAdjusted=%u "
+        "topologyProjectedTJunctionAdjusted=%u topologyBoundaryEdges=%u "
         "topologyManifoldEdges=%u topologyNonmanifoldEdges=%u "
         "topologyTJunctions=%u topologySplitSources=%u "
         "topologySplitTriangles=%u topologyCoplanarPairs=%u "
@@ -352,6 +357,12 @@ int main(int argc, char** argv) {
         topology.adjusted_vertex_instances,
         topology.authored_projection_groups,
         topology.adjusted_projection_instances,
+        topology.projected_seam_groups,
+        topology.adjusted_seam_instances,
+        topology.projected_t_junctions,
+        topology.authored_raster_groups,
+        topology.adjusted_authored_raster_instances,
+        topology.adjusted_projected_t_junction_instances,
         topology.boundary_edges,
         topology.manifold_edges,
         topology.nonmanifold_edges,

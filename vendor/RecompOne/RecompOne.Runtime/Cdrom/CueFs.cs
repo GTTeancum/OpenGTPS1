@@ -245,6 +245,40 @@ public sealed class CueFs : IDisposable
             $"Standalone loose mode has no asset mapped to LBA {lba}; BIN/CUE fallback is disabled");
     }
 
+    public void ReadSectorData(int lba, Span<byte> destination)
+    {
+        if (TryReadLooseSector(lba, destination))
+            return;
+        if (_manifest?.MetadataSectors.TryGetValue(lba, out string? encoded) == true)
+        {
+            destination.Clear();
+            int prefix = destination.Length switch
+            {
+                2048 or 2328 => 0,
+                2336 => 8,
+                2340 => 12,
+                2352 => 24,
+                _ => -1,
+            };
+            if (prefix >= 0 && destination.Length - prefix >= 2048 &&
+                Convert.TryFromBase64String(
+                    encoded,
+                    destination[prefix..],
+                    out int written) &&
+                written == 2048)
+                return;
+            ReadSectorData(lba, destination.Length).CopyTo(destination);
+            return;
+        }
+        if (_bin != null)
+        {
+            _bin.ReadSectorData(lba, destination);
+            return;
+        }
+        throw new IOException(
+            $"Standalone loose mode has no asset mapped to LBA {lba}; BIN/CUE fallback is disabled");
+    }
+
     public bool TryReadLooseFileRange(int startLba, uint offset, int count, out byte[] data)
     {
         data = [];
@@ -521,6 +555,42 @@ public sealed class CueFs : IDisposable
         return false;
     }
 
+    private bool TryReadLooseSector(int lba, Span<byte> destination)
+    {
+        foreach (var entry in _looseByLba)
+        {
+            int sectors = checked((int)((entry.DiscSize + 2047u) >> 11));
+            if (lba < entry.Lba || lba >= entry.Lba + sectors)
+                continue;
+            int sectorIndex = lba - entry.Lba;
+            if (destination.Length == 2336)
+            {
+                if (entry.Storage == LooseStorage.Raw2336)
+                {
+                    ReadHostRange(
+                        entry,
+                        (long)sectorIndex * 2336,
+                        destination);
+                }
+                else
+                {
+                    destination.Clear();
+                    destination[2] = destination[6] = 0x08;
+                    ReadHostRange(
+                        entry,
+                        (long)sectorIndex * 2048,
+                        destination.Slice(8, 2048));
+                }
+                return true;
+            }
+
+            ReadLooseSector(entry, sectorIndex, destination.Length)
+                .CopyTo(destination);
+            return true;
+        }
+        return false;
+    }
+
     private byte[] ReadLooseSector(LooseEntry entry, int sectorIndex, int size)
     {
         int lba = entry.Lba + sectorIndex;
@@ -655,6 +725,27 @@ public sealed class CueFs : IDisposable
             stream.ReadExactly(data, 0, available);
         }
         return data;
+    }
+
+    private void ReadHostRange(
+        LooseEntry entry,
+        long offset,
+        Span<byte> destination)
+    {
+        destination.Clear();
+        lock (_looseIoGate)
+        {
+            if (!_looseStreams.TryGetValue(entry.HostPath, out var stream))
+                _looseStreams[entry.HostPath] = stream =
+                    File.OpenRead(entry.HostPath);
+            if (offset >= entry.HostSize)
+                return;
+            stream.Position = entry.HostOffset + offset;
+            int available = checked((int)Math.Min(
+                destination.Length,
+                entry.HostSize - offset));
+            stream.ReadExactly(destination[..available]);
+        }
     }
 
     private static FileNotFoundException MissingLooseAsset(string path) => new(

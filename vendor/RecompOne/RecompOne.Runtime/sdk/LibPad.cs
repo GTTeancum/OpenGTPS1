@@ -11,6 +11,7 @@ public static class LibPad
     const byte Connected = 0x00;
     const byte Disconnected = 0xFF;
     const byte DigitalId = 0x41;
+    const byte AnalogId = 0x73;
     const uint PadStateDiscon = 0;
     const uint PadStateStable = 6;
 
@@ -18,6 +19,10 @@ public static class LibPad
     static uint _buf2;
     static readonly int[] _smallMotorIdx = [0, 0];
     static readonly int[] _largeMotorIdx = [1, 1];
+    static (byte Id, ushort Buttons, byte Rx, byte Ry, byte Lx, byte Ly)
+        _lastP1Trace;
+    static bool _hasP1Trace;
+    static int _lastP1TracePoll = -1000;
 
     public static void PadInitDirect(CpuContext c, IMemory m)
     {
@@ -78,23 +83,46 @@ public static class LibPad
 
     public static void Refresh(IMemory m)
     {
-        if (_buf1 != 0) WritePad(m, _buf1, Controller.State, true,
+        bool analog1 = InputManager.IsPadConnected(0);
+        bool analog2 = InputManager.IsPadConnected(1);
+        if (_buf1 != 0) WritePad(m, _buf1, Controller.State, true, analog1,
             Controller.RightX, Controller.RightY, Controller.LeftX, Controller.LeftY);
-        if (_buf2 != 0) WritePad(m, _buf2, Controller.State2, Controller.Connected2,
+        if (_buf2 != 0) WritePad(m, _buf2, Controller.State2, Controller.Connected2, analog2,
             Controller.RightX2, Controller.RightY2, Controller.LeftX2, Controller.LeftY2);
-        if (TraceInput && (Controller.State != 0xFFFF || Controller.State2 != 0xFFFF))
+        byte id1 = analog1 ? AnalogId : DigitalId;
+        var p1Trace = (
+            id1, Controller.State, Controller.RightX, Controller.RightY,
+            Controller.LeftX, Controller.LeftY);
+        bool identityOrButtonsChanged =
+            !_hasP1Trace || id1 != _lastP1Trace.Id ||
+            Controller.State != _lastP1Trace.Buttons;
+        bool axesChanged = !_hasP1Trace || p1Trace != _lastP1Trace;
+        int tracePoll = InputManager.CurrentPoll;
+        if (TraceInput &&
+            (identityOrButtonsChanged ||
+             (axesChanged && tracePoll - _lastP1TracePoll >= 30)))
+        {
             Console.Error.WriteLine(
-                $"[Input] libpad buffers=0x{_buf1:X8}/0x{_buf2:X8} " +
-                $"p1=0x{Controller.State:X4} p2=0x{Controller.State2:X4}");
+                $"[Input] libpad p1 id=0x{id1:X2} buttons=0x{Controller.State:X4} " +
+                $"rx={Controller.RightX} ry={Controller.RightY} " +
+                $"lx={Controller.LeftX} ly={Controller.LeftY}");
+            _lastP1Trace = p1Trace;
+            _hasP1Trace = true;
+            _lastP1TracePoll = tracePoll;
+        }
     }
 
     static bool IsPort1(uint port) => (port & 0x10u) == 0;
     static int PortIndex(uint port) => IsPort1(port) ? 0 : 1;
 
-    static void WritePad(IMemory m, uint buf, ushort buttons, bool present, byte rx, byte ry, byte lx, byte ly)
+    static void WritePad(
+        IMemory m, uint buf, ushort buttons, bool present, bool analog,
+        byte rx, byte ry, byte lx, byte ly)
     {
         m.WriteU8(buf + 0, present ? Connected    : Disconnected);
-        m.WriteU8(buf + 1, present ? DigitalId    : Disconnected);
+        m.WriteU8(
+            buf + 1,
+            present ? (analog ? AnalogId : DigitalId) : Disconnected);
         m.WriteU8(buf + 2, (byte)(buttons & 0xFF));
         m.WriteU8(buf + 3, (byte)(buttons >> 8));
         m.WriteU8(buf + 4, present ? rx : (byte)0x80);

@@ -10,12 +10,17 @@ bool mute = args.Any(arg =>
     arg.Equals("--mute", StringComparison.OrdinalIgnoreCase));
 bool validateLiveries = args.Any(arg =>
     arg.Equals("--validate-liveries", StringComparison.OrdinalIgnoreCase));
+bool startArcade = args.Any(arg =>
+    arg.Equals("--start-arcade", StringComparison.OrdinalIgnoreCase));
 
 string[] positionalArgs = args.Where(arg =>
     !arg.Equals("--headless", StringComparison.OrdinalIgnoreCase) &&
     !arg.Equals("--mute", StringComparison.OrdinalIgnoreCase) &&
     !arg.Equals(
         "--validate-liveries",
+        StringComparison.OrdinalIgnoreCase) &&
+    !arg.Equals(
+        "--start-arcade",
         StringComparison.OrdinalIgnoreCase)).ToArray();
 if (headless)
 {
@@ -51,7 +56,8 @@ foreach (string variant in new[] { "simulation", "arcade" })
         return 1;
     }
 }
-foreach (string sharedFile in new[] { "GT2.VOL", "MUSIC.DAT" })
+foreach (string sharedFile in new[] {
+    "GT2.VOL", "MUSIC.DAT", "TITLE_EXACT.DAT" })
 {
     if (!File.Exists(Path.Combine(looseRoot, sharedFile)))
     {
@@ -76,7 +82,10 @@ try
 {
     PreloadBundledNative("SDL2.dll");
     var memory = new PSMemory();
-    UnifiedEntry.Run(memory, looseRoot);
+    UnifiedEntry.Run(
+        memory,
+        looseRoot,
+        startArcade ? "arcade" : "simulation");
 }
 catch (Exception exception)
 {

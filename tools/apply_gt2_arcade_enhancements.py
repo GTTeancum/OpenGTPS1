@@ -106,6 +106,202 @@ def apply_frontend_arena() -> None:
     )
 
 
+def apply_renderer_enhancements() -> None:
+    replace_once(
+        OVERLAY0,
+        """        L80014344: ;
+        if (c.S5 != 0u) {
+""",
+        """        L80014344: ;
+        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.GetForcedVehicleLodSelector();
+        if (c.V0 != 0u) {
+            c.S2 = c.V0;
+            goto L80014448;
+        }
+        if (c.S5 != 0u) {
+""",
+        "Arcade maximum vehicle LOD",
+    )
+    replace_once(
+        MAIN,
+        """        c.S4 = m.ReadU32((c.S2 + 0xCu));
+        c.S3 = m.ReadU8(c.S2);
+        c.FP = m.ReadU8((c.S2 + 0x1u));
+""",
+        """        c.S4 = m.ReadU32((c.S2 + 0xCu));
+        c.S3 = m.ReadU8(c.S2);
+        RecompOne.Runtime.Sdk.GT2Compat.TraceVehicleLodSelection(
+            c.S6, c.S2, m);
+        c.FP = m.ReadU8((c.S2 + 0x1u));
+""",
+        "Arcade vehicle LOD and world-capture tracing",
+    )
+    replace_once(
+        MAIN,
+        """        m.WriteU32((c.SP + 0x18u), c.S2);
+        c.S2 = c.A2 + 0u;
+        m.WriteU32((c.SP + 0x24u), c.S5);
+""",
+        """        m.WriteU32((c.SP + 0x18u), c.S2);
+        c.S2 = c.A2 + 0u;
+        RecompOne.Runtime.Sdk.GT2Compat.TraceWheelTransform(
+            c.S6, c.S2, m.ReadU32(c.SP + 0x4Cu), m);
+        m.WriteU32((c.SP + 0x24u), c.S5);
+""",
+        "Arcade wheel transform tracing hook",
+    )
+    replace_once(
+        MAIN,
+        """        L80067704: ;
+        c.RA = m.ReadU32((c.SP + 0x5Cu));
+""",
+        """        L80067704: ;
+        RecompOne.Runtime.WorldCaptureContext.EndObject();
+        c.RA = m.ReadU32((c.SP + 0x5Cu));
+""",
+        "Arcade vehicle world-capture object end",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.A1 = 0x000E0000u;
+        c.A1 = c.A1 | 0x5700u;
+        c.A0 = c.S0 + 0x58u;
+        c.A1 = c.S1 + c.A1;
+        c.A2 = 0x00030000u;
+        m.WriteU32((c.SP + 0x18u), c.RA);
+        c.A2 = c.A2 | 0x8000u;
+""",
+        """        c.A0 = c.S0 + 0x58u;
+        if (RecompOne.Runtime.Sdk.GT2Compat.ExpandedPolygonBuffersEnabled) {
+            // Arcade's merged parameter database owns 0x80200000-0x802FFFFF.
+            // Keep renderer geometry in its own non-overlapping devkit arena.
+            c.A1 = 0x80500000u;
+            c.A2 = 0x00070000u;
+        } else {
+            c.A1 = 0x000E0000u;
+            c.A1 = c.A1 | 0x5700u;
+            c.A1 = c.S1 + c.A1;
+            c.A2 = 0x00030000u;
+            c.A2 = c.A2 | 0x8000u;
+        }
+        m.WriteU32((c.SP + 0x18u), c.RA);
+""",
+        "Arcade expanded polygon buffers",
+    )
+    replace_once(
+        OVERLAY0,
+        """    public static void func_8002009C(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x1080u;
+""",
+        """    public static void func_8002009C(CpuContext c, IMemory m)
+    {
+        RecompOne.Runtime.Sdk.GT2Compat.TraceTrackVisibility(c, m);
+        c.SP = c.SP - 0x1080u;
+""",
+        "Arcade race track visibility tracing",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.FP = 0x00630000u;
+""",
+        """        c.FP =
+            RecompOne.Runtime.Sdk.GT2Compat.GetTrackDrawDistanceLimit();
+""",
+        "Arcade extended radial track distance",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.FP = c.FP | 0xFFFFu;
+        c.V0 = m.ReadU32((c.V0 + 0xA0u));
+        c.S1 = c.SP + 0x10u;
+""",
+        """        c.FP = c.FP | 0xFFFFu;
+        c.V0 = m.ReadU32((c.V0 + 0xA0u));
+        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.GetTrackVisibilityList(
+            m, c.S6, c.V0);
+        c.S1 = c.SP + 0x10u;
+""",
+        "Arcade track visibility and LOD policy",
+    )
+    replace_once(
+        OVERLAY0,
+        """        m.WriteU16((c.S1 + 0xEu), (ushort)c.V1);
+        c.S5 = m.ReadU32((c.SP + 0x1054u));
+""",
+        """        m.WriteU16((c.S1 + 0xEu), (ushort)c.V1);
+        RecompOne.Runtime.WorldCaptureContext.RegisterTrackObject(
+            c.S1,
+            m.ReadU16((c.S2 + 0x2u)) & 0x3FFFu,
+            m.ReadU32((c.S1 + 0x4u)));
+        c.S5 = m.ReadU32((c.SP + 0x1054u));
+""",
+        "Arcade track world-capture identity",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.S0 = m.ReadU32((c.S6 + 0x4u));
+        c.S1 = m.ReadU16((c.S6 + 0xCu));
+""",
+        """        c.S0 = m.ReadU32((c.S6 + 0x4u));
+        RecompOne.Runtime.WorldCaptureContext.BeginTrackObject(c.S6, c.S0);
+        c.S1 = m.ReadU16((c.S6 + 0xCu));
+""",
+        "Arcade track world-capture object begin",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.RA = m.ReadU32((c.SP + 0x107Cu));
+        c.FP = m.ReadU32((c.SP + 0x1078u));
+""",
+        """        RecompOne.Runtime.WorldCaptureContext.EndObject();
+        c.RA = m.ReadU32((c.SP + 0x107Cu));
+        c.FP = m.ReadU32((c.SP + 0x1078u));
+""",
+        "Arcade track world-capture object end",
+    )
+    replace_exact_count(
+        OVERLAY0,
+        """        c.A0 = RecompOne.Runtime.Gte.Read(24);
+        c.V1 = RecompOne.Runtime.Gte.Read(14);
+""",
+        """        c.A0 = RecompOne.Runtime.Gte.Read(24);
+        c.V1 = RecompOne.Runtime.Gte.Read(14);
+        RecompOne.Runtime.Gte.BeginDerivedScreenProjection(
+            m.ReadU32(c.S2 + 0x8u) == 0x31525353u,
+            c.V1);
+""",
+        2,
+        "Arcade auxiliary billboard projection begin hooks",
+    )
+    for label in ("L80020954", "L80020D6C"):
+        replace_once(
+            OVERLAY0,
+            f"""        m.WriteU32((c.At + 0x68u), c.T7);
+        {label}: ;
+""",
+            f"""        m.WriteU32((c.At + 0x68u), c.T7);
+        RecompOne.Runtime.Gte.EndDerivedScreenProjection();
+        {label}: ;
+""",
+            f"Arcade auxiliary billboard projection end hook {label}",
+        )
+    replace_once(
+        OVERLAY2,
+        """        L800203F8: ;
+        c.A0 = m.ReadU32((c.SP + 0x64u));
+""",
+        """        L800203F8: ;
+        if (RecompOne.Runtime.Sdk.GT2Compat.ExtendedReplayTrackDrawDistanceEnabled) {
+            c.S0 = 0x00000001u;
+            goto L800204A0;
+        }
+        c.A0 = m.ReadU32((c.SP + 0x64u));
+""",
+        "Arcade replay track draw distance",
+    )
+
+
 def apply_livery_preview_reload() -> None:
     replace_once(
         OVERLAY2,
@@ -396,6 +592,7 @@ def main() -> int:
         "Expanded Arcade parameter database arena",
     )
     apply_frontend_arena()
+    apply_renderer_enhancements()
     replace_once(
         OVERLAY2,
         """        L800266F4: ;

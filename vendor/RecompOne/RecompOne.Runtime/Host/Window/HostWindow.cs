@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Numerics;
 using ImGuiNET;
 using Silk.NET.Input;
@@ -38,7 +39,39 @@ internal static class HostWindow
     static bool _nativeWorldAvailable;
     static int _nativeWorldWidth;
     static int _nativeWorldHeight;
+    static int _nativeWorldAllocatedWidth;
+    static int _nativeWorldAllocatedHeight;
     static int _nativeWorldInputPoll;
+    static long _nativeWorldFrame;
+    static bool _nativeWorldSynthetic;
+    static bool _nativeWorldRepeated;
+    static bool _nativeWorldTemporalResetBoundary;
+    static bool _nativeWorldWasExpected;
+    static bool _nativeWorldPrebuffering;
+    static bool _nativeRealTimeThrottleWasActive;
+    static bool _nativeInitialPrebufferPending;
+    static int _nativeWorldNonRecentHandoffPolls;
+    static int _nativeWorldPrebufferTarget = NativeWorldPrebufferOutputs;
+    const int NativeWorldPrebufferOutputs = 8;
+    const int NativeWorldInitialPrebufferOutputs = 8;
+    const int NativeWorldHandoffFlushPolls = 10;
+    const int NativeWorldMaxOutputAgePolls = 6;
+    static readonly bool _tracePerformance =
+        Environment.GetEnvironmentVariable("RECOMPONE_TRACE_PERFORMANCE") == "1";
+    static long _nativePerfTimestamp;
+    static int _nativePerfPresents;
+    static int _nativePerfNewFrames;
+    static int _nativePerfActualFrames;
+    static int _nativePerfSyntheticFrames;
+    static int _nativePerfRepeatedFrames;
+    static int _nativePerfCompositorFrames;
+    static int _nativePerfTransitionHolds;
+    static int _nativePerfWorldMissFrames;
+    static long _nativePerfAgeTotal;
+    static int _nativePerfAgeMaximum;
+    static int _nativeRejectedTraceCount;
+    static int _nativePendingTraceCount;
+    static int _nativeDecisionTraceCount;
     static uint _lastDisplayHash;
     static string? _requestedDisplayCapture;
     static string? _pendingPresentationCapture;
@@ -58,9 +91,22 @@ internal static class HostWindow
         .Select(value => int.TryParse(value, out int frame) ? frame : 0)
         .Where(frame => frame > 0)
         .ToHashSet();
+    static readonly HashSet<long> _presentationCaptureSourceFrames =
+        (Environment.GetEnvironmentVariable(
+            "RECOMPONE_PRESENTATION_CAPTURE_SOURCE_FRAMES") ?? "")
+        .Split(',', StringSplitOptions.RemoveEmptyEntries |
+            StringSplitOptions.TrimEntries)
+        .Select(value => long.TryParse(value, out long frame) ? frame : 0)
+        .Where(frame => frame > 0)
+        .ToHashSet();
     static int _presentationFrame;
     static readonly bool _capturePresentation =
         Environment.GetEnvironmentVariable("RECOMPONE_PRESENTATION_CAPTURE") == "1";
+    static readonly bool _disableDisplayCapture =
+        Environment.GetEnvironmentVariable("RECOMPONE_DISABLE_DISPLAY_CAPTURE") == "1";
+    static readonly bool _captureVideo =
+        !string.IsNullOrWhiteSpace(
+            Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_CAPTURE"));
     static readonly bool _exitAfterPresentationCapture =
         Environment.GetEnvironmentVariable(
             "RECOMPONE_EXIT_AFTER_PRESENTATION_CAPTURE") == "1";
@@ -89,9 +135,16 @@ internal static class HostWindow
                 Title = title,
                 IsVisible = _windowVisible,
                 VSync = false,
+                // Keep buffer submission explicit. Hidden/headless sessions
+                // still execute the complete render callback (including
+                // capture and native texture upload) but have no visible
+                // surface to present. Swapping that hidden surface can block
+                // inside DWM/GLFW for seconds and falsely attribute an OS
+                // compositor pause to the game or native renderer.
+                ShouldSwapAutomatically = false,
                 UpdatesPerSecond = 0,
                 FramesPerSecond = 0,
-                WindowState = ConfigManager.View.Fullscreen ? WindowState.Fullscreen : WindowState.Normal,
+                WindowState = ConfigManager.View.Fullscreen ? WindowState.Fullscreen : WindowState.Maximized,
                 API = new GraphicsAPI(ContextAPI.OpenGL, ContextProfile.Core, ContextFlags.Default, new APIVersion(4, 5)),
             };
             _window = Silk.NET.Windowing.Window.Create(options);
@@ -109,13 +162,22 @@ internal static class HostWindow
 
     public static void Present(Gpu? gpu)
     {
+        long traceStart = _tracePerformance
+            ? Stopwatch.GetTimestamp()
+            : 0;
         _gpu = gpu;
         gpu?.CapturePresentedFrame();
+        long afterCapture = _tracePerformance
+            ? Stopwatch.GetTimestamp()
+            : 0;
         if (_headless || _window == null) return;
         try { _window.DoEvents(); }
         catch (Exception e) {
             Console.WriteLine(e.Message);
         }
+        long afterEvents = _tracePerformance
+            ? Stopwatch.GetTimestamp()
+            : 0;
         if (_window.IsClosing)
         {
             Console.Error.WriteLine(
@@ -124,6 +186,9 @@ internal static class HostWindow
             Runtime.TerminateProcess(0);
         }
         InputManager.Poll();
+        long afterInput = _tracePerformance
+            ? Stopwatch.GetTimestamp()
+            : 0;
         if (InputManager.ConsumeTopBarToggle())
         {
             ConfigManager.View.HideTopBar = !ConfigManager.View.HideTopBar;
@@ -135,7 +200,23 @@ internal static class HostWindow
             SetFullscreen(ConfigManager.View.Fullscreen);
             ConfigManager.SaveView(PanelManager.Panels);
         }
-        _window.DoRender();
+        RenderWindow();
+        if (_tracePerformance)
+        {
+            long afterRender = Stopwatch.GetTimestamp();
+            double scale = 1000.0 / Stopwatch.Frequency;
+            if ((afterRender - traceStart) * scale >= 40.0)
+            {
+                Console.Error.WriteLine(
+                    $"[Host-Long-Present] " +
+                    $"poll={InputManager.CurrentPoll} " +
+                    $"captureMs={(afterCapture - traceStart) * scale:F3} " +
+                    $"eventsMs={(afterEvents - afterCapture) * scale:F3} " +
+                    $"inputMs={(afterInput - afterEvents) * scale:F3} " +
+                    $"renderMs={(afterRender - afterInput) * scale:F3} " +
+                    $"totalMs={(afterRender - traceStart) * scale:F3}");
+            }
+        }
     }
 
     internal static void Pump()
@@ -149,7 +230,64 @@ internal static class HostWindow
             Runtime.Shutdown();
             Runtime.TerminateProcess(0);
         }
-        _window.DoRender();
+        RenderWindow();
+    }
+
+    static void RenderWindow()
+    {
+        _window!.DoRender();
+        if (!_windowVisible)
+        {
+            if (!_capturePresentation)
+            {
+                // A telemetry-only headless soak consumes native-world output
+                // in OnRender without issuing GL commands. Finishing an empty
+                // hidden GL stream can still serialize the driver against the
+                // independent D3D11 renderer for hundreds of milliseconds, so
+                // there is deliberately nothing to flush in this mode.
+                return;
+            }
+            // SwapBuffers normally flushes and applies backpressure to the GL
+            // command queue. A hidden soak deliberately has no swap, so finish
+            // the small offscreen presentation explicitly; otherwise queued
+            // GL work accumulates and periodically contends with the native
+            // D3D11 renderer, creating a test-only output starvation spike.
+            long finishStarted = _tracePerformance
+                ? Stopwatch.GetTimestamp()
+                : 0;
+            _gl!.Finish();
+            if (_tracePerformance)
+            {
+                long completed = Stopwatch.GetTimestamp();
+                double elapsedMs =
+                    (completed - finishStarted) * 1000.0 /
+                        Stopwatch.Frequency;
+                if (elapsedMs >= 40.0)
+                {
+                    Console.Error.WriteLine(
+                        $"[Host-Long-Headless-Finish] " +
+                        $"poll={InputManager.CurrentPoll} " +
+                        $"finishMs={elapsedMs:F3}");
+                }
+            }
+            return;
+        }
+        long started = _tracePerformance
+            ? Stopwatch.GetTimestamp()
+            : 0;
+        _window.SwapBuffers();
+        if (_tracePerformance)
+        {
+            long completed = Stopwatch.GetTimestamp();
+            double elapsedMs =
+                (completed - started) * 1000.0 / Stopwatch.Frequency;
+            if (elapsedMs >= 40.0)
+            {
+                Console.Error.WriteLine(
+                    $"[Host-Long-Swap] poll={InputManager.CurrentPoll} " +
+                    $"swapMs={elapsedMs:F3}");
+            }
+        }
     }
 
     public static void Shutdown()
@@ -200,8 +338,20 @@ internal static class HostWindow
 
     internal static void RequestDisplayCapture(string label)
     {
+        if (_disableDisplayCapture)
+            return;
         string sanitized = new string(
             label.Where(ch => char.IsAsciiLetterOrDigit(ch) || ch == '_').ToArray());
+        if (_capturePresentation && Hle.LiveWorldRenderer.Requested)
+        {
+            // Capture the final modern presentation directly. Re-queueing the
+            // same label through the compatibility framebuffer can overwrite
+            // a correct native-world image later, after a world-free
+            // transition, with an intentionally worldless 2D probe.
+            _requestedDisplayCapture = null;
+            _pendingPresentationCapture = sanitized;
+            return;
+        }
         _requestedDisplayCapture = sanitized;
         if (_capturePresentation && Hle.GpuHle.Active)
             _pendingPresentationCapture = sanitized;
@@ -224,12 +374,21 @@ internal static class HostWindow
                 Runtime.TerminateProcess(0);
             }
             InputManager.Poll();
-            _window.DoRender();
+            RenderWindow();
         }
     }
 
     static void OnLoad()
     {
+        // GLFW does not consistently honor an initial Maximized state when a
+        // visible window is created while another desktop application owns
+        // focus. Reassert it after native window creation so the shipping
+        // visible path always starts maximized instead of silently falling
+        // back to the 640x480 minimum client area. Fullscreen remains an
+        // explicit user choice and hidden/headless validation is unaffected.
+        if (_windowVisible && !ConfigManager.View.Fullscreen)
+            _window!.WindowState = WindowState.Maximized;
+
         var input = _window!.CreateInput();
         InputManager.Initialize(input);
 
@@ -246,25 +405,26 @@ internal static class HostWindow
         _presentationRenderer = new PresentationRenderer(_gl);
         _presentationRenderer.Initialize();
 
-        string? hleOverride = Environment.GetEnvironmentVariable("RECOMPONE_GPU_HLE");
-        bool highResolution3D = hleOverride == "1" ||
-            (hleOverride != "0" && ConfigManager.View.HighResolution3D);
-        Hle.GlVram.Scale = highResolution3D ? 4 : 1;
+        // There is no shipping low-resolution/legacy 3D mode. The command
+        // compositor still draws authored 2D menus, videos, HUD, and Results,
+        // while all live race/replay worlds are owned by the native renderer.
+        const bool highResolution3D = true;
+        Hle.GlVram.Scale = 4;
         _glBackend = new Hle.GlBackend(_gl);
         _glBackend.InitGl();
         Hle.GpuHle.Active = highResolution3D;
         Hle.GpuHle.Backend = _glBackend;
         Hle.GpuHle.NativeResolution = false;
         Console.WriteLine(
-            $"[Host] PS1 color dithering={(ConfigManager.View.Ps1Dithering ? "On (fidelity)" : "Off (enhanced default)")}");
+            $"[Host] color dithering={(ConfigManager.View.Ps1Dithering ? "On" : "Off (modern fixed)")}");
         Console.WriteLine(
-            $"[Host] PS1 texture smoothing={(ConfigManager.View.TextureSmoothing ? "On (enhanced default)" : "Off (fidelity)")}");
+            $"[Host] texture smoothing={(ConfigManager.View.TextureSmoothing ? "On (modern fixed)" : "Off")}");
         Console.WriteLine(
-            $"[Host] PS1 texture projection fix={(ConfigManager.View.PerspectiveCorrectTextures ? "On (enhanced default)" : "Off (fidelity)")}");
+            $"[Host] texture projection fix={(ConfigManager.View.PerspectiveCorrectTextures ? "On (modern fixed)" : "Off")}");
         Console.WriteLine(
-            $"[Host] graphics preset={ConfigManager.View.GraphicsPreset} " +
-            $"seams={(ConfigManager.View.StabilizeGeometrySeams ? "Stabilized" : "PS1")} " +
-            $"draw-distance={(ConfigManager.View.ExtendedDrawDistance ? "Extended" : "Stock")} " +
+            $"[Host] graphics preset={ConfigManager.View.GraphicsPreset} modern-only " +
+            $"seams={(ConfigManager.View.StabilizeGeometrySeams ? "Stabilized" : "Disabled")} " +
+            $"draw-distance={(ConfigManager.View.ExtendedDrawDistance ? "Extended" : "Reduced")} " +
             $"LOD={ConfigManager.View.LevelOfDetail}");
         Console.WriteLine(
             $"[Host] native world renderer=" +
@@ -318,14 +478,36 @@ internal static class HostWindow
 
     static void OnRender(double dt)
     {
+        long traceStart = _tracePerformance
+            ? Stopwatch.GetTimestamp()
+            : 0;
         var gl = _gl!;
+        if (!_windowVisible && !_capturePresentation && !_captureVideo &&
+            string.IsNullOrEmpty(_requestedDisplayCapture))
+        {
+            // Silent performance/soak runs need to consume and audit every
+            // modern-world output, but they do not need an invisible OpenGL
+            // upload, ImGui pass, or framebuffer draw. Keep the D3D11 renderer
+            // fully active and measure its real queue while removing the
+            // otherwise test-only cross-API synchronization path.
+            Runtime.RamLog.Tick();
+            if (_gpu is { } headlessGpu)
+                PresentNativeWorld(null, headlessGpu);
+            return;
+        }
         _imgui!.Update((float)dt);
+        long afterImGuiUpdate = _tracePerformance
+            ? Stopwatch.GetTimestamp()
+            : 0;
     
         gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
         var fbDef = _window!.FramebufferSize;
         gl.Viewport(0, 0, (uint)fbDef.X, (uint)fbDef.Y);
         gl.ClearColor(0.08f, 0.08f, 0.08f, 1f);
         gl.Clear(ClearBufferMask.ColorBufferBit);
+        long afterClear = _tracePerformance
+            ? Stopwatch.GetTimestamp()
+            : 0;
 
         Runtime.RamLog.Tick();
         Memory.RamLogger.TrackReads =
@@ -335,11 +517,35 @@ internal static class HostWindow
         var gpu = _gpu;
         if (gpu != null)
         {
+            // A scripted diagnostic may explicitly request the authored VRAM
+            // while the native renderer owns presentation (for example, to
+            // identify a frontend course choice behind a 3D preview). Consume
+            // that one-shot request without changing the visible output path.
+            if (!string.IsNullOrEmpty(_requestedDisplayCapture) &&
+                Hle.GpuHle.Active &&
+                _glBackend is { Ready: true } &&
+                gpu.DisplayEnabled)
+                ProbeHleDisplay(
+                    _glBackend, gpu, gpu.DisplayWidth, gpu.DisplayHeight);
+
             bool nativePresented = PresentNativeWorld(gl, gpu);
             if (nativePresented)
             {
                 // PresentNativeWorld already submitted the completed texture
                 // to the output panel.
+            }
+            else if (gpu.LiveWorldExpected)
+            {
+                // Never expose the legacy 3D world while the modern stream is
+                // warming or unavailable. Menus/videos/results still use the
+                // authored 2D command compositor when no live world is expected.
+                if (_tracePerformance && _nativePendingTraceCount < 3)
+                {
+                    _nativePendingTraceCount++;
+                    Console.Error.WriteLine(
+                        "[Native-Present] modern world pending; " +
+                        "legacy 3D fallback suppressed");
+                }
             }
             else if (
                 Hle.GpuHle.Active &&
@@ -366,6 +572,9 @@ internal static class HostWindow
             if (PanelManager.Get<VramViewerPanel>()?.IsOpen == true)
                 UploadVramTexture(gl, gpu);
         }
+        long afterGpu = _tracePerformance
+            ? Stopwatch.GetTimestamp()
+            : 0;
 
         if (PanelManager.Get<RamMapPanel>()?.IsOpen == true)
         {
@@ -380,9 +589,29 @@ internal static class HostWindow
         PanelManager.DrawPanels();
         MenuRegistry.DrawWindows();
         Modding.ModLoadingPopup.Draw();
+        long afterPanels = _tracePerformance
+            ? Stopwatch.GetTimestamp()
+            : 0;
         gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
         gl.Viewport(0, 0, (uint)fbDef.X, (uint)fbDef.Y);
         _imgui.Render();
+        if (_tracePerformance)
+        {
+            long afterImGuiRender = Stopwatch.GetTimestamp();
+            double scale = 1000.0 / Stopwatch.Frequency;
+            if ((afterImGuiRender - traceStart) * scale >= 40.0)
+            {
+                Console.Error.WriteLine(
+                    $"[Host-Long-Render] " +
+                    $"poll={InputManager.CurrentPoll} " +
+                    $"imguiUpdateMs={(afterImGuiUpdate - traceStart) * scale:F3} " +
+                    $"clearMs={(afterClear - afterImGuiUpdate) * scale:F3} " +
+                    $"gpuMs={(afterGpu - afterClear) * scale:F3} " +
+                    $"panelsMs={(afterPanels - afterGpu) * scale:F3} " +
+                    $"imguiRenderMs={(afterImGuiRender - afterPanels) * scale:F3} " +
+                    $"totalMs={(afterImGuiRender - traceStart) * scale:F3}");
+            }
+        }
     }
 
     static void DrawDockspace()
@@ -469,15 +698,158 @@ internal static class HostWindow
         PresentTexture(gl, _displayTex, w, h, 4f / 3f);
     }
 
-    static bool PresentNativeWorld(GL gl, Gpu gpu)
+    static bool PresentNativeWorld(GL? gl, Gpu gpu)
     {
-        if (!gpu.DisplayEnabled)
+        long traceStart = _tracePerformance
+            ? Stopwatch.GetTimestamp()
+            : 0;
+        bool worldExpected = gpu.LiveWorldExpected;
+        bool worldRecentlySeen = gpu.LiveWorldRecentlySeen;
+        bool worldStarted = worldExpected && !_nativeWorldWasExpected;
+        _nativeWorldWasExpected = worldExpected;
+        bool realTimeThrottleActive = FrameClock.RealTimeThrottleActive;
+        bool realTimeThrottleStarted =
+            realTimeThrottleActive && !_nativeRealTimeThrottleWasActive;
+        _nativeRealTimeThrottleWasActive = realTimeThrottleActive;
+        if (realTimeThrottleStarted)
+            _nativeInitialPrebufferPending = true;
+        if (!worldExpected)
         {
+            _nativeWorldPrebuffering = false;
             _nativeWorldAvailable = false;
+            _nativeWorldTemporalResetBoundary = false;
+            if (worldRecentlySeen)
+                _nativeWorldNonRecentHandoffPolls = 0;
+            else
+            {
+                if (++_nativeWorldNonRecentHandoffPolls >
+                    NativeWorldHandoffFlushPolls)
+                    gpu.DiscardLiveWorldOutputs();
+            }
+            int handoffOutputAge =
+                InputManager.CurrentPoll - _nativeWorldInputPoll;
+            TraceNativeDecision(
+                worldRecentlySeen ? "ownership-gap" : "handoff",
+                worldExpected,
+                worldStarted,
+                realTimeThrottleStarted,
+                _nativeWorldPrebuffering,
+                gpu.LiveWorldOutputCount,
+                handoffOutputAge,
+                false,
+                false);
+            RecordNativePerformance(
+                false,
+                false,
+                false,
+                false,
+                handoffOutputAge,
+                worldExpected);
             return false;
         }
-        if (gpu.TryTakeLiveWorldOutput(out var output))
+        int nonRecentHandoffPolls = _nativeWorldNonRecentHandoffPolls;
+        bool hadFlushedHandoff =
+            nonRecentHandoffPolls > NativeWorldHandoffFlushPolls;
+        _nativeWorldNonRecentHandoffPolls = 0;
+        if (worldStarted && hadFlushedHandoff)
         {
+            gpu.DiscardLiveWorldOutputsBefore(
+                SelectNativeWorldStaleDiscardBeforePoll(
+                    InputManager.CurrentPoll));
+        }
+        if (ShouldStartNativeWorldPrebuffer(
+            worldStarted,
+            realTimeThrottleStarted,
+            worldRecentlySeen,
+            nonRecentHandoffPolls))
+        {
+            _nativeWorldPrebuffering = true;
+            _nativeWorldPrebufferTarget =
+                SelectNativeWorldPrebufferTarget(
+                    _nativeInitialPrebufferPending,
+                    worldStarted,
+                    worldRecentlySeen,
+                    gpu.LiveWorldOutputCount);
+            _nativeInitialPrebufferPending = false;
+        }
+        bool receivedNewFrame = false;
+        bool receivedSyntheticFrame = false;
+        bool receivedRepeatedFrame = false;
+        static void TraceRejectedOutput(
+            in Hle.LiveWorldOutput rejected,
+            int needed)
+        {
+            if (!_tracePerformance || _nativeRejectedTraceCount >= 3)
+                return;
+            _nativeRejectedTraceCount++;
+            Console.Error.WriteLine(
+                $"[Native-Present] rejected output " +
+                $"size={rejected.Width}x{rejected.Height} " +
+                $"needed={needed} capacity={rejected.Pixels.Length} " +
+                $"reserved={rejected.Stats.Reserved} " +
+                $"frame={rejected.Frame} poll={rejected.InputPoll}");
+        }
+        // Prime eight presentations behind the presentation cursor. Native
+        // then continues to publish two chronological, unique images per
+        // authored state while the host consumes two per NTSC interval. The
+        // 100 ms reserve absorbs a dense-pair/scheduler or host-event tail
+        // without
+        // blocking an ordinary vblank, repeating a 30 Hz image, or increasing
+        // the renderer's output-wait cap. Test-only fast-forward deliberately
+        // re-primes when real-time pacing begins; normal play primes only at a
+        // new 3D segment.
+        if (
+            _nativeWorldPrebuffering &&
+            gpu.LiveWorldOutputCount < _nativeWorldPrebufferTarget
+        ) {
+            if (worldStarted)
+                _nativeWorldAvailable = false;
+            int prebufferOutputAge =
+                InputManager.CurrentPoll - _nativeWorldInputPoll;
+            TraceNativeDecision(
+                "prebuffer",
+                worldExpected,
+                worldStarted,
+                realTimeThrottleStarted,
+                _nativeWorldPrebuffering,
+                gpu.LiveWorldOutputCount,
+                prebufferOutputAge,
+                receivedNewFrame,
+                false);
+            RecordNativePerformance(
+                false,
+                false,
+                false,
+                false,
+                prebufferOutputAge,
+                worldExpected,
+                transitionHold: true);
+            return false;
+        }
+        _nativeWorldPrebuffering = false;
+
+        int preTakeOutputAge =
+            InputManager.CurrentPoll - _nativeWorldInputPoll;
+        bool preTakeRecentWorld =
+            _nativeWorldAvailable &&
+            IsNativeWorldOutputAgeEligible(preTakeOutputAge);
+        int outputWaitMilliseconds =
+            SelectNativeWorldOutputWaitMilliseconds(
+                worldExpected,
+                realTimeThrottleActive);
+
+        // GT2 toggles the legacy PS1 display flag while it prepares the next
+        // 30 Hz authored framebuffer. That flag must not blank the independent
+        // native-world stream on the intervening 60 Hz vblank. The recorder's
+        // LiveWorldExpected state and the bounded output age below are the
+        // authoritative transition guards for the modern renderer.
+        if (gpu.TryTakeLiveWorldOutput(
+            out var output,
+            outputWaitMilliseconds))
+        {
+            long afterTake = _tracePerformance
+                ? Stopwatch.GetTimestamp()
+                : 0;
             try
             {
                 int needed = checked(
@@ -488,53 +860,369 @@ internal static class HostWindow
                     needed <= output.Pixels.Length
                 )
                 {
-                    gl.BindTexture(
-                        TextureTarget.Texture2D,
-                        _nativeWorldTex);
-                    gl.TexImage2D<byte>(
-                        TextureTarget.Texture2D,
-                        0,
-                        InternalFormat.Rgba8,
-                        (uint)output.Width,
-                        (uint)output.Height,
-                        0,
-                        PixelFormat.Rgba,
-                        PixelType.UnsignedByte,
-                        output.Pixels.AsSpan(0, needed));
+                    if (gl != null)
+                    {
+                        gl.BindTexture(
+                            TextureTarget.Texture2D,
+                            _nativeWorldTex);
+                        if (
+                            output.Width != _nativeWorldAllocatedWidth ||
+                            output.Height != _nativeWorldAllocatedHeight
+                        )
+                        {
+                            gl.TexImage2D<byte>(
+                                TextureTarget.Texture2D,
+                                0,
+                                InternalFormat.Rgba8,
+                                (uint)output.Width,
+                                (uint)output.Height,
+                                0,
+                                PixelFormat.Rgba,
+                                PixelType.UnsignedByte,
+                                output.Pixels.AsSpan(0, needed));
+                            _nativeWorldAllocatedWidth = output.Width;
+                            _nativeWorldAllocatedHeight = output.Height;
+                        }
+                        else
+                        {
+                            gl.TexSubImage2D<byte>(
+                                TextureTarget.Texture2D,
+                                0,
+                                0,
+                                0,
+                                (uint)output.Width,
+                                (uint)output.Height,
+                                PixelFormat.Rgba,
+                                PixelType.UnsignedByte,
+                                output.Pixels.AsSpan(0, needed));
+                        }
+                    }
                     _nativeWorldWidth = output.Width;
                     _nativeWorldHeight = output.Height;
+                    _nativeWorldFrame = output.Frame;
                     _nativeWorldInputPoll = output.InputPoll;
                     _nativeWorldAvailable = true;
+                    receivedNewFrame = true;
+                    receivedSyntheticFrame =
+                        (output.Stats.Reserved & 1u) != 0;
+                    receivedRepeatedFrame =
+                        (output.Stats.Reserved & 2u) != 0;
+                    _nativeWorldSynthetic = receivedSyntheticFrame;
+                    _nativeWorldRepeated = receivedRepeatedFrame;
+                    _nativeWorldTemporalResetBoundary =
+                        (output.Stats.Reserved & 4u) != 0;
                 }
+                else
+                    TraceRejectedOutput(in output, needed);
             }
             finally
             {
                 gpu.ReturnLiveWorldOutput(output.Pixels);
             }
+            if (_tracePerformance)
+            {
+                long afterUpload = Stopwatch.GetTimestamp();
+                double scale = 1000.0 / Stopwatch.Frequency;
+                if ((afterUpload - traceStart) * scale >= 40.0)
+                {
+                    Console.Error.WriteLine(
+                        $"[Host-Long-Native-Upload] " +
+                        $"poll={InputManager.CurrentPoll} " +
+                        $"takeMs={(afterTake - traceStart) * scale:F3} " +
+                        $"uploadMs={(afterUpload - afterTake) * scale:F3} " +
+                        $"totalMs={(afterUpload - traceStart) * scale:F3}");
+                }
+            }
         }
-        // GT2 renders its 3D scene at 30 Hz while the host presents at
-        // 60 Hz. Reuse the latest native frame for the intervening vblank
-        // instead of alternating native and legacy framebuffers. The short
-        // age bound also prevents a delayed result from lingering after a
-        // transition back to a menu or video.
+        // GT2 authors its 3D scene at 30 Hz while the host presents at 60 Hz.
+        // Reuse the latest native frame for the intervening vblank. Do not
+        // cross-fade whole frames: moving cars then appear twice as translucent
+        // silhouettes. True 60 Hz motion requires geometry-aware interpolation.
+        // The short age bound also prevents a delayed result from lingering
+        // after a transition back to a menu or video.
         int outputAge =
             InputManager.CurrentPoll - _nativeWorldInputPoll;
         bool recentWorld =
             _nativeWorldAvailable &&
-            outputAge >= 0 &&
-            outputAge <= 4;
-        if (!gpu.LiveWorldExpected && !recentWorld)
+            IsNativeWorldOutputAgeEligible(outputAge);
+        bool temporalResetBoundaryHold =
+            ShouldHoldTemporalResetBoundary(
+                worldExpected,
+                receivedNewFrame,
+                recentWorld,
+                _nativeWorldTemporalResetBoundary);
+        bool holdForPendingNativeOutput =
+            ShouldHoldForPendingNativeWorldOutput(
+                worldExpected,
+                receivedNewFrame,
+                recentWorld,
+                gpu.LiveWorldWorkPending,
+                outputAge);
+        // LiveWorldExpected already tolerates GT2's single world-free vblank
+        // between 30 Hz authored states, so midpoint output remains eligible.
+        // Once two world-free presentations hand ownership to the authored 2D
+        // compositor, even a late queued native image must be rejected; a
+        // validated image from the prior segment is still the wrong scene.
+        if (!ShouldPresentNativeWorld(
+                worldExpected,
+                receivedNewFrame,
+                recentWorld,
+                _nativeWorldTemporalResetBoundary))
         {
             _nativeWorldAvailable = false;
+            _nativeWorldTemporalResetBoundary = false;
+            // Never carry a texture across a discontinuous world segment.
+            // In particular, the first Results-car capture arrives after an
+            // authored 2D title sequence; showing the last race/replay image
+            // for its one-vblank native warmup creates a visible stale flash.
+            // Leave the last authored compositor presentation in the output
+            // panel until the first validated image for the new segment lands.
+            TraceNativeDecision(
+                "reject",
+                worldExpected,
+                worldStarted,
+                realTimeThrottleStarted,
+                _nativeWorldPrebuffering,
+                gpu.LiveWorldOutputCount,
+                outputAge,
+                receivedNewFrame,
+                recentWorld);
+            RecordNativePerformance(
+                false,
+                false,
+                false,
+                false,
+                outputAge,
+                worldExpected,
+                transitionHold:
+                    worldStarted ||
+                    holdForPendingNativeOutput ||
+                    temporalResetBoundaryHold);
             return false;
         }
-        PresentTexture(
-            gl,
-            _nativeWorldTex,
-            _nativeWorldWidth,
-            _nativeWorldHeight,
-            4f / 3f);
+        if (gl != null)
+        {
+            PresentTexture(
+                gl,
+                _nativeWorldTex,
+                _nativeWorldWidth,
+                _nativeWorldHeight,
+                4f / 3f);
+        }
+        if (_tracePerformance)
+        {
+            long afterPresentTexture = Stopwatch.GetTimestamp();
+            double scale = 1000.0 / Stopwatch.Frequency;
+            if ((afterPresentTexture - traceStart) * scale >= 40.0)
+            {
+                Console.Error.WriteLine(
+                    $"[Host-Long-Native-Present] " +
+                    $"poll={InputManager.CurrentPoll} " +
+                    $"totalMs={(afterPresentTexture - traceStart) * scale:F3}");
+            }
+        }
+        RecordNativePerformance(
+            true,
+            receivedNewFrame,
+            receivedSyntheticFrame,
+            receivedRepeatedFrame,
+            outputAge,
+            worldExpected);
         return true;
+    }
+
+    static void TraceNativeDecision(
+        string reason,
+        bool worldExpected,
+        bool worldStarted,
+        bool realTimeThrottleStarted,
+        bool prebuffering,
+        int queuedOutputs,
+        int outputAge,
+        bool receivedNewFrame,
+        bool recentWorld)
+    {
+        if (
+            !_tracePerformance ||
+            !FrameClock.RealTimeThrottleActive ||
+            _nativeDecisionTraceCount >= 128)
+            return;
+        _nativeDecisionTraceCount++;
+        Console.Error.WriteLine(
+            $"[Native-Present-Decision] reason={reason} " +
+            $"poll={InputManager.CurrentPoll} " +
+            $"worldExpected={worldExpected} " +
+            $"worldStarted={worldStarted} " +
+            $"throttleStarted={realTimeThrottleStarted} " +
+            $"prebuffering={prebuffering} " +
+            $"queued={queuedOutputs} " +
+            $"available={_nativeWorldAvailable} " +
+            $"outputAge={outputAge} " +
+            $"receivedNew={receivedNewFrame} " +
+            $"recentWorld={recentWorld}");
+    }
+
+    internal static bool ShouldPresentNativeWorld(
+        bool worldExpected,
+        bool receivedNewFrame,
+        bool recentWorld,
+        bool temporalResetBoundary) =>
+        worldExpected &&
+        (receivedNewFrame || (recentWorld && !temporalResetBoundary));
+
+    internal static bool ShouldHoldTemporalResetBoundary(
+        bool worldExpected,
+        bool receivedNewFrame,
+        bool recentWorld,
+        bool temporalResetBoundary) =>
+        worldExpected &&
+        !receivedNewFrame &&
+        recentWorld &&
+        temporalResetBoundary;
+
+    internal static bool IsNativeWorldOutputAgeEligible(int outputAge) =>
+        outputAge >= 0 && outputAge <= NativeWorldMaxOutputAgePolls;
+
+    internal static int SelectNativeWorldOutputWaitMilliseconds(
+        bool worldExpected,
+        bool realTimeThrottleActive) =>
+        worldExpected && realTimeThrottleActive
+            ? Hle.LiveWorldRenderer.OutputReadyWaitMilliseconds
+            : 0;
+
+    internal static int SelectNativeWorldStaleDiscardBeforePoll(
+        int currentPoll) =>
+        currentPoll - NativeWorldMaxOutputAgePolls;
+
+    internal static bool ShouldStartNativeWorldPrebuffer(
+        bool worldStarted,
+        bool realTimeThrottleStarted,
+        bool worldRecentlySeen,
+        int nonRecentHandoffPolls)
+    {
+        if (realTimeThrottleStarted)
+            return true;
+        if (!worldStarted)
+            return false;
+        if (worldRecentlySeen &&
+            nonRecentHandoffPolls <= NativeWorldHandoffFlushPolls)
+            return false;
+        return true;
+    }
+
+    internal static bool ShouldHoldForPendingNativeWorldOutput(
+        bool worldExpected,
+        bool receivedNewFrame,
+        bool recentWorld,
+        bool nativeWorkPending,
+        int outputAge) =>
+        worldExpected &&
+        !receivedNewFrame &&
+        !recentWorld &&
+        nativeWorkPending &&
+        outputAge > NativeWorldMaxOutputAgePolls &&
+        outputAge <= NativeWorldMaxOutputAgePolls + NativeWorldHandoffFlushPolls;
+
+    internal static int SelectNativeWorldPrebufferTarget(
+        bool initialPrebufferPending,
+        bool worldStarted,
+        bool worldRecentlySeen,
+        int queuedOutputs)
+    {
+        if (initialPrebufferPending)
+            return NativeWorldInitialPrebufferOutputs;
+        if (!worldStarted || !worldRecentlySeen)
+            return NativeWorldPrebufferOutputs;
+        return Math.Min(
+            NativeWorldPrebufferOutputs,
+            Math.Max(6, queuedOutputs));
+    }
+
+    static void RecordNativePerformance(
+        bool nativePresented,
+        bool receivedNewFrame,
+        bool receivedSyntheticFrame,
+        bool receivedRepeatedFrame,
+        int outputAge,
+        bool worldExpected,
+        bool transitionHold = false)
+    {
+        if (!_tracePerformance)
+            return;
+        if (!FrameClock.RealTimeThrottleActive)
+        {
+            ResetNativePerformanceCounters();
+            return;
+        }
+        long now = Stopwatch.GetTimestamp();
+        if (_nativePerfTimestamp == 0)
+            _nativePerfTimestamp = now;
+        _nativePerfPresents++;
+        if (nativePresented)
+        {
+            if (receivedNewFrame)
+            {
+                if (receivedRepeatedFrame)
+                    _nativePerfRepeatedFrames++;
+                else
+                {
+                    _nativePerfNewFrames++;
+                    if (receivedSyntheticFrame)
+                        _nativePerfSyntheticFrames++;
+                    else
+                        _nativePerfActualFrames++;
+                }
+            }
+            else
+                _nativePerfRepeatedFrames++;
+            int age = Math.Max(0, outputAge);
+            _nativePerfAgeTotal += age;
+            _nativePerfAgeMaximum = Math.Max(_nativePerfAgeMaximum, age);
+        }
+        else
+        {
+            if (transitionHold)
+                _nativePerfTransitionHolds++;
+            else if (worldExpected)
+                _nativePerfWorldMissFrames++;
+            else
+                _nativePerfCompositorFrames++;
+        }
+        if (_nativePerfPresents < 300)
+            return;
+
+        double seconds = (now - _nativePerfTimestamp) /
+            (double)Stopwatch.Frequency;
+        int nativePresents =
+            _nativePerfNewFrames + _nativePerfRepeatedFrames;
+        Console.Error.WriteLine(
+            $"[Native-Present] hostHz={_nativePerfPresents / seconds:F2} " +
+            $"uniqueHz={_nativePerfNewFrames / seconds:F2} " +
+            $"new={_nativePerfNewFrames} " +
+            $"actual={_nativePerfActualFrames} " +
+            $"synthetic={_nativePerfSyntheticFrames} " +
+            $"repeated={_nativePerfRepeatedFrames} " +
+            $"compositor={_nativePerfCompositorFrames} " +
+            $"worldMiss={_nativePerfWorldMissFrames} " +
+            $"transitionHold={_nativePerfTransitionHolds} " +
+            $"ageAvg={_nativePerfAgeTotal / (double)Math.Max(1, nativePresents):F2} " +
+            $"ageMax={_nativePerfAgeMaximum}");
+        ResetNativePerformanceCounters(now);
+    }
+
+    static void ResetNativePerformanceCounters(long timestamp = 0)
+    {
+        _nativePerfTimestamp = timestamp;
+        _nativePerfPresents = 0;
+        _nativePerfNewFrames = 0;
+        _nativePerfActualFrames = 0;
+        _nativePerfSyntheticFrames = 0;
+        _nativePerfRepeatedFrames = 0;
+        _nativePerfCompositorFrames = 0;
+        _nativePerfTransitionHolds = 0;
+        _nativePerfWorldMissFrames = 0;
+        _nativePerfAgeTotal = 0;
+        _nativePerfAgeMaximum = 0;
     }
 
     static void PresentTexture(GL gl, uint sourceTexture, int sourceWidth, int sourceHeight, float aspect)
@@ -554,12 +1242,25 @@ internal static class HostWindow
             string? capture = _pendingPresentationCapture;
             _pendingPresentationCapture = null;
             ++_presentationFrame;
-            if (_capturePresentation &&
+            bool captureSourceFrame =
+                _presentationCaptureSourceFrames.Contains(_nativeWorldFrame);
+            if (_capturePresentation && captureSourceFrame)
+                capture =
+                    $"source_{_nativeWorldFrame:000000}_" +
+                    (_nativeWorldSynthetic ? "synthetic" : "actual");
+            else if (_capturePresentation &&
                 (_presentationFrame == _presentationCaptureFrame ||
                  _presentationCaptureFrames.Contains(_presentationFrame)))
                 capture = $"frame_{_presentationFrame:000000}";
             texture = _presentationRenderer.Render(sourceTexture, sourceWidth, sourceHeight,
                 output.w, output.h, fxaa, capture);
+            if (!string.IsNullOrEmpty(capture) && sourceTexture == _nativeWorldTex)
+                Console.Error.WriteLine(
+                    $"[Host] native presentation capture={capture} " +
+                    $"sourceFrame={_nativeWorldFrame} " +
+                    $"poll={_nativeWorldInputPoll} " +
+                    $"synthetic={_nativeWorldSynthetic} " +
+                    $"repeated={_nativeWorldRepeated}");
             if (!string.IsNullOrEmpty(capture) && _exitAfterPresentationCapture)
                 Runtime.RequestShutdown();
         }

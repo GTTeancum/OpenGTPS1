@@ -54,8 +54,8 @@ internal static unsafe class Audio
             if (noPhysicalOutput)
             {
                 // A hidden automated run must never touch the user's physical
-                // output device. SDL's dummy backend still consumes the queue,
-                // so timing/starvation diagnostics keep working.
+                // output device. Audio-capture runs still feed this dummy
+                // device; silent renderer soaks leave its mixer inactive.
                 Environment.SetEnvironmentVariable("SDL_AUDIODRIVER", "dummy");
                 Console.Error.WriteLine(
                     "[Host] headless audio backend=dummy (no physical output device)");
@@ -94,18 +94,35 @@ internal static unsafe class Audio
 
             Array.Clear(_sampleBuf);
             OpenCapture();
-            for (int i = 0; i < NumBuffers; i++)
-                QueueCurrentBuffer();
-
-            _running = true;
-            _mixerThread = new Thread(MixerLoop)
+            bool runMixer = !noPhysicalOutput || _capture != null;
+            if (runMixer)
             {
-                IsBackground = true,
-                Name = "spu-mixer",
-                Priority = System.Threading.ThreadPriority.AboveNormal,
-            };
-            _mixerThread.Start();
-            _sdl.PauseAudioDevice(_device, 0);
+                for (int i = 0; i < NumBuffers; i++)
+                    QueueCurrentBuffer();
+
+                _running = true;
+                _mixerThread = new Thread(MixerLoop)
+                {
+                    IsBackground = true,
+                    Name = "spu-mixer",
+                    Priority = System.Threading.ThreadPriority.AboveNormal,
+                };
+                _mixerThread.Start();
+                _sdl.PauseAudioDevice(_device, 0);
+            }
+            else
+            {
+                // A renderer soak is intentionally silent and has no audio
+                // capture consumer. SDL's dummy queued-audio implementation
+                // can spend roughly half of a CPU core mixing samples nobody
+                // can hear, distorting both guest and renderer scheduling.
+                // Keep the verified dummy device open for physical-output
+                // safety, but do not start the SPU sink unless a headless
+                // audio capture explicitly requires it.
+                _sdl.PauseAudioDevice(_device, 1);
+                Console.Error.WriteLine(
+                    "[Host] headless audio mixer inactive (no capture consumer)");
+            }
             Console.Error.WriteLine(
                 $"[Host] SDL audio ready: driver={audioDriver} device={_device} " +
                 $"{obtained.Freq} Hz stereo S16 queue={TargetQueuedBytes} bytes");

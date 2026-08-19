@@ -1,0 +1,17 @@
+# Silent/headless Arcade race soak with late frontend confirmation pulses.
+# The extra CROSS pulses tolerate asynchronous CD/frontend timing changes;
+# once the race starts they are harmless because the native AI owns the car.
+780+4=CROSS
+1380+4=CROSS
+1780+4=CROSS
+2180+4=CROSS
+2580+4=CROSS
+3000+4=CROSS
+3600+4=CROSS
+4200+4=CROSS
+4260+4=CROSS
+4560+4=CROSS
+4860+4=CROSS
+5160+4=CROSS
+5460+4=CROSS
+5760+4=CROSS

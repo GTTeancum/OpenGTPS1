@@ -32,7 +32,7 @@ void put_f32(std::uint8_t* out, float value) {
     put_u32(out, bits);
 }
 
-void put_vertex(
+void put_vertex_base(
     std::uint8_t* out,
     std::int16_t x,
     std::int16_t y,
@@ -54,6 +54,23 @@ void put_vertex(
     put_u32(out + 44, 120U << 16);
     put_u32(out + 48, 256);
     put_u32(out + 52, source_pointer);
+}
+
+void put_vertex(
+    std::uint8_t* out,
+    std::int16_t x,
+    std::int16_t y,
+    std::int16_t z,
+    std::uint32_t source_pointer
+) {
+    put_vertex_base(out, x, y, z, source_pointer);
+    put_u64(out + 56, 0x9000000000000000ULL | source_pointer);
+    put_u16(out + 64, 4096);
+    put_u16(out + 72, 4096);
+    put_u16(out + 80, 4096);
+    put_u32(out + 84, 10);
+    put_u32(out + 88, 20);
+    put_u32(out + 92, 30);
 }
 
 bool write_fixture(const char* path) {
@@ -100,9 +117,77 @@ bool write_fixture(const char* path) {
     put_u16(triangle + 44, 3);
     put_u16(triangle + 46, 4);
     put_u64(triangle + 48, 0x1234);
-    put_vertex(triangle + 56, 1, 2, 3, 0x80001000);
-    put_vertex(triangle + 112, 4, 5, 6, 0x80001014);
-    put_vertex(triangle + 168, 7, 8, 9, 0x80001028);
+    put_u16(triangle + 56, 4096);
+    put_u16(triangle + 64, 4096);
+    put_u16(triangle + 72, 4096);
+    put_u32(triangle + 76, 10);
+    put_u32(triangle + 80, 20);
+    put_u32(triangle + 84, 30);
+    put_vertex(triangle + 88, 1, 2, 3, 0x80001000);
+    put_vertex(triangle + 184, 4, 5, 6, 0x80001014);
+    put_vertex(triangle + 280, 7, 8, 9, 0x80001028);
+
+    std::vector<std::uint16_t> vram(1024U * 512U);
+    std::FILE* file = std::fopen(path, "wb");
+    if (file == nullptr)
+        return false;
+    const bool okay =
+        std::fwrite(bytes.data(), 1, bytes.size(), file) == bytes.size() &&
+        std::fwrite(
+            vram.data(), sizeof(std::uint16_t), vram.size(), file
+        ) == vram.size();
+    std::fclose(file);
+    return okay;
+}
+
+bool write_v5_fixture(const char* path) {
+    constexpr std::size_t prefix_size =
+        opengt::render::world_capture_header_size +
+        opengt::render::world_capture_v5_triangle_stride;
+    std::array<std::uint8_t, prefix_size> bytes{};
+    std::memcpy(bytes.data(), "OGTWCAP\0", 8);
+    put_u32(bytes.data() + 8, 5);
+    put_u32(
+        bytes.data() + 12,
+        opengt::render::world_capture_header_size);
+    put_u64(bytes.data() + 16, 8);
+    put_u32(bytes.data() + 24, 1236);
+    put_u32(bytes.data() + 36, 320);
+    put_u32(bytes.data() + 40, 240);
+    put_u32(bytes.data() + 44, 1);
+    put_u32(
+        bytes.data() + 48,
+        opengt::render::world_capture_v5_triangle_stride);
+    put_u32(bytes.data() + 52, 1024);
+    put_u32(bytes.data() + 56, 512);
+    put_u64(bytes.data() + 60, opengt::render::world_capture_header_size);
+    put_u64(bytes.data() + 68, prefix_size);
+    put_u64(bytes.data() + 76, 1024U * 512U * 2U);
+    put_u32(bytes.data() + 84, 1U << 2);
+    put_u64(bytes.data() + 88, 0x1234);
+    put_u16(bytes.data() + 96, 4096);
+    put_u16(bytes.data() + 104, 4096);
+    put_u16(bytes.data() + 112, 4096);
+    put_u32(bytes.data() + 128, 160U << 16);
+    put_u32(bytes.data() + 132, 120U << 16);
+    put_u32(bytes.data() + 136, 256);
+
+    std::uint8_t* triangle =
+        bytes.data() + opengt::render::world_capture_header_size;
+    put_u32(triangle, 1);
+    put_u32(triangle + 32, 1);
+    put_u32(triangle + 36, 43);
+    put_u32(triangle + 40, 0x80123456);
+    put_u64(triangle + 48, 0x5678);
+    put_u16(triangle + 56, 4096);
+    put_u16(triangle + 64, 4096);
+    put_u16(triangle + 72, 4096);
+    put_u32(triangle + 76, 40);
+    put_u32(triangle + 80, 50);
+    put_u32(triangle + 84, 60);
+    put_vertex_base(triangle + 88, 1, 2, 3, 0x80002000);
+    put_vertex_base(triangle + 144, 4, 5, 6, 0x80002014);
+    put_vertex_base(triangle + 200, 7, 8, 9, 0x80002028);
 
     std::vector<std::uint16_t> vram(1024U * 512U);
     std::FILE* file = std::fopen(path, "wb");
@@ -127,6 +212,7 @@ bool expect(bool value, const char* message) {
 
 int main() {
     const char* path = "opengt_world_capture_test.ogtwcap";
+    const char* v5_path = "opengt_world_capture_v5_test.ogtwcap";
     bool okay = expect(write_fixture(path), "write fixture");
     opengt::render::WorldCaptureHeader header{};
     okay &= expect(
@@ -159,6 +245,15 @@ int main() {
         triangles[0].draw_offset_y == 4,
         "per-draw projection offset");
     okay &= expect(
+        triangles[0].exact_transform_valid &&
+        triangles[0].transform_rotation[0] == 4096 &&
+        triangles[0].transform_rotation[4] == 4096 &&
+        triangles[0].transform_rotation[8] == 4096 &&
+        triangles[0].transform_translation[0] == 10 &&
+        triangles[0].transform_translation[1] == 20 &&
+        triangles[0].transform_translation[2] == 30,
+        "retain exact object transform");
+    okay &= expect(
         vertex.projection_offset_x == (160 << 16) &&
         vertex.projection_offset_y == (120 << 16) &&
         vertex.projection_plane == 256,
@@ -167,10 +262,47 @@ int main() {
         vertex.source_vertex_identity == 0x80001000,
         "source vertex provenance");
     okay &= expect(
+        vertex.exact_transform_valid &&
+        vertex.transform_id == 0x9000000080001000ULL &&
+        vertex.transform_rotation[0] == 4096 &&
+        vertex.transform_rotation[4] == 4096 &&
+        vertex.transform_rotation[8] == 4096 &&
+        vertex.transform_translation[0] == 10 &&
+        vertex.transform_translation[1] == 20 &&
+        vertex.transform_translation[2] == 30,
+        "retain each vertex's exact transform");
+    okay &= expect(
         std::fabs(vertex.world_x - 1.0F) < 0.001F &&
         std::fabs(vertex.world_y - 2.0F) < 0.001F &&
         std::fabs(vertex.world_z - 3.0F) < 0.001F,
         "recover world coordinates");
+
+    okay &= expect(write_v5_fixture(v5_path), "write v5 fixture");
+    std::array<opengt::render::WorldCaptureTriangle, 1> v5_triangles{};
+    okay &= expect(
+        opengt::render::load_world_capture(
+            v5_path, &header,
+            v5_triangles.data(), v5_triangles.size(),
+            vram.data(), vram.size()) ==
+            opengt::render::WorldCaptureReadResult::success,
+        "load v5 capture");
+    okay &= expect(
+        header.version == 5 &&
+        header.triangle_stride ==
+            opengt::render::world_capture_v5_triangle_stride,
+        "retain v5 layout");
+    for (const auto& legacy_vertex : v5_triangles[0].vertices) {
+        okay &= expect(
+            legacy_vertex.exact_transform_valid &&
+            legacy_vertex.transform_id == 0x5678 &&
+            legacy_vertex.transform_rotation[0] == 4096 &&
+            legacy_vertex.transform_rotation[4] == 4096 &&
+            legacy_vertex.transform_rotation[8] == 4096 &&
+            legacy_vertex.transform_translation[0] == 40 &&
+            legacy_vertex.transform_translation[1] == 50 &&
+            legacy_vertex.transform_translation[2] == 60,
+            "propagate v5 command transform to each vertex");
+    }
 
     {
         std::FILE* file = std::fopen(path, "r+b");
@@ -196,6 +328,7 @@ int main() {
     }
 
     std::remove(path);
+    std::remove(v5_path);
     if (!okay)
         return 1;
     std::puts("world capture tests passed");

@@ -377,6 +377,9 @@ public sealed class CdController
         return _fs.ReadSectorData(lba, size);
     }
 
+    public void ReadSectorData(int lba, Span<byte> destination) =>
+        _fs.ReadSectorData(lba, destination);
+
     public int FirstTrackNumber => _fs.FirstTrackNumber;
     public int LastTrackNumber => _fs.LastTrackNumber;
     public int LeadOutLba => _fs.LeadOutLba;

@@ -97,6 +97,14 @@ OVERLAY_EXTRA_FUNCTIONS = {
         "0x800161E8",
         "0x80016258",
     ],
+    # Title overlay callbacks installed in the shared list object's function
+    # table. Option reaches 0x80018574 indirectly, and several branches use
+    # 0x800186D0 as a callable common epilogue. Neither has a direct JAL edge,
+    # so both must remain explicit recompiler roots.
+    1: [
+        "0x80018574",
+        "0x800186D0",
+    ],
 }
 
 

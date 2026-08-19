@@ -25,12 +25,15 @@ OpenGTPS1 0.8beta is a public beta, not a finished 1.0 release.
   are implemented.
 - The distributable runtime uses loose files only; it never needs a mounted or
   adjacent BIN/CUE/CCD/IMG/SUB image after preparation.
-- External OGG music, wrapper-level graphics presets, structured logging, and a
-  deterministic AI-driven test harness are available.
+- External OGG music, fixed modern graphics settings, structured logging, and
+  a deterministic AI-driven test harness are available.
 - The packaged native race/replay renderer provides perspective-correct
   textures, exact road-seam handling, extended draw distance, maximum vehicle
-  LOD, and dithering controls. Original PS1 presentation remains in use for
-  menus, videos, HUD layers, and display transitions.
+  LOD, and geometry-aware 59.94/60 Hz presentation. Provenance-backed 3D never
+  reaches a PS1-era compatibility rasterizer. GT2's authored screen-command
+  compositor remains in use for menus, videos, HUD layers, Results, and
+  world-free transitions; it is the 2D layer of the modern presentation path,
+  not a selectable legacy 3D renderer.
 - Graphics work remains active; visual defects and hardware-specific problems
   may still exist.
 - Resolution and widescreen expansion remain deferred while that renderer
@@ -236,20 +239,17 @@ Default keyboard bindings are:
 Bindings, display, audio, and graphics options are available in the wrapper
 menus.
 
-## Graphics presets
+## Graphics
 
-Resolution and fullscreen are separate from the quality preset.
+OpenGTPS1 has one modern 3D path. It always uses 4x source rendering,
+perspective-correct textures, stabilized authored topology, complete authored
+draw distance, maximum track/scenery and vehicle LOD, smoothed sampling, and no
+PS1 color dithering. Old `PS1 Quality`, `Custom`, stock-distance/LOD, affine,
+and native-renderer-disable configuration values are migrated to that fixed
+contract and cannot reactivate a compatibility world renderer.
 
-- **PS1 Quality** uses affine texture projection, original visibility and
-  vehicle LOD behavior, no seam stabilization, and dithering.
-- **Enhanced** enables perspective-correct projection, seam stabilization,
-  extended track visibility, maximum vehicle LOD, and disables dithering.
-- **Custom** exposes projection, seam stabilization, draw distance, vehicle
-  LOD, and dithering as independent settings.
-
-These settings describe the current compatibility renderer. The native
-renderer roadmap keeps the same wrapper-facing controls while moving geometry,
-lighting, depth, and material work into portable C++ backends.
+Output resolution, fullscreen/window state, and presentation antialiasing are
+wrapper settings; they do not reduce world geometry or reinstate PS1 rendering.
 
 ## External music
 

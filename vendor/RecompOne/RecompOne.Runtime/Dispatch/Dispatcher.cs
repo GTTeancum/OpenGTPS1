@@ -16,6 +16,31 @@ public static class Dispatcher
     static readonly Dictionary<uint, (uint Base, uint Size, uint Delta)> _objectOwners = [];
     static readonly List<(IOverlay Overlay, uint Delta)> _relocatedImages = [];
     private static IOverlay? _pending;
+    [ThreadStatic]
+    static bool _allocationScope;
+    static int _allocationScopeSamples;
+    static readonly Dictionary<uint, (long Calls, long Bytes)>
+        _allocationScopeByAddress = [];
+
+    internal static void BeginAllocationScope() => _allocationScope = true;
+
+    internal static void EndAllocationScope()
+    {
+        _allocationScope = false;
+        if (++_allocationScopeSamples < 300)
+            return;
+        string top = string.Join(
+            ',',
+            _allocationScopeByAddress
+                .OrderByDescending(entry => entry.Value.Bytes)
+                .Take(8)
+                .Select(entry =>
+                    $"0x{entry.Key:X8}:{entry.Value.Calls}/" +
+                    $"{entry.Value.Bytes / 1024.0:F0}KiB"));
+        Console.Error.WriteLine($"[PERF-DISPATCH] top=[{top}]");
+        _allocationScopeSamples = 0;
+        _allocationScopeByAddress.Clear();
+    }
     public static void Register(string name, IOverlay overlay)
     {
         _registry[name] = overlay;
@@ -274,6 +299,12 @@ public static class Dispatcher
 
     public static void Call(CpuContext c, IMemory m, uint addr)
     {
+        uint measuredAddress = addr;
+        long allocatedBefore = _allocationScope
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : 0;
+        try
+        {
         Sdk.GT2Compat.TraceRaceSchedulerDispatch(c, m, addr);
         if (BiosKernel.TryDispatch(c, m, addr)) return;
         if (_hostFunctions.TryGetValue(addr, out var hostFunction))
@@ -349,6 +380,20 @@ public static class Dispatcher
             }
         }
         fn(c, callMemory);
+        }
+        finally
+        {
+            if (_allocationScope)
+            {
+                long allocated =
+                    GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                _allocationScopeByAddress.TryGetValue(
+                    measuredAddress,
+                    out var sample);
+                _allocationScopeByAddress[measuredAddress] =
+                    (sample.Calls + 1, sample.Bytes + allocated);
+            }
+        }
     }
 
     static void TryLoadRelocatedOverlay(IMemory m, uint addr)

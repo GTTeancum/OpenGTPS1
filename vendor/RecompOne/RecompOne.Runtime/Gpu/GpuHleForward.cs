@@ -11,11 +11,124 @@ public sealed partial class Gpu
     readonly LiveWorldFrameRecorder _liveWorldCapture;
     long _projectedCaptureFrame;
     bool _liveWorldExpected;
+    int _liveWorldLastSeenPoll = int.MinValue;
+    int _liveWorldFreePresentationCount;
     bool _liveVramReported;
     bool _liveVramInitialized;
     long _mirroredUploadWords;
     long _mirroredFillWords;
     long _mirroredCopyWords;
+    readonly bool _traceScreenEffectPrimitives =
+        string.Equals(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_SCREEN_EFFECT_PRIMITIVES"),
+            "1",
+            StringComparison.Ordinal);
+    readonly int _traceScreenEffectStartPoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_SCREEN_EFFECT_START_POLL"),
+            out int traceScreenEffectStartPoll)
+            ? traceScreenEffectStartPoll
+            : 0;
+    readonly int _traceScreenEffectEndPoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_SCREEN_EFFECT_END_POLL"),
+            out int traceScreenEffectEndPoll)
+            ? traceScreenEffectEndPoll
+            : int.MaxValue;
+    readonly int _traceScreenEffectMinX =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_SCREEN_EFFECT_MIN_X"),
+            out int traceScreenEffectMinX)
+            ? traceScreenEffectMinX
+            : int.MinValue;
+    readonly int _traceScreenEffectMaxX =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_SCREEN_EFFECT_MAX_X"),
+            out int traceScreenEffectMaxX)
+            ? traceScreenEffectMaxX
+            : int.MaxValue;
+    readonly int _traceScreenEffectMinY =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_SCREEN_EFFECT_MIN_Y"),
+            out int traceScreenEffectMinY)
+            ? traceScreenEffectMinY
+            : int.MinValue;
+    readonly int _traceScreenEffectMaxY =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_SCREEN_EFFECT_MAX_Y"),
+            out int traceScreenEffectMaxY)
+            ? traceScreenEffectMaxY
+            : int.MaxValue;
+    readonly int _traceScreenEffectMinWidth =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_SCREEN_EFFECT_MIN_WIDTH"),
+            out int traceScreenEffectMinWidth)
+            ? Math.Max(1, traceScreenEffectMinWidth)
+            : 1;
+    readonly int _traceScreenEffectMinHeight =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_SCREEN_EFFECT_MIN_HEIGHT"),
+            out int traceScreenEffectMinHeight)
+            ? Math.Max(1, traceScreenEffectMinHeight)
+            : 1;
+    readonly int _traceScreenEffectMaxWidth =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_SCREEN_EFFECT_MAX_WIDTH"),
+            out int traceScreenEffectMaxWidth)
+            ? Math.Max(1, traceScreenEffectMaxWidth)
+            : 24;
+    readonly int _traceScreenEffectMaxHeight =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_SCREEN_EFFECT_MAX_HEIGHT"),
+            out int traceScreenEffectMaxHeight)
+            ? Math.Max(1, traceScreenEffectMaxHeight)
+            : 24;
+    readonly string _traceScreenEffectWorldFilter =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_TRACE_SCREEN_EFFECT_WORLD_FILTER") ?? string.Empty;
+    readonly string _traceScreenEffectTextureFilter =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_TRACE_SCREEN_EFFECT_TEXTURE_FILTER") ?? string.Empty;
+    readonly int _traceScreenEffectTPage =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_SCREEN_EFFECT_TPAGE"),
+            out int traceScreenEffectTPage)
+            ? traceScreenEffectTPage
+            : -1;
+    readonly int _traceScreenEffectClut =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_SCREEN_EFFECT_CLUT"),
+            out int traceScreenEffectClut)
+            ? traceScreenEffectClut
+            : -1;
+    readonly bool _traceScreenEffectPositions =
+        string.Equals(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_SCREEN_EFFECT_POSITIONS"),
+            "1",
+            StringComparison.Ordinal);
+    readonly bool _traceScreenEffectNewAfterBaseline =
+        string.Equals(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_SCREEN_EFFECT_NEW_AFTER_BASELINE"),
+            "1",
+            StringComparison.Ordinal);
+    readonly HashSet<string> _screenEffectBaselineSignatures = new();
+    readonly HashSet<string> _screenEffectNewPacketSignatures = new();
+    readonly HashSet<string> _screenEffectPrimitiveSignatures = new();
 
     public Gpu()
     {
@@ -61,7 +174,7 @@ public sealed partial class Gpu
         be.DrawTri(HV(a), HV(b), HV(c), PrimOf(tex, semi, raw, clut, gouraud));
     }
 
-    void CaptureTri(
+    bool CaptureTri(
         in Vert a,
         in Vert b,
         in Vert c,
@@ -78,17 +191,59 @@ public sealed partial class Gpu
         CaptureHleTri(in ha, in hb, in hc, in flags);
         bool fileWorldCapture = _worldCapture.Enabled;
         bool liveWorldCapture = _liveWorldCapture.Enabled;
-        if (fileWorldCapture || liveWorldCapture)
+        bool inspectWorldProvenance =
+            fileWorldCapture ||
+            liveWorldCapture ||
+            LiveWorldRenderer.Requested;
+        GteProjectionOrigin originA = default;
+        GteProjectionOrigin originB = default;
+        GteProjectionOrigin originC = default;
+        if (inspectWorldProvenance)
         {
             Gte.TryGetPacketOrigin(
                 a.SourceAddress,
-                out GteProjectionOrigin originA);
+                a.X - _drawOffsetX,
+                a.Y - _drawOffsetY,
+                out originA);
             Gte.TryGetPacketOrigin(
                 b.SourceAddress,
-                out GteProjectionOrigin originB);
+                b.X - _drawOffsetX,
+                b.Y - _drawOffsetY,
+                out originB);
             Gte.TryGetPacketOrigin(
                 c.SourceAddress,
-                out GteProjectionOrigin originC);
+                c.X - _drawOffsetX,
+                c.Y - _drawOffsetY,
+                out originC);
+        }
+        bool containsWorldProvenance =
+            originA.Valid || originB.Valid || originC.Valid;
+        if (_traceScreenEffectPrimitives &&
+            (!string.Equals(
+                 _traceScreenEffectTextureFilter,
+                 "untextured",
+                 StringComparison.OrdinalIgnoreCase) ||
+             !flags.Textured) &&
+            (!string.Equals(
+                 _traceScreenEffectTextureFilter,
+                 "textured",
+                 StringComparison.OrdinalIgnoreCase) ||
+             flags.Textured))
+        {
+            TraceScreenEffectPrimitive(
+                in ha,
+                in hb,
+                in hc,
+                in flags,
+                in originA,
+                in originB,
+                in originC,
+                a.SourceAddress,
+                b.SourceAddress,
+                c.SourceAddress);
+        }
+        if (fileWorldCapture || liveWorldCapture)
+        {
             var environment = CurEnv();
             if (fileWorldCapture)
             {
@@ -134,7 +289,127 @@ public sealed partial class Gpu
                 }
             }
         }
+        // On the Windows shipping path, provenance-backed 3D is native-only.
+        // Return the classification even when the native worker has failed or
+        // is stopping so neither the GL-HLE nor software compatibility
+        // rasterizer can silently reappear as a world-renderer fallback.
+        return containsWorldProvenance;
     }
+
+    void TraceScreenEffectPrimitive(
+        in HleVertex a,
+        in HleVertex b,
+        in HleVertex c,
+        in PrimFlags flags,
+        in GteProjectionOrigin originA,
+        in GteProjectionOrigin originB,
+        in GteProjectionOrigin originC,
+        uint sourceA,
+        uint sourceB,
+        uint sourceC)
+    {
+        if (Host.InputManager.CurrentPoll < _traceScreenEffectStartPoll ||
+            Host.InputManager.CurrentPoll > _traceScreenEffectEndPoll)
+            return;
+        if ((_traceScreenEffectTPage >= 0 &&
+             flags.TPage != _traceScreenEffectTPage) ||
+            (_traceScreenEffectClut >= 0 &&
+             flags.Clut != _traceScreenEffectClut))
+            return;
+        float lowX = Math.Min(a.X, Math.Min(b.X, c.X));
+        float highX = Math.Max(a.X, Math.Max(b.X, c.X));
+        float lowY = Math.Min(a.Y, Math.Min(b.Y, c.Y));
+        float highY = Math.Max(a.Y, Math.Max(b.Y, c.Y));
+        float width = highX - lowX;
+        float height = highY - lowY;
+        // Effects assembled around a projected world point arrive without
+        // per-vertex GTE provenance. Restrict this opt-in diagnostic to small
+        // textured gameplay primitives, excluding the outer HUD bands.
+        if (width < _traceScreenEffectMinWidth ||
+            height < _traceScreenEffectMinHeight ||
+            width > _traceScreenEffectMaxWidth ||
+            height > _traceScreenEffectMaxHeight ||
+            highX < 24 || lowX > 296 || highY < 36 || lowY > 218 ||
+            highX < _traceScreenEffectMinX ||
+            lowX > _traceScreenEffectMaxX ||
+            highY < _traceScreenEffectMinY ||
+            lowY > _traceScreenEffectMaxY)
+        {
+            return;
+        }
+        int lowU = Math.Min(a.U, Math.Min(b.U, c.U));
+        int highU = Math.Max(a.U, Math.Max(b.U, c.U));
+        int lowV = Math.Min(a.V, Math.Min(b.V, c.V));
+        int highV = Math.Max(a.V, Math.Max(b.V, c.V));
+        GteProjectionOrigin origin = originA.Valid
+            ? originA
+            : (originB.Valid ? originB : originC);
+        if (string.Equals(
+                _traceScreenEffectWorldFilter,
+                "unknown",
+                StringComparison.OrdinalIgnoreCase) &&
+            origin.Valid && origin.Object.Kind != WorldObjectKind.Unknown)
+        {
+            return;
+        }
+        if (string.Equals(
+                _traceScreenEffectWorldFilter,
+                "vehicle",
+                StringComparison.OrdinalIgnoreCase) &&
+            (!origin.Valid || origin.Object.Kind != WorldObjectKind.Vehicle))
+        {
+            return;
+        }
+        string provenance = origin.Valid
+            ? $"world={origin.Object.Kind}/0x{origin.Object.StableId:X8}/" +
+                $"0x{origin.Object.ModelPointer:X8}"
+            : "world=none";
+        string packetSignature =
+            $"tex={flags.Textured} uv={lowU},{lowV}-{highU},{highV} " +
+            $"tpage=0x{flags.TPage:X4} clut=0x{flags.Clut:X4} " +
+            $"semi={flags.SemiTrans} raw={flags.RawTexture} " +
+            $"gouraud={flags.Gouraud} rgb={a.R},{a.G},{a.B} " +
+            provenance;
+        if (_traceScreenEffectNewAfterBaseline)
+        {
+            if (Host.InputManager.CurrentPoll <
+                _traceScreenEffectStartPoll + 300)
+            {
+                _screenEffectBaselineSignatures.Add(packetSignature);
+                return;
+            }
+            if (_screenEffectBaselineSignatures.Contains(packetSignature) ||
+                !_screenEffectNewPacketSignatures.Add(packetSignature))
+            {
+                return;
+            }
+        }
+        string signature =
+            $"size={width:F2}x{height:F2} tex={flags.Textured} " +
+            $"uv={lowU},{lowV}-" +
+            $"{highU},{highV} tpage=0x{flags.TPage:X4} " +
+            $"clut=0x{flags.Clut:X4} semi={flags.SemiTrans} " +
+            $"raw={flags.RawTexture} gouraud={flags.Gouraud} " +
+            $"rgb={a.R},{a.G},{a.B} {provenance}" +
+            (_traceScreenEffectPositions
+                ? $" xy={lowX:F2},{lowY:F2}-{highX:F2},{highY:F2}"
+                : string.Empty);
+        int traceLimit = _traceScreenEffectPositions ? 65536 : 4096;
+        if (_screenEffectPrimitiveSignatures.Count >= traceLimit ||
+            !_screenEffectPrimitiveSignatures.Add(signature))
+        {
+            return;
+        }
+        Console.Error.WriteLine(
+            $"[Screen-Effect] poll={Host.InputManager.CurrentPoll} " +
+            $"xy={lowX:F2},{lowY:F2}-{highX:F2},{highY:F2} " +
+            $"src=0x{sourceA:X8},0x{sourceB:X8},0x{sourceC:X8} " +
+            signature);
+    }
+
+    internal static bool ShouldRasterizeCompatibilityTriangle(
+        bool containsWorldProvenance) =>
+        !LiveWorldRenderer.Requested || !containsWorldProvenance;
 
     void CaptureHleTri(
         in HleVertex a,
@@ -267,8 +542,16 @@ public sealed partial class Gpu
                 Host.InputManager.CurrentPoll,
                 in display,
                 Shadow.Pixels);
-            _liveWorldExpected =
-                _liveWorldCapture.LastPresentedFrameWasWorld;
+            int inputPoll = Host.InputManager.CurrentPoll;
+            if (_liveWorldCapture.LastPresentedFrameContainedWorld)
+            {
+                _liveWorldLastSeenPoll = inputPoll;
+                _liveWorldFreePresentationCount = 0;
+            }
+            else
+                _liveWorldFreePresentationCount++;
+            long worldAge = (long)inputPoll - _liveWorldLastSeenPoll;
+            _liveWorldExpected = worldAge >= 0 && worldAge <= 6;
             if (
                 !_liveVramReported &&
                 _liveWorldExpected &&
@@ -294,14 +577,42 @@ public sealed partial class Gpu
         }
     }
 
-    internal bool LiveWorldExpected => _liveWorldExpected;
+    // GPU presentation packets are not scene-boundary evidence. SSR11 can
+    // emit several world-free packets while retaining the same 3D segment,
+    // especially around dense scenery. The recorder's bounded world age is
+    // the authoritative ownership signal; it still expires after six polls
+    // when a menu, video, or Results composition actually takes over.
+    internal bool LiveWorldExpected =>
+        IsLiveWorldExpectedFromHistory(
+            _liveWorldExpected,
+            _liveWorldFreePresentationCount);
+
+    internal static bool IsLiveWorldExpectedFromHistory(
+        bool recentlyContainedWorld,
+        int worldFreePresentationCount) =>
+        recentlyContainedWorld;
+
+    internal bool LiveWorldRecentlySeen => _liveWorldExpected;
 
     internal GteProjectionOrigin LiveWorldMainProjection =>
         _liveWorldCapture.MainProjection;
 
     internal bool TryTakeLiveWorldOutput(
-        out LiveWorldOutput output) =>
-        _liveWorldRenderer.TryTakeOutput(out output);
+        out LiveWorldOutput output,
+        int waitMilliseconds = 0) =>
+        _liveWorldRenderer.TryTakeOutput(out output, waitMilliseconds);
+
+    internal int LiveWorldOutputCount =>
+        _liveWorldRenderer.PublishedOutputCount;
+
+    internal bool LiveWorldWorkPending =>
+        _liveWorldRenderer.HasPendingOrActiveWork;
+
+    internal void DiscardLiveWorldOutputs() =>
+        _liveWorldRenderer.DiscardPublishedOutputs();
+
+    internal void DiscardLiveWorldOutputsBefore(int minimumInputPoll) =>
+        _liveWorldRenderer.DiscardPublishedOutputsBefore(minimumInputPoll);
 
     internal void ReturnLiveWorldOutput(byte[] pixels) =>
         _liveWorldRenderer.ReturnOutput(pixels);

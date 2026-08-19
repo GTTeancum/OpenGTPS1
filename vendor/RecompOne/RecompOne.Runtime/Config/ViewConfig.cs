@@ -46,52 +46,46 @@ public class ViewConfig
 
     public bool HighResolution3D
     {
-        get => GetBool("HighResolution3D", true);
-        set => SetBool("HighResolution3D", value);
+        get => true;
+        set => SetBool("HighResolution3D", true);
     }
 
     public bool Ps1Dithering
     {
-        get => GetBool("Ps1Dithering", false);
-        set => SetBool("Ps1Dithering", value);
+        get => false;
+        set => SetBool("Ps1Dithering", false);
     }
 
     public bool TextureSmoothing
     {
-        get => GetBool("TextureSmoothing", true);
-        set => SetBool("TextureSmoothing", value);
+        get => true;
+        set => SetBool("TextureSmoothing", true);
     }
 
     public bool PerspectiveCorrectTextures
     {
-        get => GetBool("PerspectiveCorrectTextures", true);
+        get => true;
         set
         {
-            SetBool("PerspectiveCorrectTextures", value);
-            Gte.SetProjectionTrackingEnabled(
-                value || StabilizeGeometrySeams ||
-                Hle.LiveWorldRenderer.Requested ||
-                ProjectionTrace.Enabled);
+            SetBool("PerspectiveCorrectTextures", true);
+            Gte.SetProjectionTrackingEnabled(true);
         }
     }
 
     public bool StabilizeGeometrySeams
     {
-        get => GetBool("StabilizeGeometrySeams", true);
+        get => true;
         set
         {
-            SetBool("StabilizeGeometrySeams", value);
-            Gte.SetProjectionTrackingEnabled(
-                value || PerspectiveCorrectTextures ||
-                Hle.LiveWorldRenderer.Requested ||
-                ProjectionTrace.Enabled);
+            SetBool("StabilizeGeometrySeams", true);
+            Gte.SetProjectionTrackingEnabled(true);
         }
     }
 
     public bool ExtendedDrawDistance
     {
-        get => GetBool("ExtendedDrawDistance", true);
-        set => SetBool("ExtendedDrawDistance", value);
+        get => true;
+        set => SetBool("ExtendedDrawDistance", true);
     }
 
     public string OutputResolution
@@ -108,49 +102,30 @@ public class ViewConfig
 
     public string LevelOfDetail
     {
-        get => GetString("LevelOfDetail", "Maximum");
-        set => SetString("LevelOfDetail", value);
+        get => "Maximum";
+        set => SetString("LevelOfDetail", "Maximum");
     }
 
     public string GraphicsPreset
     {
-        get => GetString("GraphicsPreset", "Enhanced");
-        set => SetString("GraphicsPreset", value);
+        get => "Enhanced";
+        set => SetString("GraphicsPreset", "Enhanced");
     }
 
-    public void MarkGraphicsCustom() => GraphicsPreset = "Custom";
-
-    public void ApplyGraphicsPreset(string preset)
+    public void ApplyGraphicsPreset(string _)
     {
-        bool ps1Quality = preset.Equals(
-            "PS1 Quality", StringComparison.OrdinalIgnoreCase);
-
-        GraphicsPreset = ps1Quality ? "PS1 Quality" : "Enhanced";
-        PerspectiveCorrectTextures = !ps1Quality;
-        StabilizeGeometrySeams = !ps1Quality;
-        ExtendedDrawDistance = !ps1Quality;
-        LevelOfDetail = ps1Quality ? "Stock" : "Maximum";
-        Ps1Dithering = ps1Quality;
+        // The PC port ships one modern renderer configuration. Preserve the
+        // serialized keys for forward compatibility, but migrate every legacy,
+        // custom, or contradictory file to the proven full-quality contract.
+        GraphicsPreset = "Enhanced";
+        HighResolution3D = true;
+        TextureSmoothing = true;
+        PerspectiveCorrectTextures = true;
+        StabilizeGeometrySeams = true;
+        ExtendedDrawDistance = true;
+        LevelOfDetail = "Maximum";
+        Ps1Dithering = false;
     }
 
-    public void EnforceGraphicsPreset()
-    {
-        if (GraphicsPreset.Equals(
-                "PS1 Quality", StringComparison.OrdinalIgnoreCase))
-        {
-            ApplyGraphicsPreset("PS1 Quality");
-        }
-        else if (GraphicsPreset.Equals(
-                     "Enhanced", StringComparison.OrdinalIgnoreCase))
-        {
-            ApplyGraphicsPreset("Enhanced");
-        }
-        else
-        {
-            // Unknown or individually edited configurations are Custom. Keep
-            // their individual values intact instead of silently selecting a
-            // named preset whose advertised settings do not match.
-            GraphicsPreset = "Custom";
-        }
-    }
+    public void EnforceGraphicsPreset() => ApplyGraphicsPreset("Enhanced");
 }

@@ -5,12 +5,14 @@
 
 namespace opengt::render {
 
-constexpr std::uint32_t world_capture_version = 4;
+constexpr std::uint32_t world_capture_version = 6;
 constexpr std::uint32_t world_capture_header_size = 160;
 constexpr std::uint32_t world_capture_v1_header_size = 128;
 constexpr std::uint32_t world_capture_legacy_triangle_stride = 176;
 constexpr std::uint32_t world_capture_v3_triangle_stride = 212;
-constexpr std::uint32_t world_capture_triangle_stride = 224;
+constexpr std::uint32_t world_capture_v4_triangle_stride = 224;
+constexpr std::uint32_t world_capture_v5_triangle_stride = 256;
+constexpr std::uint32_t world_capture_triangle_stride = 384;
 constexpr std::uint32_t world_capture_max_triangles = 262144;
 
 struct WorldCaptureHeader {
@@ -50,6 +52,7 @@ struct WorldCaptureVertex {
     std::uint8_t g;
     std::uint8_t b;
     bool world_valid;
+    bool screen_offset_anchor;
     std::int16_t model_x;
     std::int16_t model_y;
     std::int16_t model_z;
@@ -60,6 +63,10 @@ struct WorldCaptureVertex {
     std::int32_t projection_offset_y;
     std::uint32_t projection_plane;
     std::uint32_t source_vertex_identity;
+    std::uint64_t transform_id;
+    std::int16_t transform_rotation[9];
+    std::int32_t transform_translation[3];
+    bool exact_transform_valid;
     float world_x;
     float world_y;
     float world_z;
@@ -85,6 +92,9 @@ struct WorldCaptureTriangle {
     std::int16_t draw_offset_x;
     std::int16_t draw_offset_y;
     std::uint64_t transform_id;
+    std::int16_t transform_rotation[9];
+    std::int32_t transform_translation[3];
+    bool exact_transform_valid;
     WorldCaptureVertex vertices[3];
 };
 

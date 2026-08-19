@@ -6,8 +6,112 @@ visible and repeatable in the packaged build at:
 
 `C:\Programming\GitHub\OpenGTPS1\OpenGTPS1\GranTurismo2PC.exe`
 
+## Repository and test-artifact hygiene
+
+- [ ] Treat cleanup as a required final step of every test, capture, profiling,
+  conversion, and smoke-test batch. Keep only the newest passing evidence, the
+  newest actionable failure reproduction, user-requested deliverables, and
+  compact validation logs. Delete superseded raw frame dumps, videos, traces,
+  extracted smoke installs, RAM dumps, and rebuildable `bin`/`obj` caches before
+  ending the task. Report repository size and free disk space after cleanup;
+  do not allow generated `artifacts` and duplicate `work` trees to accumulate
+  without an explicit retention reason.
+
+## Unified frontend and mode integration
+
+- [x] Replace the temporary two-line title treatment with Sony's complete
+  retail `arcade/arc_topmenu_usa` 2x2 menu. Preserve its GT2 artwork and native
+  selected/unselected labels for Arcade Mode, Gran Turismo, Replay Theater,
+  and Option; do not synthesize replacement text.
+  - All four selection states are rendered at the archive's native 512x480
+    BGR555 resolution with the original unscaled 140x28 label rectangles.
+    Automated comparisons report zero differing pixels for all four states;
+    all four original destinations also pass. Proof is under
+    `artifacts/retail-arc-topmenu-usa/exact-live`.
+- [x] Make the main-menu `Arcade Mode` entry transition seamlessly into the
+  first Arcade Mode menu. It must not visibly reboot, repeat the Arcade disc's
+  boot/copyright/title sequence, or present a disc-switch boundary. The native
+  Arcade executable and data may remain the implementation behind the handoff,
+  but the player-facing result must behave like one shipped game.
+  - The transition recreates the Arcade program's exact prologue state and
+    enters native function `0x8005D650`, matching the stock disc's `START GAME`
+    destination. Overlay 1 is required and boot/title overlay 5 is forbidden by
+    automated assertions.
+  - The current 9,000-poll silent/headless proof at
+    `artifacts/retail-arc-topmenu-usa-ssr11-final` starts at the unified title,
+    reaches the original Arcade course menus, selects Special Stage Route 11,
+    and runs a live auto-driven race without an unmapped call or exception.
+
+## Gran Turismo 1 content integration
+
+- [ ] Complete the former GT1-integration goal through the native
+  `GTPATCH.VOL`/merged-`GT2.VOL` first-run conversion pipeline. Finish every
+  archive-proven GT1-exclusive track, car, paint, livery, wheel, and part
+  conversion; fold shared identities into their GT2 counterparts; integrate
+  appropriate cars fully into Gran Turismo Mode purchasing, upgrades,
+  classes, eligibility, saving, and reloading; and retain native Arcade Mode
+  availability. Treat direct `.VOL` archive and car-database comparison as
+  authority rather than web lists. Smoke-test every conversion with auto-drive,
+  retain screenshots and structured evidence, confirm race/replay behavior,
+  and document the complete first-run workflow. Continue from the detailed
+  inventory and completed-conversion record in `docs/PORT_PLAN.md` and
+  `docs/GT1_CONTENT_AUDIT.md`.
+  - [x] Complete a model-referenced-texel census of all 144 comparable GT1 RM
+    bodies. Stage 31 distinct authored bodies (62 body/paint choices, including
+    53 paints with no visible GT2 counterpart) on existing GT2 identities.
+  - [x] Confirm all ten FTO RM paints use the same IDs and differ on zero
+    model-referenced texels; do not import them as duplicate choices.
+  - [x] Render every staged choice at 960x640 and assemble the validated v2
+    gallery (116 folded proofs total, zero within-car duplicate visual hashes).
+  - [ ] Complete silent selector/race smoke coverage for both paints on each
+    of the 31 staged RM bodies before enabling the gated livery layer.
+
+- [x] Eliminate the reported square exhaust/backfire flashes without hiding
+  genuine effects. Exact consecutive SSR11 captures proved that the rectangles
+  existed only on generated midpoint images: both adjacent authored images
+  were clean, and the offending geometry belonged to fast-rolling vehicle
+  wheel/cutout groups rather than a native backfire sprite. Midpoint generation
+  now preserves the authored roll sample for a wheel that advances more than
+  45 degrees per 30 Hz state while interpolating its rigid translation, and it
+  moves every prior triangle in a valid rigid group coherently through authored
+  clipping churn. No effect primitive is filtered or suppressed.
+  - `artifacts\backfire-ssr11-pair-captures-v19` retains the exact failing
+    normal-race capture pairs. The current offline rerender at
+    `artifacts\backfire-ssr11-pair-rerender-v20` contains no rectangular
+    midpoint exposure.
+  - `artifacts\backfire-ssr11-autodrive-postfix-v21` is a fresh silent/headless
+    native-AI SSR11 race, never replay view. Its 640x480 60 FPS video contains
+    1,800/1,800 distinct frames and zero adjacent duplicates; the retained
+    16-consecutive-frame sheet around the former failure is clean.
+  - The independent no-video paced run at
+    `artifacts\modern-renderer-ssr11-autodrive-postfix-v22` has 17 perfect
+    59.89-60.11 Hz world windows, zero repeats/world misses, Maximum track and
+    vehicle LOD, no bounded-resource wait/timeout, clean shutdown, and no
+    crash, renderer-disable, or unmapped-call marker.
+
 ## Native renderer and original Xbox
 
+- [x] Retire and remove the PS1-era compatibility **3D world** renderer from
+  the shipping presentation path. OpenGTPS1 ships one modern 3D renderer rather
+  than a PS1 Quality preset, legacy-renderer switch, or silent fallback.
+  - The shipping configuration now exposes no PS1 Quality, Custom, stock-LOD,
+    reduced-distance, affine-projection, seam-disable, dithering, smoothing-off,
+    or native-renderer-disable switch. Old serialized values and direct runtime
+    downgrade attempts are canonicalized to the fixed modern contract. Any
+    frame containing authored 3D provenance asserts modern-world ownership
+    before capture validation, so a native failure is reported as a world miss
+    and cannot silently expose compatibility 3D. Authored world-free menus,
+    Results, loading screens, and video continue through the GPU 2D command
+    layer pending the final portable-interface consolidation.
+  - Provenance classification now occurs even if the native worker is stopping
+    or has failed. Provenance-backed triangles are captured for the native
+    renderer but are rejected by both GL-HLE and software compatibility
+    rasterizers; screen-space commands remain enabled. Reflection regressions
+    prove both halves of that contract.
+  - [ ] Consolidate the retained authored 2D command compositor (menus, HUD,
+    loading screens, Results, MDEC video, and world-free transitions) behind
+    the portable presentation interface. This is not a second 3D renderer and
+    does not block retirement of compatibility world rasterization.
 - [x] Establish a portable C++17 scene contract and explicit topology-based
   boundary stitcher with desktop unit tests.
 - [x] Capture one bounded live projected race draw stream plus complete HLE
@@ -96,14 +200,16 @@ visible and repeatable in the packaged build at:
     zero, without padding.
   - Synthetic tests cover exact authored boundary copies, T-junction
     subdivision, and deterministic same-material coplanar ownership.
-- [x] Integrate native race/replay rendering while retaining the proven PS1
-  presentation path for menus, loading screens, display-mode transitions, and
-  MDEC video, plus PS1 screen-primitive semantics for the HUD.
+- [x] Integrate native rendering for every provenance-backed live world while
+  retaining the authored GPU 2D command layer for menus, loading screens,
+  world-free display transitions, Results, and MDEC video, plus exact
+  screen-primitive semantics for the HUD.
   - The packaged runtime records complete provenance, explicit screen-space
     primitives, and VRAM into three bounded reusable OGTWCAP v4 buffers. A
-    persistent D3D11 worker consumes only the newest frame and publishes
-    reusable RGBA buffers without blocking emulation or touching the
-    filesystem.
+    persistent D3D11 worker consumes a bounded two-capture FIFO and publishes
+    reusable RGBA buffers without filesystem traffic. Only the first-ever
+    world submission uses a bounded seed barrier; every subsequent frame and
+    temporal reset remains asynchronous.
   - `artifacts\live-native-full-tail-fixed` reaches input poll 45,000 through
     the purchased/upgraded Mazda race and natural replay, renders 19,502
     native frames, engages the deterministic driver for race pass 1/2 and
@@ -117,21 +223,21 @@ visible and repeatable in the packaged build at:
     secondary projection used by the rear-view mirror.
   - The former output pool covered only a 320x240 display at 4x and failed with
     `invalid_argument` when GT2 selected a wider late transition mode. The
-    fixed pool remains bounded but covers every 640x512 PS1 display at 4x.
-    Native submission is restricted to the 320x240 live race/replay viewport;
-    larger transition and rotating-car Results draw areas deliberately return
-    to the complete PS1 compositor.
+    fixed pool remains bounded but covers every 640x512 authored display at 4x.
+    Submission is provenance-based, so wider showroom, transition, and
+    rotating-car views remain native when they contain 3D. A world-free Results
+    frame is deliberately owned by the complete authored 2D compositor.
   - The earlier native/legacy comparison was invalid because its so-called
     legacy control disabled only the compositor while retaining Enhanced's
     all-sector visibility replacement. A true PS1 Quality control at input poll
     35,240 does not contain the reported gray diagonal surface. The extreme
     close replay camera at 35,570 is authored, but the diagonal surface was a
     native-only visibility defect.
-  - Final packaged validation
+  - Historical pre-provenance-ownership packaged validation
     `artifacts\native-track-surface-corrected-final-v3` reaches input poll
     45,100,
     records the natural replay through its end, deliberately hands the 352x300
-    Results draw area back to the PS1 compositor, and exits cleanly. It submits
+    Results draw area to the authored GPU 2D compositor, and exits cleanly. It submits
     19,505 native frames, renders 19,496, consumes 19,494, and drops 11 obsolete
     queue entries without a native disable, truncation, fatal error, or
     unhandled exception.
@@ -238,6 +344,18 @@ visible and repeatable in the packaged build at:
     additional frame-by-frame review. Track boundaries remain continuous
     without the false slab, section pop-in, background slivers, overlap
     flicker, or floating geometry.
+  - August 9 follow-up evidence reproduces the reported cyan road holes and
+    displaced/partially rejected wheels from exact live captures at polls
+    5701-5731. Vehicle depth ownership is now separated at body/wheel transform
+    boundaries. Continuous topology retains authored integer SXY only to prove
+    power-of-two road-LOD copies and sub-quarter-pixel vertex-to-edge joins.
+    The reported frame drops from nine exposed background samples to zero and
+    the sequence's worst LOD boundary drops from 151 to zero without triangle
+    inflation. The two remaining cyan-colored samples are covered by valid
+    road triangles and are transparent source texels, not geometry cracks.
+    `artifacts\user-gap-wheel-repro-14s\fixed-sequence` contains the 16 fixed
+    frames, contact sheet, per-frame logs, and scan CSV; all five native tests
+    pass.
 
 - [x] Extend draw distance far enough to show the entire track.
   - Track geometry and scenery must remain visible to the farthest practical
@@ -247,16 +365,22 @@ visible and repeatable in the packaged build at:
   - GT2's per-sector lists are authored potential-visibility sets rather than
     independent chunks of a global object list. Unioning all lists exposed
     mutually exclusive road surfaces, including the false diagonal slab at
-    0:55. Enhanced therefore retains the current authored list.
+    0:55. Enhanced now retains the current authored list first and adds only a
+    bounded three-sector horizon in both directions. This moves nearby sector
+    transitions outside the practical sightline without exposing the rest of
+    a looping track.
   - Overlay 0 also applies a camera-relative `0x0063FFFF` radial cutoff after
     consuming that list. Enhanced disables this redundant distance cutoff
-    while retaining the authored visibility set, frustum, near-plane, and
+    while retaining authored potential visibility, frustum, near-plane, and
     polygon clipping. Replay's separate stock distance gate is extended by the
     same setting.
   - Matched isolation runs prove the distinction: keeping the radial and replay
     distance extensions while removing only the all-sector union removes the
-    gray slab. The full replacement replay then completes without
-    motion-visible track-section pop-in or false surface exposure.
+    gray slab. The bounded horizon's SSR11 audit then proves all 96 observed
+    stock additions were already resident before their original sector
+    boundary and all 90 removals remained resident after it. Seventeen complete
+    paced windows hold `59.73-60.07 Hz`, with zero repeats, world misses,
+    invalid lists, output waits, or resource exhaustion.
 
 - [x] Force the highest available LOD at all distances.
   - Cars, track objects, and scenery must use their highest-detail model.
@@ -266,13 +390,16 @@ visible and repeatable in the packaged build at:
     vehicle selector `1`, which resolves to model-table index `0`, on all three
     validated tracks. Tahiti's matched Stock/Maximum frame differs at
     32.30 dB PSNR while the Maximum log identifies selector/index 1/0.
-  - Authoritative race/replay trace
-    `artifacts\visibility-lod-maximum-race-replay-trace` recorded 25,316 live
-    race visibility calls and 771 reconstructed-replay calls. Across 2,791,309
-    emitted track/scenery entries, every two-bit LOD selector was zero (highest
-    detail), while vehicles simultaneously used selector `1` / model index
-    `0`. The isolated Stock control scanned 305,806 entries and found 285,610
-    nonzero selectors, proving the wrapper option causes the all-highest result.
+  - The final deterministic race/replay audit is
+    `artifacts\modern-renderer-native-results-soak-v16-final-profile`. It
+    records 7,768 race plus 3,717 replay visibility calls. Stock GT2 requested
+    lower detail in 96,296 of 177,963 raw entries; after Maximum conversion all
+    177,963 emitted track/scenery entries use selector `0` (highest), with zero
+    nonzero selectors, null lists, or invalid lists. All 62,661 vehicle requests
+    use selector `1` / model-table index `0` across seven model sets. The focused
+    `artifacts\modern-renderer-lod-audit-v3-fixed` control independently changes
+    5,992 lower-detail requests among 8,988 raw entries to 8,988 highest-detail
+    entries and sends all 2,580 vehicle requests to selector `1`.
 
 - [x] Add a working dithering toggle.
   - Off must disable PS1 color dithering.
@@ -325,6 +452,321 @@ visible and repeatable in the packaged build at:
     that this diagnostic path did not alter the user's saved wrapper settings.
 
 ## Performance and audio
+
+- [ ] Bring the single modern renderer to sustained, correctly paced 60 FPS
+  with corrected perspective, seam/topology repair, full authored track draw
+  distance, and maximum vehicle LOD enabled in both Arcade and Gran Turismo
+  modes. Profile and remove CPU/GPU/synchronization bottlenecks without
+  reducing output quality or reinstating the PS1 renderer. Report host
+  presentation rate, new native-world frames, repeated frames, renderer time,
+  guest time, queue drops, and frame-time percentiles separately so duplicated
+  30 Hz world images cannot be mislabeled as 60 FPS. Validate representative
+  races and replays, imported content, HUD completeness, stability, and frame
+  pacing on the current target PC.
+  - Current honest status: GT2 still authors world states at 29.97 Hz, while
+    the native pair bridge produces a geometry-aware midpoint between complete
+    authored states. Transform groups are matched as units, vertices use model
+    coordinates, HUD/material/VRAM/visibility changes remain atomic, and no
+    whole-frame cross-fade is used. Telemetry distinguishes authored,
+    interpolated, repeated, and fallback presentations.
+  - Historical pre-interpolation baseline: the August 9 silent/headless
+    7,000-poll Arcade auto-drive soak at
+    `artifacts\modern-renderer-road-wheel-live-soak` exits cleanly with no
+    native disable or runtime fault. Race telemetry holds 59.94 host FPS,
+    29.97 unique authored FPS, completion age 2, and three total obsolete
+    startup drops across 1,341 submissions. The final race window reports
+    native pipeline p95 `26.113 ms`, p99 `27.899 ms`, topology `5.346 ms`, and
+    GPU render `18.132 ms`; this is stable but still above the `16.683 ms`
+    budget required for genuine unique 59.94 Hz motion.
+  - Historical pre-interpolation baseline: the subsequent modern-only pass
+    spatially indexes projected topology
+    candidates, batches compatible transparent primitives, moves per-command
+    material selection out of per-draw constants, overlaps staging readback in
+    the correct command order, and gives track sections one coherent depth
+    surface while retaining separate vehicle body/wheel layers. The bounded
+    8,000-poll Arcade auto-drive proof at
+    `artifacts\modern-renderer-unified-track-soak-v4` exits cleanly after 1,691
+    submissions and 1,686 complete authored renders, with five startup drops,
+    no synthetic frames, and no renderer disable, exception, unmapped call, or
+    crash. The final window is p50 `24.743 ms`, p95 `26.154 ms`, p99 `26.651 ms`.
+    This was improved and stable at the authored 29.97 Hz rate, but remained an
+    explicit failure against the unique-59.94-Hz completion criterion before
+    the geometry-aware pair bridge below.
+  - The 16-frame road/wheel regression now has zero exposed clear-color pixels.
+    Isolated zero-valued road texels are repaired only for upward-facing opaque
+    track surfaces with at least three opaque cardinal neighbors; authored
+    transparent cutouts remain alpha-tested.
+  - The bounded Arcade proof at
+    `artifacts\modern-renderer-unique60-arcade-soak-v2` drives through poll
+    12,000. Every complete race window from poll 5,100 onward contains exactly
+    150 authored plus 150 interpolated images with zero repeats or fallbacks;
+    unique rate is `59.57-59.98 Hz`. Shutdown reports 3,838 images of each kind,
+    three obsolete startup drops, and no disable, exception, unmapped call, or
+    crash.
+  - `artifacts\modern-renderer-live-visual-proof-moving-v1` captures eight
+    consecutive live presentations. Trace labels alternate interpolated and
+    authored frames; visual inspection shows single car silhouettes, contained
+    wheels, and continuous road/world geometry rather than blended cars or cyan
+    clear-color holes.
+  - Gran Turismo Mode proof at
+    `artifacts\modern-renderer-unique60-simulation-purchase-race-v1` creates a
+    test economy, buys and upgrades a Mazda, enters Sunday Cup, and emits 3,080
+    authored plus 3,080 interpolated frames. Nineteen full native windows have
+    zero repeats/fallbacks. One first-run window fell to `56.47 Hz` as guest
+    time rose to `16.12 ms`, despite no lost native output. The exact path and
+    interval were repeated in
+    `artifacts\modern-renderer-simulation-pacing-repeat-v2`: all 19 complete
+    windows are `59.89-59.98 Hz`, including `59.94 Hz` at the formerly slow
+    poll 12,300 interval, with 150/150 unique images and no repeat/fallback.
+    This classifies the original reading as a non-reproducible host scheduling
+    transient rather than a persistent renderer or course bottleneck.
+  - Imported-content coverage at
+    `artifacts\modern-renderer-unique60-ssr11-night-soak-v1` enters SSR11 at
+    night and emits 3,020 images of each kind. All complete post-throttle race
+    windows contain no repeated or fallback presentation.
+  - A second imported-content run at
+    `artifacts\modern-renderer-unique60-supra-tahiti-soak-v1` exercises the GT1
+    Supra body/palette on Tahiti Road. Its 23 complete race windows each contain
+    150 authored plus 150 interpolated images, zero repeats/fallbacks, and
+    `59.89-60.21 Hz` unique presentation; shutdown is clean with 3,590 images
+    of each kind and zero obsolete queue drops.
+  - Natural replay proof at
+    `artifacts\modern-renderer-unique60-replay-soak-v3` enters reconstructed
+    replay at poll 15,840 and remains native until the normal transition near
+    poll 23,280. Every complete replay window is 150/150 with no repeat or
+    fallback at approximately `59.67-60.18 Hz`; shutdown reports 7,719 images
+    of each kind, one startup drop, no fault, and an exact memory-card restore.
+  - Final bounded visible auto-drive proof at
+    `artifacts\modern-renderer-final-visible-proof-v2` uses Enhanced/Stabilized,
+    Extended draw distance, and Maximum LOD. All 24 complete live windows are
+    150/150 with zero repeats/fallbacks at `59.86-60.00 Hz` (`59.939 Hz`
+    average); shutdown is clean with 3,837 images of each kind. Final closure
+    still requires the user's visual review of wheels, seams, prop stability,
+    and distance transitions.
+  - `artifacts\modern-renderer-unique60-motion-video-v2` supplies a 30-second,
+    60 FPS review video. All 1,800 decoded frames have distinct hashes with no
+    adjacent duplicate; dense 12 FPS sheets across two four-second motion
+    intervals show contained wheels, single silhouettes, continuous road, and
+    stable distance transitions. Synchronous GL recording perturbs host pacing,
+    so this artifact is visual evidence only; the unrecorded runs remain the
+    authoritative real-time performance proof. The unchanged 30 FPS default is
+    verified by `artifacts\video-capture-default30-regression-v1` (5 seconds,
+    150 frames).
+  - Final automated closure is
+    `artifacts\modern-renderer-native-results-soak-v34-independent-confirmation-final`. The reusable
+    full-path validator buys/upgrades the Mazda, completes race and natural
+    replay, crosses the discontinuous Results cameras, and restores the card
+    hash exactly. Its 49 complete steady windows are 150 authored plus 150
+    geometry-aware midpoint presentations with zero repeats and zero world
+    misses; two discontinuity warmups are separately labelled repeated, and
+    845 presentations cover authored 2D Results composition. No crash,
+    unmapped call, truncation, rejection, or renderer-disable marker appears.
+    Shutdown records zero pending-capture drops, zero output-pool starvation,
+    one bounded 0.179 ms wait with no timeout, and only obsolete published
+    outputs discarded at scene ownership changes. The independent v33 run adds
+    51 complete zero-miss world windows at `59.80-60.11 Hz`.
+    Its renderer audit also proves Maximum track/scenery and vehicle LOD over
+    both race and replay, including the raw lower-detail requests converted by
+    the shipping path.
+  - The v34 run profiles the last 240 genuine track-world pairs, explicitly
+    excluding menus/showroom/Results so their zero topology work cannot dilute
+    the result. Pipeline p50/p95/p99 is `23.766/28.650/31.057 ms`, GPU
+    render/readback is `15.755/18.959/19.912 ms`, and topology is
+    `4.591/6.703/7.853 ms`. Pipeline p99 is below the `33.37 ms` authored-state
+    budget. The reusable harness rejects missing/zero topology samples,
+    unordered percentiles, a p99 above the 40 ms hard tail ceiling, or any
+    complete world window outside 59.5-60.5 Hz.
+  - Independent normal-speed cold-start coverage is
+    `artifacts\modern-renderer-realtime-startup-v5-final-profile`: 192 native-world
+    presentations, 2,199 compositor presentations, zero world misses, clean
+    shutdown, exact card restore, and a retained first-showroom capture. The
+    first-output barrier runs once, completed within the 100 ms bound, and
+    prevents ownership from preceding the first validated modern texture.
+  - D3D11 state binding is cached only when scissor, blend, or depth/stencil
+    state is unchanged. The optimization is byte-exact across five retained
+    reset/actual/midpoint PNGs and changes no geometry, full-distance policy,
+    maximum LOD, topology repair, filtering, or output resolution. Final user
+    visual review remains the only open gate for this item.
+  - A second quality-neutral optimization reuses prior VRAM/material uploads
+    only when exact per-command material, object-kind, and model-coordinate
+    comparison proves midpoint compatibility. All 31 outputs from the retained
+    16-capture road/wheel sequence remain byte-identical; pair p99 improved
+    from `27.560 ms` to `25.783 ms`.
+  - Current visible auto-drive evidence is
+    `artifacts\modern-renderer-final-visible-review-v5-upload-reuse`. Every one
+    of its 11 complete race windows is 150 authored/150 midpoint, zero repeats,
+    zero world misses, and `59.90-60.19 Hz`, including the former poll-6,300
+    repeat interval. It exits cleanly at poll 8,000; final user visual review
+    remains the only open gate for this item.
+  - Latest-build 30-second Arcade and Simulation review videos are retained at
+    `artifacts\modern-renderer-final-motion-arcade-v2-final-profile` and
+    `artifacts\modern-renderer-final-motion-simulation-v2-final-profile`. Each is
+    640x480 at 60 FPS with 1,800/1,800 distinct decoded frames and zero adjacent
+    duplicates. Contact, dense-motion, and worst-adjacent-SSIM sheets show
+    contained wheels, single silhouettes, continuous road/world geometry, and
+    stable props; the lowest-SSIM pairs are legitimate fast motion, start-line
+    shadow, and close overtaking rather than one-frame defects. Recording is
+    visual/temporal evidence, not the authoritative pacing measurement. User
+    visual acceptance of these runs remains the sole closure gate.
+  - Exact-current imported-content and replay review extends that evidence with
+    `artifacts\modern-renderer-final-motion-ssr11-v1-final-profile`,
+    `artifacts\modern-renderer-final-motion-supra-tahiti-v1-final-profile`, and
+    `artifacts\modern-renderer-final-motion-replay-v2-final-profile`. Each
+    30-second 60 FPS capture has 1,800/1,800 distinct decoded frames and zero
+    adjacent duplicates. Their adjacent-frame SSIM min/p1/median values are
+    `0.824554/0.860576/0.949322`, `0.819872/0.837272/0.946042`, and
+    `0.509155/0.661939/0.897556`. Contact, motion, and temporal-outlier review
+    found no wheel, silhouette, road/world, or prop-distance defect. Replay's
+    lower outliers are genuine cuts and close passes: a dedicated inspection
+    of frames 720-783 covers a silver car's full near-camera crossing and
+    proves smooth authored/midpoint progression, attached wheels, and no
+    alternating geometry.
+  - The current replay-to-Results ownership proof is
+    `artifacts\modern-renderer-replay-exit-v6-output-ring-latched-final`.
+    It captures exactly 1,800 presentations; all first 740 replay-owned frames
+    are unique with zero adjacent duplicates. Frame-level review shows replay
+    handing directly to GT2's authored Results title animation, then a clean
+    rotating car and Results UI, without the former stale race/replay flash.
+    The full video has 1,727 unique frames; its 51 adjacent duplicates occur
+    only after ownership reaches intentionally static Results/loading content.
+  - Final silent/headless endurance evidence is
+    `artifacts\modern-renderer-extended-soak-final-v84`: eight consecutive
+    strict runs over 20 minutes (three Arcade, three imported SSR11, and two
+    imported GT1 Supra/Tahiti) contribute 143 perfect steady world windows,
+    zero repeats, zero world misses, clean shutdowns, and exact card hashes.
+    Worst aggregate p99 is `28.134 ms` pipeline, `11.238 ms` GPU, and
+    `12.396 ms` topology. No run reports an output wait or timeout.
+  - Final exact coverage includes 30 distributed lossless Supra/SSR11 frames
+    with zero clear-sentinel pixels anywhere. The former v85 SSR11 motion proof
+    is superseded because it exposed a street-light billboard crossing the
+    PS1 signed screen-coordinate boundary. The native draw list now applies
+    the PS1 `1023x511` polygon-span rejection, and v101 supplies 1,800/1,800
+    unique replacement frames with zero adjacent duplicate or light streak.
+    Its proof sheets retain 640x480 detail per tile rather than the former
+    320x240 review scale.
+  - `artifacts\modern-renderer-ssr11-horizon-long-v102` validates the new
+    bounded three-sector visibility horizon over 5,304 calls and 87 sector
+    transitions. It preloads 96/96 stock additions, retains 90/90 stock
+    removals, records 17 perfect `59.73-60.07 Hz` world windows, and exits with
+    an exact memory-card restore.
+  - Final Gran Turismo Mode closure at
+    `artifacts\modern-renderer-final-host-simulation-replay-v86` covers
+    purchase, race, Results, and natural replay. It has 50/50 perfect paced
+    world windows, zero misses/violations/output waits, exact card restore,
+    Maximum LOD throughout race and replay, and p99
+    `22.146/11.352/8.816 ms` pipeline/GPU/topology.
+  - Final visible GLFW/swap-path evidence at
+    `artifacts\modern-renderer-final-visible-review-v87` adds 25 complete SSR11
+    auto-drive windows at `59.89-60.00 Hz`, each exactly 150 authored plus 150
+    geometry-midpoint images with zero repeats/misses. It records no long swap,
+    crash, unmapped call, or output timeout, and exits cleanly at poll 12,000.
+    Automated closure is now complete; this checkbox remains open only for the
+    user's visual acceptance of wheels, road/world seams, prop stability, and
+    distance transitions in that exact visible run.
+  - Reproducible aggregate closure is
+    `tools\verify_modern_renderer_closure.ps1`. The current retained output at
+    `artifacts\modern-renderer-closure-audit-v103\closure-report.json` rebuilds
+    and retests the current tree, independently revalidates v84/v86/v87, the
+    fixed v101 street-light motion proof, and the v102 visibility horizon. It
+    reports `machine-pass-user-visual-pending`; it cannot turn a machine pass
+    into visual acceptance on the user's behalf.
+  - The current durability pass removes a synchronous D3D11 readback from each
+    generated pair: the staging slot is now mapped one complete authored pair
+    later, and output provenance is delayed by the same amount. The native
+    worker runs at normal priority so a full output queue cannot pre-empt guest
+    time. A no-capture headless run also bypasses the hidden OpenGL compositor
+    while continuing to consume and validate every native output.
+  - A 125-second sampled trace at
+    `artifacts\modern-renderer-guest-cpu-long-v40` found that SDL's muted dummy
+    mixer consumed about 63 seconds of managed CPU even though no audio consumer
+    existed. Silent renderer soaks now leave that dummy mixer inactive; explicit
+    headless audio capture still starts it and is proven by the 19.354-second
+    PCM smoke at `artifacts\modern-renderer-headless-audio-capture-smoke-v44`.
+  - Post-correction strict evidence is
+    `artifacts\modern-renderer-r2r-silent-mixer-off-soak-v42`: Arcade contributes
+    20 perfect five-second windows, imported SSR11 17, and GT1 Supra/Tahiti 16.
+    All 53 windows are unique 59.5-60.5 Hz world output with zero repeats, zero
+    misses, Maximum track/vehicle LOD, clean shutdowns, and exact card restore.
+    `artifacts\modern-renderer-r2r-silent-arcade-repeat-v43` then starts four
+    fresh processes and adds 80/80 perfect Arcade windows with the same gates.
+    Native tests remain 6/6 and the managed modern-only configuration suite
+    passes. Visible/audible user review remains an explicit closure gate.
+  - The August 15 producer-tail audit reproduced the remaining intermittent
+    miss at `artifacts\modern-renderer-readback-phase-ssr11-v59`. Native phase
+    timing proves every long call was a blocking D3D11 staging `Map`
+    (`20-27 ms` readback versus roughly `0.2-2 ms` submission), after only one
+    30 Hz interval of GPU overlap. Raising only the guest thread, raising the
+    process before fixing readback, and extending the consumer wait to 12 ms
+    were all rejected by strict failures in v51, v53, and v57 respectively.
+  - Native readback now retains two complete midpoint/actual pairs in four
+    staging textures. Pixel slots and bridge metadata derive from the shared
+    `world_gpu_readback_pair_delay` invariant, so the extra completion interval
+    cannot combine a midpoint with the wrong authored endpoint. Warmup outputs
+    remain explicitly marked as repeats and are excluded from unique-motion
+    counts. The fixed v61 SSR11 run has 17/17 perfect windows and zero waits.
+  - A delayed sampled trace at
+    `artifacts\modern-renderer-arcade-late-guest-trace-v64` found no runaway
+    function, allocation storm, or GC pause during the former late-Arcade
+    slowdown; normal-priority desktop scheduling descheduled the guest for
+    `45-62 ms` while total machine CPU load was about four percent. The runtime
+    now raises the whole Windows process to Above Normal, keeping emulation and
+    renderer worker balanced. The external-policy experiment v65 and packaged
+    proof v67 both pass Arcade 20/20 with no late slowdown or world miss.
+  - Exact packaged scenario proofs are v67 Arcade (20/20), v68 GT1
+    Supra/Tahiti (16/16), and v69 imported SSR11 (17/17): 53/53 complete
+    five-second windows, each exactly 150 authored plus 150 geometric midpoint
+    frames at `59.5-60.5 Hz`, with no repeat, compositor substitution, or miss.
+    `artifacts\modern-renderer-pair-aligned-extended-soak-v70` adds six fresh
+    round-robin processes over 15 minutes and another 106/106 perfect windows,
+    clean exits, and exact card restores.
+  - Gran Turismo Mode race/Results/replay closure is
+    `artifacts\modern-renderer-pair-aligned-simulation-replay-nocapture-v72`:
+    50/50 paced world windows, zero misses or output waits, 895 authored Results
+    compositor frames, Maximum LOD over 7,768 race and 3,717 replay calls, and
+    pipeline/GPU/topology p99 `30.201/20.416/8.937 ms`. The capture-enabled v71
+    run is retained as visual evidence only: synchronous full-resolution GL
+    readback reduced nine otherwise complete windows below 59.5 Hz, so capture
+    is now opt-in and cannot contaminate performance claims.
+  - Current visible/audible user-review run is
+    `artifacts\modern-renderer-final-visible-ssr11-review-v73`. It uses normal
+    auto-drive (not replay), full-window output, the shipping no-capture path,
+    and adds 16 complete SSR11 windows with zero repeats, substitutions, misses,
+    or card changes. Machine validation is green; this checkbox remains open
+    until the user confirms the observed wheels, seams, props, and distance
+    transitions.
+  - The user subsequently observed small polygon explosions in SSR11, so the
+    earlier visible review is rejected. A 5,400-frame reproduction at
+    `artifacts\modern-renderer-ssr11-polygon-explosion-capture-v122` and exact
+    source packets at v123 isolate the failure to generated midpoint frames:
+    rigid whole-group interpolation reprojected already-culled, near-camera
+    track triangles from objects 74/75 into large wedges. Whole-group rigid
+    motion is now vehicle-only; track commands use exact provenance endpoints,
+    and unmatched visibility-churn triangles hold their prior midpoint pose.
+  - Exact formerly failing pairs are clean in v124, and the replacement live
+    90-second v126 capture contains 5,400/5,400 unique 640x480 frames with zero
+    duplicate and maximum luminance delta 4.046 versus 16.6334 before the fix.
+    The exact ReadyToRun package is v131 (native SHA-256
+    `47349A418581570BC264862F11684CE91F3FE9A668B6A582A11DFA20C46209A4`).
+    Its strict SSR11 v132 passes 17/17 windows; the final 15-minute v136 soak
+    runs two fresh processes each for Arcade, SSR11, and GT1 Supra/Tahiti and
+    passes 106/106 complete windows; and the full Gran Turismo Mode
+    race/Results/replay v134 passes 50/50 paced windows with zero misses,
+    violations, waits, or timeouts. Fresh visible SSR11 acceptance remains
+    required before this renderer goal can close.
+  - The corrected maximized, normal-auto-drive visible run is v135. It passes
+    16/16 complete SSR11 windows at 59.91-59.97 unique Hz with zero repeats,
+    substitutions, or misses; final pipeline/GPU/topology p99 is
+    18.681/6.400/8.427 ms. It exits cleanly and restores the card exactly.
+    Machine validation is green; the user's visual verdict is still required.
+  - Final machine closure is
+    `artifacts\modern-renderer-closure-audit-v137\closure-report.json`. The
+    verifier rebuilds and retests the current tree, fresh-publishes and
+    byte-compares the ReadyToRun managed assemblies and native renderer,
+    positively reproduces the rejected v122 explosion signal, validates all
+    64 authored packets and 26 corrected 1280x960 midpoint pairs, recomputes
+    all 5,400 v126 frame hashes/SSIM/luminance samples, and re-audits v132,
+    v134, v135, and every v136 run. It reports
+    `machine-pass-user-visual-pending`; visual acceptance is not automated.
 
 - [x] Complete a performance pass against the packaged build.
   - Gameplay speed must match the original NTSC timing.

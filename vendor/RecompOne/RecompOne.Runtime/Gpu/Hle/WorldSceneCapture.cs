@@ -10,14 +10,15 @@ namespace RecompOne.Runtime.Hle;
 /// </summary>
 internal sealed class WorldSceneCapture : IDisposable
 {
-    const uint Version = 4;
+    const uint Version = 5;
     const int HeaderSize = 160;
-    const int TriangleStride = 224;
+    const int TriangleStride = 256;
     const int MaxTriangles = 262_144;
 
     readonly string? _outputPath;
     readonly string? _temporaryPath;
     readonly int _targetInputPoll;
+    readonly bool _traceProjectionMismatches;
     readonly record struct CameraProjectionKey(
         ulong TransformId,
         int OffsetX,
@@ -65,12 +66,18 @@ internal sealed class WorldSceneCapture : IDisposable
     double _ownProjectionMaximumError;
     uint _ownProjectionSamples;
     uint _ownProjectionOverTwoPixels;
+    int _projectionMismatchTraceCount;
 
     public bool Enabled => _outputPath != null && !_completed && !_failed;
     public bool NeedsVramSnapshot => Enabled && _capturing;
 
     public WorldSceneCapture()
     {
+        _traceProjectionMismatches = string.Equals(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_WORLD_PROJECTION_MISMATCH"),
+            "1",
+            StringComparison.Ordinal);
         string? configuredPath =
             Environment.GetEnvironmentVariable("RECOMPONE_WORLD_CAPTURE_PATH");
         if (string.IsNullOrWhiteSpace(configuredPath))
@@ -202,6 +209,7 @@ internal sealed class WorldSceneCapture : IDisposable
             _writer.Write((short)env.DrawOffsetX);
             _writer.Write((short)env.DrawOffsetY);
             _writer.Write(identity.TransformId);
+            WriteTransform(in identity);
             WriteVertex(in a, in originA);
             WriteVertex(in b, in originB);
             WriteVertex(in c, in originC);
@@ -306,7 +314,27 @@ internal sealed class WorldSceneCapture : IDisposable
             Math.Max(_ownProjectionMaximumError, error);
         _ownProjectionSamples++;
         if (error > 2.0)
+        {
             _ownProjectionOverTwoPixels++;
+            if (_traceProjectionMismatches &&
+                _projectionMismatchTraceCount++ < 512)
+            {
+                Console.Error.WriteLine(
+                    $"[World-Projection-Mismatch] " +
+                    $"object={origin.Object.Kind}/{origin.Object.StableId}/" +
+                    $"0x{origin.Object.ModelPointer:X8} " +
+                    $"packet={vertex.X},{vertex.Y} " +
+                    $"projected={screenX + env.DrawOffsetX}," +
+                    $"{screenY + env.DrawOffsetY} error={error:F3} " +
+                    $"model={origin.ModelX},{origin.ModelY},{origin.ModelZ} " +
+                    $"view={origin.ViewX},{origin.ViewY},{origin.ViewZ} " +
+                    $"projection={origin.ProjectionOffsetX}," +
+                    $"{origin.ProjectionOffsetY},{origin.ProjectionPlane} " +
+                    $"drawOffset={env.DrawOffsetX},{env.DrawOffsetY} " +
+                    $"transform=0x{origin.TransformId:X16} " +
+                    $"flags={origin.Flags}");
+            }
+        }
     }
 
     static void Add(
@@ -392,15 +420,31 @@ internal sealed class WorldSceneCapture : IDisposable
 
     GteProjectionOrigin SelectCamera()
     {
+        GteProjectionOrigin selected = default;
+        int maximumCount = int.MinValue;
         if (_trackCameraStates.Count != 0)
         {
-            return _trackCameraStates.Values
-                .MaxBy(entry => entry.Count)
-                .Origin;
+            foreach (var candidate in _trackCameraStates.Values)
+            {
+                // MaxBy returns the first maximum. Retain that behavior while
+                // avoiding its boxed value enumerator on every frame.
+                if (candidate.Count <= maximumCount)
+                    continue;
+                maximumCount = candidate.Count;
+                selected = candidate.Origin;
+            }
         }
-        return _allTransforms.Count == 0
-            ? default
-            : _allTransforms.Values.MaxBy(entry => entry.Count).Origin;
+        else
+        {
+            foreach (var candidate in _allTransforms.Values)
+            {
+                if (candidate.Count <= maximumCount)
+                    continue;
+                maximumCount = candidate.Count;
+                selected = candidate.Origin;
+            }
+        }
+        return selected;
     }
 
     void EnsureOpen()
@@ -447,6 +491,23 @@ internal sealed class WorldSceneCapture : IDisposable
         _writer.Write(origin.ProjectionOffsetY);
         _writer.Write((uint)origin.ProjectionPlane);
         _writer.Write(SourceIdentity(in origin));
+    }
+
+    void WriteTransform(in GteProjectionOrigin origin)
+    {
+        _writer!.Write(origin.R00);
+        _writer.Write(origin.R01);
+        _writer.Write(origin.R02);
+        _writer.Write(origin.R10);
+        _writer.Write(origin.R11);
+        _writer.Write(origin.R12);
+        _writer.Write(origin.R20);
+        _writer.Write(origin.R21);
+        _writer.Write(origin.R22);
+        _writer.Write((short)0);
+        _writer.Write(origin.TranslateX);
+        _writer.Write(origin.TranslateY);
+        _writer.Write(origin.TranslateZ);
     }
 
     void WriteHeader(

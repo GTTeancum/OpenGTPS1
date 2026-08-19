@@ -45,6 +45,27 @@ $cases = @(
             '1400+1=CAPTURE')
         ExitPoll = 1800
         Expected = '[GT2] title selection: Arcade Mode'
+    },
+    @{
+        Name = 'replay-theater'
+        Script = (
+            '600+4=DOWN;' +
+            '680+4=DOWN;' +
+            '760+8=CROSS,START;' +
+            '1300+1=CAPTURE')
+        ExitPoll = 1500
+        Expected = '[GT2] title selection: Replay Theater'
+    },
+    @{
+        Name = 'option'
+        Script = (
+            '600+4=DOWN;' +
+            '680+4=DOWN;' +
+            '760+4=DOWN;' +
+            '840+8=CROSS,START;' +
+            '1400+1=CAPTURE')
+        ExitPoll = 1600
+        Expected = '[GT2] title selection: Option'
     }
 )
 
@@ -58,7 +79,6 @@ foreach ($case in $cases) {
     $env:RECOMPONE_DISABLE_LIVE_INPUT = '1'
     $env:RECOMPONE_SUPPRESS_RUMBLE = '1'
     $env:RECOMPONE_UNTHROTTLED = '1'
-    $env:RECOMPONE_NATIVE_WORLD_RENDERER = '0'
 
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $exe
@@ -89,6 +109,26 @@ foreach ($case in $cases) {
         $stdout -notmatch '\[Host\] native unified guest=arcade ') {
         throw "Unified title did not hand off to the Arcade guest:`n$stdout"
     }
+    if ($case.Name -eq 'arcade' -and
+        $stdout -notmatch (
+            '\[Host\] seamless guest handoff: Simulation title -> ' +
+            'Arcade START GAME destination')) {
+        throw "Unified title did not use the seamless Arcade handoff:`n$stdout"
+    }
+    if ($case.Name -eq 'arcade' -and
+        $stdout -notmatch (
+            '\[GT2\] Arcade frontend handoff: ' +
+            'entry=0x8005D650 START GAME overlay=1')) {
+        throw "Unified title did not enter Arcade at START GAME:`n$stdout"
+    }
+    if ($case.Name -eq 'arcade' -and
+        $stdout -match 'loaded overlay: gt2_arcade_overlay_5') {
+        throw "Unified title incorrectly replayed the Arcade boot/title overlay:`n$stdout"
+    }
+    if ($case.Name -eq 'arcade' -and
+        $stdout -notmatch 'loaded overlay: gt2_arcade_overlay_1') {
+        throw "Unified title did not load the first Arcade frontend overlay:`n$stdout"
+    }
     if ($stdout -notmatch '\[GPU\] display=True') {
         throw "Unified $($case.Name) did not enable its original display:`n$stdout"
     }
@@ -106,7 +146,6 @@ foreach ($name in @(
         'RECOMPONE_EXIT_AFTER_INPUT_POLL',
         'RECOMPONE_DISABLE_LIVE_INPUT',
         'RECOMPONE_SUPPRESS_RUMBLE',
-        'RECOMPONE_UNTHROTTLED',
-        'RECOMPONE_NATIVE_WORLD_RENDERER')) {
+        'RECOMPONE_UNTHROTTLED')) {
     Remove-Item "Env:$name" -ErrorAction SilentlyContinue
 }

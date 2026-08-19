@@ -36,7 +36,28 @@ public static class Runtime
     static long _performanceHostTicks;
     static long _performanceWaitTicks;
     static long _performanceDeviceTicks;
+    static long _performanceCdTicks;
+    static long _performanceCardTicks;
+    static long _performanceBiosPadTicks;
+    static long _performanceLibPadTicks;
     static long _performanceIrqTicks;
+    static long _performanceGuestTicks;
+    static long _performancePreviousEnd;
+    static long _performancePreviousAfterWait;
+    static long _performanceAllocatedBytes;
+    static long _performanceHostAllocatedBytes;
+    static long _performanceWaitAllocatedBytes;
+    static long _performanceDeviceAllocatedBytes;
+    static long _performanceCdAllocatedBytes;
+    static long _performanceCardAllocatedBytes;
+    static long _performanceBiosPadAllocatedBytes;
+    static long _performanceLibPadAllocatedBytes;
+    static long _performanceIrqAllocatedBytes;
+    static long _performanceGuestAllocatedBytes;
+    static long _performancePreviousEndAllocatedBytes;
+    static int _performanceGen0;
+    static int _performanceGen1;
+    static int _performanceGen2;
     static int _performanceFrames;
     static readonly bool TraceVSync =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_VSYNC") == "1";
@@ -74,6 +95,40 @@ public static class Runtime
     public static void Initialize(string title)
     {
         Diagnostics.ConsoleMirror.Install();
+        // The emulation and native-render producer threads jointly feed a
+        // hard 59.94 Hz presentation deadline. Interactive use defaults to a
+        // balanced elevated priority, while diagnostics can explicitly lower
+        // the entire process to avoid disrupting other desktop work.
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                using Process process = Process.GetCurrentProcess();
+                string? configuredPriority =
+                    Environment.GetEnvironmentVariable(
+                        "RECOMPONE_PROCESS_PRIORITY");
+                ProcessPriorityClass priority =
+                    string.Equals(
+                        configuredPriority,
+                        "BelowNormal",
+                        StringComparison.OrdinalIgnoreCase)
+                        ? ProcessPriorityClass.BelowNormal
+                        : ProcessPriorityClass.AboveNormal;
+                process.PriorityClass = priority;
+                Console.Error.WriteLine(
+                    $"[Host] scheduling priority={priority} " +
+                    "(balanced emulation/renderer)");
+            }
+            catch (Exception exception) when (
+                exception is InvalidOperationException or
+                System.ComponentModel.Win32Exception or
+                NotSupportedException)
+            {
+                Console.Error.WriteLine(
+                    $"[Host] unable to set scheduling priority: " +
+                    $"{exception.Message}");
+            }
+        }
         HostWindow.Initialize(title);
         bool forceMute =
             HostWindow.IsHeadless ||
@@ -97,6 +152,9 @@ public static class Runtime
     public static void PresentFrame()
     {
         long performanceStart = Stopwatch.GetTimestamp();
+        long allocatedAtStart = TracePerformance
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : 0;
         int traceFrame = _presentTraceCount++;
         ApplyGt2TestSavePatch();
         ApplyGt2SoakEventUnlock();
@@ -108,8 +166,13 @@ public static class Runtime
             _lastDisplayEnabled = Gpu.DisplayEnabled;
             Console.WriteLine($"[GPU] display={Gpu.DisplayEnabled} area={Gpu.DisplayX},{Gpu.DisplayY} {Gpu.DisplayWidth}x{Gpu.DisplayHeight} hle={Hle.GpuHle.Active}");
         }
+        if (Gpu != null && Mem != null)
+            Sdk.GT2Compat.CompositeUnifiedTitlePanel(Gpu, Mem);
         HostWindow.Present(Gpu);
         long afterHost = Stopwatch.GetTimestamp();
+        long allocatedAfterHost = TracePerformance
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : 0;
         if (ExitAfterInputPoll > 0 && InputManager.CurrentPoll >= ExitAfterInputPoll)
             _shutdownRequested = true;
         if (_shutdownRequested)
@@ -124,11 +187,34 @@ public static class Runtime
         Audio.Attach(Spu);
         double waitedMs = FrameClock.Throttle();
         long afterWait = Stopwatch.GetTimestamp();
+        long allocatedAfterWait = TracePerformance
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : 0;
         if (TraceVSync && traceFrame < 10) Console.Error.WriteLine($"[VSync] present {traceFrame}: devices");
         Sdk.LibCd.Tick();
+        long afterCd = Stopwatch.GetTimestamp();
+        long allocatedAfterCd = TracePerformance
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : 0;
         if (Cpu != null && Mem != null) Bios.BiosB.TickCards(Cpu, Mem);
-        if (Mem != null) { Bios.BiosB.RefreshPad(Mem); Sdk.LibPad.Refresh(Mem); } //is this correct?
-        long afterDevices = Stopwatch.GetTimestamp();
+        long afterCards = Stopwatch.GetTimestamp();
+        long allocatedAfterCards = TracePerformance
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : 0;
+        if (Mem != null) Bios.BiosB.RefreshPad(Mem);
+        long afterBiosPad = Stopwatch.GetTimestamp();
+        long allocatedAfterBiosPad = TracePerformance
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : 0;
+        if (Mem != null) Sdk.LibPad.Refresh(Mem); //is this correct?
+        long afterLibPad = Stopwatch.GetTimestamp();
+        long allocatedAfterLibPad = TracePerformance
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : 0;
+        long afterDevices = afterLibPad;
+        long allocatedAfterDevices = TracePerformance
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : 0;
         if (TraceVSync && traceFrame < 10) Console.Error.WriteLine($"[VSync] present {traceFrame}: irq");
         DispatchIrq(0); //using this to dispatch irqs too if necessary, probably not needed after the rest of stuff is reimplemented
         DrainDeferredIrqs();
@@ -136,8 +222,16 @@ public static class Runtime
         // Clear recovered depths only after that callback has consumed them.
         Gte.BeginScreenDepthFrame();
         long afterIrq = Stopwatch.GetTimestamp();
+        long allocatedAfterIrq = TracePerformance
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : 0;
         RecordPerformance(
-            performanceStart, afterHost, afterWait, afterDevices, afterIrq, waitedMs);
+            performanceStart, afterHost, afterWait, afterCd, afterCards,
+            afterBiosPad, afterLibPad, afterDevices, afterIrq,
+            allocatedAtStart, allocatedAfterHost, allocatedAfterWait,
+            allocatedAfterCd, allocatedAfterCards, allocatedAfterBiosPad,
+            allocatedAfterLibPad,
+            allocatedAfterDevices, allocatedAfterIrq, waitedMs);
         if (TraceVSync && traceFrame < 10) Console.Error.WriteLine($"[VSync] present {traceFrame}: done");
     }
 
@@ -200,32 +294,132 @@ public static class Runtime
     }
 
     static void RecordPerformance(
-        long started, long afterHost, long afterWait, long afterDevices,
-        long afterIrq, double waitedMs)
+        long started, long afterHost, long afterWait, long afterCd,
+        long afterCards, long afterBiosPad, long afterLibPad,
+        long afterDevices, long afterIrq,
+        long allocatedAtStart, long allocatedAfterHost,
+        long allocatedAfterWait, long allocatedAfterCd,
+        long allocatedAfterCards, long allocatedAfterBiosPad,
+        long allocatedAfterLibPad,
+        long allocatedAfterDevices,
+        long allocatedAfterIrq, double waitedMs)
     {
         if (!TracePerformance) return;
-        if (_performanceStarted == 0) _performanceStarted = started;
+        if (_performanceStarted == 0)
+        {
+            _performanceStarted = started;
+            _performanceAllocatedBytes = GC.GetAllocatedBytesForCurrentThread();
+            _performanceGen0 = GC.CollectionCount(0);
+            _performanceGen1 = GC.CollectionCount(1);
+            _performanceGen2 = GC.CollectionCount(2);
+        }
+        if (_performancePreviousEnd != 0)
+        {
+            _performanceGuestTicks += started - _performancePreviousEnd;
+            _performanceGuestAllocatedBytes +=
+                allocatedAtStart - _performancePreviousEndAllocatedBytes;
+        }
+        if (_performancePreviousAfterWait != 0)
+        {
+            long intervalTicks = afterWait - _performancePreviousAfterWait;
+            double intervalMs = intervalTicks * 1000.0 / Stopwatch.Frequency;
+            if (intervalMs >= 40.0)
+            {
+                double tickScale = 1000.0 / Stopwatch.Frequency;
+                Console.Error.WriteLine(
+                    $"[PERF-LONG-FRAME] poll={InputManager.CurrentPoll} " +
+                    $"intervalMs={intervalMs:F3} " +
+                    $"priorTailMs={(_performancePreviousEnd - _performancePreviousAfterWait) * tickScale:F3} " +
+                    $"guestMs={(started - _performancePreviousEnd) * tickScale:F3} " +
+                    $"hostMs={(afterHost - started) * tickScale:F3} " +
+                    $"waitMs={(afterWait - afterHost) * tickScale:F3}");
+            }
+        }
+        _performancePreviousEnd = afterIrq;
+        _performancePreviousAfterWait = afterWait;
+        _performancePreviousEndAllocatedBytes = allocatedAfterIrq;
         _performanceHostTicks += afterHost - started;
         _performanceWaitTicks += afterWait - afterHost;
         _performanceDeviceTicks += afterDevices - afterWait;
+        _performanceCdTicks += afterCd - afterWait;
+        _performanceCardTicks += afterCards - afterCd;
+        _performanceBiosPadTicks += afterBiosPad - afterCards;
+        _performanceLibPadTicks += afterLibPad - afterBiosPad;
         _performanceIrqTicks += afterIrq - afterDevices;
+        _performanceHostAllocatedBytes +=
+            allocatedAfterHost - allocatedAtStart;
+        _performanceWaitAllocatedBytes +=
+            allocatedAfterWait - allocatedAfterHost;
+        _performanceDeviceAllocatedBytes +=
+            allocatedAfterDevices - allocatedAfterWait;
+        _performanceCdAllocatedBytes += allocatedAfterCd - allocatedAfterWait;
+        _performanceCardAllocatedBytes +=
+            allocatedAfterCards - allocatedAfterCd;
+        _performanceBiosPadAllocatedBytes +=
+            allocatedAfterBiosPad - allocatedAfterCards;
+        _performanceLibPadAllocatedBytes +=
+            allocatedAfterLibPad - allocatedAfterBiosPad;
+        _performanceIrqAllocatedBytes +=
+            allocatedAfterIrq - allocatedAfterDevices;
         if (++_performanceFrames < 300) return;
 
         double scale = 1000.0 / Stopwatch.Frequency;
         double elapsedMs = (afterIrq - _performanceStarted) * scale;
         double fps = elapsedMs > 0 ? _performanceFrames * 1000.0 / elapsedMs : 0;
+        long allocatedNow = GC.GetAllocatedBytesForCurrentThread();
+        int gen0Now = GC.CollectionCount(0);
+        int gen1Now = GC.CollectionCount(1);
+        int gen2Now = GC.CollectionCount(2);
         Console.Error.WriteLine(
             $"[PERF] poll={InputManager.CurrentPoll} fps={fps:F2} " +
             $"host={_performanceHostTicks * scale / _performanceFrames:F2}ms " +
             $"wait={_performanceWaitTicks * scale / _performanceFrames:F2}ms " +
             $"devices={_performanceDeviceTicks * scale / _performanceFrames:F2}ms " +
+            $"devicePhases=" +
+            $"{_performanceCdTicks * scale / _performanceFrames:F2}/" +
+            $"{_performanceCardTicks * scale / _performanceFrames:F2}/" +
+            $"{_performanceBiosPadTicks * scale / _performanceFrames:F2}/" +
+            $"{_performanceLibPadTicks * scale / _performanceFrames:F2}ms " +
             $"irq+guest={_performanceIrqTicks * scale / _performanceFrames:F2}ms " +
+            $"guest={_performanceGuestTicks * scale / _performanceFrames:F2}ms " +
+            $"alloc={(allocatedNow - _performanceAllocatedBytes) / 1024.0:F0}KiB " +
+            $"allocPhases=" +
+            $"{_performanceHostAllocatedBytes / 1024.0:F0}/" +
+            $"{_performanceWaitAllocatedBytes / 1024.0:F0}/" +
+            $"{_performanceDeviceAllocatedBytes / 1024.0:F0}/" +
+            $"{_performanceIrqAllocatedBytes / 1024.0:F0}/" +
+            $"{_performanceGuestAllocatedBytes / 1024.0:F0}KiB " +
+            $"allocDevices=" +
+            $"{_performanceCdAllocatedBytes / 1024.0:F0}/" +
+            $"{_performanceCardAllocatedBytes / 1024.0:F0}/" +
+            $"{_performanceBiosPadAllocatedBytes / 1024.0:F0}/" +
+            $"{_performanceLibPadAllocatedBytes / 1024.0:F0}KiB " +
+            $"gc={gen0Now - _performanceGen0}/" +
+            $"{gen1Now - _performanceGen1}/{gen2Now - _performanceGen2} " +
             $"last_wait={waitedMs:F2}ms");
         _performanceStarted = afterIrq;
         _performanceHostTicks = 0;
         _performanceWaitTicks = 0;
         _performanceDeviceTicks = 0;
+        _performanceCdTicks = 0;
+        _performanceCardTicks = 0;
+        _performanceBiosPadTicks = 0;
+        _performanceLibPadTicks = 0;
         _performanceIrqTicks = 0;
+        _performanceGuestTicks = 0;
+        _performanceHostAllocatedBytes = 0;
+        _performanceWaitAllocatedBytes = 0;
+        _performanceDeviceAllocatedBytes = 0;
+        _performanceCdAllocatedBytes = 0;
+        _performanceCardAllocatedBytes = 0;
+        _performanceBiosPadAllocatedBytes = 0;
+        _performanceLibPadAllocatedBytes = 0;
+        _performanceIrqAllocatedBytes = 0;
+        _performanceGuestAllocatedBytes = 0;
+        _performanceAllocatedBytes = allocatedNow;
+        _performanceGen0 = gen0Now;
+        _performanceGen1 = gen1Now;
+        _performanceGen2 = gen2Now;
         _performanceFrames = 0;
     }
 
@@ -333,17 +527,25 @@ public static class Runtime
 
     static bool DrainDeferredHardwareActions()
     {
-        Action[] actions;
+        int actionCount;
         lock (DeferredHardwareActions)
         {
-            if (DeferredHardwareActions.Count == 0)
+            actionCount = DeferredHardwareActions.Count;
+            if (actionCount == 0)
                 return false;
-            actions = DeferredHardwareActions.ToArray();
-            DeferredHardwareActions.Clear();
         }
 
-        foreach (Action action in actions)
+        // Drain exactly the actions visible at this hardware boundary. An
+        // action may queue follow-up work, which belongs to the next pass of
+        // DrainDeferredIrqs just as it did when this queue was snapshotted via
+        // ToArray, but no temporary Action[] is required every frame.
+        for (int index = 0; index < actionCount; index++)
+        {
+            Action action;
+            lock (DeferredHardwareActions)
+                action = DeferredHardwareActions.Dequeue();
             action();
+        }
         return true;
     }
 
@@ -369,6 +571,7 @@ public static class Runtime
 
     public static void Shutdown()
     {
+        Sdk.GT2Compat.DumpRendererAudit();
         Audio.Shutdown();
         HostWindow.Shutdown();
     }

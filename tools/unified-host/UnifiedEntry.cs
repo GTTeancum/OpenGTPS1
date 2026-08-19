@@ -7,13 +7,22 @@ using BiosKernel = RecompOne.Runtime.Bios.Bios;
 
 internal static class UnifiedEntry
 {
-    public static void Run(IMemory memory, string looseRoot)
+    public static void Run(
+        IMemory memory,
+        string looseRoot,
+        string initialVariant = "simulation")
     {
+        GT2Compat.ConfigureUnifiedTitlePanels(
+            Path.Combine(looseRoot, "TITLE_EXACT.DAT"));
         RecompOne.Runtime.Runtime.Initialize("Gran Turismo 2 PC");
         RecompOne.Runtime.OggMusic.Initialize(looseRoot);
         RecompOne.Runtime.Modding.ModLoader.LoadAll();
 
-        string variant = "simulation";
+        string variant = initialVariant.Equals(
+            "arcade", StringComparison.OrdinalIgnoreCase)
+            ? "arcade"
+            : "simulation";
+        bool seamlessArcadeHandoff = false;
         while (true)
         {
             string manifest = Path.Combine("manifests", $"{variant}.json");
@@ -54,11 +63,24 @@ internal static class UnifiedEntry
 
             try
             {
-                GT2Compat.RunGuestLoop(
-                    context,
-                    memory,
-                    arcade ? 0x8005D570u : 0x8005D600u,
-                    arcade ? "gt2_arcade_overlay" : "gt2_overlay");
+                if (arcade && seamlessArcadeHandoff)
+                {
+                    // The Simulation title has already supplied the unified
+                    // legal/title presentation. Prepare the Arcade program's
+                    // own BSS and runtime services, then enter the same native
+                    // overlay requested by START GAME. Do not rerun Arcade's
+                    // executable bootstrap or opening/title overlay.
+                    GT2Compat.PrepareArcadeFrontendHandoff(context, memory);
+                    GT2Compat.RunArcadeFrontendHandoff(context, memory);
+                }
+                else
+                {
+                    GT2Compat.RunGuestLoop(
+                        context,
+                        memory,
+                        arcade ? 0x8005D570u : 0x8005D600u,
+                        arcade ? "gt2_arcade_overlay" : "gt2_overlay");
+                }
                 return;
             }
             catch (GT2VariantSwitch requested)
@@ -67,9 +89,10 @@ internal static class UnifiedEntry
                         "arcade", StringComparison.OrdinalIgnoreCase))
                     throw;
                 variant = "arcade";
+                seamlessArcadeHandoff = true;
                 Console.WriteLine(
-                    "[Host] guest-controlled transition: " +
-                    "Simulation title -> Arcade Mode");
+                    "[Host] seamless guest handoff: " +
+                    "Simulation title -> Arcade START GAME destination");
             }
         }
     }

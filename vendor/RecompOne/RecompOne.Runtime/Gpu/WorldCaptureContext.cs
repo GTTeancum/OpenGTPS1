@@ -28,8 +28,12 @@ public static class WorldCaptureContext
     static WorldObjectContext _current;
 
     public static bool LiveRenderingEnabled { get; set; }
-    public static bool CaptureEnabled =>
-        FileCaptureEnabled || LiveRenderingEnabled;
+    public static bool CaptureEnabled
+    {
+        [System.Runtime.CompilerServices.MethodImpl(
+            System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        get => FileCaptureEnabled || LiveRenderingEnabled;
+    }
     public static WorldObjectContext Current =>
         CaptureEnabled ? _current : default;
 

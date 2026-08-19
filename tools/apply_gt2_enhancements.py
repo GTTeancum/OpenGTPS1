@@ -19,7 +19,55 @@ def replace_once(path: Path, old: str, new: str, description: str) -> None:
     path.write_text(source.replace(old, new, 1), encoding="utf-8")
 
 
+def replace_exact_count(
+    path: Path,
+    old: str,
+    new: str,
+    expected_count: int,
+    description: str,
+) -> None:
+    source = path.read_text(encoding="utf-8")
+    matches = source.count(old)
+    if matches != expected_count:
+        raise RuntimeError(
+            f"{description}: expected {expected_count} source matches in "
+            f"{path}, found {matches}"
+        )
+    path.write_text(source.replace(old, new), encoding="utf-8")
+
+
+def apply_auxiliary_billboard_projection(race: Path) -> None:
+    replace_exact_count(
+        race,
+        """        c.A0 = RecompOne.Runtime.Gte.Read(24);
+        c.V1 = RecompOne.Runtime.Gte.Read(14);
+""",
+        """        c.A0 = RecompOne.Runtime.Gte.Read(24);
+        c.V1 = RecompOne.Runtime.Gte.Read(14);
+        RecompOne.Runtime.Gte.BeginDerivedScreenProjection(
+            m.ReadU32(c.S2 + 0x8u) == 0x31525353u,
+            c.V1);
+""",
+        2,
+        "Simulation auxiliary billboard projection begin hooks",
+    )
+    for label in ("L800209C8", "L80020DE0"):
+        replace_once(
+            race,
+            f"""        m.WriteU32((c.At + 0x68u), c.T7);
+        {label}: ;
+""",
+            f"""        m.WriteU32((c.At + 0x68u), c.T7);
+        RecompOne.Runtime.Gte.EndDerivedScreenProjection();
+        {label}: ;
+""",
+            f"Simulation auxiliary billboard projection end hook {label}",
+        )
+
+
 def include_livery_preview_helper() -> None:
+    if "SimulationLiveryPreview.cs" in PROJECT.read_text(encoding="utf-8"):
+        return
     replace_once(
         PROJECT,
         """  <ItemGroup>
@@ -158,6 +206,7 @@ def main() -> int:
     race = GENERATED / "gt2_overlay_0.cs"
     track = GENERATED / "gt2_overlay_2.cs"
     title = GENERATED / "gt2_overlay_1.cs"
+    main_executable = GENERATED / "main.cs"
     showroom = GENERATED / "gt2_overlay_4.cs"
     entry = GENERATED / "Entry.cs"
 
@@ -174,6 +223,20 @@ def main() -> int:
     )
 
     replace_once(
+        main_executable,
+        """        L8006D8CC: ;
+        c.V1 = (uint)(short)m.ReadU16((c.S2 + 0x26u));
+""",
+        """        L8006D8CC: ;
+        if (RecompOne.Runtime.Sdk.GT2Compat.SuppressUnifiedTitleListDecorations(c.S2)) {
+            goto L8006D998;
+        }
+        c.V1 = (uint)(short)m.ReadU16((c.S2 + 0x26u));
+""",
+        "Sony demo title 2x2 layout without vertical-list boundary arrows",
+    )
+
+    replace_once(
         title,
         """        c.A3 = (uint)(short)m.ReadU16((c.A1 + 0x10u));
         c.A2 = m.ReadU32(c.A1);
@@ -182,7 +245,7 @@ def main() -> int:
 """,
         """        c.A3 = (uint)(short)m.ReadU16((c.A1 + 0x10u));
         c.A2 = m.ReadU32(c.A1);
-        c.V0 = (uint)RecompOne.Runtime.Sdk.GT2Compat.UnifiedTitleSelectionValue(c.S1);
+        c.V0 = (uint)RecompOne.Runtime.Sdk.GT2Compat.UnifiedTitleItemValidity(c.S1);
         c.S2 = m.ReadU8((c.A0 - 0x6720u));
 """,
         "unified title item validity map",
@@ -238,10 +301,44 @@ def main() -> int:
         """        c.A0 = c.S1 + 0u;
         c.A1 = 0x00000001u;
         c.S0 = c.V0 + 0u;
-        c.A2 = 0x00000007u;
+        c.A2 = 0x00000004u;
         c.RA = 0x80017B28u;
 """,
         "unified title navigation bounds",
+    )
+
+    replace_once(
+        title,
+        """        L800178D0: ;
+        m.WriteU16((c.S0 + 0x12u), (ushort)c.A3);
+        c.V0 = (uint)(short)m.ReadU16((c.A1 + 0xCu));
+""",
+        """        L800178D0: ;
+        m.WriteU16((c.S0 + 0x12u), (ushort)c.A3);
+        m.WriteU32(
+            (c.S0 + 0xCu),
+            RecompOne.Runtime.Sdk.GT2Compat.UnifiedTitleDescriptorForState(
+                c.S1, c.A2));
+        c.V0 = (uint)(short)m.ReadU16((c.A1 + 0xCu));
+""",
+        "unified title selected/unselected native sprite",
+    )
+
+    replace_once(
+        title,
+        """        m.WriteU16((c.A0 + 0x4u), (ushort)c.V0);
+        m.WriteU16((c.A0 + 0x6u), (ushort)c.V1);
+        c.A1 = m.ReadU32((c.A1 + 0x4u));
+        c.RA = 0x800178F4u;
+""",
+        """        m.WriteU16((c.A0 + 0x4u), (ushort)c.V0);
+        m.WriteU16((c.A0 + 0x6u), (ushort)c.V1);
+        RecompOne.Runtime.Sdk.GT2Compat.PositionUnifiedTitleItem(
+            m, c.A0, c.S1);
+        c.A1 = m.ReadU32((c.A1 + 0x4u));
+        c.RA = 0x800178F4u;
+""",
+        "unified title authored 2x2 positions",
     )
 
     replace_once(
@@ -402,6 +499,21 @@ def main() -> int:
 
     replace_once(
         main,
+        """        m.WriteU32((c.SP + 0x18u), c.S2);
+        c.S2 = c.A2 + 0u;
+        m.WriteU32((c.SP + 0x24u), c.S5);
+""",
+        """        m.WriteU32((c.SP + 0x18u), c.S2);
+        c.S2 = c.A2 + 0u;
+        RecompOne.Runtime.Sdk.GT2Compat.TraceWheelTransform(
+            c.S6, c.S2, m.ReadU32(c.SP + 0x4Cu), m);
+        m.WriteU32((c.SP + 0x24u), c.S5);
+""",
+        "wheel transform tracing hook",
+    )
+
+    replace_once(
+        main,
         """        L800677F4: ;
         c.RA = m.ReadU32((c.SP + 0x5Cu));
         c.FP = m.ReadU32((c.SP + 0x58u));
@@ -534,6 +646,8 @@ def main() -> int:
 """,
         "track world-capture object end hook",
     )
+
+    apply_auxiliary_billboard_projection(race)
 
     replace_once(
         track,

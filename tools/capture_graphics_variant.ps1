@@ -1,13 +1,6 @@
 param(
-    [ValidateSet(
-        'EnhancedBaseline',
-        'ProjectionOff',
-        'SeamsOff',
-        'DistanceOff',
-        'StockLod',
-        'DitherOn'
-    )]
-    [string]$Variant,
+    [ValidateSet('Modern')]
+    [string]$Variant = 'Modern',
     [int]$CapturePoll = 10000,
     [string]$ArtifactName = 'graphics-variant-current',
     [string]$Fixture = 'tests\fixtures\ai-autodrive-save-sunday-race.input',
@@ -27,16 +20,6 @@ $fixture = if ([IO.Path]::IsPathRooted($Fixture)) {
 }
 $artifact = Join-Path $repo "artifacts\$ArtifactName"
 $capture = Join-Path $deploy "recompone_capture__$CapturePoll.ppm"
-$overrides = @{
-    EnhancedBaseline = @('RECOMPONE_PERSPECTIVE_CORRECT_TEXTURES', '1')
-    ProjectionOff = @('RECOMPONE_PERSPECTIVE_CORRECT_TEXTURES', '0')
-    SeamsOff = @('RECOMPONE_STABILIZE_GEOMETRY_SEAMS', '0')
-    DistanceOff = @('RECOMPONE_EXTENDED_DRAW_DISTANCE', '0')
-    StockLod = @('RECOMPONE_MAXIMUM_LOD', '0')
-    DitherOn = @('RECOMPONE_PS1_DITHERING', '1')
-}
-$override = $overrides[$Variant]
-
 New-Item -ItemType Directory -Path $artifact -Force | Out-Null
 if (Test-Path -LiteralPath $capture) {
     Remove-Item -LiteralPath $capture -Force
@@ -57,7 +40,6 @@ $start.EnvironmentVariables['RECOMPONE_UNTHROTTLED'] = '1'
 $start.EnvironmentVariables['RECOMPONE_GT2_AI_AUTODRIVE'] = '1'
 $start.EnvironmentVariables['RECOMPONE_TRACE_GPU_PRIMITIVES'] = '1'
 $start.EnvironmentVariables['RECOMPONE_GRAPHICS_PRESET_OVERRIDE'] = 'Enhanced'
-$start.EnvironmentVariables[$override[0]] = $override[1]
 $tracePath = Join-Path $artifact 'projection-trace.jsonl'
 if ($TraceProjection) {
     $start.EnvironmentVariables['RECOMPONE_PROJECTION_TRACE_PATH'] = $tracePath
@@ -114,5 +96,5 @@ if ($ffmpeg) {
 }
 
 Write-Output "graphics variant=$Variant artifact=$artifact"
-Write-Output "override=$($override[0])=$($override[1])"
+Write-Output 'renderer=fixed modern; legacy quality variants removed'
 Write-Output 'audio safety=dummy backend proven'

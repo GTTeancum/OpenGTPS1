@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <unordered_map>
+#include <utility>
 #include <new>
 
 namespace opengt::render {
@@ -111,6 +113,34 @@ bool displayed_screen_target(
         maximum_y >= header.display_y &&
         minimum_x <= display_x1 &&
         minimum_y <= display_y1;
+}
+
+bool valid_ps1_screen_polygon_span(
+    const WorldCaptureTriangle& triangle
+) {
+    float minimum_x = triangle.vertices[0].screen_x;
+    float maximum_x = minimum_x;
+    float minimum_y = triangle.vertices[0].screen_y;
+    float maximum_y = minimum_y;
+    for (int index = 1; index < 3; ++index) {
+        minimum_x = std::min(
+            minimum_x, triangle.vertices[index].screen_x);
+        maximum_x = std::max(
+            maximum_x, triangle.vertices[index].screen_x);
+        minimum_y = std::min(
+            minimum_y, triangle.vertices[index].screen_y);
+        maximum_y = std::max(
+            maximum_y, triangle.vertices[index].screen_y);
+    }
+    // The PS1 rejects polygons whose projected extent exceeds the GPU's
+    // 1023x511 validity limits. The compatibility rasterizers enforce the
+    // same rule before drawing. Apply it to explicit screen primitives in
+    // the native path as well: otherwise an offscreen billboard crossing the
+    // signed 11-bit coordinate boundary can wrap one vertex from -1025 to
+    // +1023 and become a full-screen streak.
+    return
+        maximum_x - minimum_x <= 1023.0F &&
+        maximum_y - minimum_y <= 511.0F;
 }
 
 std::uint32_t material_index(
@@ -239,11 +269,27 @@ WorldDrawListResult build_world_draw_list(
                 options.include_screen_space && !complete;
             if (
                 screen_space &&
-                !displayed_screen_target(header, triangle)
-            )
+                !valid_ps1_screen_polygon_span(triangle)
+            ) {
+                ++result.rejected_oversized_screen_commands;
                 continue;
-            if (!complete)
+            }
+            if (
+                screen_space &&
+                !displayed_screen_target(header, triangle)
+            ) {
+                ++result.rejected_screen_target;
+                if (triangle.object_kind == 1U)
+                    ++result.rejected_screen_target_track;
+                continue;
+            }
+            if (!complete) {
                 ++result.rejected_incomplete;
+                if (triangle.object_kind == 1U)
+                    ++result.rejected_incomplete_track;
+                else if (triangle.object_kind == 2U)
+                    ++result.rejected_incomplete_vehicle;
+            }
             if (!complete && !screen_space)
                 continue;
             if (complete && !is_main) {
@@ -264,13 +310,26 @@ WorldDrawListResult build_world_draw_list(
             command.clip_y0 = triangle.clip_y0;
             command.clip_x1 = triangle.clip_x1;
             command.clip_y1 = triangle.clip_y1;
-            command.object_kind =
-                screen_space ? 0U : triangle.object_kind;
-            command.object_id =
-                screen_space ? 0U : triangle.object_id;
-            command.model_pointer =
-                screen_space ? 0U : triangle.model_pointer;
+            const bool screen_space_track =
+                screen_space && triangle.object_kind == 1U;
+            command.object_kind = screen_space_track
+                ? triangle.object_kind
+                : screen_space ? 0U : triangle.object_kind;
+            command.object_id = screen_space_track
+                ? triangle.object_id
+                : screen_space ? 0U : triangle.object_id;
+            command.model_pointer = screen_space_track
+                ? triangle.model_pointer
+                : screen_space ? 0U : triangle.model_pointer;
             command.transform_id = triangle.transform_id;
+            for (int component = 0; component < 9; ++component)
+                command.transform_rotation[component] =
+                    triangle.transform_rotation[component];
+            for (int component = 0; component < 3; ++component)
+                command.transform_translation[component] =
+                    triangle.transform_translation[component];
+            command.exact_transform_valid =
+                !screen_space && triangle.exact_transform_valid;
             command.source_command_index =
                 static_cast<std::uint32_t>(index);
             command.channel = is_main
@@ -358,6 +417,16 @@ WorldDrawListResult build_world_draw_list(
                 destination.clip_w = clip_w;
                 destination.screen_x = projected_x;
                 destination.screen_y = projected_y;
+                destination.projection_offset_x =
+                    static_cast<float>(source.projection_offset_x);
+                destination.projection_offset_y =
+                    static_cast<float>(source.projection_offset_y);
+                destination.projection_plane =
+                    static_cast<float>(source.projection_plane);
+                destination.draw_offset_x =
+                    static_cast<float>(triangle.draw_offset_x);
+                destination.draw_offset_y =
+                    static_cast<float>(triangle.draw_offset_y);
                 destination.u = static_cast<float>(source.u);
                 destination.v = static_cast<float>(source.v);
                 destination.r = source.r;
@@ -367,12 +436,30 @@ WorldDrawListResult build_world_draw_list(
                 destination.model_y = source.model_y;
                 destination.model_z = source.model_z;
                 destination.provenance_flags =
-                    source.source_vertex_identity != 0 ? 1U : 0U;
+                    (source.source_vertex_identity != 0
+                        ? world_vertex_source_identity_flag
+                        : 0U) |
+                    (source.screen_offset_anchor
+                        ? world_vertex_screen_offset_anchor_flag
+                        : 0U);
                 destination.source_vertex_identity =
                     source.source_vertex_identity;
                 destination.exact_view_x = source.view_x;
                 destination.exact_view_y = source.view_y;
                 destination.exact_view_z = source.view_z;
+                destination.transform_id = source.transform_id;
+                for (int component = 0; component < 9; ++component) {
+                    destination.transform_rotation[component] =
+                        source.transform_rotation[component];
+                }
+                for (int component = 0; component < 3; ++component) {
+                    destination.transform_translation[component] =
+                        source.transform_translation[component];
+                }
+                destination.exact_transform_valid =
+                    source.exact_transform_valid;
+                destination.authored_screen_x = projected.x;
+                destination.authored_screen_y = projected.y;
             }
             normal(&command);
             result.commands.push_back(command);

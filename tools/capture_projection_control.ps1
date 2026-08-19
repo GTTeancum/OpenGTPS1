@@ -43,6 +43,8 @@ $start.EnvironmentVariables['RECOMPONE_UNTHROTTLED'] = '1'
 $start.EnvironmentVariables['RECOMPONE_GT2_AI_AUTODRIVE'] = '1'
 $start.EnvironmentVariables['RECOMPONE_TRACE_GPU_PRIMITIVES'] = '1'
 $start.EnvironmentVariables['RECOMPONE_GRAPHICS_PRESET_OVERRIDE'] = 'Enhanced'
+# Negative regression: this retired downgrade variable must be ignored. The
+# resulting capture must remain byte-identical to the fixed modern baseline.
 $start.EnvironmentVariables['RECOMPONE_PERSPECTIVE_CORRECT_TEXTURES'] = '0'
 $start.EnvironmentVariables['RECOMPONE_EXIT_AFTER_INPUT_POLL'] =
     ($CapturePoll + 50).ToString()
@@ -75,6 +77,11 @@ if (-not (Test-Path -LiteralPath $capture)) {
 
 $offPpm = Join-Path $artifact "projection-off-$CapturePoll.ppm"
 Copy-Item -LiteralPath $capture -Destination $offPpm -Force
+$onPpm = Join-Path $artifact "projection-on-$CapturePoll.ppm"
+if ((Get-FileHash -LiteralPath $onPpm -Algorithm SHA256).Hash -ne
+        (Get-FileHash -LiteralPath $offPpm -Algorithm SHA256).Hash) {
+    throw 'Retired projection downgrade variable changed modern output'
+}
 $ffmpeg = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
 if ($ffmpeg) {
     & $ffmpeg -hide_banner -loglevel error -y -i $offPpm `
@@ -84,5 +91,6 @@ if ($ffmpeg) {
     }
 }
 
-Write-Output "projection control=$artifact"
+Write-Output "retired projection override ignored=$artifact"
+Write-Output 'modern baseline=byte-identical'
 Write-Output 'audio safety=dummy backend proven'

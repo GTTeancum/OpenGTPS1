@@ -53,6 +53,65 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def texture_visual_fingerprints(data: bytes) -> list[str]:
+    """Hash each paint by its decoded indexed pixels and material CLUTs.
+
+    Car textures use one 4-bpp bitmap with sixteen material CLUTs per paint.
+    Raw bitmap and palette hashes report false differences when two packages
+    merely assign the same colours to different nibble indices.  For each
+    nibble, build its complete sixteen-material colour signature, sort those
+    signatures into a canonical order, and remap the bitmap to that order.
+    The resulting hash changes only when the decoded livery changes.
+
+    Nibble zero is transparent in the renderer regardless of its stored CLUT
+    value, so it is canonicalized to a transparent signature here as well.
+    """
+    count = data[0]
+    if not 1 <= count <= 16 or len(data) != 0xB3A0:
+        raise ValueError(
+            f"invalid native GT2 car texture: count={count}, size={len(data):#x}"
+        )
+    packed_pixels = data[0x43A0:0xB3A0]
+    low_nibbles = packed_pixels.translate(bytes(value & 15 for value in range(256)))
+    high_nibbles = packed_pixels.translate(bytes(value >> 4 for value in range(256)))
+    expanded = bytearray(len(packed_pixels) * 2)
+    expanded[0::2] = low_nibbles
+    expanded[1::2] = high_nibbles
+
+    fingerprints: list[str] = []
+    for paint_index in range(count):
+        clut_base = 0x20 + paint_index * 0x240
+        signatures: list[bytes] = []
+        for texel_index in range(16):
+            if texel_index == 0:
+                signatures.append(bytes(16 * 2))
+                continue
+            signatures.append(
+                b"".join(
+                    data[
+                        clut_base + material * 32 + texel_index * 2 :
+                        clut_base + material * 32 + texel_index * 2 + 2
+                    ]
+                    for material in range(16)
+                )
+            )
+
+        canonical_signatures = sorted(set(signatures))
+        canonical_index = {
+            signature: index
+            for index, signature in enumerate(canonical_signatures)
+        }
+        remap = bytes(
+            [canonical_index[signature] for signature in signatures]
+            + [0] * 240
+        )
+        canonical_pixels = bytes(expanded).translate(remap)
+        fingerprints.append(
+            sha256(b"GT-CAR-VISUAL-V1\0" + b"".join(canonical_signatures) + canonical_pixels)
+        )
+    return fingerprints
+
+
 @dataclass
 class Volume:
     path: Path
@@ -135,6 +194,8 @@ def texture_metadata(data: bytes) -> dict:
         "colorIds": list(data[2 : 2 + count]),
         "paletteSha256": [sha256(palette) for palette in palettes],
         "bitmapSha256": sha256(data[0x43A0:0xB3A0]),
+        "visualFingerprintVersion": 1,
+        "visualFingerprintSha256": texture_visual_fingerprints(data),
         "illuminationAndPaintMaskSha256": [
             sha256(data[0x220 + index * 0x240 : 0x260 + index * 0x240])
             for index in range(count)
@@ -378,6 +439,8 @@ def compare_native_texture(
     gt2 = texture_metadata(native_gt2)
     gt1_palettes = gt1["paletteSha256"]
     gt2_palettes = gt2["paletteSha256"]
+    gt1_visuals = gt1["visualFingerprintSha256"]
+    gt2_visuals = gt2["visualFingerprintSha256"]
     return {
         "gt1": gt1,
         "gt2": gt2,
@@ -385,6 +448,22 @@ def compare_native_texture(
         "bitmapIdentical": (
             gt1["bitmapSha256"] == gt2["bitmapSha256"]
         ),
+        "gt1VisualGt2Indices": [
+            [
+                index
+                for index, candidate in enumerate(gt2_visuals)
+                if candidate == visual
+            ]
+            for visual in gt1_visuals
+        ],
+        "gt2VisualGt1Indices": [
+            [
+                index
+                for index, candidate in enumerate(gt1_visuals)
+                if candidate == visual
+            ]
+            for visual in gt2_visuals
+        ],
         "gt1PaletteGt2Indices": [
             [
                 index
@@ -454,6 +533,8 @@ def build_inventory(
 
     records: list[dict] = []
     paint_id_folds: list[dict] = []
+    decoded_livery_deltas: list[dict] = []
+    racing_modification_liveries: list[dict] = []
     evidence_counts: Counter[str] = Counter()
     for stem in stems:
         day_texture, day_model, night_texture, night_model = (
@@ -573,6 +654,67 @@ def build_inventory(
             }
 
         simulation_assets_for_stem = asset_comparison.get("simulation", {})
+        if simulation_assets_for_stem.get("present"):
+            day_comparison = simulation_assets_for_stem["dayTexture"]
+            night_comparison = simulation_assets_for_stem["nightTexture"]
+            day_unmatched = [
+                index
+                for index, matches in enumerate(
+                    day_comparison["gt1VisualGt2Indices"]
+                )
+                if not matches
+            ]
+            night_unmatched = [
+                index
+                for index, matches in enumerate(
+                    night_comparison["gt1VisualGt2Indices"]
+                )
+                if not matches
+            ]
+            if day_unmatched or night_unmatched:
+                decoded_livery_deltas.append(
+                    {
+                        "stem": stem,
+                        "gt1Name": (
+                            str(spec["name"]) if spec is not None else None
+                        ),
+                        "gt1PaintIds": embedded_paint_ids,
+                        "gt2PaintIds": day_comparison["gt2"]["colorIds"],
+                        "gt1DayPaintIndicesAbsentFromGt2": day_unmatched,
+                        "gt1NightPaintIndicesAbsentFromGt2": night_unmatched,
+                        "gt1DayPaintIdsAbsentFromGt2": [
+                            embedded_paint_ids[index] for index in day_unmatched
+                        ],
+                        "gt1NightPaintIdsAbsentFromGt2": [
+                            embedded_paint_ids[index] for index in night_unmatched
+                        ],
+                        "sameStemGt2Car": same_stem_gtmode,
+                    }
+                )
+
+            base_stem = stem[:-1] + "n" if stem.endswith("r") else ""
+            base_spec = specs.get(base_stem)
+            if spec is None and base_spec is not None:
+                racing_modification_liveries.append(
+                    {
+                        "racingBodyStem": stem,
+                        "baseCarStem": base_stem,
+                        "baseCarName": str(base_spec["name"]),
+                        "gt1PaintIds": embedded_paint_ids,
+                        "gt2PaintIds": day_comparison["gt2"]["colorIds"],
+                        "gt1DayPaintIndicesAbsentFromGt2": day_unmatched,
+                        "gt1NightPaintIndicesAbsentFromGt2": night_unmatched,
+                        "decodedLiveryDelta": bool(
+                            day_unmatched or night_unmatched
+                        ),
+                        "dayModelByteIdentical": simulation_assets_for_stem[
+                            "models"
+                        ]["day"].get("byteIdentical", False),
+                        "nightModelByteIdentical": simulation_assets_for_stem[
+                            "models"
+                        ]["night"].get("byteIdentical", False),
+                    }
+                )
         texture_delta = bool(
             simulation_assets_for_stem.get("present")
             and (
@@ -699,6 +841,14 @@ def build_inventory(
                 len(item["gt1OnlyPaintIds"])
                 for item in paint_id_folds
             ),
+            "decodedLiveryDeltaEntryCount": len(decoded_livery_deltas),
+            "racingModificationBodyCount": len(
+                racing_modification_liveries
+            ),
+            "racingModificationDecodedLiveryDeltaCount": sum(
+                bool(item["decodedLiveryDelta"])
+                for item in racing_modification_liveries
+            ),
             "commonRelevantMemberCount": len(common_relevant_members),
             "differentCommonRelevantMemberCount": len(
                 different_common_members
@@ -714,6 +864,8 @@ def build_inventory(
             ),
         },
         "sameCarPaintIdFolds": paint_id_folds,
+        "decodedLiveryDeltas": decoded_livery_deltas,
+        "racingModificationLiveries": racing_modification_liveries,
         "gt2SimulationDatabase": strip_private(simulation),
         "gt2ArcadeDatabase": strip_private(arcade),
         "cars": records,

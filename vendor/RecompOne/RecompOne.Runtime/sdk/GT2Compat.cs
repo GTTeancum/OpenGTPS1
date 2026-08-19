@@ -67,6 +67,14 @@ public static class GT2Compat
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_TRACK_RENDERING") == "1";
     static readonly bool TraceVehicleLod =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_VEHICLE_LOD") == "1";
+    static readonly bool TraceWheelTransforms =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_TRACE_GT2_WHEEL_TRANSFORMS") == "1";
+    static readonly string? WheelTransformTracePath =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_GT2_WHEEL_TRANSFORM_TRACE_PATH");
+    static readonly bool AuditRenderer =
+        Environment.GetEnvironmentVariable("RECOMPONE_AUDIT_RENDERER") == "1";
     static readonly bool TraceAiDrivers =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_AI_DRIVERS") == "1";
     static readonly bool TraceLiveries =
@@ -95,6 +103,13 @@ public static class GT2Compat
     static readonly HashSet<uint> ReplayTrackModelIds = [];
     static long _trackRenderRequests;
     static int _trackRenderSamples;
+    static int _trackVisibilitySamples;
+    static long _trackVisibilityFunctionCalls;
+    static long _trackVisibilityRaceCalls;
+    static long _trackVisibilityReplayCalls;
+    static long _trackVisibilityRawEntries;
+    static long _trackVisibilityRawNonzeroSelectors;
+    static int _renderSchedulerSamples;
     static bool _trackExitTraceRegistered;
     static readonly HashSet<uint> TrackVisibilitySectors = [];
     static long _visibilityLodRaceCalls;
@@ -103,11 +118,56 @@ public static class GT2Compat
     static long _visibilityLodStockCalls;
     static long _visibilityLodEntriesScanned;
     static long _visibilityLodNonzeroSelectors;
+    static long _visibilityLodNullLists;
+    static long _visibilityLodInvalidLists;
+    static long _visibilityExpandedCalls;
+    static long _visibilityExpandedStockEntries;
+    static long _visibilityExpandedOutputEntries;
+    static int _visibilityExpandedMaximumAdded;
+    static long _visibilitySectorTransitions;
+    static long _visibilityStockTransitionAdds;
+    static long _visibilityStockTransitionRemoves;
+    static long _visibilityStockAddsPrecovered;
+    static long _visibilityStockRemovesRetained;
+    static long _visibilityExpandedTransitionAdds;
+    static long _visibilityExpandedTransitionRemoves;
+    static int _visibilityStockMaximumTransition;
+    static int _visibilityExpandedMaximumTransition;
+    static readonly HashSet<uint> VisibilityLodInvalidListSamples = [];
     static int _visibilityLodExitTraceRegistered;
+    static int _wheelTransformTraceEnabledReported;
+    static int _wheelTransformTraceInvalidIndexReported;
+    static int _wheelDispatchTraceSamples;
     static readonly Dictionary<uint, long> VehicleLodSelectorCounts = [];
     static readonly HashSet<uint> VehicleLodModelSets = [];
     static readonly HashSet<uint> VehicleLodModelPointers = [];
+    sealed class WheelTransformTraceState
+    {
+        public long Samples;
+        public readonly int[] Previous = new int[3];
+        public readonly long[] Changes = new long[3];
+        public readonly int[] MinimumShortestDelta =
+            [int.MaxValue, int.MaxValue, int.MaxValue];
+        public readonly int[] MaximumShortestDelta =
+            [int.MinValue, int.MinValue, int.MinValue];
+    }
+    static readonly object WheelTransformTraceLock = new();
+    static readonly Dictionary<ulong, WheelTransformTraceState>
+        WheelTransformTraceStates = [];
+    static readonly System.Text.StringBuilder WheelTransformTraceCsv = new();
+    static bool _wheelTransformTraceExitRegistered;
     const uint ExpandedVisibilityListAddress = 0x807F0000u;
+    const int ExtendedVisibilitySectorRadius = 3;
+    static readonly int[] VisibilityEntryGenerations = new int[0x4000];
+    static readonly int[] VisibilityEntryPositions = new int[0x4000];
+    static readonly ushort[] ExpandedVisibilityEntries = new ushort[0x4000];
+    static readonly bool[] PreviousStockVisibilityEntries = new bool[0x4000];
+    static readonly bool[] PreviousExpandedVisibilityEntries = new bool[0x4000];
+    static readonly bool[] CurrentStockVisibilityEntries = new bool[0x4000];
+    static readonly bool[] CurrentExpandedVisibilityEntries = new bool[0x4000];
+    static int _visibilityEntryGeneration;
+    static uint _visibilityTransitionTrackRoot;
+    static int _visibilityTransitionSector = -1;
     static int _bootObjectTraceCount;
     static int _overlayLoadTraceCount;
     static int _finiteCdReadTraceCount;
@@ -304,8 +364,66 @@ public static class GT2Compat
     }
 
     const uint UnifiedTitleList = 0x8004BC28u;
-    const uint UnifiedArcadeDescriptor = 0x803FF000u;
-    const uint UnifiedGtDescriptor = UnifiedArcadeDescriptor + 0xCu;
+    const uint UnifiedTitleDescriptorBase = 0x803FF000u;
+    const uint UnifiedTitleBlankDescriptor = UnifiedTitleDescriptorBase + 0x30u;
+    static bool _unifiedTitleMenuActive;
+    static ushort[]? _unifiedTitlePanels;
+    const int UnifiedTitleWidth = 512;
+    const int UnifiedTitleHeight = 480;
+
+    public static bool UnifiedTitleMenuActive => _unifiedTitleMenuActive;
+
+    public static void ConfigureUnifiedTitlePanels(string path)
+    {
+        byte[] data = File.ReadAllBytes(path);
+        const int headerSize = 20;
+        const int panelPixels = UnifiedTitleWidth * UnifiedTitleHeight;
+        const int panelCount = 4;
+        if (data.Length != headerSize + panelPixels * panelCount * 2 ||
+            System.Text.Encoding.ASCII.GetString(data, 0, 8) != "GT2TITLE" ||
+            BitConverter.ToInt32(data, 8) != UnifiedTitleWidth ||
+            BitConverter.ToInt32(data, 12) != UnifiedTitleHeight ||
+            BitConverter.ToInt32(data, 16) != panelCount)
+        {
+            throw new InvalidDataException(
+                $"invalid exact GT2 title panel asset: {path}");
+        }
+        var pixels = new ushort[panelPixels * panelCount];
+        Buffer.BlockCopy(data, headerSize, pixels, 0, pixels.Length * 2);
+        _unifiedTitlePanels = pixels;
+        Console.WriteLine(
+            "[GT2] loaded exact Sony title panels: " +
+            $"{panelCount}x{UnifiedTitleWidth}x{UnifiedTitleHeight} 15-bit");
+    }
+
+    public static void CompositeUnifiedTitlePanel(
+        global::RecompOne.Runtime.Gpu gpu, IMemory m)
+    {
+        ushort[]? panels = _unifiedTitlePanels;
+        if (!_unifiedTitleMenuActive || panels == null)
+            return;
+        EnableExactTitleDisplay();
+        // Retail overlay 1 starts an attract-mode race after 901 idle ticks.
+        // The unified frontend is a persistent PC main menu, so keep that
+        // private idle counter at zero while preserving ordinary pad input.
+        m.WriteU32(0x800B1228u, 0u);
+        int selected = m.ReadU16(UnifiedTitleList + 6u);
+        if (selected is < 1 or > 4)
+            selected = 1;
+        int panelPixels = UnifiedTitleWidth * UnifiedTitleHeight;
+        int source = (selected - 1) * panelPixels;
+        ReadOnlySpan<ushort> frame = panels.AsSpan(source, panelPixels);
+        for (int y = 0; y < UnifiedTitleHeight; y++)
+            frame.Slice(y * UnifiedTitleWidth, UnifiedTitleWidth).CopyTo(
+                gpu.Vram.AsSpan(y * RecompOne.Runtime.Hle.VramShadow.Width,
+                    UnifiedTitleWidth));
+        if (RecompOne.Runtime.Hle.GpuHle.Backend?.Ready == true)
+            RecompOne.Runtime.Hle.GpuHle.Backend.WriteVram(
+                0, 0, UnifiedTitleWidth, UnifiedTitleHeight, frame);
+    }
+
+    public static bool SuppressUnifiedTitleListDecorations(uint list) =>
+        _unifiedTitleMenuActive && list == UnifiedTitleList;
 
     public static bool ArcadeVariant =>
         _overlayPrefix.Equals(
@@ -333,24 +451,125 @@ public static class GT2Compat
         _unifiedArcadeTransition ? 1u : 5u;
 
     /// <summary>
+    /// Reproduce the Arcade executable's authored BSS state without invoking
+    /// its top-level bootstrap. The range is the exact clear performed by
+    /// SCUS-94455 at 0x8005D570 before it initializes services and selects its
+    /// first overlay.
+    /// </summary>
+    public static void PrepareArcadeFrontendHandoff(
+        CpuContext c, IMemory m)
+    {
+        const uint arcadeBssStart = 0x801C8E10u;
+        const uint arcadeBssEnd = 0x801F0750u;
+        const uint saved = 0x80090E88u;
+        m.WriteU32(saved - 8u, c.A0);
+        m.WriteU32(saved - 4u, c.A1);
+        m.WriteU32(saved, c.S0);
+        m.WriteU32(saved + 4u, c.S1);
+        m.WriteU32(saved + 8u, c.S2);
+        m.WriteU32(saved + 12u, c.S3);
+        m.WriteU32(saved + 16u, c.S4);
+        m.WriteU32(saved + 20u, c.S5);
+        m.WriteU32(saved + 24u, c.S6);
+        m.WriteU32(saved + 28u, c.S7);
+        m.WriteU32(saved + 32u, c.GP);
+        m.WriteU32(saved + 36u, c.SP);
+        m.WriteU32(saved + 40u, c.FP);
+        m.WriteU32(saved + 44u, c.RA);
+        c.SP -= 0x18u;
+        m.ZeroRange(arcadeBssStart, arcadeBssEnd - arcadeBssStart);
+        Console.WriteLine(
+            "[GT2] Arcade handoff prepared: native BSS initialized; " +
+            "boot/title overlay omitted");
+    }
+
+    /// <summary>
+    /// Enter the Arcade frontend through the post-bootstrap initializer used
+    /// immediately before the original disc requests overlay 1. This retains
+    /// the native Arcade executable, frontend, overlays and data while avoiding
+    /// a second game boot in the unified player-facing flow.
+    /// </summary>
+    public static void RunArcadeFrontendHandoff(CpuContext c, IMemory m)
+    {
+        const string arcadePrefix = "gt2_arcade_overlay";
+        string previousOverlayPrefix = _overlayPrefix;
+        _overlayPrefix = arcadePrefix;
+        try
+        {
+            // This is the sole pre-initializer call made by the stock Arcade
+            // entry after clearing BSS and before entering func_8005D650.
+            c.RA = 0x8005D5F0u;
+            Dispatch.Dispatcher.Call(c, m, 0x8008CD18u);
+            // SCUS-94455 saves these at 0x80090E80/84 before the initializer
+            // and restores them for func_8005D650. Preserve that ABI without
+            // running the top-level boot function.
+            c.A0 = m.ReadU32(0x80090E80u);
+            c.A1 = m.ReadU32(0x80090E84u);
+            c.RA = 0x8005D608u;
+            Console.WriteLine(
+                "[GT2] Arcade frontend handoff: " +
+                "entry=0x8005D650 START GAME overlay=1");
+            RunGuestLoop(c, m, 0x8005D650u, arcadePrefix);
+        }
+        finally
+        {
+            _overlayPrefix = previousOverlayPrefix;
+        }
+    }
+
+    /// <summary>
     /// Extend the original Simulation-disc title list in guest memory.  The
-    /// list engine, cursor, arrows, fading and draw path remain GT2's; only its
-    /// item count and two additional native TIM descriptors are supplied here.
+    /// list engine, cursor, fading and draw path remain GT2's; only its item
+    /// count and Sony-authored demo TIM descriptors are supplied here. The
+    /// obsolete vertical-list boundary triangles are suppressed on this exact
+    /// list because the authored 2x2 panel does not use them.
     /// </summary>
     public static void InstallUnifiedTitleMenu(IMemory m)
     {
-        m.WriteU16(UnifiedTitleList, 9);
-        ushort clut = m.ReadU16(0x8004BA52u);
+        _unifiedTitleMenuActive = true;
+        EnableExactTitleDisplay();
+        // Two sentinels plus the four complete Sony-authored demo entries:
+        // Arcade Mode, Gran Turismo, Replay Theater and Option.
+        m.WriteU16(UnifiedTitleList, 6);
+        // The final 15-bit panel is composited verbatim at presentation time.
+        // Keep the guest list's visual primitives empty while retaining its
+        // input, selection, animation timing, and destination dispatch.
+        for (uint item = 0; item < 4u; item++)
+            WriteTitleDescriptor(
+                m, UnifiedTitleDescriptorBase + item * 12u,
+                u: 0, v: 0,
+                width: 0, height: 0, tpage: 0, clut: 0);
         WriteTitleDescriptor(
-            m, UnifiedArcadeDescriptor, u: 0, v: 24,
-            width: 132, height: 22, tpage: 12, clut);
-        WriteTitleDescriptor(
-            m, UnifiedGtDescriptor, u: 0, v: 48,
-            width: 177, height: 22, tpage: 12, clut);
+            m, UnifiedTitleBlankDescriptor,
+            u: 0, v: 0,
+            width: 0, height: 0, tpage: 0, clut: 0);
 
         if (_unifiedTitleInstalled)
             return;
         _unifiedTitleInstalled = true;
+        if (Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_GT2_TITLE") == "1")
+        {
+            Console.WriteLine(
+                "[GT2-Title] list=" +
+                string.Join(' ', Enumerable.Range(0, 12).Select(index =>
+                    $"{index * 4:X2}:{m.ReadU32(UnifiedTitleList + (uint)index * 4u):X8}")));
+            uint language = Math.Min(m.ReadU8(0x801C98E0u), (byte)6);
+            uint table = m.ReadU32(0x8004BC5Cu + language * 4u);
+            for (uint item = 0; item < 8u; item++)
+            {
+                int label = (short)m.ReadU16(0x8004BC14u + item * 2u);
+                uint descriptor = table + (uint)Math.Max(0, label) * 12u;
+                Console.WriteLine(
+                    $"[GT2-Title] item={item} label={label} " +
+                    $"descriptor=0x{descriptor:X8} " +
+                    $"uv=0x{m.ReadU16(descriptor):X4} " +
+                    $"clut=0x{m.ReadU16(descriptor + 2u):X4} " +
+                    $"size={m.ReadU16(descriptor + 4u)}x" +
+                    $"{m.ReadU16(descriptor + 6u)} " +
+                    $"tpage={m.ReadU16(descriptor + 8u)}");
+            }
+        }
         string palette = Runtime.Gpu == null
             ? "unavailable"
             : string.Join(
@@ -359,9 +578,23 @@ public static class GT2Compat
                     $"{Runtime.Gpu.Vram[252 * 1024 + 848 + index]:X4}"));
         Console.WriteLine(
             "[GT2] native unified title menu installed: " +
-            "Arcade Mode, Gran Turismo Mode; " +
-            $"language={m.ReadU8(0x801C98E0u)} clut=0x{clut:X4} " +
+            "Arcade Mode, Gran Turismo, Replay Theater, Option; " +
+            $"language={m.ReadU8(0x801C98E0u)} 16bpp " +
             $"palette={palette}");
+    }
+
+    static void EnableExactTitleDisplay()
+    {
+        var gpu = Runtime.Gpu;
+        if (gpu == null)
+            return;
+        const int hStart = 0x260;
+        const int hEnd = hStart + 2550;
+        gpu.WriteGp1(
+            0x06000000u | ((uint)hEnd << 12) | (uint)hStart);
+        gpu.WriteGp1(0x08000026u); // 512 horizontal, 480-line interlaced NTSC.
+        RecompOne.Runtime.Hle.GpuHle.NotifyDisplay(
+            gpu.DisplayX, gpu.DisplayY, UnifiedTitleWidth, UnifiedTitleHeight);
     }
 
     static void WriteTitleDescriptor(
@@ -376,47 +609,63 @@ public static class GT2Compat
         m.WriteU16(address + 10u, 0);
     }
 
-    static int MapUnifiedTitleIndex(int index) => index switch
-    {
-        0 => 0,
-        1 => 1,
-        2 => 1,
-        >= 3 and <= 8 => index - 1,
-        _ => -1,
-    };
-
     public static int UnifiedTitleSelectionValue(uint index)
     {
-        int item = (int)index;
-        if (item is 0 or 8)
-            return -1;
-        if (item is 1 or 2)
-            return 0;
-        return item is >= 3 and <= 7 ? item - 2 : -1;
+        return index switch
+        {
+            1u => 0, // Arcade Mode: intercepted by CommitUnifiedTitleSelection.
+            2u => 0, // Gran Turismo: retail START GAME destination.
+            3u => 1, // Retail Replay Theater destination.
+            4u => 2, // Retail Option destination.
+            _ => -1,
+        };
     }
+
+    public static int UnifiedTitleItemValidity(uint index) =>
+        index is >= 1u and <= 4u ? 0 : -1;
 
     public static uint UnifiedTitleDescriptor(
         IMemory m, uint index, uint language)
     {
-        if (index == 1u)
-            return UnifiedArcadeDescriptor;
-        if (index == 2u)
-            return UnifiedGtDescriptor;
+        if (index is >= 1u and <= 4u)
+            return UnifiedTitleDescriptorBase + (index - 1u) * 12u;
 
-        int original = MapUnifiedTitleIndex((int)index);
-        if (original < 0)
-            original = 0;
         uint languageIndex = Math.Min(language, 6u);
         uint descriptorTable =
             m.ReadU32(0x8004BC5Cu + languageIndex * 4u);
-        int label = (short)m.ReadU16(
-            0x8004BC14u + (uint)original * 2u);
+        int label = (short)m.ReadU16(0x8004BC14u);
         return descriptorTable + (uint)Math.Max(0, label) * 12u;
+    }
+
+    public static uint UnifiedTitleDescriptorForState(
+        uint index, uint selected) =>
+        selected != 0u && index is >= 1u and <= 4u
+            ? UnifiedTitleDescriptorBase + (index - 1u) * 12u
+            : UnifiedTitleBlankDescriptor;
+
+    public static void PositionUnifiedTitleItem(
+        IMemory m, uint itemRecord, uint index)
+    {
+        (int x, int y) = index switch
+        {
+            // The retail list primitive applies a fixed (-44,-8) title-panel
+            // origin adjustment. These anchors place the archive's unscaled
+            // 140x28 rectangles at (124,284), (124,312), (264,284),
+            // and (264,312), respectively.
+            1u => (168, 292),
+            2u => (168, 320),
+            3u => (308, 292),
+            4u => (308, 320),
+            _ => (0, 0),
+        };
+        m.WriteU16(itemRecord + 4u, (ushort)x);
+        m.WriteU16(itemRecord + 6u, (ushort)y);
     }
 
     public static void CommitUnifiedTitleSelection(
         IMemory m, uint index, uint titleState)
     {
+        _unifiedTitleMenuActive = false;
         if (index == 1u)
         {
             Console.WriteLine("[GT2] title selection: Arcade Mode");
@@ -428,6 +677,10 @@ public static class GT2Compat
             return;
         if (index == 2u)
             Console.WriteLine("[GT2] title selection: Gran Turismo Mode");
+        else if (index == 3u)
+            Console.WriteLine("[GT2] title selection: Replay Theater");
+        else if (index == 4u)
+            Console.WriteLine("[GT2] title selection: Option");
         m.WriteU8(titleState + 3u, (byte)value);
     }
 
@@ -495,6 +748,11 @@ public static class GT2Compat
     public static void TraceVehicleLodSelection(
         uint carState, uint renderRequest, IMemory m)
     {
+        if (TraceWheelTransforms &&
+            Interlocked.Exchange(
+                ref _wheelTransformTraceEnabledReported, 1) == 0)
+            Console.Error.WriteLine(
+                "[GT2-WHEEL] guest transform trace enabled");
         uint selector = m.ReadU8(renderRequest);
         uint modelSet = m.ReadU32(renderRequest + 0xCu);
         uint modelPointer = 0;
@@ -506,7 +764,7 @@ public static class GT2Compat
         }
         WorldCaptureContext.BeginVehicle(carState, modelPointer);
 
-        if (!TraceVehicleLod)
+        if (!TraceVehicleLod && !AuditRenderer)
             return;
 
         lock (VehicleLodSelectorCounts)
@@ -518,7 +776,8 @@ public static class GT2Compat
                 VehicleLodModelSets.Add(modelSet);
             if (IsGuestRam(modelPointer))
                 VehicleLodModelPointers.Add(modelPointer);
-            if (_vehicleLodTraceRegistered == 0)
+            if (TraceVehicleLod && !AuditRenderer &&
+                _vehicleLodTraceRegistered == 0)
             {
                 _vehicleLodTraceRegistered = 1;
                 AppDomain.CurrentDomain.ProcessExit += (_, _) =>
@@ -649,7 +908,7 @@ public static class GT2Compat
 
     public static void TraceTrackRenderRequest(CpuContext c, IMemory m)
     {
-        if (!TraceTrackRendering)
+        if (!TraceTrackRendering && !AuditRenderer)
             return;
 
         lock (TrackObjects)
@@ -689,7 +948,7 @@ public static class GT2Compat
                     }
                 }
             }
-            if (_trackRenderSamples++ < 24)
+            if (_trackRenderSamples++ < 240)
                 Console.Error.WriteLine(
                     $"[GT2-Track-LOD] poll={Host.InputManager.CurrentPoll} " +
                     $"object=0x{c.A0:X8} view={c.A1} mesh={c.A2} " +
@@ -745,7 +1004,7 @@ public static class GT2Compat
 
     public static void TraceTrackVisibility(CpuContext c, IMemory m)
     {
-        if (!TraceTrackRendering)
+        if (!TraceTrackRendering && !AuditRenderer)
             return;
 
         uint renderState = c.A0;
@@ -759,6 +1018,31 @@ public static class GT2Compat
 
         lock (TrackVisibilitySectors)
         {
+            _trackVisibilityFunctionCalls++;
+            if (Volatile.Read(ref _aiAutoDriveReported) >= 2)
+                _trackVisibilityReplayCalls++;
+            else
+                _trackVisibilityRaceCalls++;
+            if (IsGuestRam(visibilityList))
+            {
+                int rawCount = Math.Min(
+                    (int)m.ReadU16(visibilityList), 0x4000);
+                for (int index = 0; index < rawCount; index++)
+                {
+                    ushort item = m.ReadU16(
+                        visibilityList + 2u + (uint)index * 2u);
+                    _trackVisibilityRawEntries++;
+                    if ((item & 0xC000) != 0)
+                        _trackVisibilityRawNonzeroSelectors++;
+                }
+            }
+            if (!TraceTrackRendering)
+                return;
+            if (_trackVisibilitySamples++ < 120)
+                Console.Error.WriteLine(
+                    $"[GT2-Render-Cadence] " +
+                    $"poll={Host.InputManager.CurrentPoll} " +
+                    $"mode={c.A2} sector={sector}");
             if (!TrackVisibilitySectors.Add(sector))
                 return;
             ushort count = visibilityList == 0
@@ -785,40 +1069,418 @@ public static class GT2Compat
     /// current track sector. Those lists are potential-visibility sets, not
     /// independent slices of a global object list: combining every sector
     /// exposes mutually exclusive or occluded road surfaces. Extended draw
-    /// distance therefore retains the current authored set and changes only
-    /// the later radial limit. Maximum LOD copies that same set and clears its
-    /// two selector bits independently.
+    /// distance therefore keeps the current list first and adds only the
+    /// authored sets for a bounded three-sector horizon in each direction.
+    /// This moves whole-section pop-in beyond long sightlines without exposing
+    /// the rest of a looping track. Maximum LOD clears selector bits after the
+    /// bounded union is deduplicated.
     /// </summary>
     public static uint GetTrackVisibilityList(
-        IMemory m, uint _trackRoot, uint stockList)
+        IMemory m, uint trackRoot, uint stockList)
     {
+        bool extended =
+            Config.ConfigManager.View.ExtendedDrawDistance;
         bool maximumLod =
             Config.ConfigManager.View.LevelOfDetail.Equals(
                 "Maximum", StringComparison.OrdinalIgnoreCase);
-        if (!maximumLod)
+        if (!extended && !maximumLod)
         {
             TraceTrackVisibilityLod(m, stockList, maximumLod);
             return stockList;
         }
 
         if (!IsGuestRam(stockList))
+        {
+            TraceTrackVisibilityLod(m, stockList, maximumLod);
             return stockList;
-        int visibleCount = Math.Min((int)m.ReadU16(stockList), 0x4000);
+        }
+        int stockCount = Math.Min((int)m.ReadU16(stockList), 0x4000);
+        int visibleCount;
+        if (extended && TryLocateVisibilitySector(
+                m,
+                trackRoot,
+                stockList,
+                out int sectorCount,
+                out int currentSector))
+        {
+            visibleCount = BuildExtendedVisibilityList(
+                m,
+                trackRoot,
+                stockList,
+                stockCount,
+                sectorCount,
+                currentSector,
+                maximumLod);
+            _visibilityExpandedCalls++;
+            _visibilityExpandedStockEntries += stockCount;
+            _visibilityExpandedOutputEntries += visibleCount;
+            _visibilityExpandedMaximumAdded = Math.Max(
+                _visibilityExpandedMaximumAdded,
+                visibleCount - stockCount);
+            if (AuditRenderer)
+                AuditVisibilityTransition(
+                    m,
+                    trackRoot,
+                    stockList,
+                    stockCount,
+                    currentSector,
+                    visibleCount);
+        }
+        else
+        {
+            visibleCount = stockCount;
+            for (int item = 0; item < visibleCount; item++)
+            {
+                ushort entry = m.ReadU16(
+                    stockList + 2u + (uint)item * 2u);
+                ExpandedVisibilityEntries[item] = maximumLod
+                    ? (ushort)(entry & 0x3FFF)
+                    : entry;
+            }
+        }
+
         uint output = ExpandedVisibilityListAddress;
         m.WriteU16(output, (ushort)visibleCount);
         for (int item = 0; item < visibleCount; item++)
             m.WriteU16(
                 output + 2u + (uint)item * 2u,
-                (ushort)(m.ReadU16(
-                    stockList + 2u + (uint)item * 2u) & 0x3FFF));
+                ExpandedVisibilityEntries[item]);
         TraceTrackVisibilityLod(m, output, maximumLod);
         return output;
+    }
+
+    static bool TryLocateVisibilitySector(
+        IMemory m,
+        uint trackRoot,
+        uint stockList,
+        out int sectorCount,
+        out int currentSector)
+    {
+        sectorCount = 0;
+        currentSector = -1;
+        if (!IsGuestRam(trackRoot))
+            return false;
+
+        uint tableStart = trackRoot + 0xCu;
+        uint firstDescriptor = m.ReadU32(tableStart);
+        uint tableBytes = unchecked(firstDescriptor - tableStart);
+        if (!IsGuestRam(firstDescriptor) ||
+            firstDescriptor <= tableStart ||
+            (tableBytes & 3u) != 0)
+            return false;
+        sectorCount = checked((int)(tableBytes / 4u));
+        if (sectorCount is < 1 or > 0x1000)
+            return false;
+
+        for (int sector = 0; sector < sectorCount; sector++)
+        {
+            uint descriptor = m.ReadU32(
+                tableStart + (uint)sector * 4u);
+            if (!IsGuestRam(descriptor))
+                return false;
+            if (m.ReadU32(descriptor + 0xA0u) == stockList)
+                currentSector = sector;
+        }
+        return currentSector >= 0;
+    }
+
+    static int BuildExtendedVisibilityList(
+        IMemory m,
+        uint trackRoot,
+        uint stockList,
+        int stockCount,
+        int sectorCount,
+        int currentSector,
+        bool maximumLod)
+    {
+        int generation = unchecked(++_visibilityEntryGeneration);
+        if (generation == 0)
+        {
+            Array.Clear(VisibilityEntryGenerations);
+            generation = ++_visibilityEntryGeneration;
+        }
+        int outputCount = 0;
+
+        void AddList(uint list, int count)
+        {
+            for (int item = 0; item < count; item++)
+            {
+                ushort entry = m.ReadU16(
+                    list + 2u + (uint)item * 2u);
+                int objectIndex = entry & 0x3FFF;
+                ushort outputEntry = maximumLod
+                    ? (ushort)objectIndex
+                    : entry;
+                if (VisibilityEntryGenerations[objectIndex] != generation)
+                {
+                    if (outputCount >= ExpandedVisibilityEntries.Length)
+                        return;
+                    VisibilityEntryGenerations[objectIndex] = generation;
+                    VisibilityEntryPositions[objectIndex] = outputCount;
+                    ExpandedVisibilityEntries[outputCount++] = outputEntry;
+                }
+                else if (!maximumLod)
+                {
+                    int position = VisibilityEntryPositions[objectIndex];
+                    if ((outputEntry >> 14) <
+                        (ExpandedVisibilityEntries[position] >> 14))
+                        ExpandedVisibilityEntries[position] = outputEntry;
+                }
+            }
+        }
+
+        AddList(stockList, stockCount);
+        uint tableStart = trackRoot + 0xCu;
+        for (int distance = 1;
+             distance <= ExtendedVisibilitySectorRadius;
+             distance++)
+        {
+            int forward = (currentSector + distance) % sectorCount;
+            int backward =
+                (currentSector - distance + sectorCount) % sectorCount;
+            AddSector(forward);
+            if (backward != forward)
+                AddSector(backward);
+        }
+        return outputCount;
+
+        void AddSector(int sector)
+        {
+            uint descriptor = m.ReadU32(
+                tableStart + (uint)sector * 4u);
+            if (!IsGuestRam(descriptor))
+                return;
+            uint list = m.ReadU32(descriptor + 0xA0u);
+            if (!IsGuestRam(list))
+                return;
+            int count = m.ReadU16(list);
+            if (count is < 1 or > 0x400)
+                return;
+            AddList(list, count);
+        }
+    }
+
+    static int WheelAngle(uint address, IMemory m) =>
+        m.ReadU16(address) & 0x0FFF;
+
+    static int ShortestWheelAngleDelta(int current, int previous) =>
+        ((current - previous + 0x800) & 0x0FFF) - 0x800;
+
+    /// <summary>
+    /// Samples the exact per-wheel transform record consumed by GT2's native
+    /// wheel primitive renderer. This hook is deliberately placed before the
+    /// guest Euler-to-matrix conversion, so its output cannot be affected by
+    /// native scene capture, transform fitting, interpolation, or D3D drawing.
+    /// </summary>
+    public static void TraceWheelTransform(
+        uint carState, uint wheelRecord, uint wheelIndex, IMemory m)
+    {
+        if (!TraceWheelTransforms)
+            return;
+        if (wheelIndex > 3u)
+        {
+            if (Interlocked.Exchange(
+                    ref _wheelTransformTraceInvalidIndexReported, 1) == 0)
+                Console.Error.WriteLine(
+                    $"[GT2-WHEEL] rejected invalid wheel index " +
+                    $"{wheelIndex} record=0x{wheelRecord:X8}");
+            return;
+        }
+
+        int[] angles =
+        [
+            WheelAngle(wheelRecord + 0x8u, m),
+            WheelAngle(wheelRecord + 0xAu, m),
+            WheelAngle(wheelRecord + 0xCu, m),
+        ];
+        short x = (short)m.ReadU16(wheelRecord);
+        short y = (short)m.ReadU16(wheelRecord + 0x2u);
+        short z = (short)m.ReadU16(wheelRecord + 0x4u);
+        ulong key = ((ulong)carState << 2) | wheelIndex;
+
+        lock (WheelTransformTraceLock)
+        {
+            if (!_wheelTransformTraceExitRegistered)
+            {
+                _wheelTransformTraceExitRegistered = true;
+                WheelTransformTraceCsv.AppendLine(
+                    "car_state,wheel,sample,x,y,z,angle_8,angle_a,angle_c," +
+                    "delta_8,delta_a,delta_c");
+                AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+                {
+                    lock (WheelTransformTraceLock)
+                    {
+                        if (!string.IsNullOrWhiteSpace(
+                                WheelTransformTracePath))
+                        {
+                            string path = Path.GetFullPath(
+                                WheelTransformTracePath);
+                            Directory.CreateDirectory(
+                                Path.GetDirectoryName(path)!);
+                            File.WriteAllText(
+                                path, WheelTransformTraceCsv.ToString());
+                        }
+                        foreach (var pair in WheelTransformTraceStates)
+                        {
+                            uint tracedCar = (uint)(pair.Key >> 2);
+                            uint tracedWheel = (uint)(pair.Key & 3u);
+                            WheelTransformTraceState state = pair.Value;
+                            string Axis(int index) =>
+                                state.Changes[index] == 0
+                                    ? "static"
+                                    : $"changes={state.Changes[index]} " +
+                                      $"shortest=[{state.MinimumShortestDelta[index]}," +
+                                      $"{state.MaximumShortestDelta[index]}]";
+                            Console.Error.WriteLine(
+                                $"[GT2-WHEEL] car=0x{tracedCar:X8} " +
+                                $"wheel={tracedWheel} samples={state.Samples} " +
+                                $"angle8({Axis(0)}) angleA({Axis(1)}) " +
+                                $"angleC({Axis(2)})");
+                        }
+                    }
+                };
+            }
+
+            if (!WheelTransformTraceStates.TryGetValue(
+                    key, out WheelTransformTraceState? state))
+            {
+                state = new WheelTransformTraceState();
+                WheelTransformTraceStates.Add(key, state);
+            }
+
+            int[] deltas = [0, 0, 0];
+            if (state.Samples != 0)
+            {
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    int delta = ShortestWheelAngleDelta(
+                        angles[axis], state.Previous[axis]);
+                    deltas[axis] = delta;
+                    if (delta == 0)
+                        continue;
+                    ++state.Changes[axis];
+                    state.MinimumShortestDelta[axis] = Math.Min(
+                        state.MinimumShortestDelta[axis], delta);
+                    state.MaximumShortestDelta[axis] = Math.Max(
+                        state.MaximumShortestDelta[axis], delta);
+                }
+            }
+
+            ++state.Samples;
+            WheelTransformTraceCsv.Append(
+                $"0x{carState:X8},{wheelIndex},{state.Samples}," +
+                $"{x},{y},{z},{angles[0]},{angles[1]},{angles[2]}," +
+                $"{deltas[0]},{deltas[1]},{deltas[2]}\n");
+            Array.Copy(angles, state.Previous, angles.Length);
+        }
+    }
+
+    /// <summary>
+    /// Records the inputs to GT2's conditional four-wheel dispatch gate. The
+    /// guest only calls the standalone wheel renderer when distance and render
+    /// mode pass this gate; otherwise the visible wheel geometry comes from a
+    /// different vehicle-model submission path.
+    /// </summary>
+    public static void TraceVehicleWheelDispatch(
+        uint carState, uint distance, uint renderMode)
+    {
+        if (!TraceWheelTransforms ||
+            Interlocked.Increment(ref _wheelDispatchTraceSamples) > 64)
+            return;
+        bool distanceEligible = distance < 0x2400u;
+        bool modeEligible = (int)renderMode < 3;
+        bool detailedDistanceEligible = distance < 0x900u;
+        Console.Error.WriteLine(
+            $"[GT2-WHEEL-GATE] car=0x{carState:X8} " +
+            $"distance=0x{distance:X} mode={renderMode} " +
+            $"distanceEligible={distanceEligible} " +
+            $"modeEligible={modeEligible} " +
+            $"detailEligible={detailedDistanceEligible}");
+    }
+
+    static void AuditVisibilityTransition(
+        IMemory m,
+        uint trackRoot,
+        uint stockList,
+        int stockCount,
+        int currentSector,
+        int expandedCount)
+    {
+        if (_visibilityTransitionTrackRoot == trackRoot &&
+            _visibilityTransitionSector == currentSector)
+            return;
+
+        Array.Clear(CurrentStockVisibilityEntries);
+        Array.Clear(CurrentExpandedVisibilityEntries);
+        for (int item = 0; item < stockCount; item++)
+        {
+            int objectIndex = m.ReadU16(
+                stockList + 2u + (uint)item * 2u) & 0x3FFF;
+            CurrentStockVisibilityEntries[objectIndex] = true;
+        }
+        for (int item = 0; item < expandedCount; item++)
+        {
+            int objectIndex = ExpandedVisibilityEntries[item] & 0x3FFF;
+            CurrentExpandedVisibilityEntries[objectIndex] = true;
+        }
+
+        if (_visibilityTransitionTrackRoot == trackRoot &&
+            _visibilityTransitionSector >= 0)
+        {
+            int stockAdds = 0;
+            int stockRemoves = 0;
+            int expandedAdds = 0;
+            int expandedRemoves = 0;
+            for (int objectIndex = 0;
+                 objectIndex < CurrentStockVisibilityEntries.Length;
+                 objectIndex++)
+            {
+                if (CurrentStockVisibilityEntries[objectIndex] &&
+                    !PreviousStockVisibilityEntries[objectIndex])
+                {
+                    stockAdds++;
+                    if (PreviousExpandedVisibilityEntries[objectIndex])
+                        _visibilityStockAddsPrecovered++;
+                }
+                else if (!CurrentStockVisibilityEntries[objectIndex] &&
+                    PreviousStockVisibilityEntries[objectIndex])
+                {
+                    stockRemoves++;
+                    if (CurrentExpandedVisibilityEntries[objectIndex])
+                        _visibilityStockRemovesRetained++;
+                }
+                if (CurrentExpandedVisibilityEntries[objectIndex] &&
+                    !PreviousExpandedVisibilityEntries[objectIndex])
+                    expandedAdds++;
+                else if (!CurrentExpandedVisibilityEntries[objectIndex] &&
+                    PreviousExpandedVisibilityEntries[objectIndex])
+                    expandedRemoves++;
+            }
+            _visibilitySectorTransitions++;
+            _visibilityStockTransitionAdds += stockAdds;
+            _visibilityStockTransitionRemoves += stockRemoves;
+            _visibilityExpandedTransitionAdds += expandedAdds;
+            _visibilityExpandedTransitionRemoves += expandedRemoves;
+            _visibilityStockMaximumTransition = Math.Max(
+                _visibilityStockMaximumTransition,
+                stockAdds + stockRemoves);
+            _visibilityExpandedMaximumTransition = Math.Max(
+                _visibilityExpandedMaximumTransition,
+                expandedAdds + expandedRemoves);
+        }
+
+        CurrentStockVisibilityEntries.CopyTo(
+            PreviousStockVisibilityEntries, 0);
+        CurrentExpandedVisibilityEntries.CopyTo(
+            PreviousExpandedVisibilityEntries, 0);
+        _visibilityTransitionTrackRoot = trackRoot;
+        _visibilityTransitionSector = currentSector;
     }
 
     static void TraceTrackVisibilityLod(
         IMemory m, uint visibilityList, bool maximumLod)
     {
-        if (!TraceTrackRendering)
+        if (!TraceTrackRendering && !AuditRenderer)
             return;
 
         if (Volatile.Read(ref _aiAutoDriveReported) >= 2)
@@ -830,7 +1492,11 @@ public static class GT2Compat
         else
             _visibilityLodStockCalls++;
 
-        if (IsGuestRam(visibilityList))
+        if (visibilityList == 0)
+        {
+            _visibilityLodNullLists++;
+        }
+        else if (IsGuestRam(visibilityList))
         {
             int count = Math.Min((int)m.ReadU16(visibilityList), 0x4000);
             for (int index = 0; index < count; index++)
@@ -842,8 +1508,15 @@ public static class GT2Compat
                     _visibilityLodNonzeroSelectors++;
             }
         }
+        else
+        {
+            _visibilityLodInvalidLists++;
+            if (VisibilityLodInvalidListSamples.Count < 8)
+                VisibilityLodInvalidListSamples.Add(visibilityList);
+        }
 
-        if (Interlocked.Exchange(
+        if (TraceTrackRendering && !AuditRenderer &&
+            Interlocked.Exchange(
                 ref _visibilityLodExitTraceRegistered, 1) == 0)
             AppDomain.CurrentDomain.ProcessExit += (_, _) =>
                 Console.Error.WriteLine(
@@ -853,6 +1526,63 @@ public static class GT2Compat
                     $"stockCalls={_visibilityLodStockCalls} " +
                     $"entriesScanned={_visibilityLodEntriesScanned} " +
                     $"nonzeroSelectors={_visibilityLodNonzeroSelectors}");
+    }
+
+    /// <summary>
+    /// Emits renderer acceptance counters at the runtime's deterministic
+    /// shutdown boundary. ProcessExit callbacks are unsuitable as completion
+    /// evidence because host-driven termination can occur after redirected
+    /// log capture has already completed.
+    /// </summary>
+    public static void DumpRendererAudit()
+    {
+        if (!AuditRenderer)
+            return;
+        Console.Error.WriteLine(
+            $"[GT2-Renderer-Audit] track raceCalls={_visibilityLodRaceCalls} " +
+            $"replayCalls={_visibilityLodReplayCalls} " +
+            $"maximumCalls={_visibilityLodMaximumCalls} " +
+            $"stockCalls={_visibilityLodStockCalls} " +
+            $"entriesScanned={_visibilityLodEntriesScanned} " +
+            $"nonzeroSelectors={_visibilityLodNonzeroSelectors} " +
+            $"nullLists={_visibilityLodNullLists} " +
+            $"invalidLists={_visibilityLodInvalidLists} " +
+            $"invalidSamples=[{string.Join(',', VisibilityLodInvalidListSamples.Select(value => $"0x{value:X8}"))}]");
+        Console.Error.WriteLine(
+            $"[GT2-Renderer-Audit] visibility functionCalls={_trackVisibilityFunctionCalls} " +
+            $"raceCalls={_trackVisibilityRaceCalls} " +
+            $"replayCalls={_trackVisibilityReplayCalls} " +
+            $"rawEntries={_trackVisibilityRawEntries} " +
+            $"rawNonzeroSelectors={_trackVisibilityRawNonzeroSelectors}");
+        Console.Error.WriteLine(
+            $"[GT2-Renderer-Audit] expandedVisibility calls={_visibilityExpandedCalls} " +
+            $"radius={ExtendedVisibilitySectorRadius} " +
+            $"stockEntries={_visibilityExpandedStockEntries} " +
+            $"outputEntries={_visibilityExpandedOutputEntries} " +
+            $"maximumAdded={_visibilityExpandedMaximumAdded}");
+        Console.Error.WriteLine(
+            $"[GT2-Renderer-Audit] visibilityTransitions " +
+            $"sectors={_visibilitySectorTransitions} " +
+            $"stockAdds={_visibilityStockTransitionAdds} " +
+            $"stockRemoves={_visibilityStockTransitionRemoves} " +
+            $"stockAddsPrecovered={_visibilityStockAddsPrecovered} " +
+            $"stockRemovesRetained={_visibilityStockRemovesRetained} " +
+            $"stockMaximum={_visibilityStockMaximumTransition} " +
+            $"expandedAdds={_visibilityExpandedTransitionAdds} " +
+            $"expandedRemoves={_visibilityExpandedTransitionRemoves} " +
+            $"expandedMaximum={_visibilityExpandedMaximumTransition}");
+        lock (VehicleLodSelectorCounts)
+        {
+            string selectors = string.Join(
+                ',',
+                VehicleLodSelectorCounts
+                    .OrderBy(pair => pair.Key)
+                    .Select(pair => $"{pair.Key}:{pair.Value}"));
+            Console.Error.WriteLine(
+                $"[GT2-Renderer-Audit] vehicles requests={_vehicleLodRequests} " +
+                $"selectors=[{selectors}] modelSets={VehicleLodModelSets.Count} " +
+                $"selectedModelPointers={VehicleLodModelPointers.Count}");
+        }
     }
 
     static bool IsGuestRam(uint address) =>
@@ -931,6 +1661,16 @@ public static class GT2Compat
         if (requested > 0)
             m.WriteU32(intervalCounterAddress, 0u);
         c.V0 = m.ReadU32(totalCounterAddress);
+    }
+
+    public static void TraceRenderSchedulerEntry(CpuContext c)
+    {
+        if (!TraceTrackRendering || _renderSchedulerSamples++ >= 120)
+            return;
+
+        Console.Error.WriteLine(
+            $"[GT2-Render-Scheduler] poll={Host.InputManager.CurrentPoll} " +
+            $"ra=0x{c.RA:X8} a0=0x{c.A0:X8}");
     }
 
     public static void WaitForCdCommand(CpuContext c, IMemory m)
@@ -1049,6 +1789,19 @@ public static class GT2Compat
     {
         uint index = c.A0;
         _overlayIndex = index;
+        // Widen the display and drawing areas before the title overlay builds
+        // its environments.  The Sony demo panel is authored at 512x480.
+        if (_overlayPrefix == "gt2_overlay")
+        {
+            if (index == 1u)
+                _unifiedTitleMenuActive = true;
+            else if (_unifiedTitleMenuActive)
+            {
+                _unifiedTitleMenuActive = false;
+                Console.WriteLine(
+                    $"[GT2] exact title compositor disabled before overlay {index}");
+            }
+        }
         if (!TraceBoot)
             return;
 
@@ -1062,6 +1815,7 @@ public static class GT2Compat
             : 0u;
         Console.Error.WriteLine(
             $"[GT2Compat] overlay-load invocation={invocation} index={index} " +
+            $"callerRA=0x{c.RA:X8} " +
             $"returnTarget=0x{c.S0:X8} " +
             $"archiveBase={m.ReadU32(0x801C93D0u)} " +
             $"archiveSize={m.ReadU32(0x801C93E0u)} loadedBase={m.ReadU32(tableBase + 8u):X8} " +

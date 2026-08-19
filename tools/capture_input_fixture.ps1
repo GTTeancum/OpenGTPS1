@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ArtifactName,
     [string]$DeployPath,
-    [ValidateSet('PS1 Quality', 'Enhanced', 'Custom')]
+    [ValidateSet('Enhanced')]
     [string]$Preset = 'Enhanced',
     [switch]$AiAutoDrive,
     [ValidateRange(2, 64)]

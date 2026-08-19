@@ -51,23 +51,6 @@ UNIFIED_MUSIC_SIZE = 85262336
 UNIFIED_ARCADE_STREAM_LBA = 280504
 UNIFIED_ARCADE_STREAM_SIZE = 335011840
 
-TITLE_PALETTE = (
-    0x801E,
-    0x884E,
-    0x9084,
-    0xFFFF,
-    0xFBDE,
-    0xF39C,
-    0xE739,
-    0xDAD6,
-    0xCA52,
-    0xAD6B,
-    0x9CE7,
-    0x8842,
-    0x8421,
-)
-
-
 def configured_patch_volumes(mode: str) -> list[Path]:
     if mode not in ("simulation", "arcade"):
         raise ValueError(f"unsupported GT2 patch target: {mode}")
@@ -305,14 +288,6 @@ def relocate_iso_file(
         )
 
 
-def psx_rgb(color: int) -> tuple[int, int, int]:
-    return (
-        (color & 0x1F) * 255 // 31,
-        ((color >> 5) & 0x1F) * 255 // 31,
-        ((color >> 10) & 0x1F) * 255 // 31,
-    )
-
-
 def decode_16bpp_tim(tim: bytes) -> tuple[int, int, tuple[int, ...]]:
     if len(tim) < 20 or struct.unpack_from("<II", tim, 0) != (0x10, 2):
         raise ValueError("unexpected native GT2 menu-label TIM")
@@ -323,67 +298,48 @@ def decode_16bpp_tim(tim: bytes) -> tuple[int, int, tuple[int, ...]]:
     return width, height, pixels
 
 
-def native_label_pixels(
-    selected_tim: bytes,
-    unselected_tim: bytes,
-) -> list[list[int]]:
-    width, height, selected = decode_16bpp_tim(selected_tim)
-    other_width, other_height, unselected = decode_16bpp_tim(unselected_tim)
-    if (
-        (width, height) != (140, 28)
-        or (other_width, other_height) != (width, height)
+def decode_native_demo_title(pack: bytes) -> list[int]:
+    """Decode Sony's exact 512x480 16-bit demo-menu background."""
+    background_ranges = (
+        (0x00000, 0x01000),
+        (0x01000, 0x06800),
+        (0x06800, 0x0E800),
+        (0x0E800, 0x14800),
+    )
+    canvas: list[int] = []
+    for start, end in background_ranges:
+        width, height, pixels = decode_16bpp_tim(
+            gzip.decompress(pack[start:end])
+        )
+        if (width, height) != (512, 120):
+            raise ValueError("unexpected native GT2 demo background strip")
+        canvas.extend(pixels)
+
+    # The stored background contains all four bright labels. Replace each with
+    # its authored dim state; the guest menu overlays only the current bright
+    # label at runtime.
+    for offset, (destination_x, destination_y) in zip(
+        (0x15800, 0x17800, 0x19800, 0x1B800),
+        ((124, 284), (124, 312), (264, 284), (264, 312)),
     ):
-        raise ValueError("unexpected native GT2 top-menu label dimensions")
+        width, height, pixels = decode_16bpp_tim(
+            gzip.decompress(pack[offset : offset + 0x1000])
+        )
+        if (width, height) != (140, 28):
+            raise ValueError("unexpected native GT2 demo label rectangle")
+        for y in range(height):
+            start = (destination_y + y) * 512 + destination_x
+            canvas[start : start + width] = pixels[y * width : (y + 1) * width]
 
-    palette = tuple(psx_rgb(color) for color in TITLE_PALETTE)
-    rows = [[13] * width for _ in range(22)]
-    for destination_y, source_y in enumerate(range(3, 25)):
-        for x in range(width):
-            source = psx_rgb(selected[source_y * width + x])
-            other = psx_rgb(unselected[source_y * width + x])
-            if sum(abs(a - b) for a, b in zip(source, other)) <= 30:
-                continue
-            rows[destination_y][x] = min(
-                range(len(palette)),
-                key=lambda index: sum(
-                    (source[channel] - palette[index][channel]) ** 2
-                    for channel in range(3)
-                ),
-            )
-    return rows
+    return canvas
 
 
-def build_native_unified_labels(pack: bytes) -> tuple[list[list[int]], ...]:
-    def member(offset: int) -> bytes:
-        return gzip.decompress(pack[offset : offset + 0x1000])
-
-    arcade = native_label_pixels(member(0x14800), member(0x15800))
-    gran_turismo = native_label_pixels(member(0x16800), member(0x17800))
-
-    # Preserve Sony's original red // Arcade Mode layout and glyph shapes.
-    # The second entry combines its red // prefix and Mode word with the
-    # shipped Gran Turismo wordmark from the adjacent native top-menu sprite;
-    # every visible glyph remains original GT2 artwork.
-    arcade_mode = [row[:132] for row in arcade]
-    gran_turismo_mode = []
-    for y in range(22):
-        row = [13] * 177
-        row[3:21] = arcade[y][3:21]
-        row[23:127] = gran_turismo[y][23:127]
-        row[132:177] = arcade[y][87:132]
-        gran_turismo_mode.append(row)
-    return arcade_mode, gran_turismo_mode
-
-
-def patch_unified_title_texture(volume: Path) -> None:
-    """Install Sony's native mode labels in GT2's title TIM atlas."""
+def install_unified_title_panels(volume: Path) -> Path:
+    """Export all four exact 512x480 title selection states for the host."""
     entries = {
         entry.name: entry
         for entry in read_entries(volume)
     }
-    entry = entries.get("arcade/title_item.tim.gz")
-    if entry is None:
-        raise ValueError("GT2.VOL is missing arcade/title_item.tim.gz")
     topmenu_entry = entries.get("arcade/arc_topmenu_usa")
     if topmenu_entry is None:
         raise ValueError("GT2.VOL is missing arcade/arc_topmenu_usa")
@@ -391,50 +347,41 @@ def patch_unified_title_texture(volume: Path) -> None:
     with volume.open("rb") as stream:
         stream.seek(topmenu_entry.offset)
         topmenu_pack = stream.read(topmenu_entry.size)
-    labels = build_native_unified_labels(topmenu_pack)
-
-    with volume.open("r+b") as stream:
-        stream.seek(entry.offset)
-        packed = stream.read(entry.size)
-        tim = bytearray(gzip.decompress(packed))
-        if (
-            len(tim) != 0xFE14
-            or struct.unpack_from("<II", tim, 0) != (0x10, 0)
-            or struct.unpack_from("<HH", tim, 16) != (128, 254)
-        ):
-            raise ValueError("unexpected GT2 title_item.tim layout")
-
-        row_bytes = 256
-
-        def set_pixel(x: int, y: int, value: int) -> None:
-            offset = 20 + y * row_bytes + x // 2
-            if x & 1:
-                tim[offset] = (tim[offset] & 0x0F) | (value << 4)
-            else:
-                tim[offset] = (tim[offset] & 0xF0) | value
-
-        # Replace two PAL-only title-label rows.  These exact atlas rectangles
-        # are unreachable from the NTSC-U language table, unlike apparently
-        # blank regions which are reused by the GT2 logo and footer sprites.
-        layouts = ((24, 132), (48, 177))
-        for (y, width), label in zip(layouts, labels):
-            for row in range(22):
-                for x in range(width):
-                    set_pixel(x, y + row, label[row][x])
-
-        replacement = gzip.compress(bytes(tim), compresslevel=9, mtime=0)
-        if len(replacement) > entry.size:
-            raise ValueError(
-                "unified title texture no longer fits its GT2.VOL allocation: "
-                f"{len(replacement)} > {entry.size}"
+    base = decode_native_demo_title(topmenu_pack)
+    destinations = ((124, 284), (124, 312), (264, 284), (264, 312))
+    selected_offsets = (0x14800, 0x16800, 0x18800, 0x1A800)
+    unselected_offsets = (0x15800, 0x17800, 0x19800, 0x1B800)
+    panels: list[list[int]] = []
+    for selected_index in range(4):
+        panel = base.copy()
+        for item_index, (destination_x, destination_y) in enumerate(destinations):
+            source_offset = (
+                selected_offsets[item_index]
+                if item_index == selected_index
+                else unselected_offsets[item_index]
             )
-        stream.seek(entry.offset)
-        stream.write(replacement)
-        stream.write(b"\0" * (entry.size - len(replacement)))
+            width, height, pixels = decode_16bpp_tim(
+                gzip.decompress(
+                    topmenu_pack[source_offset : source_offset + 0x1000]
+                )
+            )
+            if (width, height) != (140, 28):
+                raise ValueError("unexpected native GT2 demo label rectangle")
+            for y in range(height):
+                start = (destination_y + y) * 512 + destination_x
+                panel[start : start + width] = pixels[y * width : (y + 1) * width]
+        panels.append(panel)
+
+    output = INSTALL / "TITLE_EXACT.DAT"
+    payload = bytearray(struct.pack("<8sIII", b"GT2TITLE", 512, 480, 4))
+    for panel in panels:
+        payload.extend(struct.pack(f"<{len(panel)}H", *panel))
+    output.write_bytes(payload)
     print(
-        "installed original GT2 title-menu artwork in GT2.VOL: "
-        "// Arcade Mode, // Gran Turismo Mode"
+        "installed pixel-exact Sony GT2 demo title: four complete 512x480 "
+        "15-bit selection states; unscaled 140x28 authored labels"
     )
+    return volume
 
 
 def main() -> int:
@@ -444,6 +391,7 @@ def main() -> int:
         SIMULATION_ROOT / "GT2.VOL",
         UNIFIED_VOLUME_SIZE,
     )
+    simulation_volume = install_unified_title_panels(simulation_volume)
     arcade_volume = materialize_volume(
         "arcade",
         ARCADE_VOLUME,
@@ -514,8 +462,6 @@ def main() -> int:
         arcade_volume,
         unified_volume,
     )
-    patch_unified_title_texture(unified_volume)
-
     manifest_root = INSTALL / "manifests"
     write_volume_manifest(
         "simulation",

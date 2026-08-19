@@ -7,6 +7,8 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>GranTurismo2PC</AssemblyName>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AppHostDotNetSearch>Global</AppHostDotNetSearch>
+    <PublishReadyToRun Condition="'$(Configuration)' == 'Release' and '$(RuntimeIdentifier)' != ''">true</PublishReadyToRun>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />

@@ -34,6 +34,7 @@ try {
         -r win-x64 `
         --self-contained true `
         -p:PublishSingleFile=true `
+        -p:PublishReadyToRun=true `
         -p:Version=0.8.0-beta `
         -p:DebugType=None `
         -p:DebugSymbols=false `

@@ -221,8 +221,12 @@ int main(int argc, char** argv) {
             stderr,
             "usage: opengt_world_viewer <capture.ogtwcap> <gpu.png> "
             "[--warp] [--no-depth] [--dither] "
-            "[--no-topology] "
-            "[--scale <1-8>] [--oracle <oracle.png>] [--window]\n");
+            "[--no-topology] [--include-secondary] "
+            "[--include-screen-space] "
+            "[--no-texture-smoothing] "
+            "[--scale <1-8>] [--clear-color <RRGGBB>] "
+            "[--inspect-pixel <x> <y>] "
+            "[--oracle <oracle.png>] [--window]\n");
         return 2;
     }
     bool warp = false;
@@ -230,7 +234,13 @@ int main(int argc, char** argv) {
     bool dither = false;
     bool window = false;
     bool topology = true;
+    bool include_secondary = false;
+    bool include_screen_space = false;
+    bool texture_smoothing = true;
     std::uint32_t scale = 1;
+    std::uint32_t clear_color = 0xFF402820U;
+    int inspect_x = -1;
+    int inspect_y = -1;
     const char* oracle_path = nullptr;
     for (int index = 3; index < argc; ++index) {
         if (std::strcmp(argv[index], "--warp") == 0)
@@ -243,6 +253,38 @@ int main(int argc, char** argv) {
             window = true;
         else if (std::strcmp(argv[index], "--no-topology") == 0)
             topology = false;
+        else if (std::strcmp(argv[index], "--include-secondary") == 0)
+            include_secondary = true;
+        else if (std::strcmp(argv[index], "--include-screen-space") == 0)
+            include_screen_space = true;
+        else if (std::strcmp(argv[index], "--no-texture-smoothing") == 0)
+            texture_smoothing = false;
+        else if (
+            std::strcmp(argv[index], "--clear-color") == 0 &&
+            index + 1 < argc
+        ) {
+            char* end = nullptr;
+            const unsigned long parsed =
+                std::strtoul(argv[++index], &end, 16);
+            if (end == argv[index] || *end != '\0' || parsed > 0xFFFFFFUL) {
+                std::fprintf(stderr, "--clear-color must be RRGGBB hex\n");
+                return 2;
+            }
+            clear_color =
+                0xFF000000U |
+                ((parsed & 0x0000FFUL) << 16) |
+                (parsed & 0x00FF00UL) |
+                ((parsed & 0xFF0000UL) >> 16);
+        }
+        else if (
+            std::strcmp(argv[index], "--inspect-pixel") == 0 &&
+            index + 2 < argc
+        ) {
+            inspect_x = static_cast<int>(
+                std::strtol(argv[++index], nullptr, 10));
+            inspect_y = static_cast<int>(
+                std::strtol(argv[++index], nullptr, 10));
+        }
         else if (
             std::strcmp(argv[index], "--scale") == 0 &&
             index + 1 < argc
@@ -299,7 +341,10 @@ int main(int argc, char** argv) {
         header,
         triangles.data(),
         triangles.size(),
-        WorldDrawListOptions{false, false, scale > 1},
+        WorldDrawListOptions{
+            include_secondary,
+            include_screen_space,
+            scale > 1},
         &draw_list);
     if (list_result != WorldDrawListResult::success) {
         std::fprintf(
@@ -323,6 +368,242 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+    if (inspect_x >= 0 && inspect_y >= 0) {
+        // Inspector coordinates are expressed in the written output image,
+        // while captured primitives retain their absolute VRAM display origin.
+        // D3D rasterization evaluates coverage and interpolants at the output
+        // pixel centre, not at its upper-left boundary.
+        const float x = header.display_x +
+            (static_cast<float>(inspect_x) + 0.5F) / scale;
+        const float y = header.display_y +
+            (static_cast<float>(inspect_y) + 0.5F) / scale;
+        const auto edge = [](const WorldDrawVertex& a,
+                             const WorldDrawVertex& b,
+                             float px,
+                             float py) {
+            return (px - a.screen_x) * (b.screen_y - a.screen_y) -
+                (py - a.screen_y) * (b.screen_x - a.screen_x);
+        };
+        const auto vram_at = [&] (int px, int py) {
+            return vram[
+                static_cast<std::size_t>(py & 511) * 1024U +
+                static_cast<std::size_t>(px & 1023)];
+        };
+        const auto texture_word = [&] (
+            int raw_u,
+            int raw_v,
+            const WorldMaterial& material
+        ) {
+            int u =
+                (raw_u & ~(material.texture_mask_x * 8)) |
+                ((material.texture_offset_x &
+                    material.texture_mask_x) * 8);
+            int v =
+                (raw_v & ~(material.texture_mask_y * 8)) |
+                ((material.texture_offset_y &
+                    material.texture_mask_y) * 8);
+            u &= 255;
+            v &= 255;
+            const int page_x = (material.texture_page & 15) * 64;
+            const int page_y =
+                ((material.texture_page >> 4) & 1) * 256;
+            const int mode = (material.texture_page >> 7) & 3;
+            const int clut_x = (material.clut & 63) * 16;
+            const int clut_y = (material.clut >> 6) & 511;
+            if (mode == 0) {
+                const std::uint16_t packed = vram_at(
+                    page_x + (u >> 2), page_y + v);
+                const int index =
+                    (packed >> ((u & 3) * 4)) & 15;
+                return vram_at(clut_x + index, clut_y);
+            }
+            if (mode == 1) {
+                const std::uint16_t packed = vram_at(
+                    page_x + (u >> 1), page_y + v);
+                const int index =
+                    (packed >> ((u & 1) * 8)) & 255;
+                return vram_at(clut_x + index, clut_y);
+            }
+            return vram_at(page_x + u, page_y + v);
+        };
+        std::printf(
+            "inspect output=(%d,%d) native=(%.3f,%.3f)\n",
+            inspect_x, inspect_y, x, y);
+        for (std::size_t command_index = 0;
+             command_index < draw_list.commands.size();
+             ++command_index) {
+            const auto& command = draw_list.commands[command_index];
+            float minimum_x = command.vertices[0].screen_x;
+            float maximum_x = minimum_x;
+            float minimum_y = command.vertices[0].screen_y;
+            float maximum_y = minimum_y;
+            for (int vertex = 1; vertex < 3; ++vertex) {
+                minimum_x = std::min(
+                    minimum_x, command.vertices[vertex].screen_x);
+                maximum_x = std::max(
+                    maximum_x, command.vertices[vertex].screen_x);
+                minimum_y = std::min(
+                    minimum_y, command.vertices[vertex].screen_y);
+                maximum_y = std::max(
+                    maximum_y, command.vertices[vertex].screen_y);
+            }
+            if (
+                x < minimum_x - 2.0F || x > maximum_x + 2.0F ||
+                y < minimum_y - 2.0F || y > maximum_y + 2.0F
+            )
+                continue;
+            const float e0 = edge(
+                command.vertices[0], command.vertices[1], x, y);
+            const float e1 = edge(
+                command.vertices[1], command.vertices[2], x, y);
+            const float e2 = edge(
+                command.vertices[2], command.vertices[0], x, y);
+            const bool inside =
+                (e0 >= 0.0F && e1 >= 0.0F && e2 >= 0.0F) ||
+                (e0 <= 0.0F && e1 <= 0.0F && e2 <= 0.0F);
+            const auto& material =
+                draw_list.materials[command.material_index];
+            std::printf(
+                "  cmd=%zu inside=%s kind=%u object=%u model=%08x "
+                "transform=%016llx ot=%d source=%u material=%u flags=%08x "
+                "tpage=%04x clut=%04x "
+                "window=(%d,%d,%d,%d) "
+                "p=(%.3f,%.3f)(%.3f,%.3f)(%.3f,%.3f) "
+                "uv=(%.3f,%.3f)(%.3f,%.3f)(%.3f,%.3f) "
+                "model=(%d,%d,%d)(%d,%d,%d)(%d,%d,%d) "
+                "view=(%d,%d,%d)(%d,%d,%d)(%d,%d,%d) "
+                "edge=(%.3f,%.3f,%.3f)\n",
+                command_index,
+                inside ? "yes" : "no",
+                command.object_kind,
+                command.object_id,
+                command.model_pointer,
+                static_cast<unsigned long long>(command.transform_id),
+                command.ordering_table_index,
+                command.source_command_index,
+                command.material_index,
+                material.primitive_flags,
+                material.texture_page,
+                material.clut,
+                material.texture_mask_x,
+                material.texture_mask_y,
+                material.texture_offset_x,
+                material.texture_offset_y,
+                command.vertices[0].screen_x,
+                command.vertices[0].screen_y,
+                command.vertices[1].screen_x,
+                command.vertices[1].screen_y,
+                command.vertices[2].screen_x,
+                command.vertices[2].screen_y,
+                command.vertices[0].u,
+                command.vertices[0].v,
+                command.vertices[1].u,
+                command.vertices[1].v,
+                command.vertices[2].u,
+                command.vertices[2].v,
+                command.vertices[0].model_x,
+                command.vertices[0].model_y,
+                command.vertices[0].model_z,
+                command.vertices[1].model_x,
+                command.vertices[1].model_y,
+                command.vertices[1].model_z,
+                command.vertices[2].model_x,
+                command.vertices[2].model_y,
+                command.vertices[2].model_z,
+                command.vertices[0].exact_view_x,
+                command.vertices[0].exact_view_y,
+                command.vertices[0].exact_view_z,
+                command.vertices[1].exact_view_x,
+                command.vertices[1].exact_view_y,
+                command.vertices[1].exact_view_z,
+                command.vertices[2].exact_view_x,
+                command.vertices[2].exact_view_y,
+                command.vertices[2].exact_view_z,
+                e0, e1, e2);
+            if (inside && (material.primitive_flags & 1U) != 0) {
+                const auto& a = command.vertices[0];
+                const auto& b = command.vertices[1];
+                const auto& c = command.vertices[2];
+                const float denominator =
+                    (b.screen_y - c.screen_y) *
+                        (a.screen_x - c.screen_x) +
+                    (c.screen_x - b.screen_x) *
+                        (a.screen_y - c.screen_y);
+                if (std::abs(denominator) > 0.000001F) {
+                    const float lambda_a =
+                        ((b.screen_y - c.screen_y) *
+                            (x - c.screen_x) +
+                        (c.screen_x - b.screen_x) *
+                            (y - c.screen_y)) / denominator;
+                    const float lambda_b =
+                        ((c.screen_y - a.screen_y) *
+                            (x - c.screen_x) +
+                        (a.screen_x - c.screen_x) *
+                            (y - c.screen_y)) / denominator;
+                    const float lambda_c = 1.0F - lambda_a - lambda_b;
+                    const float reciprocal_w =
+                        lambda_a / a.clip_w +
+                        lambda_b / b.clip_w +
+                        lambda_c / c.clip_w;
+                    const float u =
+                        (lambda_a * a.u / a.clip_w +
+                            lambda_b * b.u / b.clip_w +
+                            lambda_c * c.u / c.clip_w) /
+                        reciprocal_w;
+                    const float v =
+                        (lambda_a * a.v / a.clip_w +
+                            lambda_b * b.v / b.clip_w +
+                            lambda_c * c.v / c.clip_w) /
+                        reciprocal_w;
+                    const bool screen_space =
+                        (material.primitive_flags &
+                            world_primitive_screen_space_flag) != 0;
+                    const int sample_u = static_cast<int>(std::floor(
+                        u + (screen_space ? 0.0F : 0.5F)));
+                    const int sample_v = static_cast<int>(std::floor(
+                        v + (screen_space ? 0.0F : 0.5F)));
+                    const std::int64_t ab_x =
+                        static_cast<std::int64_t>(b.model_x) - a.model_x;
+                    const std::int64_t ab_y =
+                        static_cast<std::int64_t>(b.model_y) - a.model_y;
+                    const std::int64_t ab_z =
+                        static_cast<std::int64_t>(b.model_z) - a.model_z;
+                    const std::int64_t ac_x =
+                        static_cast<std::int64_t>(c.model_x) - a.model_x;
+                    const std::int64_t ac_y =
+                        static_cast<std::int64_t>(c.model_y) - a.model_y;
+                    const std::int64_t ac_z =
+                        static_cast<std::int64_t>(c.model_z) - a.model_z;
+                    const std::int64_t normal_x = ab_y * ac_z - ab_z * ac_y;
+                    const std::int64_t normal_y = ab_z * ac_x - ab_x * ac_z;
+                    const std::int64_t normal_z = ab_x * ac_y - ab_y * ac_x;
+                    const bool recover_opaque_track =
+                        command.object_kind == 1U &&
+                        (material.primitive_flags & 2U) == 0 &&
+                        !screen_space &&
+                        std::llabs(normal_y) >= std::llabs(normal_x) &&
+                        std::llabs(normal_y) >= std::llabs(normal_z);
+                    std::printf(
+                        "    sample uv=(%.4f,%.4f) texel=(%d,%d) "
+                        "word=%04x neighbors=%04x,%04x,%04x,%04x "
+                        "opaqueTrackRecovery=%s normal=(%lld,%lld,%lld)\n",
+                        u,
+                        v,
+                        sample_u,
+                        sample_v,
+                        texture_word(sample_u, sample_v, material),
+                        texture_word(sample_u - 1, sample_v, material),
+                        texture_word(sample_u + 1, sample_v, material),
+                        texture_word(sample_u, sample_v - 1, material),
+                        texture_word(sample_u, sample_v + 1, material),
+                        recover_opaque_track ? "yes" : "no",
+                        static_cast<long long>(normal_x),
+                        static_cast<long long>(normal_y),
+                        static_cast<long long>(normal_z));
+                }
+            }
+        }
+    }
     const std::uint32_t output_width =
         static_cast<std::uint32_t>(header.display_width) * scale;
     const std::uint32_t output_height =
@@ -337,8 +618,9 @@ int main(int argc, char** argv) {
         depth,
         dither,
         true,
+        texture_smoothing,
         scale,
-        0xFF402820U,
+        clear_color,
     };
     const auto gpu_result = render_world_d3d11(
         draw_list,
@@ -392,7 +674,7 @@ int main(int argc, char** argv) {
         ProjectedRenderOptions{
             true,
             dither,
-            0xFF402820U,
+            clear_color,
         });
     if (
         oracle_stats.submitted_triangles !=
@@ -426,8 +708,9 @@ int main(int argc, char** argv) {
             false,
             dither,
             true,
+            false,
             1,
-            0xFF402820U,
+            clear_color,
         },
         &comparison_stats);
     if (comparison_result != WorldGpuRenderResult::success) {
@@ -453,6 +736,10 @@ int main(int argc, char** argv) {
         "topologySources=%u topologyPositionGroups=%u "
         "topologyBoundaryGroups=%u topologyAdjusted=%u "
         "topologyProjectionGroups=%u topologyProjectionAdjusted=%u "
+        "topologySeamGroups=%u topologySeamAdjusted=%u "
+        "topologyRasterGroups=%u topologyRasterAdjusted=%u "
+        "topologyProjectedTJunctions=%u "
+        "topologyProjectedTJunctionAdjusted=%u "
         "topologyBoundaryEdges=%u topologyManifoldEdges=%u "
         "topologyNonmanifoldEdges=%u topologyTJunctions=%u "
         "topologySplitSources=%u topologySplitTriangles=%u "
@@ -490,6 +777,12 @@ int main(int argc, char** argv) {
         topology_stats.adjusted_vertex_instances,
         topology_stats.authored_projection_groups,
         topology_stats.adjusted_projection_instances,
+        topology_stats.projected_seam_groups,
+        topology_stats.adjusted_seam_instances,
+        topology_stats.authored_raster_groups,
+        topology_stats.adjusted_authored_raster_instances,
+        topology_stats.projected_t_junctions,
+        topology_stats.adjusted_projected_t_junction_instances,
         topology_stats.boundary_edges,
         topology_stats.manifold_edges,
         topology_stats.nonmanifold_edges,

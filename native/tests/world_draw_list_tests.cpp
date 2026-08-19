@@ -188,6 +188,39 @@ int main() {
             world_primitive_screen_space_flag) != 0,
         "tag screen material for sprite texel sampling");
 
+    // SSR11 street-light regression: the authored billboard is above the
+    // camera, but one Y coordinate crosses the PS1 signed screen boundary
+    // and wraps from about -1025 to +1023. The PS1 polygon-size rule rejects
+    // this malformed half-quad; accepting it creates a bright vertical flash.
+    WorldCaptureTriangle wrapped_light = screen_triangle;
+    wrapped_light.primitive_flags = 0x0BU;
+    wrapped_light.texture_page = 41;
+    wrapped_light.clut = 32599;
+    wrapped_light.vertices[0].screen_x = 270.0F;
+    wrapped_light.vertices[0].screen_y = -991.0F;
+    wrapped_light.vertices[1].screen_x = 188.0F;
+    wrapped_light.vertices[1].screen_y = 1023.0F;
+    wrapped_light.vertices[2].screen_x = 236.0F;
+    wrapped_light.vertices[2].screen_y = -909.0F;
+    WorldCaptureTriangle screen_triangles[2]{
+        screen_triangle,
+        wrapped_light,
+    };
+    WorldDrawList filtered_screen_list{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            screen_triangles,
+            2,
+            WorldDrawListOptions{false, true, false},
+            &filtered_screen_list) == WorldDrawListResult::success,
+        "build screen list containing wrapped street light");
+    okay &= expect(
+        filtered_screen_list.commands.size() == 1 &&
+        filtered_screen_list.rejected_oversized_screen_commands == 1,
+        "reject wrapped SSR11 street-light triangle by PS1 span limits");
+
+
     if (!okay)
         return 1;
     std::puts("world draw-list tests passed");

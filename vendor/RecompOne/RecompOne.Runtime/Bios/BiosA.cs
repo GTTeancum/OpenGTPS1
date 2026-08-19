@@ -224,7 +224,13 @@ public static class BiosA
                 break;
             }
             case 0x05: c.V0 = 0xFFFFFFFFu; break;
-            case 0x06: Environment.Exit((int)c.A0); break;
+            case 0x06:
+                Console.Error.WriteLine(
+                    $"[BIOS] Exit status={(int)c.A0} " +
+                    $"poll={Host.InputManager.CurrentPoll} " +
+                    $"ra=0x{c.PeekRaw(31):X8}");
+                Environment.Exit((int)c.A0);
+                break;
             case 0x07: c.V0 = c.A0 <= 2u ? 2u : 0u; break;
             case 0x08: c.V0 = 0xFFFFFFFFu; break;
             case 0x09: Console.Write((char)(c.A0 & 0xFF)); c.V0 = c.A0; break;

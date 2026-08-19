@@ -7,20 +7,37 @@ param(
     [int]$ExitPoll,
     [Parameter(Mandatory = $true)]
     [string]$ArtifactName,
-    [ValidateSet('PS1 Quality', 'Enhanced', 'Custom')]
+    [ValidateSet('Enhanced')]
     [string]$Preset = 'Enhanced',
     [ValidateSet('simulation', 'arcade')]
     [string]$ExpectedGuest = 'arcade',
+    [string]$DeployPath = 'tools\unified-host\bin\Release\net10.0',
+    [switch]$StartArcade,
+    [string]$ThrottleOnScriptStage = '',
     [switch]$AiAutoDrive,
     [ValidateRange(2, 64)]
     [int]$AiAutoDriveMaxEngagements = 2,
-    [switch]$CreateTestSave
+    [switch]$CreateTestSave,
+    [switch]$CaptureCompatibilityUi
 )
 
 $ErrorActionPreference = 'Stop'
+if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+    try {
+        [Diagnostics.Process]::GetCurrentProcess().PriorityClass =
+            [Diagnostics.ProcessPriorityClass]::BelowNormal
+    } catch {
+        Write-Warning (
+            "Could not lower fixture-script priority: $($_.Exception.Message)")
+    }
+}
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$exe = Join-Path $repo (
-    'tools\unified-host\bin\Release\net10.0\GranTurismo2PC.exe')
+$deployRoot = if ([IO.Path]::IsPathRooted($DeployPath)) {
+    (Resolve-Path -LiteralPath $DeployPath).Path
+} else {
+    (Resolve-Path -LiteralPath (Join-Path $repo $DeployPath)).Path
+}
+$exe = Join-Path $deployRoot 'GranTurismo2PC.exe'
 $runtimeDirectory = Split-Path -Parent $exe
 $looseRoot = if ([IO.Path]::IsPathRooted($LoosePath)) {
     (Resolve-Path $LoosePath).Path
@@ -55,15 +72,20 @@ if ($capturePolls.Count -eq 0) {
 }
 
 New-Item -ItemType Directory -Path $artifact -Force | Out-Null
-foreach ($capture in Get-ChildItem -LiteralPath $runtimeDirectory `
-        -Filter 'recompone_capture*.ppm' -File) {
-    Remove-Item -LiteralPath $capture.FullName -Force
+foreach ($filter in @('recompone_capture*.ppm', 'recompone_present*.ppm')) {
+    foreach ($capture in Get-ChildItem -LiteralPath $runtimeDirectory `
+            -Filter $filter -File) {
+        Remove-Item -LiteralPath $capture.FullName -Force
+    }
 }
 
 $start = [Diagnostics.ProcessStartInfo]::new()
 $start.FileName = $exe
 $start.WorkingDirectory = $runtimeDirectory
-$start.Arguments = "--headless `"$looseRoot`""
+$start.Arguments = (
+    '--headless ' +
+    $(if ($StartArcade) { '--start-arcade ' } else { '' }) +
+    "`"$looseRoot`"")
 $start.UseShellExecute = $false
 $start.CreateNoWindow = $true
 $start.RedirectStandardOutput = $true
@@ -72,9 +94,15 @@ $env:RECOMPONE_INPUT_FILE = $fixturePath
 $env:RECOMPONE_DISABLE_LIVE_INPUT = '1'
 $env:RECOMPONE_SUPPRESS_RUMBLE = '1'
 $env:RECOMPONE_UNTHROTTLED = '1'
+$env:RECOMPONE_PROCESS_PRIORITY = 'BelowNormal'
+if (-not $CaptureCompatibilityUi) {
+    $env:RECOMPONE_PRESENTATION_CAPTURE = '1'
+}
 $env:RECOMPONE_GRAPHICS_PRESET_OVERRIDE = $Preset
 $env:RECOMPONE_EXIT_AFTER_INPUT_POLL = $ExitPoll.ToString()
-$env:RECOMPONE_NATIVE_WORLD_RENDERER = '0'
+if (-not [string]::IsNullOrWhiteSpace($ThrottleOnScriptStage)) {
+    $env:RECOMPONE_THROTTLE_ON_SCRIPT_STAGE = $ThrottleOnScriptStage
+}
 if ($CreateTestSave) {
     $env:RECOMPONE_GT2_CREATE_TEST_SAVE = '1'
 }
@@ -92,6 +120,11 @@ $cardAOriginal = if ($CreateTestSave -and
     $null
 }
 $process = [Diagnostics.Process]::Start($start)
+try {
+    $process.PriorityClass = [Diagnostics.ProcessPriorityClass]::BelowNormal
+} catch {
+    Write-Warning "Could not lower unified fixture priority: $($_.Exception.Message)"
+}
 $stdoutTask = $process.StandardOutput.ReadToEndAsync()
 $stderrTask = $process.StandardError.ReadToEndAsync()
 if (-not $process.WaitForExit(600000)) {
@@ -117,6 +150,26 @@ if ($stdout -notmatch (
     throw (
         "Unified fixture did not hand off to the expected $ExpectedGuest guest")
 }
+if ($ExpectedGuest -eq 'arcade') {
+    if (-not $StartArcade) {
+        if ($stdout -notmatch (
+                '\[Host\] seamless guest handoff: Simulation title -> ' +
+                'Arcade START GAME destination')) {
+            throw 'Unified Arcade fixture did not use the seamless handoff'
+        }
+        if ($stdout -notmatch (
+                '\[GT2\] Arcade frontend handoff: ' +
+                'entry=0x8005D650 START GAME overlay=1')) {
+            throw 'Unified Arcade fixture did not enter the START GAME destination'
+        }
+    }
+    if ($stdout -match 'loaded overlay: gt2_arcade_overlay_5') {
+        throw 'Unified Arcade fixture replayed the boot/title overlay'
+    }
+    if ($stdout -notmatch 'loaded overlay: gt2_arcade_overlay_1') {
+        throw 'Unified Arcade fixture did not load frontend overlay 1'
+    }
+}
 if ($stderr -match 'unmapped call|Unhandled exception|unknown software exception') {
     throw "Unified fixture reported a runtime failure:`n$stderr"
 }
@@ -125,7 +178,9 @@ $ffmpeg = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
 $copied = 0
 $captureNames = [Collections.Generic.SortedSet[string]]::new()
 foreach ($match in [regex]::Matches(
-        $stdout, 'captured stage .*? to (recompone_capture\S+?\.ppm)')) {
+        $stdout,
+        'captured (?:stage|presentation) .*? to ' +
+        '((?:recompone_capture|recompone_present)\S+?\.ppm)')) {
     [void]$captureNames.Add($match.Groups[1].Value)
 }
 foreach ($captureName in $captureNames) {
@@ -136,9 +191,27 @@ foreach ($captureName in $captureNames) {
     $ppm = Join-Path $artifact $captureName
     Copy-Item -LiteralPath $capture -Destination $ppm -Force
     if ($ffmpeg) {
-        & $ffmpeg -hide_banner -loglevel error -y -i $ppm (
-            Join-Path $artifact ([IO.Path]::ChangeExtension($captureName, '.png')))
-        if ($LASTEXITCODE -ne 0) {
+        $png = Join-Path $artifact (
+            [IO.Path]::ChangeExtension($captureName, '.png'))
+        $ffmpegStart = [Diagnostics.ProcessStartInfo]::new()
+        $ffmpegStart.FileName = $ffmpeg
+        $ffmpegStart.UseShellExecute = $false
+        $ffmpegStart.CreateNoWindow = $true
+        $escapedPpm = $ppm.Replace('"', '\"')
+        $escapedPng = $png.Replace('"', '\"')
+        $ffmpegStart.Arguments = (
+            "-hide_banner -loglevel error -y -i `"$escapedPpm`" " +
+            "`"$escapedPng`"")
+        $ffmpegProcess = [Diagnostics.Process]::Start($ffmpegStart)
+        try {
+            $ffmpegProcess.PriorityClass =
+                [Diagnostics.ProcessPriorityClass]::BelowNormal
+        } catch {
+            Write-Warning (
+                "Could not lower ffmpeg priority: $($_.Exception.Message)")
+        }
+        $ffmpegProcess.WaitForExit()
+        if ($ffmpegProcess.ExitCode -ne 0) {
             throw "ffmpeg failed to convert capture $captureName"
         }
     }
@@ -152,6 +225,7 @@ Write-Output (
     "fixture=$fixturePath preset=$Preset captures=$copied artifact=$artifact")
 Write-Output (
     "native_$ExpectedGuest=true auto_drive=$($AiAutoDrive.IsPresent) " +
+    "start_arcade=$($StartArcade.IsPresent) " +
     "test_save=$($CreateTestSave.IsPresent) exit=$($process.ExitCode)")
 
 foreach ($name in @(
@@ -159,9 +233,11 @@ foreach ($name in @(
         'RECOMPONE_DISABLE_LIVE_INPUT',
         'RECOMPONE_SUPPRESS_RUMBLE',
         'RECOMPONE_UNTHROTTLED',
+        'RECOMPONE_PROCESS_PRIORITY',
+        'RECOMPONE_PRESENTATION_CAPTURE',
         'RECOMPONE_GRAPHICS_PRESET_OVERRIDE',
         'RECOMPONE_EXIT_AFTER_INPUT_POLL',
-        'RECOMPONE_NATIVE_WORLD_RENDERER',
+        'RECOMPONE_THROTTLE_ON_SCRIPT_STAGE',
         'RECOMPONE_GT2_CREATE_TEST_SAVE',
         'RECOMPONE_GT2_AI_AUTODRIVE',
         'RECOMPONE_GT2_AI_AUTODRIVE_MAX_ENGAGEMENTS')) {

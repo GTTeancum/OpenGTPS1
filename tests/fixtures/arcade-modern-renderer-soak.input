@@ -1,0 +1,11 @@
+# Silent/headless Arcade race soak. This intentionally contains no capture
+# events so framebuffer readback cannot contaminate frame-time measurements.
+780+4=CROSS
+1380+4=CROSS
+1780+4=CROSS
+2180+4=CROSS
+2580+4=CROSS
+3000+4=CROSS
+3600+4=CROSS
+4200+4=CROSS
+4260+4=CROSS

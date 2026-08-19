@@ -25,6 +25,12 @@ or converted model, bitmap, and palette data. A generated detailed JSON report
 is kept under `work/gt1-vol-audit/` and is deliberately not a hand-maintained
 source list.
 
+The audit also records a decoded visual fingerprint for every paint. The
+fingerprint canonicalizes equivalent four-bit texel-index permutations before
+hashing the shared bitmap and all sixteen material CLUTs. This catches
+same-color-ID replacement artwork without treating a harmless palette-index
+renumbering as new content.
+
 Current database counts are 178 GT1 SPEC records, 344 GT1 graphic stems, 1,110
 GT2 car-info records, 618 GT2 GT Mode car records, and 63 stock GT2 Arcade car
 records. GT1 and GT2 share 302 `carobj` stems.
@@ -113,6 +119,51 @@ customer-visible cars:
 Their existing separate Arcade entries are conversion prototypes, not the
 final unified data model.
 
+## Racing Modification body audit
+
+GT1 stores Racing Modification bodies as graphics-only `r` stems beside the
+corresponding specification-bearing stock `n` stem. The supplied archive has
+159 such relationships; 144 also have a same-stem GT2 body package. Color IDs
+remain the first discriminator, but a reused ID is not proof of equivalence:
+the audit also decodes each high-LOD model's UV footprint and compares RGBA
+only on texels the native model actually references.
+
+The deterministic Mitsubishi proof at
+`artifacts/gt1-mitsubishi-racing-audit-v2/` renders the converted GT1 and
+native GT2 day bodies from profile, front three-quarter, and rear
+three-quarter angles. Every retained comparison tile is 720x480 and every
+source render is 960x640.
+
+- All ten paints across the five FTO RM bodies (`mftgr`, `mftnr`, `mftor`,
+  `mftrr`, and `mftxr`) use the same IDs as GT2 and differ on exactly zero
+  model-referenced texels. The three-angle renders also match, so importing
+  them would create duplicates.
+- The complete 144-body census found 53 GT1 paints with no visible GT2
+  counterpart across 31 authored RM bodies. The full staged set is `dvprr`,
+  `hpnvr`, `mgnor`, `mgntr`, `mgoor`, `mgotr`, `mgtmr`, `mgtor`, `mgttr`,
+  `mlnnr`, `mlnor`, `mmgor`, `mmgrr`, `nn32r`, `nplor`, `nr02r`, `nr32r`,
+  `ns13r`, `nv12r`, `nv22r`, `nzx2r`, `nzx3r`, `nzxsr`, `nzxvr`, `tcelr`,
+  `tmrlr`, `tsonr`, `tsorr`, `tspnr`, `tsprr`, and `vcrbr`.
+- Each of those 31 bodies is folded into its existing GT2 customer identity,
+  never exposed as a duplicate car. Both authored palettes remain available
+  on each distinct body, yielding 62 native RM body/paint choices; 53 are the
+  no-counterpart census results and nine share visible paint content while
+  retaining the distinct authored RM body.
+
+Both livery patch volumes now contain the same `.gtlivery` version 3 table:
+145 records, 1,748 bytes, SHA-256
+`9c95df54d69a79012bd76473b78dad432ebe42c0c2ce28adbbb17e19bb2115d7`.
+The complete generated layer has 65 fold definitions and 116 customer-facing
+folded paint/body choices. Its Arcade volume is 2,656,256 bytes, SHA-256
+`0d33fd30e38e6905f6299709fe919936a7fe5b56edf50c3a91692fdf7849fa06`;
+the Simulation volume is the same size with SHA-256
+`914a5bf2d0d5247bf2e335de86743d85f116d240e63a31a679fc22babfe0828f`.
+The table includes identity records required to disambiguate reused color IDs.
+The 960x640 per-choice proofs and master gallery are under
+`artifacts/gt1-visual-proofs-v2/gallery/`; the gallery validator reports 53
+standalone paints, 116 folded paints/liveries, and zero within-car duplicate
+visual hashes.
+
 ## Cerbera LM finding
 
 The supplied archives confirm the overlooked Cerbera LM artwork:
@@ -143,7 +194,7 @@ implementation needs an alternate native body/texture asset selected by the
 extended livery index while retaining one car identity and one saved-garage
 record.
 
-The converter now produces that data shape for all 35 entries in gated
+The converter now produces that data shape for all 65 fold definitions in gated
 `GTPATCH.LIVERY.ARCADE.VOL` and `GTPATCH.LIVERY.SIMULATION.VOL` layers:
 
 - `v-rbr` remains the only customer-visible car identity; a hidden `v1rbr`
@@ -153,10 +204,10 @@ The converter now produces that data shape for all 35 entries in gated
   appended as choices three and four;
 - the exact converted GT1 day/night texture and model members are stored under
   hidden body stem `v1rbr`;
-- `.gtlivery` version 3 contains 53 explicit mappings from each extended car
-  color index and authoritative color ID to its hidden body and original GT1
-  palette index, plus one identity disambiguator for the retail Castrol
-  palette. For `v-rbr`, indices 2 and 3 map to `v1rbr` palettes 0 and 1; and
+- `.gtlivery` version 3 contains 116 customer-facing mappings from each
+  extended car color index and authoritative color ID to its hidden body and
+  original GT1 palette/body choice, plus identity records for reused IDs. For
+  `v-rbr`, indices 2 and 3 map to `v1rbr` palettes 0 and 1; and
 - the converted day and night models are 20,032 and 21,004 bytes,
   respectively, both within the original frontend's audited `0x6000`-byte
   native model slot.
@@ -166,9 +217,9 @@ record construction, color-ID fallback, race body/palette path, and
 showroom/replay body/palette path. Resolving while GT2 still carries the
 palette index is required when two body packages reuse one color ID. The
 installer enables the layers atomically for Simulation and Arcade, requires
-their 54-record tables to be byte-identical, and installs the validated table
+their 145-record tables to be byte-identical, and installs the validated table
 as `GTLIVERY.BIN`. The fold layers remain excluded from the default unified
-install until the complete 35-target interactive smoke matrix passes. This
+install until the complete 65-fold interactive smoke matrix passes. This
 gate prevents an older executable from treating extended color indices as
 out-of-range palettes on each target's original body.
 
@@ -208,7 +259,7 @@ choice and covers the other 48 variants listed above. Cross-stem archive
 comparison additionally folds both `t-plr` IDs 108 and 113 into that same
 identity. Each gated layer now contains 140 converted day/night car assets, 35
 hidden loader-only car-info records, the extended customer-visible records,
-`.carcolor`, and the 54-record `.gtlivery` table. Conversion fails unless every
+`.carcolor`, and the 145-record `.gtlivery` table. Conversion fails unless every
 target index and hidden-body palette resolves back to the same authoritative
 color ID.
 

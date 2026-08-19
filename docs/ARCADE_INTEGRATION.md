@@ -59,16 +59,47 @@ disc-visible `GT2.VOL` at LBA 473. The Arcade executable, overlays, raw
 - One unified install shares the merged `GT2.VOL` and `MUSIC.DAT`, with
   mode-specific bootstrap and streaming files under `simulation/` and
   `arcade/`.
-- The original Simulation title list contains `Arcade Mode` first and
-  `Gran Turismo Mode` second. Selecting Arcade triggers a clean guest/runtime
-  reset and enters the original Arcade frontend directly.
+- The unified title uses the complete retail `arcade/arc_topmenu_usa` payload,
+  SHA-256
+  `128556787BBA8AB8317B8BE47D11DC8670C1503B79668CB3AF8BDF4B69EB564F`.
+  The payload is byte-identical in both US retail GT2 volumes and contains the
+  four Sony-authored 512x120 background strips plus selected and unselected
+  sprites for `Arcade Mode`, `Gran Turismo`, `Replay Theater`, and `Option`.
+  The installer decodes those native 15-bit TIM resources into four complete
+  512x480 selection states. Each state retains the original 140x28 label
+  rectangles at their authored coordinates. There is no resampling, palette
+  reduction, font recreation, synthesized artwork, or substituted pixel.
+- The original guest selector now drives the asset as its authored 2x2 menu.
+  The Simulation vertical-list boundary triangles are disabled only for this
+  title list. The runtime presents the exact 512x480 BGR555 state after GT2's
+  title draw, while the original guest list continues to own input, selection,
+  animation timing, and dispatch. Captures of all four states compare against
+  the archive-derived frames with zero differing pixels. Selecting Arcade
+  performs an in-process frontend handoff. It does
+  not invoke the Arcade executable's top-level boot, legal/title sequence, or
+  title overlay. The host recreates the exact Arcade prologue state, runs its
+  native service initializer, and enters the post-bootstrap function at
+  `0x8005D650`; that function requests overlay 1, which is the same native
+  destination requested by `START GAME` on the stock US Arcade disc.
+- `0x80018574` and `0x800186D0` are explicit Simulation overlay-1 function
+  roots. They are original callback entries required by the retail Option path
+  but were not discovered by the previous linear sweep.
 - One `GranTurismo2PC` host assembly contains both original programs and all
   twelve overlays. There are no public mode-selection switches or substitute
   host menus.
 
-`tools/test_unified_modes.ps1` selects both modes through the original unified
-title menu and verifies their displays from the same executable and shared
-loose install without an unmapped call or managed exception.
+`tools/test_unified_modes.ps1` selects all four entries through the original
+guest title selector and verifies Arcade Mode, Gran Turismo, Replay Theater,
+and Option from the same executable and shared loose install without an
+unmapped call or managed exception. Its Arcade case also requires the
+`0x8005D650` handoff and overlay 1, and rejects any load of overlay 5 so the
+Arcade boot/title path cannot silently regress. Accepted visual captures for
+all four selection states and the packaged menu are under
+`artifacts/retail-arc-topmenu-usa/exact-live`. The
+`tools/verify_unified_title_exact.py` validator compares those live P6 frames
+to `TITLE_EXACT.DAT` in BGR555 space and rejects any differing pixel. The
+title-to-Route-11 race proof is under
+`artifacts/retail-arc-topmenu-usa-ssr11-final`.
 
 ## Native Gran Turismo 1 content layer
 
@@ -166,9 +197,12 @@ Route 11 is inserted after each table's always-available prefix. This preserves
 GT2's original progression ordering while making the imported course
 immediately selectable. The deterministic
 `tests/fixtures/unified-arcade-ssr11-race.input` smoke enters Arcade Mode
-through the unified title, selects the fourth course, starts Route 11, engages
-the original AI racing-line controller for the player car, and captures live
-race frames. The accepted run completes without an unmapped call, managed
+through the unified title and seamless `START GAME` destination, selects the
+fourth course, starts Route 11, engages the original AI racing-line controller
+for the player car, and captures live race frames. The accepted handoff run is
+stored in `artifacts/arcade-seamless-handoff-race`: it proves overlay 1 loaded,
+overlay 5 did not load, the native Route 11 course menu appeared, and a live
+race ran through the 9,000-poll bound without an unmapped call, managed
 exception, or software fault.
 
 `tests/fixtures/unified-arcade-roadster-race.input` selects the appended

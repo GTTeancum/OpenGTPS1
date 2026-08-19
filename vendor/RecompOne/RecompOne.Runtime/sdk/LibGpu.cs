@@ -63,6 +63,8 @@ public static class LibGpu
         uint env = c.A0;
         short clipX = S16(m, env + 0x00), clipY = S16(m, env + 0x02);
         short clipW = S16(m, env + 0x04), clipH = S16(m, env + 0x06);
+        if (GT2Compat.UnifiedTitleMenuActive && clipW <= 352)
+            clipW = 512;
         short ofsX = S16(m, env + 0x08), ofsY = S16(m, env + 0x0A);
         short twX = S16(m, env + 0x0C), twY = S16(m, env + 0x0E);
         short twW = S16(m, env + 0x10), twH = S16(m, env + 0x12);
@@ -101,6 +103,9 @@ public static class LibGpu
         uint env = c.A0;
         short dispX = S16(m, env + 0x00), dispY = S16(m, env + 0x02);
         short dispW = S16(m, env + 0x04), dispH = S16(m, env + 0x06);
+        bool exactTitle = GT2Compat.UnifiedTitleMenuActive;
+        if (exactTitle && dispW <= 352)
+            dispW = 512;
         short scrX = S16(m, env + 0x08), scrY = S16(m, env + 0x0A);
         short scrW = S16(m, env + 0x0C), scrH = S16(m, env + 0x0E);
         byte isinter = m.ReadU8(env + 0x10);
@@ -112,6 +117,8 @@ public static class LibGpu
         int hStart = scrX * 10 + 0x260;
         int vStart = scrY + (pal ? 0x13 : 0x10);
         int hEnd = hStart + (scrW != 0 ? scrW * 10 : 2560);
+        if (exactTitle)
+            hEnd = hStart + 2550; // (512 - GP1 rounding bias) * 5 cycles/pixel
         int vEnd = vStart + (scrH != 0 ? scrH : 240);
         hStart = Math.Clamp(hStart, 500, 3290);
         hEnd = Math.Clamp(hEnd, hStart + 0x50, 3290);

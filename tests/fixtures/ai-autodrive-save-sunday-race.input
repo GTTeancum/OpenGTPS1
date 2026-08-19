@@ -1,6 +1,8 @@
-# Title -> GT Mode. The packaged convenience card auto-loads its purchased,
-# upgraded Mazda Protege and starts on the overview map.
-680+8=CROSS,START
+# Unified title -> Gran Turismo Mode. The packaged convenience card auto-loads
+# its purchased, upgraded Mazda Protege and starts on the overview map.
+560+1=CAPTURE
+600+4=DOWN
+640+8=CROSS,START
 760+3=RIGHT
 780+3=RIGHT
 820+4=CROSS

@@ -1,0 +1,12 @@
+# Direct native Arcade frontend -> single-player Road Race on Tahiti Road.
+# The drive-test launcher starts the Arcade guest at overlay 1, so the unified
+# title and both discs' legal/opening presentations are intentionally absent.
+780+4=CROSS
+1380+4=CROSS
+1780+4=CROSS
+2180+4=CROSS
+2580+4=CROSS
+3000+4=CROSS
+3600+4=CROSS
+4200+4=CROSS
+4260+4=CROSS

@@ -6,14 +6,15 @@ param(
         'tests\fixtures\ai-autodrive-save-sunday-race.input',
     [string]$DeployPath =
         'C:\Programming\GitHub\OpenGTPS1\OpenGTPS1',
-    [ValidateSet('Enhanced', 'PS1 Quality')]
+    [ValidateSet('Enhanced')]
     [string]$GraphicsPreset = 'Enhanced',
     [string]$VideoCapture = '',
     [int]$VideoStartPoll = 0,
     [int]$VideoEndPoll = 0,
+    [ValidateSet(30, 60)]
+    [int]$VideoFps = 30,
     [switch]$CapturePresentation,
     [switch]$DumpNativeCapture,
-    [switch]$LegacyControl,
     [switch]$Unthrottled
 )
 
@@ -66,8 +67,6 @@ $environment = [ordered]@{
     'RECOMPONE_GRAPHICS_PRESET_OVERRIDE' = $GraphicsPreset
     'RECOMPONE_EXIT_AFTER_INPUT_POLL' = $ExitPoll.ToString()
     'RECOMPONE_NATIVE_WORLD_TRACE_INTERVAL' = '30'
-    'RECOMPONE_NATIVE_WORLD_RENDERER' =
-        if ($LegacyControl) { '0' } else { $null }
     'RECOMPONE_VIDEO_CAPTURE' = $videoCapturePath
     'RECOMPONE_VIDEO_START_INPUT_POLL' =
         if ($videoCapturePath) { $VideoStartPoll.ToString() } else { $null }
@@ -75,6 +74,7 @@ $environment = [ordered]@{
         if ($videoCapturePath) { $VideoEndPoll.ToString() } else { $null }
     'RECOMPONE_VIDEO_WIDTH' = if ($videoCapturePath) { '640' } else { $null }
     'RECOMPONE_VIDEO_HEIGHT' = if ($videoCapturePath) { '480' } else { $null }
+    'RECOMPONE_VIDEO_FPS' = if ($videoCapturePath) { $VideoFps.ToString() } else { $null }
     'RECOMPONE_PRESENTATION_CAPTURE' =
         if ($CapturePresentation) { '1' } else { $null }
     'RECOMPONE_NATIVE_WORLD_DUMP_PATH' =
@@ -153,16 +153,14 @@ if ($null -ne $exitCode -and $exitCode -ne 0) {
 if ($stderr -match 'Unhandled exception|Fatal error') {
     throw 'Live-native smoke logged a fatal runtime failure'
 }
-if (-not $LegacyControl) {
-    if (
-        $stderr -notmatch '\[Native-World\] enabled' -or
-        $stderr -notmatch '\[Native-World\] frame='
-    ) {
-        throw 'Live-native smoke did not prove native rendering'
-    }
-    if ($stderr -match '\[Native-World\] disabled:') {
-        throw 'Live-native smoke logged a native renderer failure'
-    }
+if (
+    $stderr -notmatch '\[Native-World\] enabled' -or
+    $stderr -notmatch '\[Native-World\] frame='
+) {
+    throw 'Live-native smoke did not prove native rendering'
+}
+if ($stderr -match '\[Native-World\] disabled:') {
+    throw 'Live-native smoke logged a native renderer failure'
 }
 if ($stderr -notmatch '\[Runtime\] shutdown complete; exit=0') {
     throw 'Live-native smoke did not complete orderly shutdown'
@@ -180,8 +178,7 @@ if ($videoCapturePath) {
 }
 
 Write-Output (
-    "live_native=pass renderer=" +
-    "$(if ($LegacyControl) { 'legacy' } else { 'native' }) " +
+    "live_native=pass renderer=native " +
     "preset=$GraphicsPreset " +
     "exitPoll=$ExitPoll " +
     "audio=dummy " +

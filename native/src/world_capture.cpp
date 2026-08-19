@@ -61,7 +61,11 @@ WorldCaptureReadResult parse_header(
             ? world_capture_legacy_triangle_stride
             : version == 3
                 ? world_capture_v3_triangle_stride
-                : world_capture_triangle_stride;
+                : version == 4
+                    ? world_capture_v4_triangle_stride
+                    : version == 5
+                        ? world_capture_v5_triangle_stride
+                        : world_capture_triangle_stride;
     if (header_size != expected_header_size ||
         byte_count != expected_header_size ||
         u32(bytes + 48) != expected_triangle_stride)
@@ -191,6 +195,7 @@ void parse_vertex(
     vertex->g = bytes[17];
     vertex->b = bytes[18];
     vertex->world_valid = (bytes[19] & 1U) != 0;
+    vertex->screen_offset_anchor = (bytes[19] & 2U) != 0;
     vertex->model_x = i16(bytes + 20);
     vertex->model_y = i16(bytes + 22);
     vertex->model_z = i16(bytes + 24);
@@ -208,6 +213,25 @@ void parse_vertex(
     }
     if (header.version >= 4)
         vertex->source_vertex_identity = u32(bytes + 52);
+    vertex->transform_id = 0;
+    for (int index = 0; index < 9; ++index)
+        vertex->transform_rotation[index] = 0;
+    for (auto& component : vertex->transform_translation)
+        component = 0;
+    vertex->exact_transform_valid = false;
+    if (header.version >= 6) {
+        vertex->transform_id = u64(bytes + 56);
+        for (int index = 0; index < 9; ++index)
+            vertex->transform_rotation[index] = i16(bytes + 64 + index * 2);
+        for (int index = 0; index < 3; ++index) {
+            vertex->transform_translation[index] =
+                i32(bytes + 84 + index * 4);
+        }
+        vertex->exact_transform_valid =
+            vertex->world_valid &&
+            !vertex->screen_offset_anchor &&
+            vertex->transform_id != 0;
+    }
     if (vertex->world_valid)
         calculate_world(header, vertex);
     else
@@ -244,17 +268,52 @@ void parse_triangle(
         triangle->draw_offset_y = i16(bytes + 46);
     }
     triangle->transform_id = u64(bytes + 48);
-    const std::size_t vertex_stride =
-        header.version >= 4 ? 56 : header.version >= 3 ? 52 : 40;
-    parse_vertex(bytes + 56, header, &triangle->vertices[0]);
+    triangle->exact_transform_valid = header.version >= 5;
+    if (triangle->exact_transform_valid) {
+        for (int index = 0; index < 9; ++index)
+            triangle->transform_rotation[index] =
+                i16(bytes + 56 + index * 2);
+        for (int index = 0; index < 3; ++index)
+            triangle->transform_translation[index] =
+                i32(bytes + 76 + index * 4);
+    } else {
+        for (int index = 0; index < 9; ++index)
+            triangle->transform_rotation[index] =
+                index == 0 || index == 4 || index == 8 ? 4096 : 0;
+        for (auto& component : triangle->transform_translation)
+            component = 0;
+    }
+    const std::size_t vertex_stride = header.version >= 6
+        ? 96
+        : header.version >= 4 ? 56 : header.version >= 3 ? 52 : 40;
+    const std::size_t vertices_offset = header.version >= 5 ? 88 : 56;
     parse_vertex(
-        bytes + 56 + vertex_stride,
+        bytes + vertices_offset,
+        header,
+        &triangle->vertices[0]);
+    parse_vertex(
+        bytes + vertices_offset + vertex_stride,
         header,
         &triangle->vertices[1]);
     parse_vertex(
-        bytes + 56 + vertex_stride * 2,
+        bytes + vertices_offset + vertex_stride * 2,
         header,
         &triangle->vertices[2]);
+    if (header.version < 6) {
+        for (auto& vertex : triangle->vertices) {
+            vertex.transform_id = triangle->transform_id;
+            for (int index = 0; index < 9; ++index) {
+                vertex.transform_rotation[index] =
+                    triangle->transform_rotation[index];
+            }
+            for (int index = 0; index < 3; ++index) {
+                vertex.transform_translation[index] =
+                    triangle->transform_translation[index];
+            }
+            vertex.exact_transform_valid =
+                vertex.world_valid && triangle->exact_transform_valid;
+        }
+    }
 }
 
 } // namespace

@@ -4,6 +4,9 @@ param(
     [int]$ExitPoll = 10300,
     [string]$ArtifactName = 'native-projected-scene',
     [string]$LoosePath,
+    [string]$RuntimePath = '',
+    [switch]$StartArcade,
+    [string]$ThrottleOnScriptStage = '',
     [switch]$AiAutoDrive
 )
 
@@ -17,10 +20,18 @@ $fixtureCandidate = if ([IO.Path]::IsPathRooted($Fixture)) {
 $fixturePath = (Resolve-Path $fixtureCandidate).Path
 $dll = Join-Path $repo (
     'generated\recompiled\bin\Release\net10.0\GranTurismo2PC.dll')
+$runtimeArtifact = if ([string]::IsNullOrWhiteSpace($RuntimePath)) {
+    $dll
+} elseif ([IO.Path]::IsPathRooted($RuntimePath)) {
+    (Resolve-Path -LiteralPath $RuntimePath).Path
+} else {
+    (Resolve-Path -LiteralPath (Join-Path $repo $RuntimePath)).Path
+}
+$runtimeIsDll = [string]::IsNullOrWhiteSpace($RuntimePath)
 $renderer = Join-Path $repo (
     'build\native\Release\opengt_capture_render.exe')
-if (-not (Test-Path -LiteralPath $dll)) {
-    throw "Development build is missing: $dll"
+if (-not (Test-Path -LiteralPath $runtimeArtifact)) {
+    throw "Runtime build is missing: $runtimeArtifact"
 }
 if (-not (Test-Path -LiteralPath $renderer)) {
     throw "Native capture renderer is missing: $renderer"
@@ -33,7 +44,7 @@ $LoosePath = if ([IO.Path]::IsPathRooted($LoosePath)) {
 } else {
     [IO.Path]::GetFullPath((Join-Path $repo $LoosePath))
 }
-if (-not (Test-Path -LiteralPath (
+if ($runtimeIsDll -and -not (Test-Path -LiteralPath (
         Join-Path $LoosePath 'recompone.loose.json'))) {
     throw "Loose runtime is missing: $LoosePath"
 }
@@ -67,7 +78,7 @@ foreach ($path in $generatedFiles) {
     }
 }
 
-$runtimeDirectory = Split-Path -Parent $dll
+$runtimeDirectory = Split-Path -Parent $runtimeArtifact
 foreach ($runtimeFile in @(
         'carda.sav',
         'cardb.sav',
@@ -91,9 +102,13 @@ $settingsHashBefore = if (Test-Path -LiteralPath $settings) {
 }
 
 $start = New-Object Diagnostics.ProcessStartInfo
-$start.FileName = 'dotnet'
-$start.WorkingDirectory = Split-Path -Parent $dll
-$start.Arguments = "`"$dll`" --headless `"$LoosePath`""
+$start.FileName = if ($runtimeIsDll) { 'dotnet' } else { $runtimeArtifact }
+$start.WorkingDirectory = $runtimeDirectory
+$start.Arguments = (
+    $(if ($runtimeIsDll) { "`"$runtimeArtifact`" " } else { '' }) +
+    '--headless ' +
+    $(if ($StartArcade) { '--start-arcade ' } else { '' }) +
+    "`"$LoosePath`"")
 $start.UseShellExecute = $false
 $start.CreateNoWindow = $true
 $start.RedirectStandardOutput = $true
@@ -109,6 +124,9 @@ $launchEnvironment = [ordered]@{
     'RECOMPONE_UNTHROTTLED' = '1'
     'RECOMPONE_GRAPHICS_PRESET_OVERRIDE' = 'Enhanced'
     'RECOMPONE_EXIT_AFTER_INPUT_POLL' = $ExitPoll.ToString()
+    'RECOMPONE_THROTTLE_ON_SCRIPT_STAGE' = if (
+        [string]::IsNullOrWhiteSpace($ThrottleOnScriptStage)
+    ) { $null } else { $ThrottleOnScriptStage }
     'RECOMPONE_GPU_CAPTURE_PATH' = $capture
     'RECOMPONE_GPU_CAPTURE_INPUT_POLL' = $CapturePoll.ToString()
     'RECOMPONE_GT2_AI_AUTODRIVE' = if ($AiAutoDrive) { '1' } else { $null }

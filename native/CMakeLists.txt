@@ -12,6 +12,7 @@ add_library(opengt_renderer_core STATIC
     src/world_capture.cpp
     src/world_draw_list.cpp
     src/world_gpu_renderer_d3d11.cpp
+    src/world_interpolation.cpp
     src/world_topology.cpp
 )
 
@@ -126,6 +127,40 @@ if(OPENGT_BUILD_TESTS)
         NAME opengt_world_topology_tests
         COMMAND opengt_world_topology_tests
     )
+
+    add_executable(opengt_world_interpolation_tests
+        tests/world_interpolation_tests.cpp
+    )
+    target_link_libraries(
+        opengt_world_interpolation_tests
+        PRIVATE
+            opengt_renderer_core
+    )
+    target_compile_features(
+        opengt_world_interpolation_tests PRIVATE cxx_std_17)
+
+    add_test(
+        NAME opengt_world_interpolation_tests
+        COMMAND opengt_world_interpolation_tests
+    )
+
+    if(WIN32)
+        add_executable(opengt_world_gpu_renderer_tests
+            tests/world_gpu_renderer_tests.cpp
+        )
+        target_link_libraries(
+            opengt_world_gpu_renderer_tests
+            PRIVATE
+                opengt_renderer_core
+        )
+        target_compile_features(
+            opengt_world_gpu_renderer_tests PRIVATE cxx_std_17)
+
+        add_test(
+            NAME opengt_world_gpu_renderer_tests
+            COMMAND opengt_world_gpu_renderer_tests
+        )
+    endif()
 endif()
 
 add_executable(opengt_capture_render
@@ -151,3 +186,18 @@ add_executable(opengt_live_benchmark
 )
 target_link_libraries(opengt_live_benchmark PRIVATE opengt_live_renderer)
 target_compile_features(opengt_live_benchmark PRIVATE cxx_std_17)
+
+add_executable(opengt_world_interpolation_inspect
+    tools/world_interpolation_inspect.cpp
+)
+target_link_libraries(
+    opengt_world_interpolation_inspect PRIVATE opengt_renderer_core)
+target_compile_features(
+    opengt_world_interpolation_inspect PRIVATE cxx_std_17)
+
+add_executable(opengt_live_pair_inspect
+    tools/live_pair_inspect.cpp
+)
+target_link_libraries(
+    opengt_live_pair_inspect PRIVATE opengt_live_renderer opengt_renderer_core)
+target_compile_features(opengt_live_pair_inspect PRIVATE cxx_std_17)

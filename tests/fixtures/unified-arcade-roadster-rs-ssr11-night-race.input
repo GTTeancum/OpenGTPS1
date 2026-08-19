@@ -24,19 +24,21 @@
 5700+4=CROSS
 
 # Automatic transmission -> Road Race course menu. SSR11 is the fourth
-# always-available course and selects the converted night car body.
+# always-available course and selects the converted night car body. Navigate
+# before confirming; the former post-6900 inputs arrived after race_1 began
+# and therefore only exercised Tahiti Road while claiming SSR11 coverage.
 6300+4=CROSS
+6500+4=RIGHT
+6620+4=RIGHT
+6740+4=RIGHT
+6860+1=CAPTURE
 6900+4=CROSS
 6960+1=CAPTURE
-7020+4=RIGHT
-7140+4=RIGHT
-7260+4=RIGHT
-7420+1=CAPTURE
-7460+4=CROSS
 
-# Exercise the converted CNO through live GT2 race rendering and auto-drive.
+# Exercise the converted CNO through native GT2 AI auto-drive. The race stage
+# contains capture markers only: no scripted throttle, steering, camera, or
+# replay input participates in the proof.
 [race_1]
-0+8500=CROSS
 300+1=CAPTURE
 1000+1=CAPTURE
 2000+1=CAPTURE

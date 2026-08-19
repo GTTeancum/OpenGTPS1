@@ -19,6 +19,8 @@ enum {
     OPENGT_LIVE_TOPOLOGY = 1u << 2,
     OPENGT_LIVE_PERSPECTIVE = 1u << 3,
     OPENGT_LIVE_WARP = 1u << 4,
+    OPENGT_LIVE_TEXTURE_SMOOTHING = 1u << 5,
+    OPENGT_LIVE_REALTIME_READBACK = 1u << 6,
 };
 
 typedef struct opengt_live_options {
@@ -42,11 +44,53 @@ typedef struct opengt_live_stats {
     uint32_t topology_ownership_reorders;
     uint32_t output_width;
     uint32_t output_height;
+    // CPU elapsed time inside render_world_d3d11. The synchronous API waits
+    // through completion/readback; live asynchronous submissions do not.
     uint64_t render_microseconds;
     uint64_t frame_index;
     int32_t input_poll;
     uint32_t reserved;
+    uint64_t decode_microseconds;
+    uint64_t draw_list_microseconds;
+    uint64_t topology_microseconds;
+    uint64_t pipeline_microseconds;
 } opengt_live_stats;
+
+typedef struct opengt_live_interpolation_stats {
+    uint32_t struct_size;
+    uint32_t result;
+    uint32_t output_count;
+    uint32_t previous_commands;
+    uint32_t current_commands;
+    uint32_t eligible_world_commands;
+    uint32_t matched_commands;
+    uint32_t matched_track_commands;
+    uint32_t matched_vehicle_commands;
+    uint32_t held_screen_commands;
+    uint32_t held_unmatched_commands;
+    uint32_t previous_transform_groups;
+    uint32_t current_transform_groups;
+    uint32_t matched_transform_groups;
+    uint32_t temporal_reset;
+    // Bit 0 records that the midpoint reused exactly compatible prior-frame
+    // VRAM/material uploads. Bit 1 records that the current authored state had
+    // eligible track commands, so performance telemetry can exclude menus and
+    // Results screens from its aligned track-world percentile window.
+    uint32_t reserved;
+    uint32_t exact_rigid_transform_groups;
+    uint32_t incoherent_exact_transform_groups;
+    uint32_t held_incoherent_vehicle_commands;
+    uint32_t held_track_visibility_commands;
+    uint32_t held_unsafe_track_commands;
+    uint64_t interpolation_microseconds;
+    uint64_t pair_pipeline_microseconds;
+    uint64_t midpoint_render_microseconds;
+    uint64_t actual_render_microseconds;
+    // Topology is built once for the current authored state before either
+    // output is rendered. Expose it at pair scope; midpoint output stats are
+    // intentionally topology-free and cannot represent this cost.
+    uint64_t current_topology_microseconds;
+} opengt_live_interpolation_stats;
 
 OPENGT_LIVE_EXPORT void* opengt_live_create(void);
 
@@ -60,6 +104,35 @@ OPENGT_LIVE_EXPORT int32_t opengt_live_render(
     size_t output_capacity,
     const opengt_live_options* options,
     opengt_live_stats* stats);
+
+// Submits one midpoint/actual pair and drains the oldest completed pair without
+// blocking. output_count is one for an immediate temporal reset, zero when no
+// prior pair is ready, and two for a completed chronological pair. Pixel data
+// and frame metadata always come from the same staging slots. stats.reserved
+// bit 0 marks a synthesized midpoint and bit 2 marks a one-output temporal
+// reset boundary that may not be reused as the next 60 Hz native image.
+OPENGT_LIVE_EXPORT int32_t opengt_live_render_pair(
+    void* handle,
+    const uint8_t* capture_bytes,
+    size_t capture_size,
+    uint8_t* output_first_rgba,
+    uint8_t* output_second_rgba,
+    size_t output_capacity,
+    const opengt_live_options* options,
+    opengt_live_stats* first_stats,
+    opengt_live_stats* second_stats,
+    opengt_live_interpolation_stats* interpolation_stats);
+
+// Drains one additional completed midpoint/actual pair without submitting a
+// new authored capture. Returns 1 when a pair was written, 0 when the oldest
+// pair is still in flight, and a negative result on error.
+OPENGT_LIVE_EXPORT int32_t opengt_live_try_read_pair(
+    void* handle,
+    uint8_t* output_first_rgba,
+    uint8_t* output_second_rgba,
+    size_t output_capacity,
+    opengt_live_stats* first_stats,
+    opengt_live_stats* second_stats);
 
 OPENGT_LIVE_EXPORT uint32_t opengt_live_api_version(void);
 

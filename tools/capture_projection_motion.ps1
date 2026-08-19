@@ -1,12 +1,12 @@
 param(
-    [ValidateSet('Projection', 'Seams')]
-    [string]$Feature = 'Projection',
+    [ValidateSet('Modern')]
+    [string]$Feature = 'Modern',
     [int]$StartPoll = 9400,
     [int]$EndPoll = 10300,
     [string]$ArtifactName = 'projection-motion-current',
     [string]$Fixture = 'tests\fixtures\ai-autodrive-save-sunday-race.input',
-    [ValidateSet('On', 'Off', 'Both')]
-    [string]$Setting = 'Both'
+    [ValidateSet('Fixed')]
+    [string]$Setting = 'Fixed'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,17 +30,7 @@ $settings = Join-Path $deploy 'interface.ini'
 $settingsHashBefore = (Get-FileHash -LiteralPath $settings -Algorithm SHA256).Hash
 New-Item -ItemType Directory -Path $artifact -Force | Out-Null
 $featureSlug = $Feature.ToLowerInvariant()
-$environmentSetting = if ($Feature -eq 'Projection') {
-    'RECOMPONE_PERSPECTIVE_CORRECT_TEXTURES'
-} else {
-    'RECOMPONE_STABILIZE_GEOMETRY_SEAMS'
-}
-
-foreach ($setting in $(if ($Setting -eq 'Both') {
-    @('On', 'Off')
-} else {
-    @($Setting)
-})) {
+foreach ($setting in @($Setting)) {
     $settingSlug = $setting.ToLowerInvariant()
     $video = Join-Path $artifact "$featureSlug-$settingSlug.mp4"
     if (Test-Path -LiteralPath $video) {
@@ -63,8 +53,6 @@ foreach ($setting in $(if ($Setting -eq 'Both') {
     $start.EnvironmentVariables['RECOMPONE_GT2_AI_AUTODRIVE'] = '1'
     $start.EnvironmentVariables['RECOMPONE_TRACE_GPU_PRIMITIVES'] = '1'
     $start.EnvironmentVariables['RECOMPONE_GRAPHICS_PRESET_OVERRIDE'] = 'Enhanced'
-    $start.EnvironmentVariables[$environmentSetting] =
-        if ($setting -eq 'On') { '1' } else { '0' }
     $start.EnvironmentVariables['RECOMPONE_VIDEO_CAPTURE'] = $video
     $start.EnvironmentVariables['RECOMPONE_VIDEO_START_INPUT_POLL'] = $StartPoll.ToString()
     $start.EnvironmentVariables['RECOMPONE_VIDEO_END_INPUT_POLL'] = $EndPoll.ToString()
@@ -109,7 +97,7 @@ foreach ($setting in $(if ($Setting -eq 'Both') {
     if ($videoBytes -gt 25MB) {
         throw "$Feature $setting video exceeds the 25 MiB safety limit: $videoBytes"
     }
-    Write-Output "feature=$Feature setting=$setting video=$video bytes=$videoBytes audio=dummy"
+    Write-Output "renderer=$Feature setting=$setting video=$video bytes=$videoBytes audio=dummy"
 }
 
 $settingsHashAfter = (Get-FileHash -LiteralPath $settings -Algorithm SHA256).Hash

@@ -119,6 +119,13 @@
     liveries and promotion of validated new-car dealer integration without
     displacing any native entries. TVR is new-car-only in the merged design;
     Cerbera LM must be sold as a new TVR and never enter used-car rotations.
+    The archive-derived review gallery at
+    `artifacts/gt1-visual-proofs-v1/gallery` renders every currently converted
+    choice: 53 standalone paints across 13 cars and 54 folded paints/liveries
+    across 34 GT2 targets. Each individual proof is 960x640 and the overview
+    sheets retain 720x480 per tile; within-car pixel hashing finds zero
+    duplicate visual groups. The focused Cerbera/Castrol sheet contains both
+    Cerbera LM bodies and all four accepted Castrol Supra liveries.
 - Mine supported Gran Turismo 2 demo builds for demo-exclusive LM colors,
   liveries, and alternate body/texture packages, then fold them into the
   corresponding retail GT2 identities. Treat each user-supplied demo image as
@@ -148,9 +155,10 @@
   loaded target resolves to original recompiled code or a source-backed host
   shim.
 - **Graphics/video:** GPU command lists, VRAM transfers, MDEC input/output,
-  display modes, menu framebuffers, and race rendering remain live. Wrapper
-  presets select PS1 or enhanced projection, seam handling, track visibility,
-  vehicle LOD, and dithering without changing guest gameplay state.
+  display modes, menu framebuffers, and race rendering remain live. One fixed
+  modern world renderer owns every provenance-backed 3D command with corrected
+  projection, stabilized topology, complete authored visibility, maximum LOD,
+  smoothed sampling, and no dithering, without changing guest gameplay state.
 - **Input:** digital and analog controller state reaches the original pad data
   structures with stable edge timing.
 - **Audio:** SPU voices and streamed XA/CD input remain paced and audible.
@@ -165,8 +173,15 @@
 
 ## GT2 graphics enhancements
 
-- Texture projection correction uses the recovered per-vertex GTE depth in the
-  host shader. Disabling it restores the PS1's affine interpolation.
+- The shipping target has one modern 3D renderer. PS1 Quality, Custom, runtime
+  downgrade values, and legacy-world fallback have been removed from shipping
+  presentation. GT2's authored 2D GPU command compositor remains responsible
+  for menus, loading, Results, HUD, MDEC video, and world-free transitions; it
+  is not an alternate world renderer.
+
+- Texture projection correction uses recovered per-vertex GTE view/projection
+  state in the native backend and is mandatory in the shipping path. Affine
+  rendering remains available only to standalone development oracles.
 - Road/model seam stabilization uses authored boundary identity, exact
   view-space T-junction subdivision, and deterministic coplanar ownership.
   The known Red Rock replay line was a 3D texel-center sampling fault and is
@@ -177,10 +192,17 @@
 - Maximum vehicle LOD forces selector `1`, the player-quality model, for all
   cars instead of selecting three distance-dependent representations.
 - The enhanced geometry paths use the original development-console polygon
-  buffer layout at `0x80200000`, expanded to `0x70000` bytes, so additional
-  road and vehicle polygons are not silently discarded.
-- PS1 Quality, Enhanced, and Custom live in the wrapper. Output resolution is
-  deliberately independent and widescreen is deferred.
+  buffer layout expanded to `0x70000` bytes, so additional distant road and
+  vehicle polygons cannot overflow retail storage. Simulation uses
+  `0x80200000`; unified Arcade uses the non-overlapping `0x80500000` arena
+  because its merged parameter database already owns
+  `0x80200000`-`0x802FFFFF`. This keeps renderer geometry, imported car data,
+  and the `0x80400000` frontend archive reservation disjoint.
+- Old PS1 Quality/Enhanced/Custom values are migration inputs only: loading any
+  of them canonicalizes the fixed modern contract. Provenance-backed triangles
+  are rejected by both GL-HLE and software compatibility rasterizers even when
+  the native worker is unavailable, preventing a silent legacy-world fallback.
+  Output resolution remains independent and widescreen is deferred.
 
 ## RecompOne gotchas carried from the reference
 

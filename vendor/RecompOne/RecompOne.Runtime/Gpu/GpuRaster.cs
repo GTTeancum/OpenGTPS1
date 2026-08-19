@@ -106,19 +106,38 @@ public sealed partial class Gpu
                 cmd, tex, quad, traceVertices);
         }
 
-        CaptureTri(v[0], v[1], v[2], tex, gouraud, semi, raw, clut);
+        bool firstContainsWorld = CaptureTri(
+            v[0], v[1], v[2], tex, gouraud, semi, raw, clut);
+        bool secondContainsWorld = false;
         if (quad)
-            CaptureTri(v[1], v[2], v[3], tex, gouraud, semi, raw, clut);
+        {
+            secondContainsWorld = CaptureTri(
+                v[1], v[2], v[3], tex, gouraud, semi, raw, clut);
+        }
 
         if (HleOn)
         {
-            HleTri(v[0], v[1], v[2], tex, gouraud, semi, raw, clut);
-            if (quad) HleTri(v[1], v[2], v[3], tex, gouraud, semi, raw, clut);
+            if (ShouldRasterizeCompatibilityTriangle(firstContainsWorld))
+                HleTri(v[0], v[1], v[2], tex, gouraud, semi, raw, clut);
+            if (
+                quad &&
+                ShouldRasterizeCompatibilityTriangle(secondContainsWorld))
+            {
+                HleTri(v[1], v[2], v[3], tex, gouraud, semi, raw, clut);
+            }
         }
         else
         {
-            RasterTriangle(v[0], v[1], v[2], tex, gouraud, semi, raw, clut);
-            if (quad) RasterTriangle(v[1], v[2], v[3], tex, gouraud, semi, raw, clut);
+            if (ShouldRasterizeCompatibilityTriangle(firstContainsWorld))
+                RasterTriangle(
+                    v[0], v[1], v[2], tex, gouraud, semi, raw, clut);
+            if (
+                quad &&
+                ShouldRasterizeCompatibilityTriangle(secondContainsWorld))
+            {
+                RasterTriangle(
+                    v[1], v[2], v[3], tex, gouraud, semi, raw, clut);
+            }
         }
     }
 

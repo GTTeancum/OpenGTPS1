@@ -8,12 +8,15 @@ namespace opengt::render {
 
 // This pass is deliberately source-topology driven. Every operation requires
 // a non-zero authored vertex identity and exact integer GTE view coordinates.
-// There is no distance tolerance, screen-space expansion, or nearest-neighbor
-// search in this API-neutral C++17 layer.
+// Continuous high-resolution projection may additionally close a subpixel
+// seam between mutually nearest boundary vertices, but only after exact
+// authored evidence proves that the two track sections are adjacent.
 struct WorldTopologyOptions {
     bool join_authored_boundaries;
     bool split_exact_t_junctions;
     bool deterministic_coplanar_ownership;
+    bool repair_projected_t_junctions = true;
+    bool repair_offscreen_projected_t_junctions = true;
 };
 
 struct WorldTopologyStats {
@@ -27,6 +30,12 @@ struct WorldTopologyStats {
     std::uint32_t adjusted_vertex_instances;
     std::uint32_t authored_projection_groups;
     std::uint32_t adjusted_projection_instances;
+    std::uint32_t projected_seam_groups;
+    std::uint32_t adjusted_seam_instances;
+    std::uint32_t authored_raster_groups;
+    std::uint32_t adjusted_authored_raster_instances;
+    std::uint32_t projected_t_junctions;
+    std::uint32_t adjusted_projected_t_junction_instances;
     std::uint32_t boundary_edges;
     std::uint32_t manifold_edges;
     std::uint32_t nonmanifold_edges;

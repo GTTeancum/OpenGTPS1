@@ -47,6 +47,10 @@ internal static unsafe class InputManager
         int.TryParse(Environment.GetEnvironmentVariable("RECOMPONE_INPUT_END_POLL"), out int inputEndPoll)
             ? Math.Max(0, inputEndPoll)
             : 0;
+    static readonly int _liveInputStartPoll =
+        int.TryParse(Environment.GetEnvironmentVariable("RECOMPONE_LIVE_INPUT_START_POLL"), out int liveInputStartPoll)
+            ? Math.Max(0, liveInputStartPoll)
+            : 0;
     static readonly (byte Large, byte Small)[] _lastRumble =
         [(byte.MaxValue, byte.MaxValue), (byte.MaxValue, byte.MaxValue)];
 
@@ -70,6 +74,9 @@ internal static unsafe class InputManager
         ParseScriptedInput();
         if (_disableLiveInput)
             Console.Error.WriteLine("[Input] live keyboard/gamepad input disabled for deterministic replay");
+        else if (_liveInputStartPoll > 0)
+            Console.Error.WriteLine(
+                $"[Input] live keyboard/gamepad input starts at poll {_liveInputStartPoll}");
         if (_forcePad2Connected)
             Console.Error.WriteLine("[Input] controller 2 connection forced for deterministic replay");
         if (input.Keyboards.Count > 0)
@@ -112,7 +119,9 @@ internal static unsafe class InputManager
 
     public static void Poll()
     {
-        if (_disableLiveInput)
+        bool liveInputEnabled =
+            !_disableLiveInput && _inputPoll >= _liveInputStartPoll;
+        if (!liveInputEnabled)
         {
             Controller.State = Controller.State2 = 0xFFFF;
             Controller.LeftX = Controller.LeftY = Controller.RightX = Controller.RightY = 0x80;
@@ -128,7 +137,8 @@ internal static unsafe class InputManager
         Controller.State &= (ushort)~V8Compat.GetAutomationInputMask();
         Controller.State &= (ushort)~V82Compat.GetAutomationInputMask();
         Controller.Connected2 = _forcePad2Connected ||
-            (!_disableLiveInput && (_pad1 != null || HasAnyKey(ConfigManager.Game.Keys2)));
+            (liveInputEnabled &&
+             (_pad1 != null || HasAnyKey(ConfigManager.Game.Keys2)));
     }
 
     static void ParseScriptedInput()
@@ -370,6 +380,7 @@ internal static unsafe class InputManager
     }
 
     internal static int CurrentPoll => _inputPoll;
+    internal static string? CurrentScriptStage => _scriptStage;
 
     static string ControllerName(GameController* controller)
     {
