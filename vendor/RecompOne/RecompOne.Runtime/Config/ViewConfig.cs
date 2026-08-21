@@ -70,10 +70,13 @@ public class ViewConfig
 
     public bool PerspectiveCorrectTextures
     {
-        get => true;
+        // GT2 authors road, landscape, and vehicle UVs for the PS1's affine
+        // rasterizer. Perspective interpolation bends those atlas mappings
+        // across large triangles and can pull unrelated texels into the road.
+        get => false;
         set
         {
-            SetBool("PerspectiveCorrectTextures", true);
+            SetBool("PerspectiveCorrectTextures", false);
             Gte.SetProjectionTrackingEnabled(true);
         }
     }
@@ -127,7 +130,7 @@ public class ViewConfig
         HighResolution3D = true;
         TextureSmoothing = true;
         HighResolutionTextures = true;
-        PerspectiveCorrectTextures = true;
+        PerspectiveCorrectTextures = false;
         StabilizeGeometrySeams = true;
         ExtendedDrawDistance = true;
         LevelOfDetail = "Maximum";

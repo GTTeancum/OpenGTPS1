@@ -683,7 +683,7 @@ ownership and pacing authority.
 
 The August 15, 2026 validation uses the ReadyToRun host in
 `artifacts/modern-renderer-r2r-v82/publish`. It retains the complete modern
-quality contract: 4x source geometry, perspective-correct and smoothed
+quality contract: 4x source geometry, GT2-authored affine and smoothed
 textures, topology repair, full authored visibility distance, Maximum
 track/scenery and vehicle LOD, and no compatibility-world fallback.
 
@@ -836,14 +836,14 @@ deliberately `machine-pass-user-visual-pending`, not complete.
 ## Texture projection
 
 Race vertices carry model/world position and exact GTE view/projection state
-through the native scene path. The backend performs homogeneous projection and
-perspective-correct interpolation from those values. It does not reconstruct
-perspective from already projected PS1 XY packets or correlate framebuffer
-pixels.
+through the native scene path. The backend performs homogeneous geometry
+projection from those values. Texture coordinates retain GT2's authored affine
+interpolation: applying perspective correction globally bends the UV layouts of
+large road and landscape triangles and can sample the wrong authored region.
 
-The temporary development oracle can still request affine interpolation for
-comparison captures. It is not part of the shipping renderer. The modern path
-uses native perspective correction.
+The development viewer can still request perspective interpolation for A/B
+captures. It is diagnostic-only until a GT2-aware reconstruction can preserve
+the affine reference coverage without road corruption.
 
 ## Road and model seams
 

@@ -423,7 +423,7 @@ internal static class HostWindow
         Console.WriteLine(
             $"[Host] external 4x texture assets={(ConfigManager.View.HighResolutionTextures ? "On (when pack installed)" : "Off")}");
         Console.WriteLine(
-            $"[Host] texture projection fix={(ConfigManager.View.PerspectiveCorrectTextures ? "On (modern fixed)" : "Off")}");
+            $"[Host] texture projection={(ConfigManager.View.PerspectiveCorrectTextures ? "Perspective" : "GT2 affine")}");
         Console.WriteLine(
             $"[Host] graphics preset={ConfigManager.View.GraphicsPreset} modern-only " +
             $"seams={(ConfigManager.View.StabilizeGeometrySeams ? "Stabilized" : "Disabled")} " +

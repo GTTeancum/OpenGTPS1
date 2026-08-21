@@ -15,7 +15,7 @@ extracts the required loose files from the user's own matching raw IMG.
 
 - Playable original game flow from boot through purchasing, upgrading, races,
   results, championships, and replays.
-- Native Windows race/replay renderer with perspective-correct textures,
+- Native Windows race/replay renderer with GT2-authored affine texture mapping,
   exact track-seam handling, extended draw distance, maximum vehicle LOD, and
   configurable dithering.
 - Keyboard and Xbox-compatible controller input.

@@ -427,6 +427,189 @@ void emit_clip_rect_diagnostics(const WorldDrawList& draw_list) {
     }
 }
 
+// Projection failures are often intermittent because a single vertex crosses
+// a clip plane or a large authored triangle changes its raster footprint by a
+// fraction of a pixel. Keep this opt-in: at interval 1 it deliberately emits
+// enough provenance to correlate a visible frame with the exact command.
+void emit_primitive_diagnostics(
+    const WorldDrawList& draw_list,
+    const WorldGpuRenderOptions& options
+) {
+    if (std::getenv("OPENGT_RENDER_PRIMITIVE_DIAGNOSTICS") == nullptr)
+        return;
+    static thread_local std::uint64_t primitive_sample = 0;
+    std::uint64_t interval = 120;
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_PRIMITIVE_DIAGNOSTICS_INTERVAL")) {
+        const unsigned long parsed = std::strtoul(configured, nullptr, 10);
+        if (parsed != 0)
+            interval = parsed;
+    }
+    if ((primitive_sample++ % interval) != 0)
+        return;
+
+    constexpr float d3d_near_plane = 16.0F;
+    std::size_t world_commands = 0;
+    std::size_t screen_commands = 0;
+    std::size_t camera_crossings = 0;
+    std::size_t near_crossings = 0;
+    std::size_t behind_near = 0;
+    std::size_t viewport_crossings = 0;
+    std::size_t oversized_spans = 0;
+    std::size_t nonfinite_commands = 0;
+    std::size_t depth_track_commands = 0;
+    float maximum_projection_delta = 0.0F;
+    float minimum_view_z = (std::numeric_limits<float>::max)();
+    float maximum_view_z = (std::numeric_limits<float>::lowest)();
+    std::vector<std::size_t> suspicious;
+    suspicious.reserve(32);
+
+    const float display_x0 = static_cast<float>(draw_list.display_x);
+    const float display_y0 = static_cast<float>(draw_list.display_y);
+    const float display_x1 = display_x0 + draw_list.display_width;
+    const float display_y1 = display_y0 + draw_list.display_height;
+    for (std::size_t index = 0; index < draw_list.commands.size(); ++index) {
+        const auto& command = draw_list.commands[index];
+        const auto& material = draw_list.materials[command.material_index];
+        if ((material.primitive_flags & world_primitive_screen_space_flag) != 0) {
+            ++screen_commands;
+            continue;
+        }
+        ++world_commands;
+        if (options.depth_buffer && command.object_kind == 1U)
+            ++depth_track_commands;
+        float min_x = command.vertices[0].screen_x;
+        float max_x = min_x;
+        float min_y = command.vertices[0].screen_y;
+        float max_y = min_y;
+        float min_z = command.vertices[0].view_z;
+        float max_z = min_z;
+        bool finite = true;
+        for (const auto& vertex : command.vertices) {
+            min_x = (std::min)(min_x, vertex.screen_x);
+            max_x = (std::max)(max_x, vertex.screen_x);
+            min_y = (std::min)(min_y, vertex.screen_y);
+            max_y = (std::max)(max_y, vertex.screen_y);
+            min_z = (std::min)(min_z, vertex.view_z);
+            max_z = (std::max)(max_z, vertex.view_z);
+            finite = finite && std::isfinite(vertex.screen_x) &&
+                std::isfinite(vertex.screen_y) &&
+                std::isfinite(vertex.clip_x) &&
+                std::isfinite(vertex.clip_y) &&
+                std::isfinite(vertex.clip_z) &&
+                std::isfinite(vertex.clip_w);
+            maximum_projection_delta = (std::max)(
+                maximum_projection_delta,
+                (std::max)(
+                    std::abs(vertex.screen_x - vertex.authored_screen_x),
+                    std::abs(vertex.screen_y - vertex.authored_screen_y)));
+        }
+        minimum_view_z = (std::min)(minimum_view_z, min_z);
+        maximum_view_z = (std::max)(maximum_view_z, max_z);
+        const bool crosses_camera = min_z <= 0.0F && max_z > 0.0F;
+        const bool crosses_near =
+            min_z < d3d_near_plane && max_z >= d3d_near_plane;
+        const bool entirely_behind_near = max_z < d3d_near_plane;
+        const bool crosses_viewport =
+            (min_x < display_x0 && max_x >= display_x0) ||
+            (min_x < display_x1 && max_x >= display_x1) ||
+            (min_y < display_y0 && max_y >= display_y0) ||
+            (min_y < display_y1 && max_y >= display_y1);
+        const bool oversized =
+            max_x - min_x > draw_list.display_width * 4.0F ||
+            max_y - min_y > draw_list.display_height * 4.0F;
+        camera_crossings += crosses_camera ? 1U : 0U;
+        near_crossings += crosses_near ? 1U : 0U;
+        behind_near += entirely_behind_near ? 1U : 0U;
+        viewport_crossings += crosses_viewport ? 1U : 0U;
+        oversized_spans += oversized ? 1U : 0U;
+        nonfinite_commands += finite ? 0U : 1U;
+        if (
+            suspicious.size() < 32 &&
+            (crosses_camera || crosses_near || entirely_behind_near ||
+                oversized || !finite)
+        )
+            suspicious.push_back(index);
+    }
+
+    if (world_commands == 0) {
+        minimum_view_z = 0.0F;
+        maximum_view_z = 0.0F;
+    }
+    std::fprintf(
+        stderr,
+        "[Render-Primitives] frameSample=%llu authored=%s "
+        "projection=%s textureProjection=%s depth=%s topologyCommands=%zu "
+        "world=%zu screen=%zu depthTrack=%zu viewZ=%.3f..%.3f "
+        "cameraCross=%zu nearCross=%zu behindNear=%zu viewportCross=%zu "
+        "oversized=%zu nonfinite=%zu maxAuthoredDelta=%.3f "
+        "display=%d,%d..%d,%d\n",
+        static_cast<unsigned long long>(primitive_sample - 1),
+        options.synthetic_midpoint ? "midpoint" : "actual",
+        draw_list.continuous_projection ? "continuous" : "authored-sxy",
+        options.perspective_correct ? "perspective" : "affine",
+        options.depth_buffer ? "on" : "off",
+        draw_list.commands.size(),
+        world_commands,
+        screen_commands,
+        depth_track_commands,
+        minimum_view_z,
+        maximum_view_z,
+        camera_crossings,
+        near_crossings,
+        behind_near,
+        viewport_crossings,
+        oversized_spans,
+        nonfinite_commands,
+        maximum_projection_delta,
+        draw_list.display_x,
+        draw_list.display_y,
+        draw_list.display_x + draw_list.display_width,
+        draw_list.display_y + draw_list.display_height);
+
+    if (std::getenv("OPENGT_RENDER_PRIMITIVE_DIAGNOSTICS_VERBOSE") == nullptr)
+        return;
+    for (const std::size_t index : suspicious) {
+        const auto& command = draw_list.commands[index];
+        std::fprintf(
+            stderr,
+            "[Render-Primitive] cmd=%zu kind=%u object=%u model=%08x "
+            "transform=%016llx ot=%d source=%u clip=%d,%d..%d,%d "
+            "screen=(%.3f,%.3f)(%.3f,%.3f)(%.3f,%.3f) "
+            "authored=(%d,%d)(%d,%d)(%d,%d) "
+            "viewZ=(%.3f,%.3f,%.3f) clipW=(%.3f,%.3f,%.3f)\n",
+            index,
+            command.object_kind,
+            command.object_id,
+            command.model_pointer,
+            static_cast<unsigned long long>(command.transform_id),
+            command.ordering_table_index,
+            command.source_command_index,
+            command.clip_x0,
+            command.clip_y0,
+            command.clip_x1,
+            command.clip_y1,
+            command.vertices[0].screen_x,
+            command.vertices[0].screen_y,
+            command.vertices[1].screen_x,
+            command.vertices[1].screen_y,
+            command.vertices[2].screen_x,
+            command.vertices[2].screen_y,
+            command.vertices[0].authored_screen_x,
+            command.vertices[0].authored_screen_y,
+            command.vertices[1].authored_screen_x,
+            command.vertices[1].authored_screen_y,
+            command.vertices[2].authored_screen_x,
+            command.vertices[2].authored_screen_y,
+            command.vertices[0].view_z,
+            command.vertices[1].view_z,
+            command.vertices[2].view_z,
+            command.vertices[0].clip_w,
+            command.vertices[1].clip_w,
+            command.vertices[2].clip_w);
+    }
+}
+
 bool same_wheel_group(
     const SmoothWheel& wheel,
     const WorldDrawCommand& command
@@ -2928,6 +3111,7 @@ WorldGpuRenderResult render_world_d3d11(
         emit_vehicle_diagnostics(
             draw_list, smooth_wheels, options.synthetic_midpoint);
         emit_clip_rect_diagnostics(draw_list);
+        emit_primitive_diagnostics(draw_list, options);
     } catch (const std::bad_alloc&) {
         return WorldGpuRenderResult::resource_failed;
     }

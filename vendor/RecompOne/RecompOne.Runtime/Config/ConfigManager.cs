@@ -62,8 +62,9 @@ public static class ConfigManager
             _pendingImGuiIni = imguiIni;
         }
         // Modern rendering is the sole shipping path. This also migrates old
-        // PS1-quality/custom files to full distance, maximum LOD, corrected
-        // projection, seam stabilization, smoothing, and 4x source rendering.
+        // PS1-quality/custom files to full distance, maximum LOD, authored
+        // affine texture mapping, seam stabilization, smoothing, and 4x source
+        // rendering.
         View.EnforceGraphicsPreset();
 
         string? graphicsPresetOverride =

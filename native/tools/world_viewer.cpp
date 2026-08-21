@@ -223,7 +223,7 @@ int main(int argc, char** argv) {
             "[--warp] [--no-depth] [--dither] "
             "[--no-topology] [--include-secondary] "
             "[--include-screen-space] "
-            "[--affine-textures] "
+            "[--perspective-textures] [--affine-textures] "
             "[--no-texture-smoothing] "
             "[--scale <1-8>] [--clear-color <RRGGBB>] "
             "[--inspect-pixel <x> <y>] "
@@ -237,7 +237,7 @@ int main(int argc, char** argv) {
     bool topology = true;
     bool include_secondary = false;
     bool include_screen_space = false;
-    bool perspective_correct = true;
+    bool perspective_correct = false;
     bool texture_smoothing = true;
     std::uint32_t scale = 1;
     std::uint32_t clear_color = 0xFF402820U;
@@ -261,6 +261,8 @@ int main(int argc, char** argv) {
             include_screen_space = true;
         else if (std::strcmp(argv[index], "--affine-textures") == 0)
             perspective_correct = false;
+        else if (std::strcmp(argv[index], "--perspective-textures") == 0)
+            perspective_correct = true;
         else if (std::strcmp(argv[index], "--no-texture-smoothing") == 0)
             texture_smoothing = false;
         else if (
@@ -700,7 +702,7 @@ int main(int argc, char** argv) {
         oracle.data(),
         oracle.size(),
         ProjectedRenderOptions{
-            true,
+            false,
             dither,
             clear_color,
         });
@@ -735,7 +737,7 @@ int main(int argc, char** argv) {
             true,
             false,
             dither,
-            true,
+            false,
             false,
             false,
             1,
@@ -757,7 +759,7 @@ int main(int argc, char** argv) {
             : 20.0 * std::log10(255.0 / comparison.rms);
     std::printf(
         "version=%u frame=%llu poll=%d adapter=%s resolution=%ux%u "
-        "scale=%u depth=%s "
+        "scale=%u depth=%s textures=%s "
         "dither=%s commands=%u track=%u vehicles=%u unclassified=%u "
         "materials=%zu secondaryExcluded=%u "
         "topology=%s topologyInput=%u topologyOutput=%u "
@@ -789,6 +791,7 @@ int main(int argc, char** argv) {
         output_height,
         scale,
         depth ? "on" : "off",
+        perspective_correct ? "perspective" : "affine",
         dither ? "on" : "off",
         gpu_stats.commands,
         draw_list.track_commands,

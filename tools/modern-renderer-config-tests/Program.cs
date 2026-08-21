@@ -33,7 +33,7 @@ static void RequireModern(ViewConfig view, string context)
     Require(view.HighResolution3D, $"{context}: 4x source");
     Require(view.TextureSmoothing, $"{context}: smoothing");
     Require(view.HighResolutionTextures, $"{context}: 4x texture assets");
-    Require(view.PerspectiveCorrectTextures, $"{context}: projection");
+    Require(!view.PerspectiveCorrectTextures, $"{context}: GT2 affine textures");
     Require(view.StabilizeGeometrySeams, $"{context}: seams");
     Require(view.ExtendedDrawDistance, $"{context}: distance");
     Require(view.LevelOfDetail == "Maximum", $"{context}: LOD");
