@@ -119,6 +119,32 @@ def include_bundled_native_renderer() -> None:
     )
 
 
+def preload_bundled_window_dependencies(program: Path) -> None:
+    source = program.read_text(encoding="utf-8")
+    if 'PreloadBundledNative("glfw3.dll");' in source:
+        return
+    replace_once(
+        program,
+        'PreloadBundledNative("SDL2.dll");\n',
+        'PreloadBundledNative("glfw3.dll");\n'
+        'PreloadBundledNative("cimgui.dll");\n'
+        'PreloadBundledNative("SDL2.dll");\n',
+        "bundled GLFW and cimgui native preloads",
+    )
+
+
+def use_windows_gui_subsystem() -> None:
+    source = PROJECT.read_text(encoding="utf-8")
+    if "<OutputType>WinExe</OutputType>" in source:
+        return
+    replace_once(
+        PROJECT,
+        "    <OutputType>Exe</OutputType>\n",
+        "    <OutputType>WinExe</OutputType>\n",
+        "Windows GUI executable subsystem",
+    )
+
+
 def apply_livery_preview_reload(track: Path) -> None:
     replace_once(
         track,
@@ -246,9 +272,12 @@ def main() -> int:
     main_executable = GENERATED / "main.cs"
     showroom = GENERATED / "gt2_overlay_4.cs"
     entry = GENERATED / "Entry.cs"
+    program = GENERATED / "Program.cs"
 
     include_livery_preview_helper()
     include_bundled_native_renderer()
+    preload_bundled_window_dependencies(program)
+    use_windows_gui_subsystem()
 
     replace_once(
         race,

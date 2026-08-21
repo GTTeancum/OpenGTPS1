@@ -187,6 +187,17 @@ Require(
         StringComparison.Ordinal),
     "single-file publish no longer embeds the native renderer bridge");
 Require(
+    unifiedHostProject.Contains(
+        "<OutputType>WinExe</OutputType>",
+        StringComparison.Ordinal) &&
+    unifiedHostProgram.Contains(
+        "PreloadBundledNative(\"glfw3.dll\");",
+        StringComparison.Ordinal) &&
+    unifiedHostProgram.Contains(
+        "PreloadBundledNative(\"cimgui.dll\");",
+        StringComparison.Ordinal),
+    "interactive single-file launch no longer initializes a console-free window backend");
+Require(
     unifiedHostProgram.Contains(
         "ResolveUnifiedGameRoot(AppContext.BaseDirectory, launchDirectory)",
         StringComparison.Ordinal) &&

@@ -97,6 +97,8 @@ if (validateLiveries)
 
 try
 {
+    PreloadBundledNative("glfw3.dll");
+    PreloadBundledNative("cimgui.dll");
     PreloadBundledNative("SDL2.dll");
     var memory = new PSMemory();
     UnifiedEntry.Run(
