@@ -95,6 +95,9 @@ public static class GT2Compat
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_LIVERIES") == "1";
     static readonly bool AiAutoDrive =
         Environment.GetEnvironmentVariable("RECOMPONE_GT2_AI_AUTODRIVE") == "1";
+    static readonly bool UnlockArcadeCourses =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_GT2_ARCADE_UNLOCK_ALL_COURSES") == "1";
     static readonly int AiAutoDriveMaxEngagements =
         ParseAiAutoDriveMaxEngagements(
             Environment.GetEnvironmentVariable(
@@ -109,6 +112,7 @@ public static class GT2Compat
                 "RECOMPONE_GT2_VEHICLE_LOD_SELECTOR_OVERRIDE"));
     static readonly HashSet<string> RaceSchedulerStates = [];
     static int _true60HzSchedulerReports;
+    static int _arcadeCourseUnlockReported;
     static int _true60HzVSyncReports;
     static uint[]? _true60HzStateSnapshot;
     static uint _true60HzStateCar;
@@ -122,6 +126,32 @@ public static class GT2Compat
         new int[16 * True60HzLinearVelocityOffsets.Length];
     static uint _true60HzVelocityCarArray;
     static uint _true60HzVelocityCarCount;
+
+    /// <summary>
+    /// Expose every stock Arcade course to an isolated diagnostic session.
+    /// The guest table is private to the current process; normal progression
+    /// and the player's memory card are not changed.
+    /// </summary>
+    public static void UnlockArcadeCourseTable(uint table, IMemory m)
+    {
+        if (!UnlockArcadeCourses || !IsGuestRam(table))
+            return;
+
+        const int recordBytes = 32;
+        const uint unlockOffset = 20u;
+        int count = 0;
+        for (; count < 64; count++)
+        {
+            uint record = table + (uint)(count * recordBytes);
+            if (m.ReadU32(record) == 0u)
+                break;
+            m.WriteU32(record + unlockOffset, 0xFFFFu);
+        }
+        if (Interlocked.Exchange(ref _arcadeCourseUnlockReported, 1) == 0)
+            Console.Error.WriteLine(
+                $"[GT2] diagnostic Arcade course unlock active; " +
+                $"firstTable=0x{table:X8} entries={count}");
+    }
     static readonly HashSet<uint> TrackObjects = [];
     static readonly HashSet<uint> TrackViewIndices = [];
     static readonly HashSet<uint> TrackMeshIndices = [];

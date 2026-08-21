@@ -20,8 +20,11 @@ try {
         python tools\apply_gt2_enhancements.py
         if ($LASTEXITCODE -ne 0) { throw "apply_gt2_enhancements.py failed: $LASTEXITCODE" }
     }
-    elseif (-not (Test-Path -LiteralPath 'generated\recompiled\GranTurismo2PC.csproj')) {
-        throw 'Generated sources are missing. Use tools\build.ps1 -Regenerate with the archival source available.'
+    elseif (
+        -not (Test-Path -LiteralPath 'generated\recompiled\GranTurismo2PC.csproj') -or
+        -not (Test-Path -LiteralPath 'generated\arcade-recompiled\GranTurismo2ArcadePC.csproj')
+    ) {
+        throw 'Generated Simulation/Arcade sources are missing. Use tools\build.ps1 -Regenerate with the archival sources available.'
     }
 
     cmake -S native -B build\native
@@ -33,22 +36,56 @@ try {
         throw "Native renderer build failed: $LASTEXITCODE"
     }
 
-    dotnet build generated\recompiled\GranTurismo2PC.csproj -c Release `
+    dotnet build tools\unified-host\GranTurismo2PC.csproj -c Release `
         -p:Version=$packageVersion
-    if ($LASTEXITCODE -ne 0) { throw "GT2 build failed: $LASTEXITCODE" }
-
-    python tools\prepare_loose_install.py
-    if ($LASTEXITCODE -ne 0) { throw "Loose-file preparation failed: $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0) { throw "Unified GT2 build failed: $LASTEXITCODE" }
 
     $install = Join-Path $repo 'OpenGTPS1'
-    dotnet publish generated\recompiled\GranTurismo2PC.csproj -c Release `
+    $unifiedVolume = Join-Path $install 'GT2.VOL'
+    if (-not (Test-Path -LiteralPath $unifiedVolume -PathType Leaf)) {
+        throw "Unified GT2.VOL is missing: $unifiedVolume"
+    }
+    $unifiedVolumeBytes = (Get-Item -LiteralPath $unifiedVolume).Length
+    foreach ($variant in @('simulation', 'arcade')) {
+        $manifestPath = Join-Path $install "manifests\$variant.json"
+        if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Unified $variant manifest is missing: $manifestPath"
+        }
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+        $volumeEntries = @($manifest.files | Where-Object path -eq 'GT2.VOL')
+        if ($volumeEntries.Count -ne 1) {
+            throw "Unified $variant manifest does not contain one GT2.VOL entry"
+        }
+        $entry = $volumeEntries[0]
+        $sourceOffset = if ($null -eq $entry.sourceOffset) {
+            0L
+        } else {
+            [long]$entry.sourceOffset
+        }
+        $sourceLength = if ($null -eq $entry.sourceLength) {
+            [long]$entry.size
+        } else {
+            [long]$entry.sourceLength
+        }
+        if ($sourceOffset + $sourceLength -gt $unifiedVolumeBytes) {
+            throw (
+                "Unified $variant GT2.VOL range exceeds ${unifiedVolume}: " +
+                "$sourceOffset+$sourceLength > $unifiedVolumeBytes. " +
+                'Rebuild the combined Simulation/Arcade data with ' +
+                'tools\prepare_unified_install.py before publishing.'
+            )
+        }
+    }
+
+    dotnet publish tools\unified-host\GranTurismo2PC.csproj -c Release `
         -r win-x64 --self-contained true -p:PublishSingleFile=true `
         -p:IncludeNativeLibrariesForSelfExtract=true `
         -p:PublishReadyToRun=true `
         -p:Version=$packageVersion `
         -p:DebugType=None -p:DebugSymbols=false `
         -o $install
-    if ($LASTEXITCODE -ne 0) { throw "GT2 publish failed: $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0) { throw "Unified GT2 publish failed: $LASTEXITCODE" }
 
     # A single-file publish does not overwrite framework-dependent sidecars
     # left by an older deployment. Remove only top-level runtime DLLs and the

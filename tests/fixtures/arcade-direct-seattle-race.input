@@ -1,0 +1,23 @@
+# Direct native Arcade frontend -> single-player Road Race on Seattle Circuit.
+# The quick-race launcher starts the Arcade guest at overlay 1, so the unified
+# title and both discs' legal/opening presentations are intentionally absent.
+780+4=CROSS
+1380+4=CROSS
+1780+4=CROSS
+2180+4=CROSS
+2580+4=CROSS
+3000+4=CROSS
+3600+4=CROSS
+4200+4=CROSS
+
+# Seattle Circuit is stock road-race entry 7. The imported SSR11 entry is
+# inserted at menu position 3, so Seattle is eight steps right from Tahiti.
+4700+4=RIGHT
+4820+4=RIGHT
+4940+4=RIGHT
+5060+4=RIGHT
+5180+4=RIGHT
+5300+4=RIGHT
+5420+4=RIGHT
+5540+4=RIGHT
+5660+4=CROSS

@@ -755,6 +755,7 @@ def main() -> int:
 """,
             f"""        c.A0 = 0x80050000u;
         c.A0 = c.A0 + 0x{extended}u;
+        RecompOne.Runtime.Sdk.GT2Compat.UnlockArcadeCourseTable(c.A0, m);
 """,
             f"GT1 SSR11 native {label} course table",
         )
