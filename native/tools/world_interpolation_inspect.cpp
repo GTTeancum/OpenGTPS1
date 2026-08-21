@@ -543,7 +543,8 @@ void print_hit_commands(
         std::printf(
             "hit command=%zu kind=%u object=%u model=%08x source=%u "
             "transform=%016llx exact=%u ot=%d channel=%u material=%u "
-            "flags=%08x tpage=%04x clut=%04x env=%08x screenSpace=%u "
+            "flags=%08x tpage=%04x clut=%04x env=%08x "
+            "mask=(%d,%d) offset=(%d,%d) screenSpace=%u "
             "rect=(%.3f,%.3f)-(%.3f,%.3f)\n",
             command_index,
             command.object_kind,
@@ -559,6 +560,10 @@ void print_hit_commands(
             material.texture_page,
             material.clut,
             material.environment_flags,
+            material.texture_mask_x,
+            material.texture_mask_y,
+            material.texture_offset_x,
+            material.texture_offset_y,
             screen_space ? 1U : 0U,
             minimum_x,
             minimum_y - list.display_y,
@@ -568,18 +573,26 @@ void print_hit_commands(
             const auto& value = command.vertices[vertex];
             std::printf(
                 "  v%d screen=(%.3f,%.3f) view=(%.3f,%.3f,%.3f) "
-                "model=(%d,%d,%d) uv=(%.3f,%.3f) src=%08x prov=%04x\n",
+                "projection=(%.3f,%.3f,%.3f) model=(%d,%d,%d) "
+                "uv=(%.3f,%.3f) rgb=(%u,%u,%u) "
+                "src=%08x prov=%04x\n",
                 vertex,
                 value.screen_x,
                 value.screen_y - list.display_y,
                 value.view_x,
                 value.view_y,
                 value.view_z,
+                value.projection_plane,
+                value.projection_offset_x,
+                value.projection_offset_y,
                 value.model_x,
                 value.model_y,
                 value.model_z,
                 value.u,
                 value.v,
+                value.r,
+                value.g,
+                value.b,
                 value.source_vertex_identity,
                 value.provenance_flags);
         }

@@ -261,6 +261,8 @@ int main() {
     projected_current.commands[0].object_id = 0;
     projected_current.commands[0].model_pointer = 0;
     projected_current.commands[0].transform_id = 0;
+    for (auto& sky_vertex : projected_current.commands[0].vertices)
+        sky_vertex.r = 160;
     okay &= expect(
         interpolate_world_draw_lists(
             projected_previous,
@@ -270,9 +272,11 @@ int main() {
             &stats) == WorldInterpolationResult::success &&
         stats.matched_commands == 1 &&
         stats.held_unmatched_commands == 0 &&
+        stats.eligible_world_commands == 0 &&
+        midpoint.commands[0].vertices[0].r == 144 &&
         std::fabs(midpoint.commands[0].vertices[0].screen_y - 95.68F) <
             0.001F,
-        "interpolate no-transform projected world fragments");
+        "interpolate transformless projected world fragments directly");
 
     auto hud_previous = list();
     hud_previous.materials[0].primitive_flags =
@@ -317,6 +321,24 @@ int main() {
         stats.matched_commands == 1 &&
         stats.held_screen_commands == 0,
         "interpolate large untextured screen-space background fills");
+
+    auto field_background_previous = background_previous;
+    field_background_previous.display_y = 240;
+    for (auto& background_vertex :
+         field_background_previous.commands[0].vertices) {
+        background_vertex.screen_y += 240.0F;
+    }
+    okay &= expect(
+        interpolate_world_draw_lists(
+            field_background_previous,
+            background_current,
+            0.5F,
+            &midpoint,
+            &stats) == WorldInterpolationResult::success &&
+        std::fabs(
+            midpoint.commands[0].vertices[0].screen_y -
+            midpoint.display_y - 73.0F) < 0.001F,
+        "normalize field origins while interpolating background fills");
 
     auto screen_effect_previous = list();
     screen_effect_previous.materials[0].primitive_flags =
@@ -461,6 +483,47 @@ int main() {
         midpoint.commands[0].transform_translation[1] == -5 &&
         midpoint.commands[0].transform_translation[2] == 1000,
         "publish the sampled guest RT with midpoint wheel commands");
+
+    auto exact_sky_previous = exact_previous;
+    auto exact_sky_current = exact_current;
+    for (auto& sky_command : exact_sky_previous.commands) {
+        sky_command.object_kind = 0;
+        sky_command.object_id = 0;
+        sky_command.model_pointer = 0;
+    }
+    for (auto& sky_command : exact_sky_current.commands) {
+        sky_command.object_kind = 0;
+        sky_command.object_id = 0;
+        sky_command.model_pointer = 0;
+    }
+    exact_sky_previous.vehicle_commands = 0;
+    exact_sky_previous.unclassified_commands = 2;
+    exact_sky_current.vehicle_commands = 0;
+    exact_sky_current.unclassified_commands = 2;
+    auto sky_decoys = exact_sky_previous.commands;
+    for (auto& sky_decoy : sky_decoys) {
+        sky_decoy.transform_id = 0x3333;
+        for (auto& decoy_vertex : sky_decoy.vertices)
+            decoy_vertex.model_x += 1000;
+    }
+    exact_sky_current.commands.insert(
+        exact_sky_current.commands.end(),
+        sky_decoys.begin(),
+        sky_decoys.end());
+    exact_sky_current.unclassified_commands = 4;
+    okay &= expect(
+        interpolate_world_draw_lists(
+            exact_sky_previous,
+            exact_sky_current,
+            0.5F,
+            &midpoint,
+            &stats) == WorldInterpolationResult::success &&
+        stats.matched_commands == 2 &&
+        midpoint.commands[0].exact_transform_valid &&
+        std::fabs(midpoint.commands[0].vertices[0].view_x - 10.0F) < 0.2F &&
+        std::fabs(midpoint.commands[0].vertices[0].view_y + 146.4214F) <
+            0.2F,
+        "advance an unclassified sky mesh with one exact rigid midpoint");
 
     // Retail GT2 wheel matrices include model scale in the captured GTE
     // transform. A unit-quaternion conversion used to discard this 1/16

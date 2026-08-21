@@ -191,11 +191,15 @@ using ScreenCommandIndex = std::unordered_map<
 struct ProjectedCommandKey {
     std::uint32_t source_command_index;
     ScreenCommandKey material;
+    VertexKey model_vertices[3];
 
     bool operator==(const ProjectedCommandKey& other) const noexcept {
-        return
+        bool same =
             source_command_index == other.source_command_index &&
             material == other.material;
+        for (int index = 0; index < 3; ++index)
+            same = same && model_vertices[index] == other.model_vertices[index];
+        return same;
     }
 };
 
@@ -205,6 +209,11 @@ struct ProjectedCommandKeyHash {
             key.source_command_index);
         result ^= ScreenCommandKeyHash{}(key.material) +
             0x9E3779B97F4A7C15ULL + (result << 6U) + (result >> 2U);
+        for (const auto& vertex : key.model_vertices) {
+            result ^= VertexKeyHash{}(vertex) +
+                0x9E3779B97F4A7C15ULL + (result << 6U) +
+                (result >> 2U);
+        }
         return result;
     }
 };
@@ -316,7 +325,7 @@ bool interpolated_screen_space_command(
         large_untextured_screen_space_command(list, command);
 }
 
-bool unowned_projected_command(
+bool unclassified_projected_command(
     const WorldDrawList& list,
     const WorldDrawCommand& command
 ) noexcept {
@@ -386,6 +395,40 @@ ScreenCommandKey screen_command_key(
     return key;
 }
 
+ProjectedCommandKey projected_command_key(
+    const WorldDrawList& list,
+    const WorldDrawCommand& command
+) noexcept {
+    auto material = screen_command_key(list, command);
+    // Projected background lighting can change vertex color between authored
+    // frames. Source order plus material/UV identity owns the primitive;
+    // requiring the prior color would turn every lighting change into a
+    // one-frame hold and make the sky visibly alternate at 30 Hz.
+    for (int index = 0; index < 3; ++index) {
+        material.r[index] = 0;
+        material.g[index] = 0;
+        material.b[index] = 0;
+    }
+    return ProjectedCommandKey{
+        command.source_command_index,
+        material,
+        {
+            VertexKey{
+                command.vertices[0].model_x,
+                command.vertices[0].model_y,
+                command.vertices[0].model_z},
+            VertexKey{
+                command.vertices[1].model_x,
+                command.vertices[1].model_y,
+                command.vertices[1].model_z},
+            VertexKey{
+                command.vertices[2].model_x,
+                command.vertices[2].model_y,
+                command.vertices[2].model_z},
+        },
+    };
+}
+
 ScreenCommandIndex build_screen_command_index(
     const WorldDrawList& list
 ) {
@@ -407,18 +450,17 @@ ProjectedCommandIndex build_projected_command_index(
     result.reserve(list.commands.size());
     for (std::size_t index = 0; index < list.commands.size(); ++index) {
         const auto& command = list.commands[index];
-        if (!unowned_projected_command(list, command))
+        if (!unclassified_projected_command(list, command))
             continue;
-        result[ProjectedCommandKey{
-            command.source_command_index,
-            screen_command_key(list, command),
-        }].push_back(index);
+        result[projected_command_key(list, command)].push_back(index);
     }
     return result;
 }
 
 double screen_centroid_distance_squared(
+    const WorldDrawList& left_list,
     const WorldDrawCommand& left,
+    const WorldDrawList& right_list,
     const WorldDrawCommand& right
 ) noexcept {
     double left_x = 0.0;
@@ -431,8 +473,12 @@ double screen_centroid_distance_squared(
         right_x += right.vertices[index].screen_x;
         right_y += right.vertices[index].screen_y;
     }
-    const double dx = left_x / 3.0 - right_x / 3.0;
-    const double dy = left_y / 3.0 - right_y / 3.0;
+    const double dx =
+        left_x / 3.0 - left_list.display_x -
+        (right_x / 3.0 - right_list.display_x);
+    const double dy =
+        left_y / 3.0 - left_list.display_y -
+        (right_y / 3.0 - right_list.display_y);
     return dx * dx + dy * dy;
 }
 
@@ -498,7 +544,9 @@ bool interpolate_screen_command(
         )
             continue;
         const double cost = screen_centroid_distance_squared(
+            previous,
             previous_command,
+            current,
             current.commands[current_index]);
         if (cost < best_cost) {
             best = current_index;
@@ -510,16 +558,22 @@ bool interpolate_screen_command(
 
     const auto& current_command = current.commands[best];
     for (int vertex_index = 0; vertex_index < 3; ++vertex_index) {
+        const float normalized_current_x =
+            current_command.vertices[vertex_index].screen_x -
+            current.display_x + previous.display_x;
+        const float normalized_current_y =
+            current_command.vertices[vertex_index].screen_y -
+            current.display_y + previous.display_y;
         output->vertices[vertex_index].screen_x =
             previous_command.vertices[vertex_index].screen_x +
             (
-                current_command.vertices[vertex_index].screen_x -
+                normalized_current_x -
                 previous_command.vertices[vertex_index].screen_x
             ) * alpha;
         output->vertices[vertex_index].screen_y =
             previous_command.vertices[vertex_index].screen_y +
             (
-                current_command.vertices[vertex_index].screen_y -
+                normalized_current_y -
                 previous_command.vertices[vertex_index].screen_y
             ) * alpha;
     }
@@ -731,10 +785,30 @@ std::vector<std::size_t> match_groups(
                 source.centroid_x - candidate.centroid_x;
             const double dy =
                 source.centroid_y - candidate.centroid_y;
+            std::size_t unshared_vertices = 0;
+            if (
+                source.identity.category.object_kind == 0 &&
+                source.identity.category.model_pointer == 0
+            ) {
+                std::size_t shared_vertices = 0;
+                for (const auto& vertex : source.vertices) {
+                    if (candidate.vertices.find(vertex.first) !=
+                        candidate.vertices.end()) {
+                        ++shared_vertices;
+                    }
+                }
+                unshared_vertices =
+                    source.vertices.size() + candidate.vertices.size() -
+                    shared_vertices * 2U;
+            }
             // Command cardinality distinguishes a car body from its wheels
             // and shadow. Centroid distance then distinguishes the four
-            // instances of the same wheel model.
+            // instances of the same wheel model. Unclassified exact meshes
+            // share one otherwise-generic owner category; their authored
+            // model vertices distinguish the sky dome from unrelated world
+            // effects before centroid proximity is considered.
             const double cost =
+                static_cast<double>(unshared_vertices) * 1000000000.0 +
                 command_delta * 1000000.0 + dx * dx + dy * dy;
             if (cost < best_cost) {
                 best = current_index;
@@ -1744,33 +1818,42 @@ bool interpolate_projected_command(
     if (
         current_projected_used == nullptr ||
         output == nullptr ||
-        !unowned_projected_command(previous, previous_command)
+        !unclassified_projected_command(previous, previous_command)
     )
         return false;
-    const auto found = current_projected_commands.find(ProjectedCommandKey{
-        previous_command.source_command_index,
-        screen_command_key(previous, previous_command),
-    });
+    const auto found = current_projected_commands.find(
+        projected_command_key(previous, previous_command));
     if (found == current_projected_commands.end())
         return false;
 
     constexpr double maximum_centroid_motion_squared = 96.0 * 96.0;
     std::size_t best = current.commands.size();
     double best_cost = maximum_centroid_motion_squared;
+    std::size_t reusable = current.commands.size();
+    double reusable_cost = maximum_centroid_motion_squared;
     for (const std::size_t current_index : found->second) {
-        if (
-            current_index >= current.commands.size() ||
-            (*current_projected_used)[current_index]
-        )
+        if (current_index >= current.commands.size())
             continue;
         const double cost = screen_centroid_distance_squared(
+            previous,
             previous_command,
+            current,
             current.commands[current_index]);
-        if (cost < best_cost) {
+        if (cost < reusable_cost) {
+            reusable = current_index;
+            reusable_cost = cost;
+        }
+        if (!(*current_projected_used)[current_index] && cost < best_cost) {
             best = current_index;
             best_cost = cost;
         }
     }
+    // Topology can retain duplicate prior fragments while the next authored
+    // frame collapses them back to one command. Their source/material/model
+    // key is exact, so sharing that current sample is safer than holding one
+    // duplicate at the old sky pose and producing an alternating shard.
+    if (best >= current.commands.size())
+        best = reusable;
     if (best >= current.commands.size())
         return false;
 
@@ -1782,6 +1865,27 @@ bool interpolate_projected_command(
             current_command.vertices[vertex_index],
             alpha,
             &output->vertices[vertex_index]);
+        const auto interpolate_channel = [alpha] (
+            std::uint8_t previous_channel,
+            std::uint8_t current_channel
+        ) {
+            return static_cast<std::uint8_t>(std::clamp(
+                std::lround(interpolate(
+                    static_cast<float>(previous_channel),
+                    static_cast<float>(current_channel),
+                    alpha)),
+                0L,
+                255L));
+        };
+        output->vertices[vertex_index].r = interpolate_channel(
+            previous_command.vertices[vertex_index].r,
+            current_command.vertices[vertex_index].r);
+        output->vertices[vertex_index].g = interpolate_channel(
+            previous_command.vertices[vertex_index].g,
+            current_command.vertices[vertex_index].g);
+        output->vertices[vertex_index].b = interpolate_channel(
+            previous_command.vertices[vertex_index].b,
+            current_command.vertices[vertex_index].b);
     }
     (*current_projected_used)[best] = true;
     output->exact_transform_valid = false;
@@ -1831,7 +1935,7 @@ bool interpolate_screen_offset_anchor_command(
         if (!same_sources)
             continue;
         const double cost = screen_centroid_distance_squared(
-            previous_command, candidate);
+            previous, previous_command, current, candidate);
         if (cost < best_cost) {
             best = index;
             best_cost = cost;
@@ -4005,10 +4109,32 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
         }
         const auto candidates_finished = InterpolationClock::now();
 
+        std::uint32_t projected_diagnostic_source =
+            (std::numeric_limits<std::uint32_t>::max)();
+        if (const char* configured = std::getenv(
+                "OPENGT_INTERPOLATION_PROJECTED_SOURCE")) {
+            projected_diagnostic_source = static_cast<std::uint32_t>(
+                std::strtoul(configured, nullptr, 10));
+        }
+
         for (std::size_t command_index = 0;
              command_index < midpoint.commands.size();
              ++command_index) {
             auto& command = midpoint.commands[command_index];
+            if (command.source_command_index == projected_diagnostic_source) {
+                std::fprintf(
+                    stderr,
+                    "[Interpolation-Projected] source=%u command=%zu "
+                    "screen=%u anchor=%u projected=%u transform=%016llx\n",
+                    command.source_command_index,
+                    command_index,
+                    screen_space_command(previous, command) ? 1U : 0U,
+                    screen_offset_anchor_command(command) ? 1U : 0U,
+                    unclassified_projected_command(previous, command)
+                        ? 1U
+                        : 0U,
+                    static_cast<unsigned long long>(command.transform_id));
+            }
             if (
                 !(screen_space_command(previous, command) &&
                     command.object_kind == 1) &&
@@ -4057,7 +4183,7 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
                 }
                 continue;
             }
-            if (unowned_projected_command(previous, command)) {
+            if (unclassified_projected_command(previous, command)) {
                 if (!current_projected_commands_built) {
                     current_projected_commands =
                         build_projected_command_index(current);
@@ -4065,14 +4191,27 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
                         current.commands.size(), false);
                     current_projected_commands_built = true;
                 }
-                if (interpolate_projected_command(
+                const bool projected = interpolate_projected_command(
                         previous,
                         current,
                         previous.commands[command_index],
                         current_projected_commands,
                         &current_projected_used,
                         alpha,
-                        &command)) {
+                        &command);
+                if (
+                    command.source_command_index ==
+                        projected_diagnostic_source
+                ) {
+                    std::fprintf(
+                        stderr,
+                        "[Interpolation-Projected] source=%u matched=%u "
+                        "candidates=%zu\n",
+                        command.source_command_index,
+                        projected ? 1U : 0U,
+                        current_projected_commands.size());
+                }
+                if (projected) {
                     ++stats.matched_commands;
                 } else {
                     ++stats.held_unmatched_commands;
@@ -4313,6 +4452,13 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
                 rigid_transform.valid &&
                 rigid_transform.exact &&
                 command.object_kind == 1;
+            const bool use_exact_unclassified_transform =
+                rigid_transform.valid &&
+                rigid_transform.exact &&
+                command.object_kind == 0 &&
+                command.object_id == 0 &&
+                command.model_pointer == 0 &&
+                command.exact_transform_valid;
             const WorldDrawVertex* current_vertices[3]{};
             bool complete = true;
             for (int vertex_index = 0; vertex_index < 3; ++vertex_index) {
@@ -4334,7 +4480,11 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
             // articulation uses the exact or fitted rigid path, where the
             // group's projection sample is valid for topology-generated
             // vertices without an exact current counterpart.
-            if (use_vehicle_rigid_transform || use_exact_track_transform) {
+            if (
+                use_vehicle_rigid_transform ||
+                use_exact_track_transform ||
+                use_exact_unclassified_transform
+            ) {
                 if (!rigid_transform.exact)
                     command.exact_transform_valid = false;
                 const WorldDrawVertex& projection_sample =
@@ -4460,8 +4610,10 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
                 std::array<std::uint32_t, 3> total_counts{};
                 std::array<double, 3> held_area{};
                 std::array<double, 3> total_area{};
+                const std::size_t comparable_commands = std::min(
+                    midpoint.commands.size(), previous.commands.size());
                 for (std::size_t command_index = 0;
-                     command_index < midpoint.commands.size();
+                     command_index < comparable_commands;
                      ++command_index) {
                     const auto& moved = midpoint.commands[command_index];
                     const auto& source = previous.commands[command_index];
