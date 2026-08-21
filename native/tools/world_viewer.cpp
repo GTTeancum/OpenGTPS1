@@ -619,6 +619,7 @@ int main(int argc, char** argv) {
         dither,
         true,
         texture_smoothing,
+        false,
         scale,
         clear_color,
     };
@@ -708,6 +709,7 @@ int main(int argc, char** argv) {
             false,
             dither,
             true,
+            false,
             false,
             1,
             clear_color,

@@ -70,6 +70,10 @@ def replace_exact_count(
 
 
 def include_livery_preview_helper() -> None:
+    source = PROJECT.read_text(encoding="utf-8")
+    if "ArcadeLiveryPreview.cs" in source:
+        return
+
     replace_once(
         PROJECT,
         """  <ItemGroup>
@@ -424,6 +428,137 @@ def apply_livery_preview_reload() -> None:
 
 def main() -> int:
     include_livery_preview_helper()
+
+    replace_once(
+        OVERLAY0,
+        """        c.V1 = m.ReadU8((c.FP + 0x8u));
+        c.V0 = 0x800B0000u;
+        m.WriteU8((c.V0 - 0x75A0u), (byte)0u);
+        m.WriteU32((c.S4 + 0x18u), c.V1);
+""",
+        """        RecompOne.Runtime.Sdk.GT2Compat.ConfigureTrue60HzRaceTimeStep(
+            c.FP, m);
+        c.V1 = m.ReadU8((c.FP + 0x8u));
+        c.V0 = 0x800B0000u;
+        m.WriteU8((c.V0 - 0x75A0u), (byte)0u);
+        m.WriteU32((c.S4 + 0x18u), c.V1);
+""",
+        "Arcade race NTSC time step",
+    )
+
+    replace_once(
+        OVERLAY0,
+        """        c.A1 = (uint)((int)c.A1 >> 8);
+        c.A2 = (uint)((int)c.A2 >> 8);
+        c.A3 = (uint)((int)c.A3 >> 8);
+""",
+        """        c.A1 = (uint)((int)c.A1 >> RecompOne.Runtime.Sdk.GT2Compat.GetTrue60HzVehicleIntegrationShift(8));
+        c.A2 = (uint)((int)c.A2 >> RecompOne.Runtime.Sdk.GT2Compat.GetTrue60HzVehicleIntegrationShift(8));
+        c.A3 = (uint)((int)c.A3 >> RecompOne.Runtime.Sdk.GT2Compat.GetTrue60HzVehicleIntegrationShift(8));
+""",
+        "Arcade vehicle position integration time step",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.RA = 0x8003AFF0u;
+        GranTurismo2ArcadePC.func_800759A4(c, m);
+        c.V1 = m.ReadU32((c.S4 + 0x64Cu));
+""",
+        """        c.RA = 0x8003AFF0u;
+        GranTurismo2ArcadePC.func_800759A4(c, m);
+        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.ScaleTrue60HzVehicleDelta(c.V0);
+        c.V1 = m.ReadU32((c.S4 + 0x64Cu));
+""",
+        "Arcade longitudinal acceleration integration time step",
+    )
+    replace_once(
+        OVERLAY0,
+        """        L80034488: ;
+        c.A0 = c.S6 + 0u;
+        c.A1 = c.S5 + 0u;
+        c.RA = 0x80034494u;
+        GranTurismo2ArcadePC.func_800342CC(c, m);
+""",
+        """        L80034488: ;
+        c.A0 = c.S6 + 0u;
+        c.A1 = c.S5 + 0u;
+        RecompOne.Runtime.Sdk.GT2Compat.BeginTrue60HzLinearVelocityStep(
+            c.S6, c.S5, m);
+        c.RA = 0x80034494u;
+        GranTurismo2ArcadePC.func_800342CC(c, m);
+        RecompOne.Runtime.Sdk.GT2Compat.EndTrue60HzLinearVelocityStep(
+            c.S6, c.S5, m);
+""",
+        "Arcade linear velocity integration time step",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.RA = 0x80045C38u;
+        GranTurismo2ArcadePC.func_800759A4(c, m);
+        c.V1 = m.ReadU32((c.S1 + 0x624u));
+""",
+        """        c.RA = 0x80045C38u;
+        GranTurismo2ArcadePC.func_800759A4(c, m);
+        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.ScaleTrue60HzVehicleDelta(c.V0);
+        c.V1 = m.ReadU32((c.S1 + 0x624u));
+""",
+        "Arcade secondary force accumulator time step",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.RA = 0x8003B228u;
+        GranTurismo2ArcadePC.func_8007587C(c, m);
+        c.S0 = c.S0 + c.V0;
+        c.V1 = m.ReadU32((c.S3 + 0x628u));
+""",
+        """        c.RA = 0x8003B228u;
+        GranTurismo2ArcadePC.func_8007587C(c, m);
+        c.S0 = c.S0 + c.V0;
+        c.S0 = RecompOne.Runtime.Sdk.GT2Compat.ScaleTrue60HzVehicleDelta(c.S0);
+        c.V1 = m.ReadU32((c.S3 + 0x628u));
+""",
+        "Arcade wheel-pair force time step",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.V0 = m.ReadU32(c.S1);
+        c.V1 = (uint)((int)c.V1 >> 1);
+        c.V0 = m.ReadU32(c.V0);
+""",
+        """        c.V0 = m.ReadU32(c.S1);
+        c.V1 = (uint)((int)c.V1 >> 1);
+        c.V1 = RecompOne.Runtime.Sdk.GT2Compat.ScaleTrue60HzVehicleDelta(c.V1);
+        c.V0 = m.ReadU32(c.V0);
+""",
+        "Arcade wheel-speed integration time step",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.V1 = m.ReadU32((c.S2 + 0x634u));
+        c.V0 = (uint)((int)c.V0 >> 1);
+        c.A1 = c.V1 + c.V0;
+""",
+        """        c.V1 = m.ReadU32((c.S2 + 0x634u));
+        c.V0 = (uint)((int)c.V0 >> 1);
+        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.ScaleTrue60HzVehicleDelta(c.V0);
+        c.A1 = c.V1 + c.V0;
+""",
+        "Arcade driven-wheel recurrence time step",
+    )
+    replace_once(
+        OVERLAY0,
+        """        m.WriteU32((c.SP + 0x14u), c.S1);
+        c.S2 = m.ReadU8((c.S0 + 0x5D2Du));
+        c.A0 = c.S3 + 0u;
+""",
+        """        m.WriteU32((c.SP + 0x14u), c.S1);
+        c.S2 = m.ReadU8((c.S0 + 0x5D2Du));
+        RecompOne.Runtime.Sdk.GT2Compat.TraceTrue60HzVehicleStage(
+            "begin", c.S3, c.S2, m);
+        c.A0 = c.S3 + 0u;
+""",
+        "Arcade true-60 vehicle state diagnostic",
+    )
 
     replace_once(
         ENTRY,

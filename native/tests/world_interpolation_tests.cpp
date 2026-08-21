@@ -602,6 +602,52 @@ int main() {
         fragment_held,
         "reject an incoherent exact transform and hold the fragment intact");
 
+    auto atomic_vehicle_previous = exact_previous;
+    atomic_vehicle_previous.commands.insert(
+        atomic_vehicle_previous.commands.end(),
+        clipped_fragment_previous.commands.begin(),
+        clipped_fragment_previous.commands.end());
+    atomic_vehicle_previous.vehicle_commands = 4;
+    auto atomic_vehicle_current = exact_current;
+    atomic_vehicle_current.commands.insert(
+        atomic_vehicle_current.commands.end(),
+        clipped_fragment_current.commands.begin(),
+        clipped_fragment_current.commands.end());
+    atomic_vehicle_current.vehicle_commands = 4;
+    okay &= expect(
+        interpolate_world_draw_lists(
+            atomic_vehicle_previous,
+            atomic_vehicle_current,
+            0.5F,
+            &midpoint,
+            &stats) == WorldInterpolationResult::success &&
+        stats.incoherent_exact_transform_groups == 1 &&
+        stats.held_incoherent_vehicle_commands == 2 &&
+        stats.held_atomic_vehicle_commands == 2 &&
+        stats.matched_vehicle_commands == 0 &&
+        stats.held_unmatched_commands == 4,
+        "hold every sibling group when one vehicle group is incoherent");
+    bool atomic_vehicle_held =
+        midpoint.commands.size() == atomic_vehicle_previous.commands.size();
+    for (std::size_t command_index = 0;
+         command_index < midpoint.commands.size();
+         ++command_index) {
+        for (int vertex_index = 0; vertex_index < 3; ++vertex_index) {
+            atomic_vehicle_held = atomic_vehicle_held &&
+                midpoint.commands[command_index].vertices[vertex_index]
+                        .screen_x ==
+                    atomic_vehicle_previous.commands[command_index]
+                        .vertices[vertex_index].screen_x &&
+                midpoint.commands[command_index].vertices[vertex_index]
+                        .screen_y ==
+                    atomic_vehicle_previous.commands[command_index]
+                        .vertices[vertex_index].screen_y;
+        }
+    }
+    okay &= expect(
+        atomic_vehicle_held,
+        "restore a mixed vehicle to one coherent authored pose");
+
     auto clipped_current = rotating_current;
     clipped_current.commands.pop_back();
     clipped_current.vehicle_commands = 1;

@@ -5,6 +5,7 @@
 #include "opengt/world_interpolation.hpp"
 #include "opengt/world_topology.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
@@ -565,17 +566,85 @@ void print_hit_commands(
         hits);
 }
 
+void print_vehicle_shadow_census(
+    const opengt::render::WorldDrawList& list
+) {
+    const bool detailed =
+        std::getenv("OPENGT_INSPECT_SHADOW_CENSUS") != nullptr;
+    std::size_t signature = 0;
+    std::size_t fully_flat = 0;
+    std::size_t flat_edge = 0;
+    std::size_t no_flat_edge = 0;
+    for (std::size_t command_index = 0;
+         command_index < list.commands.size();
+         ++command_index) {
+        const auto& command = list.commands[command_index];
+        if (
+            command.object_kind != 2U ||
+            command.material_index >= list.materials.size()
+        )
+            continue;
+        const auto& material = list.materials[command.material_index];
+        if (
+            (material.primitive_flags & 1U) != 0 ||
+            (material.primitive_flags & 2U) == 0 ||
+            ((material.texture_page >> 5U) & 3U) != 2U
+        )
+            continue;
+        ++signature;
+        const std::int16_t y0 = command.vertices[0].model_y;
+        const std::int16_t y1 = command.vertices[1].model_y;
+        const std::int16_t y2 = command.vertices[2].model_y;
+        if (y0 == y1 && y1 == y2) {
+            ++fully_flat;
+            continue;
+        }
+        const bool has_flat_edge =
+            y0 == y1 || y0 == y2 || y1 == y2;
+        if (has_flat_edge)
+            ++flat_edge;
+        else
+            ++no_flat_edge;
+        if (detailed) {
+            std::printf(
+                "  shadowCandidate command=%zu class=%s object=%u "
+                "model=%08x transform=%016llx material=%u "
+                "modelY=(%d,%d,%d) provenance=(%04x,%04x,%04x)\n",
+                command_index,
+                has_flat_edge ? "flatEdge" : "noFlatEdge",
+                command.object_id,
+                command.model_pointer,
+                static_cast<unsigned long long>(command.transform_id),
+                command.material_index,
+                y0,
+                y1,
+                y2,
+                command.vertices[0].provenance_flags,
+                command.vertices[1].provenance_flags,
+                command.vertices[2].provenance_flags);
+        }
+    }
+    std::printf(
+        "vehicleShadowSignature=%zu fullyFlat=%zu flatEdge=%zu "
+        "noFlatEdge=%zu\n",
+        signature,
+        fully_flat,
+        flat_edge,
+        no_flat_edge);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 3 || argc > 13) {
+    if (argc < 3) {
         std::fprintf(
             stderr,
             "usage: opengt_world_interpolation_inspect "
             "<previous.ogtwcap> <current.ogtwcap> "
             "[midpoint.png] [--no-depth] [--model hex] "
             "[--command-range first last] [--summary-only] "
-            "[--repeat count] [--cached-index]\n");
+            "[--repeat count] [--cached-index] "
+            "[--sample-pixel x y]\n");
         return 2;
     }
     const char* output_path = nullptr;
@@ -583,6 +652,9 @@ int main(int argc, char** argv) {
     bool summary_only = false;
     bool cached_index = false;
     bool topology_midpoint = false;
+    bool sample_pixel = false;
+    float sample_x = 0.0F;
+    float sample_y = 0.0F;
     std::uint32_t repeat_count = 1;
     std::uint32_t isolated_model = 0;
     std::size_t first_command = 0;
@@ -626,6 +698,14 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "invalid command range\n");
                 return 2;
             }
+        }
+        else if (
+            std::strcmp(argv[argument], "--sample-pixel") == 0 &&
+            argument + 2 < argc
+        ) {
+            sample_x = std::strtof(argv[++argument], nullptr);
+            sample_y = std::strtof(argv[++argument], nullptr);
+            sample_pixel = true;
         }
         else if (output_path == nullptr)
             output_path = argv[argument];
@@ -697,7 +777,8 @@ int main(int argc, char** argv) {
         "track=%u vehicle=%u "
         "heldScreen=%u heldUnmatched=%u groups=%u/%u matchedGroups=%u "
         "exactRigidGroups=%u incoherentExactGroups=%u "
-        "heldIncoherentVehicle=%u heldTrackVisibility=%u "
+        "heldIncoherentVehicle=%u heldAtomicVehicle=%u "
+        "heldTrackVisibility=%u "
         "heldUnsafeTrack=%u vertexExactTrackGroups=%u "
         "unavailableVertexExactTrackGroups=%u "
         "ambiguousTrackVertexMappings=%u "
@@ -727,6 +808,7 @@ int main(int argc, char** argv) {
         stats.exact_rigid_transform_groups,
         stats.incoherent_exact_transform_groups,
         stats.held_incoherent_vehicle_commands,
+        stats.held_atomic_vehicle_commands,
         stats.held_track_visibility_commands,
         stats.held_unsafe_track_commands,
         stats.vertex_exact_track_groups,
@@ -750,6 +832,7 @@ int main(int argc, char** argv) {
         stats.previous_group_cache_hit,
         stats.current_group_cache_hit,
         repeat_count);
+    print_vehicle_shadow_census(midpoint);
     if (topology_midpoint) {
         opengt::render::WorldTopologyStats midpoint_topology{};
         if (
@@ -816,7 +899,7 @@ int main(int argc, char** argv) {
         print_exploded_midpoint_triangles(previous.draw_list, midpoint);
     }
 
-    if (output_path != nullptr) {
+    if (output_path != nullptr || sample_pixel) {
         if (
             isolated_model != 0 ||
             last_command != (std::numeric_limits<std::size_t>::max)()
@@ -852,20 +935,45 @@ int main(int argc, char** argv) {
             output.data(),
             output.size(),
             opengt::render::WorldGpuRenderOptions{
-                false, depth, false, true, true, scale, 0xFF402820U},
+                false, depth, false, true, true, false, scale, 0xFF402820U},
             &render_stats);
         if (
             render_result !=
                 opengt::render::WorldGpuRenderResult::success ||
-            !opengt::render::write_rgba_png(
-                output_path, output.data(), width, height)
+            (output_path != nullptr &&
+                !opengt::render::write_rgba_png(
+                    output_path, output.data(), width, height))
         ) {
             std::fprintf(stderr, "midpoint render/write failed\n");
             return 1;
         }
+        if (sample_pixel) {
+            const std::int32_t output_x = std::clamp(
+                static_cast<std::int32_t>(std::floor(
+                    (sample_x - midpoint.display_x) * scale)),
+                0,
+                static_cast<std::int32_t>(width) - 1);
+            const std::int32_t output_y = std::clamp(
+                static_cast<std::int32_t>(std::floor(sample_y * scale)),
+                0,
+                static_cast<std::int32_t>(height) - 1);
+            const std::size_t offset =
+                (static_cast<std::size_t>(output_y) * width + output_x) * 4U;
+            std::printf(
+                "samplePixel=(%.3f,%.3f) output=(%d,%d) "
+                "rgba=(%u,%u,%u,%u)\n",
+                sample_x,
+                sample_y,
+                output_x,
+                output_y,
+                output[offset + 0],
+                output[offset + 1],
+                output[offset + 2],
+                output[offset + 3]);
+        }
         std::printf(
             "output=%s drawCalls=%u transparent=%u\n",
-            output_path,
+            output_path != nullptr ? output_path : "not-written",
             render_stats.draw_calls,
             render_stats.transparent_draw_calls);
     }

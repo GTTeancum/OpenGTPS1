@@ -63,6 +63,20 @@ public static class GT2Compat
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_MENU") == "1";
     static readonly bool TraceRaceScheduler =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_SCHEDULER") == "1";
+    // Genuine per-VBlank simulation is the shipping GT2 architecture.  A
+    // value of 0 exists only to reproduce retired midpoint-era diagnostics.
+    static readonly bool True60HzEnabled =
+        Environment.GetEnvironmentVariable("RECOMPONE_GT2_TRUE_60HZ") != "0";
+    static readonly bool TraceTrue60HzCadence =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_TRACE_GT2_TRUE60_CADENCE") == "1";
+    static readonly int True60HzStateTracePoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_GT2_TRUE60_STATE_POLL"),
+            out int true60StateTracePoll)
+            ? true60StateTracePoll
+            : -1;
     static readonly bool TraceTrackRendering =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_TRACK_RENDERING") == "1";
     static readonly bool TraceVehicleLod =
@@ -94,6 +108,20 @@ public static class GT2Compat
             Environment.GetEnvironmentVariable(
                 "RECOMPONE_GT2_VEHICLE_LOD_SELECTOR_OVERRIDE"));
     static readonly HashSet<string> RaceSchedulerStates = [];
+    static int _true60HzSchedulerReports;
+    static int _true60HzVSyncReports;
+    static uint[]? _true60HzStateSnapshot;
+    static uint _true60HzStateCar;
+    static readonly uint[] True60HzLinearVelocityOffsets =
+    [
+        0x688u, 0x68Cu, 0x690u,
+    ];
+    static readonly uint[] True60HzLinearVelocityBefore =
+        new uint[16 * True60HzLinearVelocityOffsets.Length];
+    static readonly int[] True60HzLinearVelocityRemainders =
+        new int[16 * True60HzLinearVelocityOffsets.Length];
+    static uint _true60HzVelocityCarArray;
+    static uint _true60HzVelocityCarCount;
     static readonly HashSet<uint> TrackObjects = [];
     static readonly HashSet<uint> TrackViewIndices = [];
     static readonly HashSet<uint> TrackMeshIndices = [];
@@ -824,7 +852,8 @@ public static class GT2Compat
             uint car = carArray + index * 0xB40u + 0x2Cu;
             int mode = (sbyte)m.ReadU8(car + 0x45Du);
             Console.Error.WriteLine(
-                $"[GT2-AI] tick={tick} car={index} mode={mode} " +
+                $"[GT2-AI] poll={Host.InputManager.CurrentPoll} " +
+                $"tick={tick} car={index} mode={mode} " +
                 $"line={m.ReadU16(car + 0x610u)} " +
                 $"lineNext={m.ReadU16(car + 0x612u)} " +
                 $"speedTarget={m.ReadU16(car + 0x640u)} " +
@@ -1260,6 +1289,94 @@ public static class GT2Compat
         }
     }
 
+    /// <summary>
+    /// One-poll diagnostic for locating GT2's fixed-step vehicle accumulators.
+    /// Each call compares the first car's complete native object with the
+    /// preceding stage. It is read-only and inactive unless an exact input poll
+    /// is selected through RECOMPONE_TRACE_GT2_TRUE60_STATE_POLL.
+    /// </summary>
+    public static void TraceTrue60HzVehicleStage(
+        string stage, uint carArray, uint carCount, IMemory m)
+    {
+        int poll = Host.InputManager.CurrentPoll;
+        if (True60HzStateTracePoll == -2)
+        {
+            if (stage == "begin" && poll is >= 4800 and <= 4920 &&
+                IsGuestRam(carArray) && carCount is >= 1u and <= 16u)
+            {
+                uint traceCar = carArray + 0x2Cu;
+                Console.Error.WriteLine(
+                    $"[GT2-True60-Velocity] poll={poll} " +
+                    $"v=({unchecked((int)m.ReadU32(traceCar + 0x65Cu))}," +
+                    $"{unchecked((int)m.ReadU32(traceCar + 0x660u))}," +
+                    $"{unchecked((int)m.ReadU32(traceCar + 0x664u))}) " +
+                    $"longitudinal={unchecked((int)m.ReadU32(traceCar + 0x64Cu))}");
+            }
+            return;
+        }
+
+        if (poll != True60HzStateTracePoll ||
+            !IsGuestRam(carArray) ||
+            carCount is < 1u or > 16u)
+            return;
+
+        const int carBytes = 0xB40;
+        const int wordCount = carBytes / sizeof(uint);
+        uint car = carArray;
+
+        // A stage hook inside a per-car loop can observe every vehicle. The
+        // begin hook establishes the first car as the diagnostic target; do
+        // not reset the comparison snapshot when later loop iterations pass a
+        // different car.
+        if (stage != "begin" &&
+            _true60HzStateSnapshot is not null &&
+            _true60HzStateCar != car)
+            return;
+
+        uint[] current = new uint[wordCount];
+        for (int word = 0; word < wordCount; word++)
+            current[word] = m.ReadU32(car + (uint)(word * sizeof(uint)));
+
+        if (_true60HzStateSnapshot is null ||
+            _true60HzStateCar != car ||
+            stage == "begin")
+        {
+            _true60HzStateSnapshot = current;
+            _true60HzStateCar = car;
+            System.Text.StringBuilder words = new(wordCount * 9);
+            for (int word = 0; word < wordCount; word++)
+            {
+                if (word != 0)
+                    words.Append(',');
+                words.Append(current[word].ToString("X8"));
+            }
+            Console.Error.WriteLine(
+                $"[GT2-True60-State] poll={True60HzStateTracePoll} " +
+                $"stage={stage} car=0x{car:X8} words={words}");
+            return;
+        }
+
+        List<string> changes = [];
+        for (int word = 0; word < wordCount; word++)
+        {
+            uint before = _true60HzStateSnapshot[word];
+            uint after = current[word];
+            if (before == after)
+                continue;
+
+            changes.Add(
+                $"+0x{word * sizeof(uint):X3}:" +
+                $"{unchecked((int)before)}->{unchecked((int)after)}" +
+                $"(d={unchecked((int)(after - before))})");
+        }
+
+        Console.Error.WriteLine(
+            $"[GT2-True60-State] poll={True60HzStateTracePoll} " +
+            $"stage={stage} changes={changes.Count} " +
+            string.Join(' ', changes));
+        _true60HzStateSnapshot = current;
+    }
+
     static int WheelAngle(uint address, IMemory m) =>
         m.ReadU16(address) & 0x0FFF;
 
@@ -1641,6 +1758,15 @@ public static class GT2Compat
         uint intervalCounterAddress = CdDriveStateAddress + 0x174u;
 
         int requested = (int)c.A0;
+        int poll = Host.InputManager.CurrentPoll;
+        if (
+            TraceTrue60HzCadence && True60HzEnabled && poll >= 4280 &&
+            Interlocked.Increment(ref _true60HzVSyncReports) <= 160)
+        {
+            Console.Error.WriteLine(
+                $"[GT2-True60-VSync] poll={poll} requested={requested} " +
+                $"ra=0x{c.RA:X8}");
+        }
         if (requested < 0)
         {
             m.WriteU32(intervalCounterAddress, 0u);
@@ -1663,7 +1789,147 @@ public static class GT2Compat
         c.V0 = m.ReadU32(totalCounterAddress);
     }
 
-    public static void TraceRenderSchedulerEntry(CpuContext c)
+    /// <summary>
+    /// Convert GT2's authored race time step from two NTSC fields to one. The
+    /// original race code reads this byte for its timer, physics, effects, and
+    /// replay rate branches, then copies it into the scheduler's +0x18 VBlank
+    /// wait. Applying the conversion before that copy selects GT2's existing
+    /// one-field calculations and scheduler cadence together. Object +0x1E is
+    /// an independent buffer phase and must remain untouched.
+    ///
+    /// Systems that do not consult this authored time step still require
+    /// explicit parity validation before the mode can become user-facing.
+    /// </summary>
+    public static void ConfigureTrue60HzRaceTimeStep(
+        uint raceConfiguration,
+        IMemory m)
+    {
+        if (!True60HzEnabled)
+            return;
+
+        if (!IsGuestRam(raceConfiguration))
+            throw new InvalidOperationException(
+                $"GT2 true-60 time-step hook received invalid configuration " +
+                $"0x{raceConfiguration:X8}");
+
+        uint timeStepAddress = raceConfiguration + 0x8u;
+        byte authoredTimeStep = m.ReadU8(timeStepAddress);
+        if (authoredTimeStep is not (1 or 2))
+            throw new InvalidOperationException(
+                $"GT2 true-60 expected race time step 1 or 2 at " +
+                $"0x{timeStepAddress:X8}, found {authoredTimeStep}");
+
+        m.WriteU8(timeStepAddress, 1);
+        if (Interlocked.Increment(ref _true60HzSchedulerReports) <= 4)
+            Console.Error.WriteLine(
+                $"[GT2-True60] race time step {authoredTimeStep} -> 1 " +
+                $"configuration=0x{raceConfiguration:X8}");
+    }
+
+    /// <summary>
+    /// Apply the one-field duration to a signed fixed-point state delta from a
+    /// vehicle force accumulator which GT2 otherwise treats as one 30 Hz step.
+    /// </summary>
+    public static uint ScaleTrue60HzVehicleDelta(uint delta) =>
+        True60HzEnabled
+            ? unchecked((uint)(unchecked((int)delta) >> 1))
+            : delta;
+
+    /// <summary>
+    /// Convert a fixed-point velocity-to-position shift from 30 Hz to 60 Hz.
+    /// The velocity remains a physical state value; only its integration over
+    /// the shorter authored field is scaled.
+    /// </summary>
+    public static int GetTrue60HzVehicleIntegrationShift(int stockShift) =>
+        True60HzEnabled ? stockShift + 1 : stockShift;
+
+    /// <summary>
+    /// Capture physical linear velocity before GT2's contact/force solver. The
+    /// solver still runs every field; the matching end hook converts only its
+    /// accumulated state change to the one-field duration.
+    /// </summary>
+    public static void BeginTrue60HzLinearVelocityStep(
+        uint carArray, uint carCount, IMemory m)
+    {
+        if (!True60HzEnabled || !IsGuestRam(carArray) ||
+            carCount is < 1u or > 16u)
+            return;
+
+        if (_true60HzVelocityCarArray != carArray ||
+            _true60HzVelocityCarCount != carCount)
+        {
+            Array.Clear(True60HzLinearVelocityRemainders);
+        }
+
+        CaptureTrue60HzVehicleFields(
+            carArray, carCount, True60HzLinearVelocityOffsets,
+            True60HzLinearVelocityBefore, m);
+        _true60HzVelocityCarArray = carArray;
+        _true60HzVelocityCarCount = carCount;
+    }
+
+    public static void EndTrue60HzLinearVelocityStep(
+        uint carArray, uint carCount, IMemory m)
+    {
+        if (!True60HzEnabled ||
+            carArray != _true60HzVelocityCarArray ||
+            carCount != _true60HzVelocityCarCount)
+            return;
+
+        CommitTrue60HzVehicleFields(
+            carArray, carCount, True60HzLinearVelocityOffsets,
+            True60HzLinearVelocityBefore,
+            True60HzLinearVelocityRemainders, m);
+    }
+
+    static void CaptureTrue60HzVehicleFields(
+        uint carArray,
+        uint carCount,
+        ReadOnlySpan<uint> offsets,
+        Span<uint> before,
+        IMemory m)
+    {
+        for (uint index = 0; index < carCount; index++)
+        {
+            uint car = carArray + index * 0xB40u;
+            int baseIndex = checked((int)index) * offsets.Length;
+            for (int field = 0; field < offsets.Length; field++)
+                before[baseIndex + field] = m.ReadU32(car + offsets[field]);
+        }
+    }
+
+    static void CommitTrue60HzVehicleFields(
+        uint carArray,
+        uint carCount,
+        ReadOnlySpan<uint> offsets,
+        ReadOnlySpan<uint> before,
+        Span<int> remainders,
+        IMemory m)
+    {
+        for (uint index = 0; index < carCount; index++)
+        {
+            uint car = carArray + index * 0xB40u;
+            int baseIndex = checked((int)index) * offsets.Length;
+            for (int field = 0; field < offsets.Length; field++)
+            {
+                int stateIndex = baseIndex + field;
+                uint address = car + offsets[field];
+                uint oldValue = before[stateIndex];
+                uint newValue = m.ReadU32(address);
+                long numerator =
+                    unchecked((int)(newValue - oldValue)) +
+                    remainders[stateIndex];
+                int scaledDelta = checked((int)(numerator >> 1));
+                remainders[stateIndex] =
+                    checked((int)(numerator - ((long)scaledDelta << 1)));
+                m.WriteU32(
+                    address,
+                    oldValue + unchecked((uint)scaledDelta));
+            }
+        }
+    }
+
+    public static void TraceRenderSchedulerEntry(CpuContext c, IMemory m)
     {
         if (!TraceTrackRendering || _renderSchedulerSamples++ >= 120)
             return;

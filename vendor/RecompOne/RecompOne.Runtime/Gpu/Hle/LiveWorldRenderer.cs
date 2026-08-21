@@ -84,12 +84,23 @@ internal struct LiveInterpolationStats
     public ulong CurrentTopologyMicroseconds;
 }
 
+[StructLayout(LayoutKind.Sequential)]
+internal struct LiveTextureUpload
+{
+    public ulong Key;
+    public int X;
+    public int Y;
+    public int WordWidth;
+    public int Height;
+}
+
 internal readonly record struct LiveRenderSettings(
     bool Depth,
     bool Dithering,
     bool Topology,
     bool PerspectiveCorrect,
     bool TextureSmoothing,
+    bool HighResolutionTextures,
     int OutputScale);
 
 /// <summary>
@@ -104,14 +115,15 @@ internal sealed class LiveWorldRenderer : IDisposable
     const int CaptureBufferCount = 3;
     const int PendingCaptureCount = CaptureBufferCount - 1;
     internal const int OutputBufferCount = 11;
-    // Eight completed outputs, two buffers owned by RenderPair, and one briefly
-    // owned by the host upload path must coexist without starving the worker.
+    // Eight completed outputs, up to two buffers owned by legacy RenderPair,
+    // and one briefly owned by the host upload path must coexist without
+    // starving the worker. Authored-only true-60 rendering rents one buffer.
     internal const int PublishedOutputCapacity = 8;
     // Presentation spends this only when the chronological output queue is
     // empty. It is returned by the later vblank throttle in the normal case;
-    // Ten milliseconds catches imminent native completions without letting a
+    // Twelve milliseconds catches imminent native completions without letting a
     // scheduler oversleep consume most of the next NTSC presentation interval.
-    internal const int OutputReadyWaitMilliseconds = 8;
+    internal const int OutputReadyWaitMilliseconds = 12;
     internal const int MaxTriangles = 32_768;
     internal const int HeaderSize = 160;
     internal const int TriangleStride = 384;
@@ -134,10 +146,20 @@ internal sealed class LiveWorldRenderer : IDisposable
     const uint WarpFlag = 1u << 4;
     const uint TextureSmoothingFlag = 1u << 5;
     const uint RealtimeReadbackFlag = 1u << 6;
+    const uint HighResolutionTexturesFlag = 1u << 7;
+    const uint NoOutputStatsFlag = 1u << 3;
 
     static readonly bool ForceWarp =
         Environment.GetEnvironmentVariable(
             "RECOMPONE_NATIVE_WORLD_WARP") == "1";
+    // Authored per-VBlank output is the shipping default.  The explicit 0
+    // override exists only for retired midpoint-pipeline diagnostics.
+    static readonly bool AuthoredOnly =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_GT2_TRUE_60HZ") != "0";
+    static readonly bool TraceTextureUploads =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_TRACE_TEXTURE_UPLOADS") == "1";
     static readonly int TraceInterval =
         int.TryParse(
             Environment.GetEnvironmentVariable(
@@ -173,6 +195,7 @@ internal sealed class LiveWorldRenderer : IDisposable
     readonly ConcurrentQueue<byte[]> _capturePool = new();
     readonly ConcurrentQueue<byte[]> _outputPool = new();
     readonly object _gate = new();
+    readonly object _textureUploadGate = new();
     readonly AutoResetEvent _workReady = new(false);
     readonly ManualResetEventSlim _firstOutputReady = new(false);
     readonly Thread? _worker;
@@ -188,6 +211,7 @@ internal sealed class LiveWorldRenderer : IDisposable
     long _renderedRepeated;
     long _syntheticAttempts;
     long _syntheticNoOutput;
+    long _authoredNoOutput;
     long _dropped;
     long _droppedPendingCaptures;
     long _droppedOutputPool;
@@ -207,20 +231,23 @@ internal sealed class LiveWorldRenderer : IDisposable
     // Keep the three components aligned so each percentile window describes
     // the same authored-state pairs. Submit is CPU time inside the two D3D11
     // render calls; the asynchronous live path does not wait for GPU
-    // completion. Topology is paid once while building the current authored
-    // state; pipeline includes both plus decode, interpolation, draw-list
-    // construction, and bridge overhead.
+    // completion. Topology is paid once on the geometric midpoint; pipeline
+    // includes both plus decode, interpolation, draw-list construction, and
+    // bridge overhead.
     readonly ulong[] _recentPipelineMicroseconds = new ulong[240];
     readonly ulong[] _recentSubmitMicroseconds = new ulong[240];
     readonly ulong[] _recentTopologyMicroseconds = new ulong[240];
     int _recentProfileCount;
     int _recentProfileCursor;
     int _dumpedCaptureCount;
+    LiveTextureUpload[] _textureUploads = [];
+    readonly HashSet<ulong> _tracedTextureUploadKeys = [];
 
     readonly record struct PendingCapture(
         byte[] Buffer,
         int Size,
-        LiveRenderSettings Settings);
+        LiveRenderSettings Settings,
+        LiveTextureUpload[] TextureUploads);
 
     public static bool Requested => OperatingSystem.IsWindows();
 
@@ -243,16 +270,20 @@ internal sealed class LiveWorldRenderer : IDisposable
             // endpoint, yielding two unique states per authoring interval
             // without blending two complete car silhouettes.
             // Native pair production is presentation-critical once real-time
-            // pacing begins. Keep it at the same priority class as the paced
-            // emulation thread; the bounded pending/output queues still
-            // prevent it from running ahead and turning a full output queue
-            // into slow game time.
-            Priority = ThreadPriority.AboveNormal,
+            // pacing begins. Keep it at the same highest thread priority as
+            // the paced emulation thread while the process itself remains
+            // AboveNormal. This prevents unrelated AboveNormal application
+            // workers from descheduling both halves of the 60 Hz pipeline;
+            // the bounded pending/output queues still prevent this worker
+            // from running ahead and turning a full output queue into slow
+            // game time.
+            Priority = ThreadPriority.Highest,
         };
         _worker.Start();
         Console.Error.WriteLine(
             $"[Native-World] enabled buffers={CaptureBufferCount} " +
-            $"maxTriangles={MaxTriangles} outputBuffers={OutputBufferCount}");
+            $"maxTriangles={MaxTriangles} outputBuffers={OutputBufferCount} " +
+            $"mode={(AuthoredOnly ? "authored-only" : "interpolated-pair")}");
     }
 
     public bool TryRentCaptureBuffer(out byte[] buffer) =>
@@ -288,7 +319,8 @@ internal sealed class LiveWorldRenderer : IDisposable
             _pendingCaptures.Enqueue(new PendingCapture(
                 capture,
                 size,
-                settings));
+                settings,
+                Volatile.Read(ref _textureUploads)));
             _submitted++;
         }
         if (discarded != null)
@@ -310,6 +342,90 @@ internal sealed class LiveWorldRenderer : IDisposable
                     "[Native-World] first-output seed ready");
         }
         return true;
+    }
+
+    static bool Overlaps(
+        in LiveTextureUpload upload,
+        int x,
+        int y,
+        int width,
+        int height) =>
+        upload.X < x + width && x < upload.X + upload.WordWidth &&
+        upload.Y < y + height && y < upload.Y + upload.Height;
+
+    public void InvalidateTextureUploads(int x, int y, int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+            return;
+        lock (_textureUploadGate)
+        {
+            LiveTextureUpload[] current = _textureUploads;
+            LiveTextureUpload[] retained = current
+                .Where(upload => !Overlaps(upload, x, y, width, height))
+                .ToArray();
+            if (retained.Length != current.Length)
+                Volatile.Write(ref _textureUploads, retained);
+        }
+    }
+
+    public void RecordTextureUpload(
+        int x,
+        int y,
+        int wordWidth,
+        int height,
+        ReadOnlySpan<ushort> words)
+    {
+        if (
+            wordWidth <= 0 || height <= 0 ||
+            words.Length != checked(wordWidth * height) ||
+            x < 0 || y < 0 ||
+            x + wordWidth > 1024 || y + height > 512)
+        {
+            InvalidateTextureUploads(x, y, wordWidth, height);
+            return;
+        }
+        const ulong Offset = 14695981039346656037UL;
+        const ulong Prime = 1099511628211UL;
+        ulong key = Offset;
+        static void Add(ref ulong value, byte item)
+        {
+            value ^= item;
+            value *= Prime;
+        }
+        Add(ref key, (byte)wordWidth);
+        Add(ref key, (byte)(wordWidth >> 8));
+        Add(ref key, (byte)height);
+        Add(ref key, (byte)(height >> 8));
+        foreach (ushort word in words)
+        {
+            Add(ref key, (byte)word);
+            Add(ref key, (byte)(word >> 8));
+        }
+        var upload = new LiveTextureUpload
+        {
+            Key = key,
+            X = x,
+            Y = y,
+            WordWidth = wordWidth,
+            Height = height,
+        };
+        lock (_textureUploadGate)
+        {
+            var next = _textureUploads
+                .Where(item => !Overlaps(item, x, y, wordWidth, height))
+                .Append(upload)
+                .ToArray();
+            Volatile.Write(ref _textureUploads, next);
+            if (TraceTextureUploads && _tracedTextureUploadKeys.Add(key))
+            {
+                string payload = words.Length <= 256
+                    ? $" data={Convert.ToHexString(MemoryMarshal.AsBytes(words))}"
+                    : string.Empty;
+                Console.Error.WriteLine(
+                    $"[TextureUpload] key={key:x16} x={x} y={y} " +
+                    $"words={wordWidth} height={height}{payload}");
+            }
+        }
     }
 
     public bool TryTakeOutput(
@@ -459,9 +575,10 @@ internal sealed class LiveWorldRenderer : IDisposable
     void WorkerMain()
     {
         nint handle = 0;
+        LiveTextureUpload[] boundTextureUploads = [];
         try
         {
-            if (NativeMethods.ApiVersion() != 4)
+            if (NativeMethods.ApiVersion() != 6)
                 throw new InvalidOperationException(
                     "native renderer API version mismatch");
             handle = NativeMethods.Create();
@@ -483,6 +600,21 @@ internal sealed class LiveWorldRenderer : IDisposable
                 byte[] capture = pending.Buffer;
                 int size = pending.Size;
                 LiveRenderSettings settings = pending.Settings;
+                if (!ReferenceEquals(
+                        boundTextureUploads,
+                        pending.TextureUploads))
+                {
+                    int uploadResult = NativeMethods.SetTextureUploads(
+                        handle,
+                        ForceWarp ? 1 : 0,
+                        pending.TextureUploads,
+                        (nuint)pending.TextureUploads.Length);
+                    if (uploadResult != 0)
+                        throw new InvalidOperationException(
+                            $"native texture upload registry failed " +
+                            $"result={uploadResult}");
+                    boundTextureUploads = pending.TextureUploads;
+                }
                 if (!_outputPool.TryDequeue(out byte[]? firstOutput))
                 {
                     ReturnCaptureBuffer(capture);
@@ -493,7 +625,9 @@ internal sealed class LiveWorldRenderer : IDisposable
                     }
                     continue;
                 }
-                if (!_outputPool.TryDequeue(out byte[]? secondOutput))
+                byte[]? secondOutput = null;
+                if (!AuthoredOnly &&
+                    !_outputPool.TryDequeue(out secondOutput))
                 {
                     ReturnOutput(firstOutput);
                     ReturnCaptureBuffer(capture);
@@ -549,6 +683,8 @@ internal sealed class LiveWorldRenderer : IDisposable
                     if (ForceWarp) flags |= WarpFlag;
                     if (settings.TextureSmoothing)
                         flags |= TextureSmoothingFlag;
+                    if (settings.HighResolutionTextures)
+                        flags |= HighResolutionTexturesFlag;
                     if (FrameClock.RealTimeThrottleActive)
                         flags |= RealtimeReadbackFlag;
                     var options = new LiveNativeOptions
@@ -581,61 +717,94 @@ internal sealed class LiveWorldRenderer : IDisposable
                     Volatile.Write(
                         ref _activePairStartTicks,
                         Stopwatch.GetTimestamp());
-                    int result = NativeMethods.RenderPair(
-                        handle,
-                        capture,
-                        (nuint)size,
-                        firstOutput,
-                        secondOutput,
-                        (nuint)firstOutput.Length,
-                        in options,
-                        ref firstStats,
-                        ref secondStats,
-                        ref interpolation);
+                    int result = AuthoredOnly
+                        ? NativeMethods.Render(
+                            handle,
+                            capture,
+                            (nuint)size,
+                            firstOutput,
+                            (nuint)firstOutput.Length,
+                            in options,
+                            ref firstStats)
+                        : NativeMethods.RenderPair(
+                            handle,
+                            capture,
+                            (nuint)size,
+                            firstOutput,
+                            secondOutput!,
+                            (nuint)firstOutput.Length,
+                            in options,
+                            ref firstStats,
+                            ref secondStats,
+                            ref interpolation);
                     if (result != 0)
                         throw new InvalidOperationException(
                             $"native render failed result={result} " +
-                            $"detail={interpolation.Result} " +
+                            $"detail={(AuthoredOnly ? firstStats.Result : interpolation.Result)} " +
                             $"captureDisplay=" +
                             $"{BitConverter.ToInt32(capture, 36)}x" +
                             $"{BitConverter.ToInt32(capture, 40)} " +
                             $"outputScale={options.OutputScale} " +
                             $"outputCapacity={firstOutput.Length}");
-                    if (interpolation.OutputCount > 2)
-                        throw new InvalidOperationException(
-                            $"native render returned invalid output count " +
-                            $"{interpolation.OutputCount}");
-                    if (interpolation.OutputCount == 0)
+                    if (AuthoredOnly)
                     {
-                        int lateRead = NativeMethods.TryReadPair(
-                            handle,
-                            firstOutput,
-                            secondOutput,
-                            (nuint)firstOutput.Length,
-                            ref firstStats,
-                            ref secondStats);
-                        if (lateRead < 0)
+                        bool hasOutput =
+                            (firstStats.Reserved & NoOutputStatsFlag) == 0;
+                        interpolation.OutputCount = hasOutput ? 1u : 0u;
+                        interpolation.ActualRenderMicroseconds =
+                            firstStats.RenderMicroseconds;
+                        interpolation.PairPipelineMicroseconds =
+                            firstStats.PipelineMicroseconds;
+                        interpolation.CurrentTopologyMicroseconds =
+                            firstStats.TopologyMicroseconds;
+                        if (firstStats.TopologyMicroseconds != 0)
+                            interpolation.Reserved |= 2u;
+                        if (hasOutput)
+                        {
+                            PublishRenderedOutput(firstOutput, in firstStats);
+                            firstPublished = true;
+                        }
+                        else
+                            _authoredNoOutput++;
+                    }
+                    else
+                    {
+                        if (interpolation.OutputCount > 2)
                             throw new InvalidOperationException(
-                                $"native readback drain failed " +
-                                $"result={lateRead} " +
-                                $"detail={firstStats.Result}");
-                        if (lateRead == 1)
-                            interpolation.OutputCount = 2;
+                                $"native render returned invalid output count " +
+                                $"{interpolation.OutputCount}");
+                        if (interpolation.OutputCount == 0)
+                        {
+                            int lateRead = NativeMethods.TryReadPair(
+                                handle,
+                                firstOutput,
+                                secondOutput!,
+                                (nuint)firstOutput.Length,
+                                ref firstStats,
+                                ref secondStats);
+                            if (lateRead < 0)
+                                throw new InvalidOperationException(
+                                    $"native readback drain failed " +
+                                    $"result={lateRead} " +
+                                    $"detail={firstStats.Result}");
+                            if (lateRead == 1)
+                                interpolation.OutputCount = 2;
+                        }
+                        _syntheticAttempts++;
+                        if (interpolation.OutputCount >= 1)
+                        {
+                            PublishRenderedOutput(firstOutput, in firstStats);
+                            firstPublished = true;
+                        }
+                        if (interpolation.OutputCount >= 2)
+                        {
+                            PublishRenderedOutput(secondOutput!, in secondStats);
+                            secondPublished = true;
+                        }
+                        DrainCompletedPairs(handle);
+                        if (interpolation.OutputCount < 2)
+                            _syntheticNoOutput++;
                     }
-                    _syntheticAttempts++;
-                    if (interpolation.OutputCount >= 1)
-                    {
-                        PublishRenderedOutput(firstOutput, in firstStats);
-                        firstPublished = true;
-                    }
-                    if (interpolation.OutputCount >= 2)
-                    {
-                        PublishRenderedOutput(secondOutput, in secondStats);
-                        secondPublished = true;
-                    }
-                    DrainCompletedPairs(handle);
-                    if (interpolation.OutputCount < 2)
-                        _syntheticNoOutput++;
                     _pairOperations++;
                     _totalRenderMicroseconds +=
                         checked((long)(
@@ -690,6 +859,7 @@ internal sealed class LiveWorldRenderer : IDisposable
                         Console.Error.WriteLine(
                             $"[Native-World] frame={traceStats.FrameIndex} " +
                             $"poll={traceStats.InputPoll} " +
+                            $"mode={(AuthoredOnly ? "authored" : "pair")} " +
                             $"outputs={interpolation.OutputCount} " +
                             $"reset={interpolation.TemporalReset} " +
                             $"triangles={traceStats.CaptureTriangles} " +
@@ -760,7 +930,7 @@ internal sealed class LiveWorldRenderer : IDisposable
                     Volatile.Write(ref _activeCaptureInputPoll, -1);
                     if (!firstPublished)
                         ReturnOutput(firstOutput);
-                    if (!secondPublished)
+                    if (secondOutput is not null && !secondPublished)
                         ReturnOutput(secondOutput);
                     ReturnCaptureBuffer(capture);
                     lock (_gate)
@@ -976,6 +1146,7 @@ internal sealed class LiveWorldRenderer : IDisposable
             $"repeated={_renderedRepeated} " +
             $"syntheticAttempts={_syntheticAttempts} " +
             $"syntheticNoOutput={_syntheticNoOutput} " +
+            $"authoredNoOutput={_authoredNoOutput} " +
             $"consumed={_consumed} dropped={_dropped} " +
             $"droppedPending={_droppedPendingCaptures} " +
             $"droppedOutputPool={_droppedOutputPool} " +
@@ -1046,6 +1217,16 @@ internal sealed class LiveWorldRenderer : IDisposable
 
         [DllImport(
             Library,
+            EntryPoint = "opengt_live_set_texture_uploads",
+            CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int SetTextureUploads(
+            nint handle,
+            int softwareAdapter,
+            [In] LiveTextureUpload[] uploads,
+            nuint uploadCount);
+
+        [DllImport(
+            Library,
             EntryPoint = "opengt_live_api_version",
             CallingConvention = CallingConvention.Cdecl)]
         internal static extern uint ApiVersion();
@@ -1095,6 +1276,7 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
     uint _worldTriangleCount;
     bool _truncated;
     bool _reportedOversizeOutput;
+    int _nonprojectableWorldFrames;
     int _deferredScreenLineTriangles;
     long _deferredScreenLineUpdates;
     long _deferredScreenLineReuses;
@@ -1118,6 +1300,9 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         RentAndReset();
     }
 
+    [MethodImpl(
+        MethodImplOptions.AggressiveInlining |
+        MethodImplOptions.AggressiveOptimization)]
     public void RecordTriangle(
         long pendingFrame,
         in HleDrawEnv env,
@@ -1142,6 +1327,7 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             explicitScreenSpace: false);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     void RecordTriangleCore(
         long pendingFrame,
         in HleDrawEnv env,
@@ -1191,9 +1377,7 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             : originB.Valid ? originB : originC;
         if (valid != 0)
             _worldTriangleCount++;
-        CountTransform(in originA);
-        CountTransform(in originB);
-        CountTransform(in originC);
+        CountTransforms(in originA, in originB, in originC);
         uint primitiveFlags = 0;
         if (flags.Textured) primitiveFlags |= 1U << 0;
         if (flags.SemiTrans) primitiveFlags |= 1U << 1;
@@ -1408,10 +1592,24 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             ResetCurrent();
             return;
         }
-        // Decide ownership from authored 3D provenance before validating or
-        // submitting the capture. A malformed, oversized, truncated, or
-        // temporarily unrenderable world frame must become an observable
-        // modern-renderer miss, never a silent compatibility-world fallback.
+        // Provenance without a usable projection plane occurs in authored 2D
+        // transitions and cannot define a native 3D camera.  Keep those frames
+        // with the compatibility compositor.  Once a usable camera exists,
+        // malformed, oversized, truncated, or temporarily unrenderable world
+        // work remains an observable modern-renderer miss.
+        GteProjectionOrigin camera = SelectCamera();
+        if (!camera.Valid || camera.ProjectionPlane == 0)
+        {
+            if (++_nonprojectableWorldFrames <= 3)
+            {
+                Console.Error.WriteLine(
+                    $"[Native-World] compositor retained nonprojectable " +
+                    $"provenance frame={presentedFrame} poll={inputPoll} " +
+                    $"triangles={_worldTriangleCount}");
+            }
+            ResetCurrent();
+            return;
+        }
         LastPresentedFrameContainedWorld = true;
         if (_truncated)
         {
@@ -1436,19 +1634,13 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             return;
         }
         long captureLength = vramOffset + vramBytes;
-        // Grow the MemoryStream before copying through the backing array.
-        // SetLength zero-fills newly exposed bytes, so growing it after this
-        // copy would erase the complete VRAM snapshot submitted to native.
-        _stream.SetLength(captureLength);
+        // The fixed-capacity stream deliberately retains the full backing
+        // length. Native receives the exact used byte count separately, so
+        // there is no reason to zero-fill the VRAM range immediately before
+        // overwriting every byte of it.
         MemoryMarshal.AsBytes(vram).CopyTo(
             _buffer.AsSpan(checked((int)vramOffset), vramBytes));
         _stream.Position = captureLength;
-        GteProjectionOrigin camera = SelectCamera();
-        if (!camera.Valid || camera.ProjectionPlane == 0)
-        {
-            ResetCurrent();
-            return;
-        }
         MainProjection = camera;
         var settings = new LiveRenderSettings(
             Depth: true,
@@ -1457,6 +1649,8 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             PerspectiveCorrect:
                 ConfigManager.View.PerspectiveCorrectTextures,
             TextureSmoothing: ConfigManager.View.TextureSmoothing,
+            HighResolutionTextures:
+                ConfigManager.View.HighResolutionTextures,
             OutputScale:
                 ConfigManager.View.HighResolution3D ? 4 : 1);
         int outputWidth =
@@ -1569,9 +1763,8 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         long length = offset + bytes;
         if (length > _buffer!.Length)
             return;
-        // As with the VRAM snapshot, grow before copying into the public
-        // backing array so MemoryStream cannot zero the appended records.
-        _stream.SetLength(length);
+        // The stream retains its full fixed-capacity length; the explicit
+        // cursor and submitted byte count define the valid capture extent.
         _deferredScreenLines.AsSpan(0, bytes).CopyTo(
             _buffer.AsSpan(checked((int)offset), bytes));
         _stream.Position = length;
@@ -1586,13 +1779,52 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         }
     }
 
-    void CountTransform(in GteProjectionOrigin origin)
+    static bool SameCameraProjection(
+        in GteProjectionOrigin left,
+        in GteProjectionOrigin right) =>
+        left.Valid && right.Valid &&
+        left.Object.Kind == right.Object.Kind &&
+        left.TransformId == right.TransformId &&
+        (left.Object.Kind != WorldObjectKind.Track ||
+            (left.ProjectionOffsetX == right.ProjectionOffsetX &&
+             left.ProjectionOffsetY == right.ProjectionOffsetY &&
+             left.ProjectionPlane == right.ProjectionPlane));
+
+    void CountTransforms(
+        in GteProjectionOrigin a,
+        in GteProjectionOrigin b,
+        in GteProjectionOrigin c)
+    {
+        int aWeight = a.Valid ? 1 : 0;
+        int bWeight = b.Valid ? 1 : 0;
+        int cWeight = c.Valid ? 1 : 0;
+        if (SameCameraProjection(in a, in b))
+        {
+            aWeight += bWeight;
+            bWeight = 0;
+        }
+        if (SameCameraProjection(in a, in c))
+        {
+            aWeight += cWeight;
+            cWeight = 0;
+        }
+        else if (SameCameraProjection(in b, in c))
+        {
+            bWeight += cWeight;
+            cWeight = 0;
+        }
+        if (aWeight != 0)
+            CountTransform(in a, aWeight);
+        if (bWeight != 0)
+            CountTransform(in b, bWeight);
+        if (cWeight != 0)
+            CountTransform(in c, cWeight);
+    }
+
+    void CountTransform(in GteProjectionOrigin origin, int weight)
     {
         if (!origin.Valid)
             return;
-        _allTransforms.TryGetValue(origin.TransformId, out var entry);
-        _allTransforms[origin.TransformId] =
-            (entry.Count + 1, origin);
         if (origin.Object.Kind == WorldObjectKind.Track)
         {
             var key = new CameraProjectionKey(
@@ -1600,9 +1832,18 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
                 origin.ProjectionOffsetX,
                 origin.ProjectionOffsetY,
                 origin.ProjectionPlane);
-            _trackCameras.TryGetValue(key, out var camera);
-            _trackCameras[key] = (camera.Count + 1, origin);
+            ref var camera = ref CollectionsMarshal.GetValueRefOrAddDefault(
+                _trackCameras,
+                key,
+                out _);
+            camera = (camera.Count + weight, origin);
+            return;
         }
+        ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(
+            _allTransforms,
+            origin.TransformId,
+            out _);
+        entry = (entry.Count + weight, origin);
     }
 
     uint SourceIdentity(in GteProjectionOrigin origin)
@@ -1619,11 +1860,13 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             origin.ModelY,
             origin.ModelZ,
             ScreenOffsetDirection(in origin));
-        if (_sourceVertices.TryGetValue(key, out uint identity))
-            return identity;
-        identity = 0x40000000u |
-            checked((uint)_sourceVertices.Count + 1u);
-        _sourceVertices.Add(key, identity);
+        ref uint identity = ref CollectionsMarshal.GetValueRefOrAddDefault(
+            _sourceVertices,
+            key,
+            out bool exists);
+        if (!exists)
+            identity = 0x40000000u |
+                checked((uint)_sourceVertices.Count);
         return identity;
     }
 
@@ -1675,6 +1918,7 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         return allSelected;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     void WriteVertex(
         Span<byte> destination,
         ref int offset,
@@ -1708,6 +1952,7 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         WriteTransform(destination, ref offset, in origin);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     static void WriteTransform(
         Span<byte> destination,
         ref int offset,
@@ -1844,7 +2089,6 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         _stream = new MemoryStream(
             buffer, 0, buffer.Length, writable: true,
             publiclyVisible: true);
-        _stream.SetLength(LiveWorldRenderer.HeaderSize);
         _stream.Position = LiveWorldRenderer.HeaderSize;
         _writer = new BinaryWriter(
             _stream, Encoding.UTF8, leaveOpen: true);
@@ -1859,7 +2103,6 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             return;
         }
         Array.Clear(_buffer!, 0, LiveWorldRenderer.HeaderSize);
-        _stream.SetLength(LiveWorldRenderer.HeaderSize);
         _stream.Position = LiveWorldRenderer.HeaderSize;
         ClearFrameState();
     }

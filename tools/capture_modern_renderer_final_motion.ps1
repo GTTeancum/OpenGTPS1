@@ -5,13 +5,15 @@ param(
     [string]$Scenario = 'Default',
     [string]$ArtifactName = '',
     [int]$TimeoutSeconds = 240,
-    [int]$CaptureFrames = 1800,
+    [int]$CaptureFrames = -1,
     [int]$VideoStartPoll = -1,
-    [string]$DeployPath = 'tools\unified-host\bin\Release\net10.0',
+    [string]$DeployPath = 'tools\unified-host\bin\Release\net10.0\win-x64\publish',
     [string]$DataPath = 'work\gt2-unified',
     [string]$FixtureOverride = '',
     [int]$VideoWidth = 640,
-    [int]$VideoHeight = 480
+    [int]$VideoHeight = 480,
+    [ValidateRange(0, 51)]
+    [int]$VideoCrf = 12
 )
 
 $ErrorActionPreference = 'Stop'
@@ -62,14 +64,28 @@ if (-not [string]::IsNullOrWhiteSpace($FixtureOverride)) {
 $videoStart = switch ($Scenario) {
     'SSR11' { 7550 }
     'SupraTahiti' { 7900 }
-    'Replay' { 16500 }
-    'ReplayExit' { 22600 }
+    # The deterministic quick-win fixture enters replay at poll 9,636 and the
+    # native world relinquishes ownership at poll 10,791. Keep the replay-only
+    # proof wholly inside that authored interval, and begin ReplayExit late
+    # enough to cover both sides of the ownership handoff.
+    'Replay' { 9700 }
+    'ReplayExit' { 10400 }
     default { if ($arcade) { 5000 } else { 8400 } }
 }
 if ($VideoStartPoll -ge 0) {
     $videoStart = $VideoStartPoll
 }
-$requestedVideoFrames = if ($Scenario -eq 'ReplayExit') { 1810 } else { $CaptureFrames }
+$effectiveCaptureFrames = if ($CaptureFrames -gt 0) {
+    $CaptureFrames
+} elseif ($Scenario -eq 'Replay') {
+    # One complete five-second authored-motion window. The deterministic replay
+    # finishes shortly afterward and legitimately holds a stopped car while its
+    # post-finish countdown runs; that static tail belongs in ReplayExit proof.
+    300
+} else {
+    1800
+}
+$requestedVideoFrames = $effectiveCaptureFrames
 # Exact captures stop on presentations written, not input polls. During native
 # output stalls a poll can legitimately produce no presentation, so a poll-
 # based video end can truncate a long capture even though the game keeps going.
@@ -130,6 +146,7 @@ $environment = [ordered]@{
     RECOMPONE_GT2_SOAK_QUICK_WIN_AFTER_AI_TICKS = $(
         if ($Scenario -in 'Replay', 'ReplayExit') { '600' } else { $null })
     RECOMPONE_GT2_CREATE_TEST_SAVE = $(if ($arcade) { $null } else { '1' })
+    RECOMPONE_GT2_TRUE_60HZ = '1'
     RECOMPONE_GRAPHICS_PRESET_OVERRIDE = 'Enhanced'
     RECOMPONE_EXIT_AFTER_INPUT_POLL = $exitPoll.ToString()
     RECOMPONE_UNTHROTTLED = '1'
@@ -149,6 +166,7 @@ $environment = [ordered]@{
     RECOMPONE_VIDEO_WIDTH = $VideoWidth.ToString()
     RECOMPONE_VIDEO_HEIGHT = $VideoHeight.ToString()
     RECOMPONE_VIDEO_FPS = '60'
+    RECOMPONE_VIDEO_CRF = $VideoCrf.ToString()
 }
 foreach ($entry in $environment.GetEnumerator()) {
     if ($null -ne $entry.Value) {
@@ -217,19 +235,6 @@ if ($stderr -match
     throw "$Mode motion capture logged a renderer/runtime failure"
 }
 
-if ($Scenario -eq 'ReplayExit') {
-    # Recorder startup crosses a process/thread boundary and can begin three or
-    # four input polls after the request. Capture a short deterministic tail,
-    # then normalize to exactly the first 1,800 presentations so the proof is
-    # always 30.000 seconds rather than accepting a 1,799-frame near miss.
-    $normalizedVideo = Join-Path $artifact 'replayexit-normalized.mp4'
-    & ffmpeg -hide_banner -loglevel error -y -i $video `
-        -vf 'trim=end_frame=1800,setpts=PTS-STARTPTS' -an -r 60 `
-        -c:v libx264 -preset medium -crf 12 -pix_fmt yuv420p $normalizedVideo
-    if ($LASTEXITCODE -ne 0) { throw 'ReplayExit frame normalization failed' }
-    Move-Item -LiteralPath $normalizedVideo -Destination $video -Force
-}
-
 & ffmpeg -hide_banner -loglevel error -y -i $video -f framemd5 $frameMd5
 if ($LASTEXITCODE -ne 0) { throw 'framemd5 extraction failed' }
 $hashes = Get-Content -LiteralPath $frameMd5 |
@@ -246,11 +251,42 @@ $validatedFrameCount = $hashes.Count
 $validatedUnique = $wholeVideoUnique
 $validatedAdjacentDuplicates = $adjacentDuplicates
 if ($Scenario -eq 'ReplayExit') {
-    # Replay relinquishes modern-world ownership at absolute poll 23,340. The
-    # remaining frames are authored world-free Results/loading composition and
-    # may be intentionally static. The first 740 presentations, from poll
-    # 22,600 through the final replay-owned vblank, must remain wholly unique.
-    $validatedFrameCount = 740
+    # Derive the replay-owned prefix from this run's actual recorder start and
+    # first native-world handoff. Results/loading composition after the handoff
+    # can be intentionally static and is validated separately as a clean mode
+    # transition rather than misclassified as authored replay motion.
+    $captureStartMatch = [regex]::Match(
+        $stderr,
+        '\[Host\] video capture started at input poll (\d+):')
+    if (-not $captureStartMatch.Success) {
+        throw 'ReplayExit did not report its actual video start poll'
+    }
+    $captureStartPoll = [int]$captureStartMatch.Groups[1].Value
+    $handoffPoll = $null
+    foreach ($handoffMatch in [regex]::Matches(
+        $stderr,
+        '\[Native-Present-Decision\] reason=handoff poll=(\d+)')) {
+        $candidatePoll = [int]$handoffMatch.Groups[1].Value
+        if ($candidatePoll -gt $captureStartPoll) {
+            $handoffPoll = $candidatePoll
+            break
+        }
+    }
+    if ($null -eq $handoffPoll) {
+        throw 'ReplayExit did not report a native-world ownership handoff'
+    }
+    # A frame recorded at the first handoff poll may consume a final queued
+    # world submission. Excluding that poll makes the validated prefix strictly
+    # replay-owned even if output scheduling changes by one presentation.
+    $validatedFrameCount = [Math]::Min(
+        $hashes.Count,
+        $handoffPoll - $captureStartPoll)
+    if ($validatedFrameCount -lt 300) {
+        throw (
+            'ReplayExit captured fewer than 300 strictly replay-owned frames; ' +
+            "start=$captureStartPoll handoff=$handoffPoll " +
+            "validated=$validatedFrameCount")
+    }
     $validatedHashes = @($hashes | Select-Object -First $validatedFrameCount)
     $validatedUnique = @($validatedHashes | Sort-Object -Unique).Count
     $validatedAdjacentDuplicates = 0
@@ -260,7 +296,7 @@ if ($Scenario -eq 'ReplayExit') {
         }
     }
 }
-$expectedFrameCount = if ($Scenario -eq 'ReplayExit') { 1810 } else { $CaptureFrames }
+$expectedFrameCount = $effectiveCaptureFrames
 if ($hashes.Count -ne $expectedFrameCount -or
     $validatedUnique -ne $validatedFrameCount -or
     $validatedAdjacentDuplicates -ne 0) {
@@ -280,7 +316,19 @@ if ($hashes.Count -ne $expectedFrameCount -or
     -vf 'fps=0.5,scale=640:480:flags=neighbor,tile=5x3' `
     -frames:v 1 $contactSheet
 if ($LASTEXITCODE -ne 0) { throw 'contact-sheet generation failed' }
-& ffmpeg -hide_banner -loglevel error -y -ss 10 -t 4 -i $video `
+$videoDurationSeconds = $expectedFrameCount * 1001.0 / 60000.0
+$motionDurationSeconds = [Math]::Min(4.0, $videoDurationSeconds)
+$motionStartSeconds = [Math]::Max(
+    0.0,
+    $videoDurationSeconds - $motionDurationSeconds)
+$motionStartArgument = $motionStartSeconds.ToString(
+    '0.###',
+    [Globalization.CultureInfo]::InvariantCulture)
+$motionDurationArgument = $motionDurationSeconds.ToString(
+    '0.###',
+    [Globalization.CultureInfo]::InvariantCulture)
+& ffmpeg -hide_banner -loglevel error -y `
+    -ss $motionStartArgument -t $motionDurationArgument -i $video `
     -vf 'fps=6,scale=640:480:flags=neighbor,tile=6x4' `
     -frames:v 1 $motionSheet
 if ($LASTEXITCODE -ne 0) { throw 'motion-sheet generation failed' }

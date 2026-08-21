@@ -18,7 +18,7 @@
 
 namespace {
 
-constexpr std::uint32_t api_version = 4;
+constexpr std::uint32_t api_version = 6;
 static_assert(sizeof(opengt_live_interpolation_stats) == 128);
 using Clock = std::chrono::steady_clock;
 
@@ -58,10 +58,44 @@ struct LiveContext {
     std::uint32_t pending_output_pair_write{};
     std::uint32_t pending_output_pair_count{};
     bool readback_software_adapter{};
+    std::array<
+        opengt_live_stats,
+        opengt::render::world_gpu_async_readback_image_capacity>
+        pending_authored_stats{};
+    std::uint32_t pending_authored_read{};
+    std::uint32_t pending_authored_write{};
+    std::uint32_t pending_authored_count{};
 
     LiveContext()
         : vram(1024U * 512U), previous_vram(1024U * 512U) {}
 };
+
+int32_t try_read_pending_authored(
+    LiveContext* context,
+    std::uint8_t* output,
+    std::size_t output_capacity,
+    opengt_live_stats* stats,
+    bool wait_for_completion
+) {
+    if (context->pending_authored_count == 0)
+        return 0;
+    const auto result = opengt::render::try_read_world_d3d11_image(
+        context->readback_software_adapter,
+        output,
+        output_capacity,
+        wait_for_completion);
+    if (result == opengt::render::WorldGpuReadbackResult::not_ready)
+        return 0;
+    if (result != opengt::render::WorldGpuReadbackResult::success)
+        return -static_cast<std::int32_t>(
+            700U + static_cast<std::uint32_t>(result));
+    const std::uint32_t read = context->pending_authored_read;
+    *stats = context->pending_authored_stats[read];
+    context->pending_authored_read =
+        (read + 1U) % context->pending_authored_stats.size();
+    --context->pending_authored_count;
+    return 1;
+}
 
 template<typename T>
 void clear_struct(T* value) {
@@ -188,7 +222,12 @@ std::uint32_t build_frame(
                 true,
                 true,
                 true,
-                repair_projected_topology},
+                repair_projected_topology,
+                // Topology is rebuilt independently every authored frame.
+                // Repair the one-pixel raster-visible boundary; spending the
+                // 192-pixel diagnostic margin cannot affect this frame's
+                // visible seam and consumed most of the 59.94 Hz budget.
+                false},
             &built->topology);
         if (topology_result != WorldTopologyResult::success)
             return 300U + static_cast<std::uint32_t>(topology_result);
@@ -212,6 +251,7 @@ opengt::render::WorldGpuRenderOptions gpu_options(
         (options.flags & OPENGT_LIVE_DITHER) != 0,
         (options.flags & OPENGT_LIVE_PERSPECTIVE) != 0,
         (options.flags & OPENGT_LIVE_TEXTURE_SMOOTHING) != 0,
+        (options.flags & OPENGT_LIVE_HIGH_RESOLUTION_TEXTURES) != 0,
         options.output_scale,
         options.clear_color_rgba8,
     };
@@ -436,7 +476,7 @@ void log_temporal_reset(
         "size=%dx%d prevSize=%dx%d flags=%u prevFlags=%u scale=%u "
         "prevScale=%u clear=%08x prevClear=%08x camera=%llu prevCamera=%llu "
         "commands=%zu prevCommands=%zu track=%u prevTrack=%u vehicle=%u "
-        "prevVehicle=%u eligibleTrack=%u triangles=%u\n",
+        "prevVehicle=%u trackScope=%u triangles=%u\n",
         reason,
         static_cast<unsigned long long>(current.header.frame_index),
         static_cast<unsigned long long>(previous.frame_index),
@@ -462,7 +502,7 @@ void log_temporal_reset(
         context.previous_draw_list.track_commands,
         context.draw_list.vehicle_commands,
         context.previous_draw_list.vehicle_commands,
-        current.topology.eligible_track_commands,
+        context.draw_list.track_commands != 0 ? 1U : 0U,
         current.header.triangle_count);
 }
 
@@ -484,9 +524,9 @@ void cache_current(
 
 bool defer_temporal_reset_readback(
     const char* reason,
-    const BuiltFrame& current
+    bool current_has_track
 ) {
-    if (current.topology.eligible_track_commands != 0)
+    if (current_has_track)
         return false;
     return
         std::strcmp(reason, "frame_gap") == 0 ||
@@ -497,6 +537,7 @@ bool recover_temporal_gap_by_interpolation(
     const char* reason,
     const LiveContext& context,
     const BuiltFrame& current,
+    bool current_has_track,
     const opengt_live_options& options
 ) {
     if (
@@ -504,7 +545,7 @@ bool recover_temporal_gap_by_interpolation(
         std::strcmp(reason, "poll_gap") != 0)
         return false;
     if (
-        current.topology.eligible_track_commands == 0 ||
+        !current_has_track ||
         context.previous_draw_list.track_commands == 0)
         return false;
     const auto& previous = context.previous_header;
@@ -555,7 +596,6 @@ int32_t opengt_live_render(
         return fail(stats, 1);
     try {
         auto* context = static_cast<LiveContext*>(handle);
-        context->has_previous = false;
         BuiltFrame built{};
         std::uint32_t result = build_frame(
             context,
@@ -563,7 +603,12 @@ int32_t opengt_live_render(
             capture_size,
             *options,
             &built);
-        if (result == 0)
+        if (result != 0)
+            return fail(stats, result);
+        const bool realtime_readback =
+            (options->flags & OPENGT_LIVE_REALTIME_READBACK) != 0;
+        if (!realtime_readback) {
+            context->has_previous = false;
             result = render_frame(
                 built,
                 context->draw_list,
@@ -573,7 +618,68 @@ int32_t opengt_live_render(
                 output_capacity,
                 *options,
                 stats);
-        return result == 0 ? 0 : fail(stats, result);
+            return result == 0 ? 0 : fail(stats, result);
+        }
+
+        const char* reset_reason = temporal_stream_reset_reason(
+            *context, built, *options);
+        const bool software_adapter =
+            (options->flags & OPENGT_LIVE_WARP) != 0;
+        if (reset_reason != nullptr) {
+            log_temporal_reset(*context, built, *options, reset_reason);
+            opengt::render::reset_world_d3d11_readback(software_adapter);
+            context->pending_authored_read = 0;
+            context->pending_authored_write = 0;
+            context->pending_authored_count = 0;
+        }
+        context->readback_software_adapter = software_adapter;
+
+        opengt_live_stats submitted{};
+        submitted.struct_size = sizeof(submitted);
+        result = render_frame(
+            built,
+            context->draw_list,
+            context->vram.data(),
+            context->vram.size(),
+            output_rgba,
+            output_capacity,
+            *options,
+            &submitted,
+            false,
+            false,
+            false,
+            false,
+            true);
+        if (result != 0)
+            return fail(stats, result);
+        if (
+            context->pending_authored_count >=
+            context->pending_authored_stats.size()
+        )
+            return fail(stats, 704U);
+        const std::uint32_t write = context->pending_authored_write;
+        context->pending_authored_stats[write] = submitted;
+        context->pending_authored_write =
+            (write + 1U) % context->pending_authored_stats.size();
+        ++context->pending_authored_count;
+
+        const bool readback_primed =
+            context->pending_authored_count >=
+            opengt::render::world_gpu_readback_pair_delay * 2U;
+        const int32_t drained = try_read_pending_authored(
+            context,
+            output_rgba,
+            output_capacity,
+            stats,
+            readback_primed);
+        if (drained < 0)
+            return fail(stats, static_cast<std::uint32_t>(-drained));
+        if (drained == 0) {
+            *stats = submitted;
+            stats->reserved |= OPENGT_LIVE_STATS_NO_OUTPUT;
+        }
+        cache_current(context, built, *options, submitted);
+        return 0;
     } catch (const std::bad_alloc&) {
         return fail(stats, 2);
     } catch (...) {
@@ -624,13 +730,23 @@ int32_t opengt_live_render_pair(
         if (result != 0)
             return fail_pair(
                 first_stats, second_stats, interpolation_stats, result);
+        // Pair rendering intentionally builds topology on the interpolated
+        // midpoint rather than this raw authored list. Use draw-list
+        // provenance for track scope/reset decisions; current.topology is
+        // therefore zero here by construction.
+        const bool current_has_track =
+            context->draw_list.track_commands != 0;
 
         const char* reset_reason = temporal_stream_reset_reason(
             *context, current, *options);
         if (
             reset_reason != nullptr &&
             recover_temporal_gap_by_interpolation(
-                reset_reason, *context, current, *options))
+                reset_reason,
+                *context,
+                current,
+                current_has_track,
+                *options))
             reset_reason = nullptr;
         if (reset_reason != nullptr) {
             log_temporal_reset(*context, current, *options, reset_reason);
@@ -642,7 +758,8 @@ int32_t opengt_live_render_pair(
             context->pending_output_pair_read = 0;
             context->pending_output_pair_write = 0;
             context->pending_output_pair_count = 0;
-            if (defer_temporal_reset_readback(reset_reason, current)) {
+            if (defer_temporal_reset_readback(
+                    reset_reason, current_has_track)) {
                 opengt_live_stats actual{};
                 actual.struct_size = sizeof(actual);
                 fill_deferred_reset_stats(
@@ -653,7 +770,7 @@ int32_t opengt_live_render_pair(
                     &actual);
                 interpolation_stats->current_topology_microseconds =
                     current.topology_microseconds;
-                if (current.topology.eligible_track_commands != 0)
+                if (current_has_track)
                     interpolation_stats->reserved |= 2U;
                 interpolation_stats->pair_pipeline_microseconds =
                     microseconds(Clock::now() - pair_started);
@@ -684,7 +801,7 @@ int32_t opengt_live_render_pair(
                 actual.render_microseconds;
             interpolation_stats->current_topology_microseconds =
                 current.topology_microseconds;
-            if (current.topology.eligible_track_commands != 0)
+            if (current_has_track)
                 interpolation_stats->reserved |= 2U;
             interpolation_stats->pair_pipeline_microseconds =
                 microseconds(Clock::now() - pair_started);
@@ -852,7 +969,7 @@ int32_t opengt_live_render_pair(
             interpolation.matched_transform_groups;
         if (reuse_midpoint_uploads)
             interpolation_stats->reserved |= 1U;
-        if (current.topology.eligible_track_commands != 0)
+        if (current_has_track)
             interpolation_stats->reserved |= 2U;
         interpolation_stats->exact_rigid_transform_groups =
             interpolation.exact_rigid_transform_groups;
@@ -871,7 +988,7 @@ int32_t opengt_live_render_pair(
         interpolation_stats->actual_render_microseconds =
             actual.render_microseconds;
         interpolation_stats->current_topology_microseconds =
-            current.topology_microseconds;
+            midpoint_built.topology_microseconds;
         interpolation_stats->pair_pipeline_microseconds =
             pair_pipeline_microseconds;
         cache_current(context, current, *options, actual);
@@ -926,6 +1043,27 @@ int32_t opengt_live_try_read_pair(
         second_stats->result = 3;
         return -3;
     }
+}
+
+int32_t opengt_live_set_texture_uploads(
+    void* handle,
+    int32_t software_adapter,
+    const opengt_live_texture_upload* uploads,
+    size_t upload_count
+) {
+    if (
+        handle == nullptr ||
+        (upload_count != 0 && uploads == nullptr) ||
+        upload_count > 65536
+    )
+        return -1;
+    static_assert(
+        sizeof(opengt_live_texture_upload) ==
+        sizeof(opengt::render::WorldTextureUpload));
+    return opengt::render::set_world_d3d11_texture_uploads(
+        software_adapter != 0,
+        reinterpret_cast<const opengt::render::WorldTextureUpload*>(uploads),
+        upload_count) ? 0 : -2;
 }
 
 std::uint32_t opengt_live_api_version(void) {

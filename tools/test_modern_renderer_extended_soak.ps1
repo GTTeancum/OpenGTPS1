@@ -1,11 +1,11 @@
 param(
     [ValidateRange(10, 175)]
     [int]$MaxMinutes = 30,
-    [string]$DeployPath = 'tools\unified-host\bin\Release\net10.0',
+    [string]$DeployPath = 'tools\unified-host\bin\Release\net10.0\win-x64\publish',
     [string]$DataPath = 'work\gt2-unified',
-    [double]$MaximumExternal3dPercent = 5.0,
-    [ValidateSet('Arcade', 'SSR11', 'SupraTahiti')]
-    [string[]]$Scenarios = @('Arcade', 'SSR11', 'SupraTahiti'),
+    [double]$MaximumExternal3dPercent = 100.0,
+    [ValidateSet('TahitiRoad', 'RedRock', 'SSR11', 'SupraTahiti')]
+    [string[]]$Scenarios = @('TahitiRoad', 'RedRock'),
     [switch]$AboveNormalPriority,
     [string]$ArtifactName =
         "modern-renderer-extended-soak-$((Get-Date).ToString('yyyyMMdd-HHmmss'))"

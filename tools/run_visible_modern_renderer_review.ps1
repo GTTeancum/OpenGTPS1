@@ -1,25 +1,24 @@
 param(
-    # The Arcade default reproduces the original SSR11 review exactly. GT-mode
-    # routes such as the Red Rock Sunday Cup fixture must not receive
-    # --start-arcade, and need the simulation test save the capture harness
-    # already creates for them.
+    # Stock GT2 content is the default review path. Converted tracks remain
+    # available only through an explicit fixture override after stock-track
+    # acceptance is complete.
     [ValidateSet('Arcade', 'Simulation')]
-    [string]$Mode = 'Arcade',
+    [string]$Mode = 'Simulation',
     [string]$Scenario = '',
     [int]$ExitPoll = 12000,
     [int]$TimeoutSeconds = 360,
-    [string]$DeployPath = 'artifacts\modern-renderer-r2r-current-v66\publish',
+    [string]$DeployPath = 'tools\unified-host\bin\Release\net10.0\win-x64\publish',
     [string]$DataPath = 'work\gt2-unified',
     [string]$Fixture =
-        'tests\fixtures\unified-arcade-roadster-rs-ssr11-night-race.input',
-    [string]$ArtifactName = 'modern-renderer-final-visible-ssr11-review-v73',
+        'tests\fixtures\modern-renderer-replay-soak.input',
+    [string]$ArtifactName = 'modern-renderer-final-visible-red-rock-review',
     [switch]$Muted,
     [switch]$CaptureEvidence,
     [switch]$AboveNormalPriority
 )
 $arcade = $Mode -eq 'Arcade'
 if ([string]::IsNullOrWhiteSpace($Scenario)) {
-    $Scenario = if ($arcade) { 'SSR11' } else { 'Simulation' }
+    $Scenario = if ($arcade) { 'TahitiRoad' } else { 'RedRock' }
 }
 
 $ErrorActionPreference = 'Stop'
@@ -233,7 +232,7 @@ if ($CaptureEvidence) {
     })
     if ($undersized.Count -ne 0) {
         throw (
-            'Visible SSR11 review produced undersized captures: ' +
+            "Visible $Scenario review produced undersized captures: " +
             (($undersized | Select-Object -ExpandProperty Name) -join ', '))
     }
 }

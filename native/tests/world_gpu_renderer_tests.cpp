@@ -113,6 +113,7 @@ std::array<std::uint8_t, 4> render_center(
             false,
             true,
             false,
+            false,
             1,
             clear_rgba,
         },
@@ -140,6 +141,96 @@ bool is_green(const std::array<std::uint8_t, 4>& pixel) {
 
 bool is_clear(const std::array<std::uint8_t, 4>& pixel) {
     return pixel[0] > 240U && pixel[1] < 16U && pixel[2] < 16U;
+}
+
+std::array<std::uint8_t, 4> render_vehicle_shadow_center(
+    bool prepend_clipped_shadow
+) {
+    using namespace opengt::render;
+    WorldDrawList list{};
+    list.display_width = 16;
+    list.display_height = 16;
+    list.materials.push_back(WorldMaterial{
+        0xAU,
+        2U << 5U,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    });
+
+    WorldDrawCommand shadow{};
+    shadow.vertices[0] = vertex(-1.0F, -1.0F, -1747, 0, 2472);
+    shadow.vertices[1] = vertex(-1.0F, 1.0F, -1726, 1051, -43);
+    // Clipped/interpolated GT2 shadow vertices can all lack model provenance
+    // and retain unrelated view-space coordinates.
+    shadow.vertices[2] = vertex(1.0F, 0.0F, 4556, 1732, 5593);
+    shadow.material_index = 0;
+    shadow.clip_x0 = 0;
+    shadow.clip_y0 = 0;
+    shadow.clip_x1 = 15;
+    shadow.clip_y1 = 15;
+    shadow.object_kind = 2;
+    shadow.object_id = 1;
+    shadow.model_pointer = 0x80165118U;
+    shadow.transform_id = 0xC3D496D5101E901DULL;
+    shadow.channel = WorldViewChannel::main_view;
+
+    if (prepend_clipped_shadow) {
+        WorldDrawCommand clipped_shadow = shadow;
+        clipped_shadow.vertices[0] = vertex(-1.0F, -1.0F, 0, 0, 0);
+        clipped_shadow.vertices[1] = vertex(-0.75F, -0.5F, 0, 1, 0);
+        clipped_shadow.vertices[2] = vertex(-0.5F, -1.0F, 0, 2, 0);
+        list.commands.push_back(clipped_shadow);
+    }
+    list.commands.push_back(shadow);
+    list.vehicle_commands = static_cast<std::uint32_t>(
+        list.commands.size());
+
+    std::vector<std::uint16_t> vram(1024U * 512U);
+    std::vector<std::uint8_t> output(16U * 16U * 4U);
+    WorldGpuRenderStats stats{};
+    reset_world_d3d11_readback(false);
+    const auto result = render_world_d3d11(
+        list,
+        vram.data(),
+        vram.size(),
+        output.data(),
+        output.size(),
+        WorldGpuRenderOptions{
+            false,
+            true,
+            false,
+            true,
+            false,
+            false,
+            1,
+            clear_rgba,
+        },
+        &stats);
+    if (result != WorldGpuRenderResult::success || !stats.output_valid) {
+        std::fprintf(
+            stderr,
+            "FAILED: vehicle shadow render result=%s outputValid=%u\n",
+            world_gpu_render_result_name(result),
+            stats.output_valid ? 1U : 0U);
+        return {};
+    }
+    const std::size_t center = (8U * 16U + 8U) * 4U;
+    return {
+        output[center],
+        output[center + 1],
+        output[center + 2],
+        output[center + 3],
+    };
+}
+
+bool is_soft_shadow(const std::array<std::uint8_t, 4>& pixel) {
+    return
+        pixel[0] >= 230U && pixel[0] <= 245U &&
+        pixel[1] < 16U && pixel[2] < 16U;
 }
 
 // A GT2 rear-view mirror pass submits vehicles through a narrow guest drawing
@@ -257,6 +348,7 @@ std::array<int, 2> mirror_shell_coverage(std::int16_t clip_x1) {
             false,
             true,
             false,
+            false,
             1,
             clear_rgba,
         },
@@ -289,7 +381,28 @@ std::array<int, 2> mirror_shell_coverage(std::int16_t clip_x1) {
 } // namespace
 
 int main() {
+    using opengt::render::WorldTextureUpload;
+    using opengt::render::world_texture_upload_contains_clut;
     bool okay = true;
+    constexpr std::uint64_t paint_key = 0x123456789ABCDEF0ULL;
+    constexpr WorldTextureUpload paint_bank{
+        paint_key, 448, 480, 64, 4};
+    constexpr std::uint16_t contained_clut =
+        static_cast<std::uint16_t>((481U << 6U) | (29U));
+    okay &= expect(
+        world_texture_upload_contains_clut(
+            paint_bank, paint_key, contained_clut),
+        "match a car paint only when its exact palette upload contains the CLUT");
+    okay &= expect(
+        !world_texture_upload_contains_clut(
+            paint_bank, paint_key ^ 1U, contained_clut),
+        "reject a different car paint palette key");
+    constexpr std::uint16_t outside_clut =
+        static_cast<std::uint16_t>((481U << 6U) | (27U));
+    okay &= expect(
+        !world_texture_upload_contains_clut(
+            paint_bank, paint_key, outside_clut),
+        "reject an exact palette upload that does not contain the primitive CLUT");
     okay &= expect(
         is_green(render_center(1U, true, 4U)),
         "repair an isolated transparent texel on an opaque track surface");
@@ -302,6 +415,12 @@ int main() {
     okay &= expect(
         is_clear(render_center(1U, true, 2U)),
         "preserve an authored track-texture cutout");
+    okay &= expect(
+        is_soft_shadow(render_vehicle_shadow_center(false)),
+        "recognize a vehicle shadow with no model-space-flat edge");
+    okay &= expect(
+        is_soft_shadow(render_vehicle_shadow_center(true)),
+        "preserve soft shadows when clipped shadow triangles are batched");
     const auto clipped = mirror_shell_coverage(15);
     okay &= expect(
         clipped[0] > 0,

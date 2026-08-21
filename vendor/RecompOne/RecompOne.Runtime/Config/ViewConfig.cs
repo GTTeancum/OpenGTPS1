@@ -62,6 +62,12 @@ public class ViewConfig
         set => SetBool("TextureSmoothing", true);
     }
 
+    public bool HighResolutionTextures
+    {
+        get => true;
+        set => SetBool("HighResolutionTextures", true);
+    }
+
     public bool PerspectiveCorrectTextures
     {
         get => true;
@@ -120,6 +126,7 @@ public class ViewConfig
         GraphicsPreset = "Enhanced";
         HighResolution3D = true;
         TextureSmoothing = true;
+        HighResolutionTextures = true;
         PerspectiveCorrectTextures = true;
         StabilizeGeometrySeams = true;
         ExtendedDrawDistance = true;

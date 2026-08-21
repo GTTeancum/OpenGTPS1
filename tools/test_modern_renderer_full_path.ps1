@@ -5,7 +5,7 @@ param(
     [switch]$CaptureEvidence,
     [switch]$AboveNormalPriority,
     [string]$Fixture = 'tests\fixtures\modern-renderer-replay-soak.input',
-    [string]$DeployPath = 'tools\unified-host\bin\Release\net10.0',
+    [string]$DeployPath = 'tools\unified-host\bin\Release\net10.0\win-x64\publish',
     [string]$DataPath = 'work\gt2-unified'
 )
 

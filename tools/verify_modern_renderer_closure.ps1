@@ -196,8 +196,8 @@ $nativeBuild = Invoke-LoggedCommand 'cmake' @(
 $nativeTests = Invoke-LoggedCommand 'ctest' @(
     '--test-dir', '.\build\native', '--output-on-failure', '-C', 'Release') `
     'native-tests'
-Require ($nativeTests.Stdout -match '100% tests passed, 0 tests failed out of 6') (
-    'Native CTest output did not prove all six targets')
+Require ($nativeTests.Stdout -match '100% tests passed, 0 tests failed out of 7') (
+    'Native CTest output did not prove all seven targets')
 
 $policyTest = Invoke-LoggedCommand 'dotnet' @(
     'run', '--project',
@@ -205,6 +205,13 @@ $policyTest = Invoke-LoggedCommand 'dotnet' @(
     '-c', 'Release', '--no-build') 'modern-policy'
 Require ($policyTest.Stdout -match 'modern_renderer_config=pass') (
     'Modern-only configuration/presentation policy regression failed')
+
+$texturePackTest = Invoke-LoggedCommand 'python' @(
+    '.\tools\test_gt2_texture_pack.py') 'texture-pack-tests'
+Require ($texturePackTest.Stderr -match 'Ran 4 tests') (
+    'Per-asset texture-pack identity regression tests did not run')
+Require ($texturePackTest.Stderr -match '\bOK\b') (
+    'Per-asset texture-pack identity regression tests failed')
 
 $diffCheck = Invoke-LoggedCommand 'git' @('diff', '--check') 'git-diff-check'
 

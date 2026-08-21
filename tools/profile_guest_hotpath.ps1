@@ -7,6 +7,8 @@ param(
     [string]$Mode = 'Arcade',
     [int]$QuickWinAfterAiTicks = 0,
     [switch]$CreateTestSave,
+    [switch]$True60Hz,
+    [switch]$AboveNormalPriority,
     [string]$Fixture =
         'tests\fixtures\arcade-modern-renderer-soak-resilient.input',
     [switch]$DisableTieredCompilation,
@@ -53,7 +55,11 @@ $cardHashBefore = (Get-FileHash -LiteralPath $card -Algorithm SHA256).Hash
 
 $environment = [ordered]@{
     SDL_AUDIODRIVER = 'dummy'
-    RECOMPONE_PROCESS_PRIORITY = 'BelowNormal'
+    RECOMPONE_PROCESS_PRIORITY = if ($AboveNormalPriority) {
+        'AboveNormal'
+    } else {
+        'BelowNormal'
+    }
     RECOMPONE_INPUT_FILE = $runtimeFixture
     RECOMPONE_DISABLE_LIVE_INPUT = '1'
     RECOMPONE_SUPPRESS_RUMBLE = '1'
@@ -65,6 +71,9 @@ $environment = [ordered]@{
     RECOMPONE_THROTTLE_ON_SCRIPT_STAGE = 'race_1'
     RECOMPONE_TRACE_PERFORMANCE = '1'
     RECOMPONE_DISABLE_DISPLAY_CAPTURE = '1'
+}
+if ($True60Hz) {
+    $environment.RECOMPONE_GT2_TRUE_60HZ = '1'
 }
 if ($DisableTieredCompilation) {
     $environment.DOTNET_TieredCompilation = '0'
@@ -103,7 +112,13 @@ try {
         -RedirectStandardOutput $stdoutPath `
         -RedirectStandardError $stderrPath `
         -WindowStyle Hidden
-    try { $process.PriorityClass = 'BelowNormal' } catch {}
+    try {
+        $process.PriorityClass = if ($AboveNormalPriority) {
+            'AboveNormal'
+        } else {
+            'BelowNormal'
+        }
+    } catch {}
     $deadline = [DateTime]::UtcNow.AddSeconds(240)
     $triggerPattern = if ($TraceAfterPoll -gt 0) {
         "^\[PERF\] poll=$TraceAfterPoll "

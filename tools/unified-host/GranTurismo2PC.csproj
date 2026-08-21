@@ -7,7 +7,9 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>GranTurismo2PC</AssemblyName>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
-    <AppHostDotNetSearch>Global</AppHostDotNetSearch>
+    <!-- Prefer the bundled runtime in self-contained releases while retaining
+         global-runtime fallback for ordinary framework-dependent builds. -->
+    <AppHostDotNetSearch>AppLocal;Global</AppHostDotNetSearch>
     <PublishReadyToRun Condition="'$(Configuration)' == 'Release' and '$(RuntimeIdentifier)' != ''">true</PublishReadyToRun>
   </PropertyGroup>
   <ItemGroup>
@@ -20,5 +22,10 @@
     <Compile Include="..\..\generated\arcade-recompiled\*.cs"
              Exclude="..\..\generated\arcade-recompiled\Program.cs" />
     <ProjectReference Include="..\..\vendor\RecompOne\RecompOne.Runtime\RecompOne.Runtime.csproj" />
+    <None Include="..\..\build\native\Release\opengt_live_renderer.dll"
+          Condition="Exists('..\..\build\native\Release\opengt_live_renderer.dll')"
+          Link="opengt_live_renderer.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -2,7 +2,7 @@ param(
     [string]$ArtifactName = 'modern-renderer-realtime-startup-current',
     [int]$ExitPoll = 2400,
     [int]$TimeoutSeconds = 120,
-    [string]$DeployPath = 'tools\unified-host\bin\Release\net10.0',
+    [string]$DeployPath = 'tools\unified-host\bin\Release\net10.0\win-x64\publish',
     [string]$DataPath = 'work\gt2-unified',
     [string]$Fixture = 'tests\fixtures\modern-renderer-replay-soak.input'
 )

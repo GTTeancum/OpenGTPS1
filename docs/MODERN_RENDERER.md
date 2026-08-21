@@ -212,6 +212,66 @@ setting.
 The same backend now runs in the packaged PC build. The standalone viewer
 remains the deterministic capture oracle and diagnostic surface.
 
+## External 4x texture assets
+
+The fixed 4x scene rasterization and the optional texture pack are separate
+operations. A normal 320x240 GT2 race is rasterized directly into a 1280x960
+3D target. That adds geometry, edge, depth, and sampling precision but does
+not add authored texture detail. When installed, the external pack instead
+replaces decoded PS1 texture regions with 4x Real-ESRGAN assets before those
+assets are sampled by the 4x renderer.
+
+The replacement path follows the loose-asset approach proven in the local
+Vigilante 8: 2nd Offense recomp, but identity comes from each exact CPU-to-VRAM
+image upload rather than a shared VRAM page. Every unique authored bitmap is
+therefore one independently upscaled file; archive aliases do not duplicate
+it. Course textures may use a small live-CLUT color fit for dynamic lighting.
+Cars retain GT2's native indexed-bitmap and live paint-bank architecture: one
+paint-neutral 4x detail asset is generated for each unique day/night bitmap,
+then its bounded luminance detail is applied to the palette color selected by
+the game at runtime. Paint choices and track-light palettes are never baked
+into DDS files. The native D3D11 backend loads a format-7 loose-DDS
+`manifest.json` from `mods\enhanced_textures_4x`, or from
+`OPENGT_TEXTURE_PACK_DIR` when set. It also accepts format 5 and 6 packs for
+compatibility, but rejects the old page-dump formats.
+
+Missing identities fall back per primitive to the exact live PS1 VRAM texture.
+Visibility, transparent word-zero discard, and STP blending continue to come
+from the original BGR555 word; neural output supplies RGB detail only.
+
+Build stock assets directly from the materialized GT2 volumes. Runtime dumps
+remain diagnostic only and cannot be used to build a pack:
+
+```powershell
+python tools\build_gt2_texture_pack.py `
+  --volume work\gt2-unified\simulation.materialized.vol `
+  --volume work\gt2-unified\arcade.materialized.vol `
+  --course-filter tahiti_t `
+  --car-filter ccrcn --car-filter t002n `
+  --output work\gt2-texture-pack\tahiti\enhanced_textures_4x
+```
+
+The builder extends edge pixels around every source region, extends visible RGB
+beneath transparent word-zero borders to prevent dark filtering halos, and
+restores the original nearest-neighbor STP mask after inference. The selected
+`realesr-animevideov3-x4` model preserves low-resolution road and vegetation
+structure more reliably than the sharper general/anime model on the available
+GT2 assets. A downsampled round-trip fidelity gate rejects altered natural
+textures. A reviewed text, signage, or decorative bitmap may cross that limit
+only through an explicit per-key exception recorded in the manifest; it still
+must have a verified Real-ESRGAN output and cannot fall back to a resize.
+
+Every run hashes the executable, model graph and weights, padded inputs, neural
+outputs, cropped previews, and final DDS files. Reuse is allowed only when the
+entire provenance record matches. The pack writes one ordinary uncompressed DDS
+and one padding-free `cropped_neural_png` preview per bitmap, and validates that
+no identities share a file. Generated GT2 assets remain under ignored `work`,
+`bin`, or `artifacts` paths and are never committed. Runtime logs report the
+pack path, GPU cache size, hit coverage, and matched palette-native car
+bitmaps. Upload tracing also sees UI and font-sheet uploads, but screen-space
+replacement stays disabled until the final UI-specific sweep validates those
+assets separately.
+
 ## Live PC integration
 
 Race and replay presentation use a bounded C ABI bridge in
@@ -246,6 +306,79 @@ provenance-based rather than restricted to GT2's usual 320x240 race viewport.
 Wider showroom, transition, and rotating-car draw areas are submitted whenever
 they contain authored 3D provenance and fit the bounded pool. A world-free
 Results or menu frame is deliberately composed by the authored 2D layer.
+
+### Genuine authored NTSC update rate (current authority)
+
+The shipping GT2 path runs the race engine once per NTSC VBlank. Both Arcade
+and Gran Turismo overlays set GT2's authored race time step and scheduler wait
+from two fields to one. Input, AI, the force/contact solver, collision,
+position and rotation integration, camera, timers, effects, and replay advance
+on every field. Velocity-to-position shifts and force-derived state deltas use
+the shorter interval; signed remainder carry prevents repeated half-step
+rounding from changing long-term speed or distance. The mode therefore
+preserves the original real-time game rate while producing a newly simulated
+state at approximately 59.94 Hz.
+
+This is the packaged default; no environment variable is required. Setting
+`RECOMPONE_GT2_TRUE_60HZ=0` is retained solely for reproducing retired
+midpoint-era diagnostics.
+
+Live presentation is authored-only in this mode. Native capture API v6 submits
+one independently authored image per update through an asynchronous D3D11
+readback queue. Pixels and telemetry share one FIFO identity; while the queue
+primes, `OPENGT_LIVE_STATS_NO_OUTPUT` prevents the runtime from publishing a
+new frame with stale pixels. Synthetic attempts, midpoint generation, and
+repeat substitution remain zero. When an authored world segment ends, any
+undrainable tail stays private and ownership returns to GT2's 2D compositor;
+the last race or replay image is not relabelled as a new frame.
+
+`tools/test_modern_renderer_scenario.ps1` now sets True60 on its child process
+itself. It cannot silently inherit or omit the mode. Every complete world
+window must contain exactly 300 actual frames, zero synthetic frames, zero
+repeats, and zero world misses. It also rejects sustained cadence outside
+59.5-60.5 Hz, resource exhaustion, invalid Maximum LOD, non-headless audio, a
+changed memory card, or an unclean exit. Full-resolution video remains visual
+and identity evidence only because synchronous recording can reduce measured
+host cadence.
+
+Current acceptance evidence, all on stock tracks and explicitly excluding
+SSR11, is. The final cadence and identity runs v222-v225 use the exact rebuilt
+shipping package whose default is described above:
+
+- `artifacts/gt2-true60-parity-samples-v129` and
+  `artifacts/gt2-true60-force628-parity-v137`: matched stock/True60 wall-time
+  checkpoints retain the same race timer and track/opponent phase; the final
+  one-field force/integration path remains within one displayed mph while
+  advancing the complete solver on every field;
+- `artifacts/gt2-true60-tahiti-final-v223`: Arcade/Tahiti Road, 19 complete
+  windows, 0 misses/repeats, 59.961 Hz aggregate, 59.920-60.125 Hz adjacent
+  pairs, and 11.643 ms pipeline p99;
+- `artifacts/gt2-true60-red-rock-final-v222`: Gran Turismo/Red Rock race,
+  replay, Results, and both ownership handoffs, 8 complete windows, 0
+  misses/repeats, 17 bounded transition holds, 59.941 Hz aggregate,
+  59.915-59.960 Hz adjacent pairs, and 13.087 ms pipeline p99;
+- `artifacts/gt2-true60-replay-final-v224`: 300/300 unique authored replay
+  presentations with no adjacent duplicate;
+- `artifacts/gt2-true60-replay-exit-final-v225`: 391/391 unique replay-owned
+  presentations and no adjacent duplicate before the normal compositor
+  handoff in a complete 1,800-frame capture; and
+- `artifacts/gt2-true60-tahiti-motion-v205/gulf-audit`: literal sequential
+  inspection of frames 180-479 (about 0:03-0:08), with both GULF signs stable
+  on every even and odd authored frame.
+
+The native CTest suite passes 7/7, and the managed policy/source-contract suite
+passes the capture-v6 identity, bounded ownership, pacing, memory fast-path,
+and projection-origin contracts. The Tahiti lower-road rectangle is also
+present in the 320x240 PS1-compatible oracle and is classified as an authored
+mesh/UV boundary in
+`artifacts/tahiti-road-patch-history-v210/inspection.txt`; it is not a True60,
+topology, depth, upscale, or video defect.
+
+### Retired midpoint pipeline (historical evidence only)
+
+The following midpoint discussion records the earlier 30 Hz development path.
+It is retained to explain old artifacts and regressions, but it does not
+describe the current shipping architecture or current acceptance criteria.
 
 GT2 advances race simulation and emits world geometry at 30 Hz even though the
 host presents at 59.94 Hz. The live worker now renders two ordered images for
@@ -678,7 +811,7 @@ track/scenery and vehicle LOD, and no compatibility-world fallback.
   User visual acceptance of this replacement remains pending.
 
 The current tree builds with zero managed errors; its modern-renderer policy
-executable passes every fixed-quality and no-fallback invariant, and all six
+executable passes every fixed-quality and no-fallback invariant, and all seven
 native CTests pass. Aggregate scans of v84-v87 contain no crash, fatal,
 unhandled exception, unmapped-call, or output-timeout signature. The earlier
 v87 visual acceptance is superseded by the user's polygon-explosion report.
@@ -686,7 +819,7 @@ Automated validation of the corrected package is green; a fresh visible SSR11
 auto-drive review of that exact package remains required.
 
 `tools/verify_modern_renderer_closure.ps1` makes that boundary executable. It
-rebuilds the current managed tree, reruns all six native CTests and the
+rebuilds the current managed tree, reruns all seven native CTests and the
 modern-only policy regression, performs a fresh ReadyToRun publish and
 byte-compares both managed assemblies plus the native renderer against v131,
 and validates every v136 soak log. It rescans all 30 lossless PNGs for exact
@@ -843,7 +976,11 @@ Sampling the nearest texel with `floor(uv + 0.5)` removes the dotted black line
 without padding or UV nudges. In the fixed 4x replay crop, dark pixels on the
 known line fell from 22 to zero.
 
-## Pair-aligned readback and final pacing
+## Historical pair-aligned readback and pacing
+
+This section describes the retired midpoint pipeline. Current True60 uses the
+single-authored-image API v6 queue and evidence listed above; it does not
+submit or drain midpoint/actual pairs.
 
 The final intermittent producer miss was not topology or interpolation. Native
 phase timing isolated it to a blocking D3D11 staging `Map`: the two-slot ring

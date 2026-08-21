@@ -1,6 +1,8 @@
 namespace RecompOne.Runtime;
 
 //old soft raster
+using System.Runtime.InteropServices;
+
 public sealed partial class Gpu
 {
     struct Vert
@@ -20,9 +22,13 @@ public sealed partial class Gpu
         {  3, -1,  2, -2 },
     };
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     void DrawPolygon()
     {
-        uint cmd = _fifo[0];
+        Span<uint> fifo = CollectionsMarshal.AsSpan(_fifo);
+        Span<uint> fifoSources = CollectionsMarshal.AsSpan(_fifoSources);
+        uint cmd = fifo[0];
         bool gouraud = (cmd & (1u << 28)) != 0;
         bool quad = (cmd & (1u << 27)) != 0;
         bool tex = (cmd & (1u << 26)) != 0;
@@ -31,6 +37,8 @@ public sealed partial class Gpu
         int n = quad ? 4 : 3;
 
         Span<Vert> v = stackalloc Vert[4];
+        Span<GteProjectionOrigin> origins =
+            stackalloc GteProjectionOrigin[4];
         int idx = 1;
         int clut = 0;
         int cr = (int)(cmd & 0xFF), cg = (int)((cmd >> 8) & 0xFF), cb = (int)((cmd >> 16) & 0xFF);
@@ -39,32 +47,33 @@ public sealed partial class Gpu
         {
             if (gouraud && i > 0)
             {
-                uint cw = _fifo[idx++];
+                uint cw = fifo[idx++];
                 cr = (int)(cw & 0xFF); cg = (int)((cw >> 8) & 0xFF); cb = (int)((cw >> 16) & 0xFF);
             }
             v[i].R = cr; v[i].G = cg; v[i].B = cb;
 
             int coordinateWordIndex = idx;
-            uint vw = _fifo[idx++];
+            uint vw = fifo[idx++];
             int rawX = CoordX(vw);
             int rawY = CoordY(vw);
             v[i].X = _drawOffsetX + rawX;
             v[i].Y = _drawOffsetY + rawY;
-            uint sourceAddress = coordinateWordIndex < _fifoSources.Count
-                ? _fifoSources[coordinateWordIndex]
+            uint sourceAddress = coordinateWordIndex < fifoSources.Length
+                ? fifoSources[coordinateWordIndex]
                 : uint.MaxValue;
             v[i].SourceAddress = sourceAddress;
             // Only a direct GTE-register-to-packet-word store is trusted for
             // perspective correction. Value/coordinate matching is useful
             // diagnostic evidence, but is ambiguous and therefore stays on
             // the affine path.
-            if (Gte.TryGetPacketDepth(
+            if (Gte.TryGetPacketProjection(
                     sourceAddress,
                     rawX,
                     rawY,
                     out ushort z,
                     out int age,
-                    out GteDepthProvenance provenance))
+                    out GteDepthProvenance provenance,
+                    out origins[i]))
             {
                 v[i].Z = z;
                 v[i].DepthAge = age;
@@ -77,7 +86,7 @@ public sealed partial class Gpu
 
             if (tex)
             {
-                uint uvw = _fifo[idx++];
+                uint uvw = fifo[idx++];
                 v[i].U = (int)(uvw & 0xFF);
                 v[i].V = (int)((uvw >> 8) & 0xFF);
                 if (i == 0) clut = (int)((uvw >> 16) & 0xFFFF);
@@ -107,12 +116,16 @@ public sealed partial class Gpu
         }
 
         bool firstContainsWorld = CaptureTri(
-            v[0], v[1], v[2], tex, gouraud, semi, raw, clut);
+            v[0], v[1], v[2],
+            origins[0], origins[1], origins[2],
+            tex, gouraud, semi, raw, clut);
         bool secondContainsWorld = false;
         if (quad)
         {
             secondContainsWorld = CaptureTri(
-                v[1], v[2], v[3], tex, gouraud, semi, raw, clut);
+                v[1], v[2], v[3],
+                origins[1], origins[2], origins[3],
+                tex, gouraud, semi, raw, clut);
         }
 
         if (HleOn)

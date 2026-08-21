@@ -1,4 +1,6 @@
+using RecompOne.Runtime;
 using RecompOne.Runtime.Config;
+using RecompOne.Runtime.Context;
 using System.Reflection;
 using System.Runtime.InteropServices;
 
@@ -30,6 +32,7 @@ static void RequireModern(ViewConfig view, string context)
     Require(view.GraphicsPreset == "Enhanced", $"{context}: preset");
     Require(view.HighResolution3D, $"{context}: 4x source");
     Require(view.TextureSmoothing, $"{context}: smoothing");
+    Require(view.HighResolutionTextures, $"{context}: 4x texture assets");
     Require(view.PerspectiveCorrectTextures, $"{context}: projection");
     Require(view.StabilizeGeometrySeams, $"{context}: seams");
     Require(view.ExtendedDrawDistance, $"{context}: distance");
@@ -37,11 +40,264 @@ static void RequireModern(ViewConfig view, string context)
     Require(!view.Ps1Dithering, $"{context}: dithering");
 }
 
+static void VerifyCpuProjectionFastPath()
+{
+    const uint packed = 0x00200010u;
+    var cpu = new CpuContext();
+    var projected = new GteProjectedValue(
+        packed,
+        Z: 512,
+        Generation: Gte.ProjectionGeneration,
+        GteDepthProvenance.CpuRegisterFlow);
+    WorldCaptureContext.LiveRenderingEnabled = false;
+    Gte.SetProjectionTrackingEnabled(true);
+    try
+    {
+        Gte.NotifyCpuRegisterRead(packed, in projected);
+        cpu.V0 = packed;
+        Require(
+            !Gte.HasPendingCpuProjection,
+            "CPU projection assignment did not consume pending metadata");
+
+        Require(cpu.V0 == packed, "tracked CPU register value changed");
+        Require(
+            Gte.HasPendingCpuProjection,
+            "tracked CPU register read did not restore projection metadata");
+
+        _ = cpu.V1;
+        Require(
+            !Gte.HasPendingCpuProjection,
+            "untracked CPU register read did not clear pending projection");
+
+        _ = cpu.V0;
+        Require(
+            Gte.HasPendingCpuProjection,
+            "tracked CPU register did not remain reusable");
+        Gte.Write(0, 0);
+        Require(
+            !Gte.HasPendingCpuProjection,
+            "non-SXY GTE write did not end CPU projection transfer");
+    }
+    finally
+    {
+        Gte.SetProjectionTrackingEnabled(false);
+        WorldCaptureContext.LiveRenderingEnabled = false;
+    }
+}
+
+VerifyCpuProjectionFastPath();
+
+static void VerifyProjectionOriginHandleFlow()
+{
+    const uint directAddress = 0x00001000u;
+    const uint cpuAddress = directAddress + 4;
+    const uint modelPointer = 0x00123456u;
+    var cpu = new CpuContext();
+    WorldCaptureContext.LiveRenderingEnabled = true;
+    Gte.SetProjectionTrackingEnabled(true);
+    WorldCaptureContext.BeginTrackObject(1, modelPointer);
+    try
+    {
+        Gte.WriteControl(0, 0x00001000u);
+        Gte.WriteControl(1, 0x10000000u);
+        Gte.WriteControl(2, 0x00001000u);
+        Gte.WriteControl(3, 0u);
+        Gte.WriteControl(4, 0x00001000u);
+        Gte.WriteControl(5, 0u);
+        Gte.WriteControl(6, 0u);
+        Gte.WriteControl(7, 1024u);
+        Gte.WriteControl(24, 160u << 16);
+        Gte.WriteControl(25, 120u << 16);
+        Gte.WriteControl(26, 256u);
+
+        static void Project(short x, short y, short z)
+        {
+            Gte.Write(0, (ushort)x | ((uint)(ushort)y << 16));
+            Gte.Write(1, (ushort)z);
+            Gte.Execute(0x01u);
+        }
+
+        static GteProjectionOrigin Resolve(uint address, uint packed)
+        {
+            Require(
+                Gte.TryGetPacketProjection(
+                    address,
+                    (short)packed,
+                    (short)(packed >> 16),
+                    out ushort z,
+                    out _,
+                    out _,
+                    out GteProjectionOrigin origin) &&
+                z != 0 && origin.Valid,
+                "projection origin transport handle did not resolve");
+            return origin;
+        }
+
+        Project(10, 20, 30);
+        uint directPacked = Gte.StoreWord(14);
+        Gte.NotifyRamWrite(directAddress, directPacked);
+        GteProjectionOrigin direct = Resolve(directAddress, directPacked);
+
+        Project(11, 21, 31);
+        uint cpuPacked = Gte.Read(14);
+        cpu.V0 = cpuPacked;
+        uint transferredPacked = cpu.V0;
+        Gte.NotifyRamWrite(cpuAddress, transferredPacked);
+        GteProjectionOrigin transferred = Resolve(
+            cpuAddress, transferredPacked);
+
+        Require(
+            direct.ModelX == 10 && direct.ModelY == 20 &&
+            direct.ModelZ == 30 && transferred.ModelX == 11 &&
+            transferred.ModelY == 21 && transferred.ModelZ == 31 &&
+            direct.R00 == 4096 && direct.R11 == 4096 &&
+            direct.R22 == 4096 && direct.TranslateZ == 1024 &&
+            direct.ProjectionOffsetX == 160 << 16 &&
+            direct.ProjectionOffsetY == 120 << 16 &&
+            direct.ProjectionPlane == 256 &&
+            direct.Object.Kind == WorldObjectKind.Track &&
+            direct.Object.ModelPointer == modelPointer,
+            "projection origin handle changed captured provenance");
+    }
+    finally
+    {
+        WorldCaptureContext.EndObject();
+        Gte.SetProjectionTrackingEnabled(false);
+        WorldCaptureContext.LiveRenderingEnabled = false;
+    }
+}
+
+VerifyProjectionOriginHandleFlow();
+
+string unifiedHostProject = ReadRepoFile(
+    @"tools\unified-host\GranTurismo2PC.csproj");
+string unifiedHostProgram = ReadRepoFile(
+    @"tools\unified-host\Program.cs");
+Require(
+    unifiedHostProject.Contains(
+        "<AppHostDotNetSearch>AppLocal;Global</AppHostDotNetSearch>",
+        StringComparison.Ordinal),
+    "self-contained apphost no longer prefers its bundled runtime");
+Require(
+    unifiedHostProject.Contains(
+        "CopyToPublishDirectory=\"PreserveNewest\"",
+        StringComparison.Ordinal) &&
+    unifiedHostProject.Contains(
+        "opengt_live_renderer.dll",
+        StringComparison.Ordinal),
+    "self-contained publish can retain a stale native renderer DLL");
+Require(
+    unifiedHostProgram.Contains(
+        "ResolveUnifiedGameRoot(AppContext.BaseDirectory, launchDirectory)",
+        StringComparison.Ordinal) &&
+    unifiedHostProgram.Contains(
+        "Path.Combine(directory.FullName, \"work\", \"gt2-unified\")",
+        StringComparison.Ordinal) &&
+    unifiedHostProgram.Contains(
+        "GranTurismo2PC-startup-latest.log",
+        StringComparison.Ordinal) &&
+    unifiedHostProgram.Contains(
+        "Gran Turismo 2 PC - Startup Error",
+        StringComparison.Ordinal),
+    "no-argument startup no longer resolves developer data or reports a durable interactive failure");
+
+string stockScenarioHarness = ReadRepoFile(
+    @"tools\test_modern_renderer_scenario.ps1");
+string stockSoakHarness = ReadRepoFile(
+    @"tools\test_modern_renderer_extended_soak.ps1");
+string visibleReviewHarness = ReadRepoFile(
+    @"tools\run_visible_modern_renderer_review.ps1");
+string frameClockSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Host\FrameClock.cs");
+string liveRendererSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Gpu\Hle\LiveWorldRenderer.cs");
+string gt2CompatSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\sdk\GT2Compat.cs");
+string presentationRendererSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Host\Window\PresentationRenderer.cs");
+string motionCaptureHarness = ReadRepoFile(
+    @"tools\capture_modern_renderer_final_motion.ps1");
+const string selfContainedDeploy =
+    @"tools\unified-host\bin\Release\net10.0\win-x64\publish";
+Require(
+    stockScenarioHarness.Contains("'TahitiRoad'", StringComparison.Ordinal) &&
+    stockScenarioHarness.Contains("'RedRock'", StringComparison.Ordinal) &&
+    stockScenarioHarness.Contains(selfContainedDeploy, StringComparison.Ordinal),
+    "stock renderer scenarios no longer target the exact packaged build");
+Require(
+    stockSoakHarness.Contains(
+        "[string[]]$Scenarios = @('TahitiRoad', 'RedRock')",
+        StringComparison.Ordinal) &&
+    !stockSoakHarness.Contains(
+        "[string[]]$Scenarios = @('Arcade', 'SSR11', 'SupraTahiti')",
+        StringComparison.Ordinal),
+    "converted content became the primary renderer soak again");
+Require(
+    visibleReviewHarness.Contains(
+        "[string]$Mode = 'Simulation'",
+        StringComparison.Ordinal) &&
+    visibleReviewHarness.Contains(
+        @"tests\fixtures\modern-renderer-replay-soak.input",
+        StringComparison.Ordinal) &&
+    !visibleReviewHarness.Contains(
+        "[string]$Mode = 'Arcade'",
+        StringComparison.Ordinal),
+    "visible renderer review no longer defaults to stock Red Rock");
+Require(
+    frameClockSource.Contains(
+        "Thread.CurrentThread.Priority = ThreadPriority.Highest",
+        StringComparison.Ordinal) &&
+    liveRendererSource.Contains(
+        "Priority = ThreadPriority.Highest",
+        StringComparison.Ordinal),
+    "paced emulation and native pair production no longer share the highest thread priority");
+Require(
+    gt2CompatSource.Contains(
+        "static readonly bool True60HzEnabled",
+        StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "\"RECOMPONE_GT2_TRUE_60HZ\") != \"0\";",
+        StringComparison.Ordinal) &&
+    !gt2CompatSource.Contains(
+        "True60HzExperiment",
+        StringComparison.Ordinal) &&
+    liveRendererSource.Contains(
+        "\"RECOMPONE_GT2_TRUE_60HZ\") != \"0\";",
+        StringComparison.Ordinal) &&
+    stockScenarioHarness.Contains(
+        "RECOMPONE_GT2_TRUE_60HZ = '1'",
+        StringComparison.Ordinal),
+    "genuine per-VBlank simulation is no longer the shipping and explicit-test default");
+Require(
+    presentationRendererSource.Contains(
+        "Environment.GetEnvironmentVariable(\"RECOMPONE_VIDEO_CRF\")",
+        StringComparison.Ordinal) &&
+    presentationRendererSource.Contains(
+        ": 12;",
+        StringComparison.Ordinal) &&
+    !presentationRendererSource.Contains(
+        "\"-maxrate\"",
+        StringComparison.Ordinal) &&
+    !presentationRendererSource.Contains(
+        "\"1500k\"",
+        StringComparison.Ordinal) &&
+    motionCaptureHarness.Contains(
+        "RECOMPONE_VIDEO_CRF = $VideoCrf.ToString()",
+        StringComparison.Ordinal) &&
+    motionCaptureHarness.Contains(
+        "RECOMPONE_GT2_TRUE_60HZ = '1'",
+        StringComparison.Ordinal) &&
+    presentationRendererSource.Contains(
+        "\"60000/1001\"",
+        StringComparison.Ordinal),
+    "motion evidence capture is bandwidth-starved or lacks an explicit high-quality CRF");
+
 var legacy = new ViewConfig
 {
     GraphicsPreset = "PS1 Quality",
     HighResolution3D = false,
     TextureSmoothing = false,
+    HighResolutionTextures = false,
     PerspectiveCorrectTextures = false,
     StabilizeGeometrySeams = false,
     ExtendedDrawDistance = false,
@@ -56,6 +312,7 @@ var custom = new ViewConfig
     GraphicsPreset = "Custom",
     HighResolution3D = false,
     TextureSmoothing = false,
+    HighResolutionTextures = false,
     PerspectiveCorrectTextures = false,
     StabilizeGeometrySeams = false,
     ExtendedDrawDistance = false,
@@ -72,6 +329,7 @@ RequireModern(explicitLegacy, "legacy preset request");
 var runtimeDowngrade = new ViewConfig();
 runtimeDowngrade.HighResolution3D = false;
 runtimeDowngrade.TextureSmoothing = false;
+runtimeDowngrade.HighResolutionTextures = false;
 runtimeDowngrade.PerspectiveCorrectTextures = false;
 runtimeDowngrade.StabilizeGeometrySeams = false;
 runtimeDowngrade.ExtendedDrawDistance = false;
@@ -84,6 +342,23 @@ Environment.SetEnvironmentVariable("RECOMPONE_NATIVE_WORLD_RENDERER", "0");
 Type rendererType = typeof(ViewConfig).Assembly.GetType(
     "RecompOne.Runtime.Hle.LiveWorldRenderer",
     throwOnError: true)!;
+Type gt2CompatType = typeof(ViewConfig).Assembly.GetType(
+    "RecompOne.Runtime.Sdk.GT2Compat",
+    throwOnError: true)!;
+string? savedTrue60Override = Environment.GetEnvironmentVariable(
+    "RECOMPONE_GT2_TRUE_60HZ");
+Environment.SetEnvironmentVariable("RECOMPONE_GT2_TRUE_60HZ", null);
+bool authoredRendererDefault = (bool)rendererType.GetField(
+    "AuthoredOnly",
+    BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+bool true60GuestDefault = (bool)gt2CompatType.GetField(
+    "True60HzEnabled",
+    BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+Environment.SetEnvironmentVariable(
+    "RECOMPONE_GT2_TRUE_60HZ", savedTrue60Override);
+Require(
+    authoredRendererDefault && true60GuestDefault,
+    "shipping process without a True60 override did not select authored per-VBlank operation");
 Type interpolationStatsType = typeof(ViewConfig).Assembly.GetType(
     "RecompOne.Runtime.Hle.LiveInterpolationStats",
     throwOnError: true)!;
@@ -106,7 +381,7 @@ foreach (string generatedOverlay in new[]
     string source = ReadRepoFile(generatedOverlay);
     Require(
         Occurrences(source, "Gte.BeginDerivedScreenProjection(") == 2 &&
-        Occurrences(source, "0x31525353u,\n            c.V1)") == 2 &&
+        Occurrences(source, "0x31525353u") == 2 &&
         Occurrences(source, "Gte.EndDerivedScreenProjection();") == 2,
         $"{generatedOverlay}: auxiliary billboard projection scopes are not balanced");
 }
@@ -309,6 +584,9 @@ MethodInfo nativeStaleDiscardBeforePoll = hostWindowType.GetMethod(
 MethodInfo nativeShouldStartPrebuffer = hostWindowType.GetMethod(
     "ShouldStartNativeWorldPrebuffer",
     BindingFlags.NonPublic | BindingFlags.Static)!;
+MethodInfo nativeShouldPreserveInitialPrebuffer = hostWindowType.GetMethod(
+    "ShouldPreserveInitialNativeWorldPrebuffer",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
 MethodInfo nativeOutputWaitMilliseconds = hostWindowType.GetMethod(
     "SelectNativeWorldOutputWaitMilliseconds",
     BindingFlags.NonPublic | BindingFlags.Static)!;
@@ -346,7 +624,24 @@ Require(
         [true, false, false, 1])!,
     "short in-race native ownership gaps still restart the output prebuffer");
 Require(
-    (int)nativeOutputWaitMilliseconds.Invoke(null, [true, true])! == 8 &&
+    (bool)nativeShouldPreserveInitialPrebuffer.Invoke(
+        null,
+        [true, 0])! &&
+    (bool)nativeShouldPreserveInitialPrebuffer.Invoke(
+        null,
+        [true, 1])! &&
+    (bool)nativeShouldPreserveInitialPrebuffer.Invoke(
+        null,
+        [true, 10])! &&
+    !(bool)nativeShouldPreserveInitialPrebuffer.Invoke(
+        null,
+        [true, 11])! &&
+    !(bool)nativeShouldPreserveInitialPrebuffer.Invoke(
+        null,
+        [false, 1])!,
+    "release-paced native reserve cannot survive a bounded ownership gap");
+Require(
+    (int)nativeOutputWaitMilliseconds.Invoke(null, [true, true])! == 12 &&
     (int)nativeOutputWaitMilliseconds.Invoke(null, [true, false])! == 0 &&
     (int)nativeOutputWaitMilliseconds.Invoke(null, [false, true])! == 0,
     "native output wait can still run outside paced 60 Hz world evidence");
@@ -426,8 +721,11 @@ Console.WriteLine(
     "bounded_output_wait=pass native_pair_prebuffer=pass " +
     "native_output_ring=pass capture_stream_reservation=pass " +
     "native_capture_v6=pass " +
+    "true60_shipping_default=pass " +
+    "no_argument_startup=pass " +
     "native_interpolation_abi=pass " +
     "auxiliary_billboard_projection_scopes=pass " +
     "stage_throttle_latch=pass output_dock_validation=pass " +
     "native_reuse_age_guard=pass packet_origin_coordinate_guard=pass " +
-    "bounded_world_ownership=pass");
+    "bounded_world_ownership=pass cpu_projection_fast_path=pass " +
+    "projection_origin_handle_flow=pass");

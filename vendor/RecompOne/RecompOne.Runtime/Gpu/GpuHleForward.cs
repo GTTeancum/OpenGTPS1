@@ -144,6 +144,8 @@ public sealed partial class Gpu
     int CurTPage() => ((_texPageX / 64) & 0xf) | (((_texPageY / 256) & 1) << 4)
                     | ((_blendMode & 3) << 5) | ((_texDepth & 3) << 7);
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     HleDrawEnv CurEnv() => new()
     {
         ClipX0 = _drawAreaLeft, ClipY0 = _drawAreaTop, ClipX1 = _drawAreaRight, ClipY1 = _drawAreaBottom,
@@ -152,12 +154,16 @@ public sealed partial class Gpu
         SetMask = _setMask, CheckMask = _checkMask, Dither = DitherEnabled,
     };
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     static HleVertex HV(in Vert v) => new()
     {
         X = v.X, Y = v.Y, R = (byte)v.R, G = (byte)v.G, B = (byte)v.B, U = (short)v.U, V = (short)v.V,
         Z = v.Z, HasGteZ = v.HasGteZ,
     };
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     PrimFlags PrimOf(bool tex, bool semi, bool raw, int clut, bool gouraud = false) => new()
     {
         Textured = tex, SemiTrans = semi, RawTexture = raw, Gouraud = gouraud, TPage = (ushort)CurTPage(), Clut = (ushort)clut,
@@ -174,10 +180,15 @@ public sealed partial class Gpu
         be.DrawTri(HV(a), HV(b), HV(c), PrimOf(tex, semi, raw, clut, gouraud));
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     bool CaptureTri(
         in Vert a,
         in Vert b,
         in Vert c,
+        in GteProjectionOrigin originA,
+        in GteProjectionOrigin originB,
+        in GteProjectionOrigin originC,
         bool tex,
         bool gouraud,
         bool semi,
@@ -188,34 +199,10 @@ public sealed partial class Gpu
         var ha = HV(a);
         var hb = HV(b);
         var hc = HV(c);
-        CaptureHleTri(in ha, in hb, in hc, in flags);
+        if (_projectedCapture.Enabled)
+            CaptureHleTri(in ha, in hb, in hc, in flags);
         bool fileWorldCapture = _worldCapture.Enabled;
         bool liveWorldCapture = _liveWorldCapture.Enabled;
-        bool inspectWorldProvenance =
-            fileWorldCapture ||
-            liveWorldCapture ||
-            LiveWorldRenderer.Requested;
-        GteProjectionOrigin originA = default;
-        GteProjectionOrigin originB = default;
-        GteProjectionOrigin originC = default;
-        if (inspectWorldProvenance)
-        {
-            Gte.TryGetPacketOrigin(
-                a.SourceAddress,
-                a.X - _drawOffsetX,
-                a.Y - _drawOffsetY,
-                out originA);
-            Gte.TryGetPacketOrigin(
-                b.SourceAddress,
-                b.X - _drawOffsetX,
-                b.Y - _drawOffsetY,
-                out originB);
-            Gte.TryGetPacketOrigin(
-                c.SourceAddress,
-                c.X - _drawOffsetX,
-                c.Y - _drawOffsetY,
-                out originC);
-        }
         bool containsWorldProvenance =
             originA.Valid || originB.Valid || originC.Valid;
         if (_traceScreenEffectPrimitives &&
@@ -417,6 +404,8 @@ public sealed partial class Gpu
         in HleVertex c,
         in PrimFlags flags)
     {
+        if (!_projectedCapture.Enabled)
+            return;
         var environment = CurEnv();
         _projectedCapture.RecordTriangle(
             _projectedCaptureFrame + 1,
@@ -577,15 +566,19 @@ public sealed partial class Gpu
         }
     }
 
-    // GPU presentation packets are not scene-boundary evidence. SSR11 can
-    // emit several world-free packets while retaining the same 3D segment,
-    // especially around dense scenery. The recorder's bounded world age is
-    // the authoritative ownership signal; it still expires after six polls
-    // when a menu, video, or Results composition actually takes over.
+    // GPU presentation packets are not scene-boundary evidence. Dense scenery
+    // can emit bounded world-free packets while retaining the same 3D segment,
+    // so buffered or active native work keeps ownership through those gaps.
+    // Once the current presentation is world-free and no native image can
+    // still arrive, hand off immediately instead of waiting for an impossible
+    // readback and recording a false world miss at Results.
     internal bool LiveWorldExpected =>
         IsLiveWorldExpectedFromHistory(
             _liveWorldExpected,
-            _liveWorldFreePresentationCount);
+            _liveWorldFreePresentationCount) &&
+        (_liveWorldFreePresentationCount == 0 ||
+         _liveWorldRenderer.PublishedOutputCount != 0 ||
+         _liveWorldRenderer.HasPendingOrActiveWork);
 
     internal static bool IsLiveWorldExpectedFromHistory(
         bool recentlyContainedWorld,
@@ -673,12 +666,14 @@ public sealed partial class Gpu
 
     void HleFill(int x, int y, int w, int h, ushort color)
     {
+        _liveWorldRenderer.InvalidateTextureUploads(x, y, w, h);
         MirrorFill(x, y, w, h, color);
         GpuHle.Backend!.FillRect(x, y, w, h, color);
     }
 
     void HleCopy(int sx, int sy, int dx, int dy, int w, int h)
     {
+        _liveWorldRenderer.InvalidateTextureUploads(dx, dy, w, h);
         MirrorCopy(sx, sy, dx, dy, w, h);
         GpuHle.Backend!.CopyVram(sx, sy, dx, dy, w, h);
     }
@@ -769,6 +764,12 @@ public sealed partial class Gpu
             Shadow[x, y] = _hleLoad[index];
         }
         GpuHle.Backend!.WriteVram(_loadX, _loadY, _loadW, _loadH, _hleLoad.AsSpan(0, _loadW * _loadH));
+        _liveWorldRenderer.RecordTextureUpload(
+            _loadX,
+            _loadY,
+            _loadW,
+            _loadH,
+            _hleLoad.AsSpan(0, count));
         _hleLoadActive = false;
     }
 }

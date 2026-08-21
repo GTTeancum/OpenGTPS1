@@ -36,13 +36,29 @@ else if (mute)
 ConfigManager.Load();
 RecompOne.Runtime.Runtime.SetMode(RecompOne.Runtime.RunMode.Devkit);
 
-string looseRoot = positionalArgs.Length > 0
+string? looseRoot = positionalArgs.Length > 0
     ? Path.GetFullPath(positionalArgs[0], launchDirectory)
-    : AppContext.BaseDirectory;
+    : ResolveUnifiedGameRoot(AppContext.BaseDirectory, launchDirectory);
+if (looseRoot is null)
+{
+    return StartupFailure(
+        "Gran Turismo 2 game data was not found. Run " +
+        "Setup-From-Simulation-Disc.ps1 in a release package, or pass the " +
+        "prepared unified game-data directory on the command line.",
+        headless);
+}
 if (!Directory.Exists(looseRoot))
 {
-    Console.Error.WriteLine($"Unified game directory is missing: {looseRoot}");
-    return 1;
+    return StartupFailure(
+        $"Unified game directory is missing: {looseRoot}",
+        headless);
+}
+if (positionalArgs.Length == 0 &&
+    !Path.GetFullPath(AppContext.BaseDirectory).Equals(
+        Path.GetFullPath(looseRoot),
+        StringComparison.OrdinalIgnoreCase))
+{
+    Console.WriteLine($"[Host] auto-resolved unified game data: {looseRoot}");
 }
 
 foreach (string variant in new[] { "simulation", "arcade" })
@@ -51,9 +67,9 @@ foreach (string variant in new[] { "simulation", "arcade" })
         looseRoot, "manifests", $"{variant}.json");
     if (!File.Exists(manifestPath))
     {
-        Console.Error.WriteLine(
-            $"Unified {variant} manifest is missing: {manifestPath}");
-        return 1;
+        return StartupFailure(
+            $"Unified {variant} manifest is missing: {manifestPath}",
+            headless);
     }
 }
 foreach (string sharedFile in new[] {
@@ -61,9 +77,10 @@ foreach (string sharedFile in new[] {
 {
     if (!File.Exists(Path.Combine(looseRoot, sharedFile)))
     {
-        Console.Error.WriteLine(
-            $"Unified shared game data is missing: {Path.Combine(looseRoot, sharedFile)}");
-        return 1;
+        return StartupFailure(
+            $"Unified shared game data is missing: " +
+            Path.Combine(looseRoot, sharedFile),
+            headless);
     }
 }
 
@@ -99,6 +116,83 @@ catch (Exception exception)
     return 1;
 }
 return 0;
+
+static string? ResolveUnifiedGameRoot(
+    string applicationDirectory,
+    string launchDirectory)
+{
+    var candidates = new List<string>();
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    void AddCandidate(string candidate)
+    {
+        string fullPath = Path.GetFullPath(candidate);
+        if (seen.Add(fullPath))
+            candidates.Add(fullPath);
+    }
+
+    // A release setup installs the prepared data beside the executable.
+    AddCandidate(applicationDirectory);
+    AddCandidate(launchDirectory);
+    AddCandidate(Path.Combine(launchDirectory, "work", "gt2-unified"));
+
+    // Developer self-contained publishes live several levels below the repo.
+    // Walk ancestors instead of depending on one fixed bin/TFM/RID layout.
+    for (DirectoryInfo? directory = new(applicationDirectory);
+         directory is not null;
+         directory = directory.Parent)
+    {
+        AddCandidate(Path.Combine(directory.FullName, "work", "gt2-unified"));
+    }
+
+    return candidates.FirstOrDefault(HasUnifiedGameData);
+}
+
+static bool HasUnifiedGameData(string directory) =>
+    Directory.Exists(directory) &&
+    File.Exists(Path.Combine(directory, "manifests", "simulation.json")) &&
+    File.Exists(Path.Combine(directory, "manifests", "arcade.json")) &&
+    File.Exists(Path.Combine(directory, "GT2.VOL")) &&
+    File.Exists(Path.Combine(directory, "MUSIC.DAT")) &&
+    File.Exists(Path.Combine(directory, "TITLE_EXACT.DAT"));
+
+static int StartupFailure(string diagnostic, bool headless)
+{
+    Console.Error.WriteLine(diagnostic);
+    try
+    {
+        string logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
+        Directory.CreateDirectory(logDirectory);
+        string report =
+            $"UTC: {DateTimeOffset.UtcNow:O}{Environment.NewLine}" +
+            $"Command line: {Environment.CommandLine}{Environment.NewLine}" +
+            $"Startup error: {diagnostic}{Environment.NewLine}";
+        File.WriteAllText(
+            Path.Combine(logDirectory, "GranTurismo2PC-startup-latest.log"),
+            report);
+    }
+    catch
+    {
+        // The primary diagnostic remains on stderr.
+    }
+
+    if (!headless && OperatingSystem.IsWindows())
+    {
+        try
+        {
+            StartupDialog.MessageBox(
+                0,
+                diagnostic,
+                "Gran Turismo 2 PC - Startup Error",
+                0x10u);
+        }
+        catch
+        {
+            // A dialog is supplemental; never mask the persistent diagnostic.
+        }
+    }
+    return 1;
+}
 
 static void WriteCrashDiagnostic(string diagnostic)
 {
@@ -188,4 +282,17 @@ static void ValidateLiveryResolver()
     Console.WriteLine(
         "[Host] livery resolver validation passed: " +
         "Castrol Supra palettes=4, duplicate IDs=108/113");
+}
+
+internal static class StartupDialog
+{
+    [System.Runtime.InteropServices.DllImport(
+        "user32.dll",
+        EntryPoint = "MessageBoxW",
+        CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    internal static extern int MessageBox(
+        nint window,
+        string text,
+        string caption,
+        uint type);
 }

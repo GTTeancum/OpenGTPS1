@@ -2787,6 +2787,11 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
     try {
         using InterpolationClock = std::chrono::steady_clock;
         const auto interpolation_started = InterpolationClock::now();
+        // This is a process-wide diagnostic override. Sampling it inside the
+        // command loop adds thousands of serialized CRT environment queries
+        // to every midpoint.
+        const bool track_camera_delta_enabled =
+            std::getenv("OPENGT_DISABLE_TRACK_CAMERA_DELTA") == nullptr;
         WorldInterpolationStats stats{};
         stats.previous_commands = static_cast<std::uint32_t>(
             previous.commands.size());
@@ -2871,6 +2876,17 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
             track_transform_mappings, alpha);
         std::vector<bool> vehicle_body_groups(
             previous_groups.size(), false);
+        std::vector<bool> vehicle_commands_interpolated(
+            midpoint.commands.size(), false);
+        struct VehicleHoldState {
+            std::size_t held_commands{};
+            bool body_group{};
+        };
+        std::unordered_map<
+            GroupCategory,
+            VehicleHoldState,
+            GroupCategoryHash> held_vehicle_categories;
+        held_vehicle_categories.reserve(previous_groups.size());
         stats.previous_transform_groups =
             static_cast<std::uint32_t>(previous_groups.size());
         stats.current_transform_groups =
@@ -2883,6 +2899,7 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
         struct VehicleCategorySizes {
             std::size_t largest{};
             std::size_t second_largest{};
+            std::size_t total{};
         };
         std::unordered_map<
             GroupCategory,
@@ -2894,6 +2911,7 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
                 continue;
             auto& sizes = vehicle_category_sizes[group.identity.category];
             const std::size_t command_count = group.commands.size();
+            sizes.total += command_count;
             if (command_count >= sizes.largest) {
                 sizes.second_largest = sizes.largest;
                 sizes.largest = command_count;
@@ -3176,12 +3194,27 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
                     ? command_to_previous_group[command_index]
                     : no_previous_group;
             if (previous_group == no_previous_group) {
+                if (command.object_kind == 2) {
+                    ++held_vehicle_categories[
+                        GroupCategory{
+                            command.object_kind,
+                            command.object_id,
+                            command.model_pointer,
+                            command.channel}].held_commands;
+                }
                 ++stats.held_unmatched_commands;
                 continue;
             }
             const std::size_t current_group_index =
                 group_matches[previous_group];
             if (current_group_index >= current_groups.size()) {
+                if (command.object_kind == 2) {
+                    auto& held = held_vehicle_categories[
+                        previous_groups[previous_group].identity.category];
+                    ++held.held_commands;
+                    held.body_group = held.body_group ||
+                        vehicle_body_groups[previous_group];
+                }
                 ++stats.held_unmatched_commands;
                 continue;
             }
@@ -3197,7 +3230,7 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
             // because both sides of every shared edge take the same step.
             if (
                 command.object_kind == 1 &&
-                std::getenv("OPENGT_DISABLE_TRACK_CAMERA_DELTA") == nullptr
+                track_camera_delta_enabled
             ) {
                 // A clip fallback vertex carries no object matrix of its own,
                 // which previously disqualified the whole triangle and left
@@ -3261,6 +3294,11 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
                 // triangle is the only bounded operation that also preserves
                 // its shape; vertex morphing tears the car silhouette into
                 // alternating shards at the viewport edge.
+                auto& held = held_vehicle_categories[
+                    previous_groups[previous_group].identity.category];
+                ++held.held_commands;
+                held.body_group = held.body_group ||
+                    vehicle_body_groups[previous_group];
                 ++stats.held_unmatched_commands;
                 ++stats.held_incoherent_vehicle_commands;
                 continue;
@@ -3427,11 +3465,20 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
                 ++stats.matched_commands;
                 if (command.object_kind == 1)
                     ++stats.matched_track_commands;
-                else if (command.object_kind == 2)
+                else if (command.object_kind == 2) {
                     ++stats.matched_vehicle_commands;
+                    vehicle_commands_interpolated[command_index] = true;
+                }
                 continue;
             }
             if (!complete) {
+                if (command.object_kind == 2) {
+                    auto& held = held_vehicle_categories[
+                        previous_groups[previous_group].identity.category];
+                    ++held.held_commands;
+                    held.body_group = held.body_group ||
+                        vehicle_body_groups[previous_group];
+                }
                 ++stats.held_unmatched_commands;
                 continue;
             }
@@ -3447,16 +3494,48 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
             ++stats.matched_commands;
             if (command.object_kind == 1)
                 ++stats.matched_track_commands;
-            else if (command.object_kind == 2)
+            else if (command.object_kind == 2) {
                 ++stats.matched_vehicle_commands;
+                vehicle_commands_interpolated[command_index] = true;
+            }
         }
-        // Make every car atomic. One held sibling group is enough to hold the
-        // whole vehicle: a body advanced around a stalled wheel reads as a
-        // detached wheel, and a body whose triangles split between advanced
-        // and held reads as alternating shards. Restoring the remaining
-        // commands from the previous authored list keeps the car whole and
-        // costs one guest interval of vehicle motion on that midpoint only;
-        // the authored frame that follows still publishes the current pose.
+        // Keep a car atomic when its body, or a substantial share of its
+        // sibling groups, cannot advance coherently. A body whose triangles
+        // split between advanced and held reads as alternating shards. A
+        // small clipped wheel fragment may safely hold for one midpoint,
+        // though; freezing the complete car for every such fragment would
+        // unnecessarily restore 30 Hz vehicle motion during ordinary play.
+        for (const auto& group : previous_groups) {
+            if (group.identity.category.object_kind != 2)
+                continue;
+            const auto held = held_vehicle_categories.find(
+                group.identity.category);
+            const auto sizes = vehicle_category_sizes.find(
+                group.identity.category);
+            if (
+                held == held_vehicle_categories.end() ||
+                sizes == vehicle_category_sizes.end() ||
+                (!held->second.body_group &&
+                    held->second.held_commands * 4 < sizes->second.total)
+            )
+                continue;
+            for (const std::size_t command_index : group.commands) {
+                if (
+                    command_index >= midpoint.commands.size() ||
+                    command_index >= previous.commands.size()
+                ) {
+                    continue;
+                }
+                if (vehicle_commands_interpolated[command_index]) {
+                    --stats.matched_commands;
+                    --stats.matched_vehicle_commands;
+                    ++stats.held_unmatched_commands;
+                    ++stats.held_atomic_vehicle_commands;
+                }
+                midpoint.commands[command_index] =
+                    previous.commands[command_index];
+            }
+        }
         const auto commands_finished = InterpolationClock::now();
         if (std::getenv("OPENGT_INTERPOLATION_HELD_DIAGNOSTICS") != nullptr) {
             // A held command is one the loop left exactly as copied from the
@@ -3534,7 +3613,7 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
                     "vehicle=%u/%u trackAreaShare=%.1f%% "
                     "vehicleAreaShare=%.1f%% screenAreaShare=%.1f%% "
                     "heldUnmatched=%u heldVisibility=%u heldUnsafe=%u "
-                    "heldIncoherentVehicle=%u heldDegenerateVehicle=%u collidingKeys=%zu/%zu\n",
+                    "heldIncoherentVehicle=%u heldAtomicVehicle=%u collidingKeys=%zu/%zu\n",
                     held_counts[0],
                     total_counts[0],
                     held_counts[1],
@@ -3548,7 +3627,7 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
                     stats.held_track_visibility_commands,
                     stats.held_unsafe_track_commands,
                     stats.held_incoherent_vehicle_commands,
-                    stats.held_degenerate_vehicle_commands,
+                    stats.held_atomic_vehicle_commands,
                     colliding_vehicle_keys,
                     colliding_all_keys);
             }

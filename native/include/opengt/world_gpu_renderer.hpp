@@ -15,6 +15,8 @@ constexpr std::size_t world_gpu_readback_pair_delay = 2;
 // than a quarter second at the authored 30 Hz cadence without changing the
 // normal two-pair presentation latency.
 constexpr std::size_t world_gpu_async_readback_pair_capacity = 8;
+constexpr std::size_t world_gpu_async_readback_image_capacity =
+    world_gpu_async_readback_pair_capacity * 2;
 
 struct WorldGpuRenderOptions {
     bool use_software_adapter;
@@ -22,6 +24,7 @@ struct WorldGpuRenderOptions {
     bool dithering;
     bool perspective_correct;
     bool texture_smoothing;
+    bool high_resolution_textures;
     std::uint32_t output_scale;
     std::uint32_t clear_color_rgba8;
     // A generated midpoint can reuse the prior authored frame's immutable
@@ -50,6 +53,31 @@ struct WorldGpuRenderStats {
     bool software_adapter;
     bool output_valid;
 };
+
+struct WorldTextureUpload {
+    std::uint64_t key;
+    std::int32_t x;
+    std::int32_t y;
+    std::int32_t word_width;
+    std::int32_t height;
+};
+
+// A car paint is identified by both its indexed bitmap upload and the exact
+// 64x4 palette-bank upload containing the primitive's 16-word CLUT.
+constexpr bool world_texture_upload_contains_clut(
+    const WorldTextureUpload& upload,
+    std::uint64_t expected_key,
+    std::uint16_t clut
+) noexcept {
+    const std::int64_t clut_x = static_cast<std::int64_t>(clut & 63U) * 16;
+    const std::int64_t clut_y = (clut >> 6U) & 511U;
+    return
+        upload.key == expected_key &&
+        upload.word_width > 0 && upload.height > 0 &&
+        clut_x >= upload.x && clut_y >= upload.y &&
+        clut_x + 16 <= static_cast<std::int64_t>(upload.x) + upload.word_width &&
+        clut_y + 1 <= static_cast<std::int64_t>(upload.y) + upload.height;
+}
 
 enum class WorldGpuRenderResult {
     success,
@@ -87,6 +115,13 @@ WorldGpuReadbackResult try_read_world_d3d11_pair(
     bool wait_for_completion = false
 ) noexcept;
 
+WorldGpuReadbackResult try_read_world_d3d11_image(
+    bool use_software_adapter,
+    std::uint8_t* output_rgba,
+    std::size_t output_size,
+    bool wait_for_completion = false
+) noexcept;
+
 std::size_t pending_world_d3d11_readback_pairs(
     bool use_software_adapter
 ) noexcept;
@@ -94,6 +129,11 @@ std::size_t pending_world_d3d11_readback_pairs(
 // Begins a new temporal stream. The next render is read back synchronously;
 // later renders resume the two-pair staging overlap.
 void reset_world_d3d11_readback(bool use_software_adapter) noexcept;
+
+bool set_world_d3d11_texture_uploads(
+    bool use_software_adapter,
+    const WorldTextureUpload* uploads,
+    std::size_t upload_count) noexcept;
 
 const char* world_gpu_render_result_name(
     WorldGpuRenderResult result

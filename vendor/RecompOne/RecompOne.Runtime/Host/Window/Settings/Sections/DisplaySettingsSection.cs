@@ -65,7 +65,8 @@ internal sealed class DisplaySettingsSection : ISettingsSection
         ImGui.TextWrapped(
             "The native renderer is always enabled for races and replays. " +
             "There is no legacy 3D compatibility mode.");
-        ImGui.BulletText("4x internal scene source");
+        ImGui.BulletText("3D scene rasterization: 4x (320x240 to 1280x960)");
+        ImGui.BulletText("Texture assets: external 4x replacements when installed");
         ImGui.BulletText("Perspective-correct textures and stabilized seams");
         ImGui.BulletText("Extended authored draw distance and maximum LOD");
         ImGui.BulletText("Texture reconstruction enabled; color dithering disabled");

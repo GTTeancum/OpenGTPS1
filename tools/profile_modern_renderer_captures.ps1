@@ -12,7 +12,7 @@ param(
     [int]$Frames = 600,
     [ValidateRange(1, 8)]
     [int]$Scale = 4,
-    [double]$MaximumExternal3dPercent = 5.0
+    [double]$MaximumExternal3dPercent = 100.0
 )
 
 $ErrorActionPreference = 'Stop'

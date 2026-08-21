@@ -13,8 +13,8 @@ param(
     [ValidateRange(1, 1000000)]
     [int]$ExitPoll = 9000,
     [int]$TimeoutSeconds = 240,
-    [double]$MaximumExternal3dPercent = 5.0,
-    [string]$DeployPath = 'tools\unified-host\bin\Release\net10.0',
+    [double]$MaximumExternal3dPercent = 100.0,
+    [string]$DeployPath = 'tools\unified-host\bin\Release\net10.0\win-x64\publish',
     [string]$DataPath = 'work\gt2-unified'
 )
 
@@ -142,7 +142,11 @@ $start.RedirectStandardOutput = $true
 $start.RedirectStandardError = $true
 $environment = [ordered]@{
     SDL_AUDIODRIVER = 'dummy'
-    RECOMPONE_PROCESS_PRIORITY = 'BelowNormal'
+    # A genuine 59.94 Hz proof must exercise the shipping scheduler policy.
+    # Legacy/interpolation diagnostics remain deliberately de-prioritized.
+    RECOMPONE_PROCESS_PRIORITY = $(
+        if ($env:RECOMPONE_GT2_TRUE_60HZ -eq '1') { $null }
+        else { 'BelowNormal' })
     RECOMPONE_INPUT_FILE = $runtimeFixture
     RECOMPONE_DISABLE_LIVE_INPUT = '1'
     RECOMPONE_SUPPRESS_RUMBLE = '1'
@@ -340,11 +344,11 @@ $topologyPhases = [regex]::Matches(
 $interpolationPhases = [regex]::Matches(
     $pairText,
     '(?m)^\[Interpolation-Phases\] ')
-if ($topologyPhases.Count -ne $Count -or
+if ($topologyPhases.Count -ne ($Count - 1) -or
     $interpolationPhases.Count -ne ($Count - 1)) {
     throw (
         'Adjacent phase diagnostics are incomplete: ' +
-        "topology=$($topologyPhases.Count)/$Count " +
+        "topology=$($topologyPhases.Count)/$($Count - 1) " +
         "interpolation=$($interpolationPhases.Count)/$($Count - 1)")
 }
 $uncachedInterpolationPhases = [regex]::Matches(

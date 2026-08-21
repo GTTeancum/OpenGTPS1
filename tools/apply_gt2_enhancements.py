@@ -213,6 +213,137 @@ def main() -> int:
     include_livery_preview_helper()
 
     replace_once(
+        race,
+        """        c.V1 = m.ReadU8((c.FP + 0x8u));
+        c.V0 = 0x800B0000u;
+        m.WriteU8((c.V0 - 0x7298u), (byte)0u);
+        m.WriteU32((c.S4 + 0x18u), c.V1);
+""",
+        """        RecompOne.Runtime.Sdk.GT2Compat.ConfigureTrue60HzRaceTimeStep(
+            c.FP, m);
+        c.V1 = m.ReadU8((c.FP + 0x8u));
+        c.V0 = 0x800B0000u;
+        m.WriteU8((c.V0 - 0x7298u), (byte)0u);
+        m.WriteU32((c.S4 + 0x18u), c.V1);
+""",
+        "Simulation race NTSC time step",
+    )
+
+    replace_once(
+        race,
+        """        c.A1 = (uint)((int)c.A1 >> 8);
+        c.A2 = (uint)((int)c.A2 >> 8);
+        c.A3 = (uint)((int)c.A3 >> 8);
+""",
+        """        c.A1 = (uint)((int)c.A1 >> RecompOne.Runtime.Sdk.GT2Compat.GetTrue60HzVehicleIntegrationShift(8));
+        c.A2 = (uint)((int)c.A2 >> RecompOne.Runtime.Sdk.GT2Compat.GetTrue60HzVehicleIntegrationShift(8));
+        c.A3 = (uint)((int)c.A3 >> RecompOne.Runtime.Sdk.GT2Compat.GetTrue60HzVehicleIntegrationShift(8));
+""",
+        "Simulation vehicle position integration time step",
+    )
+    replace_once(
+        race,
+        """        c.RA = 0x8003B044u;
+        GranTurismo2PC.func_80075A94(c, m);
+        c.V1 = m.ReadU32((c.S4 + 0x64Cu));
+""",
+        """        c.RA = 0x8003B044u;
+        GranTurismo2PC.func_80075A94(c, m);
+        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.ScaleTrue60HzVehicleDelta(c.V0);
+        c.V1 = m.ReadU32((c.S4 + 0x64Cu));
+""",
+        "Simulation longitudinal acceleration integration time step",
+    )
+    replace_once(
+        race,
+        """        L800344DC: ;
+        c.A0 = c.S6 + 0u;
+        c.A1 = c.S5 + 0u;
+        c.RA = 0x800344E8u;
+        GranTurismo2PC.func_80034320(c, m);
+""",
+        """        L800344DC: ;
+        c.A0 = c.S6 + 0u;
+        c.A1 = c.S5 + 0u;
+        RecompOne.Runtime.Sdk.GT2Compat.BeginTrue60HzLinearVelocityStep(
+            c.S6, c.S5, m);
+        c.RA = 0x800344E8u;
+        GranTurismo2PC.func_80034320(c, m);
+        RecompOne.Runtime.Sdk.GT2Compat.EndTrue60HzLinearVelocityStep(
+            c.S6, c.S5, m);
+""",
+        "Simulation linear velocity integration time step",
+    )
+    replace_once(
+        race,
+        """        c.RA = 0x80045D18u;
+        GranTurismo2PC.func_80075A94(c, m);
+        c.V1 = m.ReadU32((c.S1 + 0x624u));
+""",
+        """        c.RA = 0x80045D18u;
+        GranTurismo2PC.func_80075A94(c, m);
+        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.ScaleTrue60HzVehicleDelta(c.V0);
+        c.V1 = m.ReadU32((c.S1 + 0x624u));
+""",
+        "Simulation secondary force accumulator time step",
+    )
+    replace_once(
+        race,
+        """        c.RA = 0x8003B27Cu;
+        GranTurismo2PC.func_8007596C(c, m);
+        c.S0 = c.S0 + c.V0;
+        c.V1 = m.ReadU32((c.S3 + 0x628u));
+""",
+        """        c.RA = 0x8003B27Cu;
+        GranTurismo2PC.func_8007596C(c, m);
+        c.S0 = c.S0 + c.V0;
+        c.S0 = RecompOne.Runtime.Sdk.GT2Compat.ScaleTrue60HzVehicleDelta(c.S0);
+        c.V1 = m.ReadU32((c.S3 + 0x628u));
+""",
+        "Simulation wheel-pair force time step",
+    )
+    replace_once(
+        race,
+        """        c.V0 = m.ReadU32(c.S1);
+        c.V1 = (uint)((int)c.V1 >> 1);
+        c.V0 = m.ReadU32(c.V0);
+""",
+        """        c.V0 = m.ReadU32(c.S1);
+        c.V1 = (uint)((int)c.V1 >> 1);
+        c.V1 = RecompOne.Runtime.Sdk.GT2Compat.ScaleTrue60HzVehicleDelta(c.V1);
+        c.V0 = m.ReadU32(c.V0);
+""",
+        "Simulation wheel-speed integration time step",
+    )
+    replace_once(
+        race,
+        """        c.V1 = m.ReadU32((c.S2 + 0x634u));
+        c.V0 = (uint)((int)c.V0 >> 1);
+        c.A1 = c.V1 + c.V0;
+""",
+        """        c.V1 = m.ReadU32((c.S2 + 0x634u));
+        c.V0 = (uint)((int)c.V0 >> 1);
+        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.ScaleTrue60HzVehicleDelta(c.V0);
+        c.A1 = c.V1 + c.V0;
+""",
+        "Simulation driven-wheel recurrence time step",
+    )
+    replace_once(
+        race,
+        """        m.WriteU32((c.SP + 0x14u), c.S1);
+        c.S2 = m.ReadU8((c.S0 + 0x5D2Du));
+        c.A0 = c.S3 + 0u;
+""",
+        """        m.WriteU32((c.SP + 0x14u), c.S1);
+        c.S2 = m.ReadU8((c.S0 + 0x5D2Du));
+        RecompOne.Runtime.Sdk.GT2Compat.TraceTrue60HzVehicleStage(
+            "begin", c.S3, c.S2, m);
+        c.A0 = c.S3 + 0u;
+""",
+        "Simulation true-60 vehicle state diagnostic",
+    )
+
+    replace_once(
         entry,
         """        Dispatcher.Call(c, m, 0x8005D600u);
 """,

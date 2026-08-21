@@ -87,10 +87,18 @@ internal sealed class PresentationRenderer : IDisposable
         int.TryParse(Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_HEIGHT"), out int videoOutputHeight)
             ? Math.Clamp(videoOutputHeight, 120, 1080)
             : 480;
-    readonly int _videoFrameRate =
+    readonly bool _videoCaptureEveryPresentation =
+        Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_FPS") == "60";
+    readonly string _videoFrameRate =
         Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_FPS") == "60"
-            ? 60
-            : 30;
+            ? "60000/1001"
+            : "30000/1001";
+    readonly int _videoCrf =
+        int.TryParse(
+            Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_CRF"),
+            out int videoCrf)
+            ? Math.Clamp(videoCrf, 0, 51)
+            : 12;
     readonly int _videoFrameLimit =
         int.TryParse(
             Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_CAPTURE_FRAMES"),
@@ -269,12 +277,13 @@ internal sealed class PresentationRenderer : IDisposable
             return;
         }
 
-        // GT2 presents at 59.94 Hz. Historical evidence videos capture every
-        // other presentation at 30 fps; explicit 60 fps proofs retain both the
-        // authored and geometry-interpolated presentations.
-        if (_videoFrameRate == 30 && (_videoPresentationFrame++ & 1) != 0)
+        // GT2 presents at NTSC 60000/1001 Hz. Historical 30 fps evidence keeps
+        // every other presentation; explicit 60-mode proofs retain every
+        // independently authored presentation and label the stream 60000/1001.
+        if (!_videoCaptureEveryPresentation &&
+            (_videoPresentationFrame++ & 1) != 0)
             return;
-        if (_videoFrameRate == 60)
+        if (_videoCaptureEveryPresentation)
             _videoPresentationFrame++;
 
         try
@@ -321,13 +330,12 @@ internal sealed class PresentationRenderer : IDisposable
         {
             "-y", "-loglevel", "error",
             "-f", "rawvideo", "-pix_fmt", "rgb24",
-            "-video_size", $"{width}x{height}", "-framerate", _videoFrameRate.ToString(),
+            "-video_size", $"{width}x{height}", "-framerate", _videoFrameRate,
             "-i", "pipe:0", "-an",
             "-vf",
             $"scale=w={_videoOutputWidth}:h={_videoOutputHeight}:force_original_aspect_ratio=decrease:flags=lanczos," +
             $"pad={_videoOutputWidth}:{_videoOutputHeight}:(ow-iw)/2:(oh-ih)/2:black",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "24",
-            "-maxrate", "1500k", "-bufsize", "3000k",
+            "-c:v", "libx264", "-preset", "medium", "-crf", _videoCrf.ToString(),
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", path,
         })
             start.ArgumentList.Add(argument);
@@ -338,7 +346,7 @@ internal sealed class PresentationRenderer : IDisposable
         Console.Error.WriteLine(
             $"[Host] video capture started at input poll {InputManager.CurrentPoll}: " +
             $"{width}x{height} source -> {_videoOutputWidth}x{_videoOutputHeight} {_videoFrameRate} fps, " +
-            $"1.5 Mbps ceiling -> {path}");
+            $"H.264 CRF {_videoCrf} without a bitrate ceiling -> {path}");
     }
 
     void FinishVideo()

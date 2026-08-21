@@ -180,6 +180,12 @@ def main() -> int:
             },
             {
                 "overlay": "main",
+                "address": "80080B10",
+                "target": "RecompOne.Runtime.Sdk.GT2Compat.TraceRenderSchedulerEntry",
+                "mode": "pre",
+            },
+            {
+                "overlay": "main",
                 "address": "8007C550",
                 "target": "RecompOne.Runtime.Sdk.GT2Compat.WaitForCdCommand",
                 "mode": "replace",

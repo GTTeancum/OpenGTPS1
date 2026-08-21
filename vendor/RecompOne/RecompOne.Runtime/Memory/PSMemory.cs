@@ -13,6 +13,7 @@ public sealed class PSMemory : IMemory
     private static int _watchedWriteCount;
 
     private readonly byte[] _ram = new byte[Runtime.Mode == RunMode.Devkit ? MemoryMap.DevkitRamSize : MemoryMap.RetailRamSize];
+    private readonly uint _ramMask;
     private readonly byte[] _scratchpad = new byte[MemoryMap.ScratchpadSize];
     private readonly byte[] _hwregs = new byte[MemoryMap.HwRegsSize];
     private readonly byte[] _bios = new byte[MemoryMap.BiosSize];
@@ -29,10 +30,60 @@ public sealed class PSMemory : IMemory
 
     public PSMemory()
     {
+        _ramMask = checked((uint)_ram.Length - 1u);
+        if ((_ram.Length & (_ram.Length - 1)) != 0)
+            throw new InvalidOperationException("PS1 RAM size must be a power of two");
         _dma = new Dma(this, _gpu, _spu, _mdec, () => Runtime.DeferIrq(3));
         Runtime.Gpu = _gpu;
         Runtime.Spu = _spu;
         Bios.KromFont.InstallInto(_bios);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    static ushort ReadLittleEndianU16(byte[] storage, int offset)
+    {
+        ushort value = System.Runtime.CompilerServices.Unsafe.ReadUnaligned<
+            ushort>(ref storage[offset]);
+        return BitConverter.IsLittleEndian
+            ? value
+            : System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(value);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    static uint ReadLittleEndianU32(byte[] storage, int offset)
+    {
+        uint value = System.Runtime.CompilerServices.Unsafe.ReadUnaligned<
+            uint>(ref storage[offset]);
+        return BitConverter.IsLittleEndian
+            ? value
+            : System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(value);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    static void WriteLittleEndianU16(
+        byte[] storage,
+        int offset,
+        ushort value)
+    {
+        if (!BitConverter.IsLittleEndian)
+            value = System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(
+                value);
+        System.Runtime.CompilerServices.Unsafe.WriteUnaligned(
+            ref storage[offset], value);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    static void WriteLittleEndianU32(byte[] storage, int offset, uint value)
+    {
+        if (!BitConverter.IsLittleEndian)
+            value = System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(
+                value);
+        System.Runtime.CompilerServices.Unsafe.WriteUnaligned(
+            ref storage[offset], value);
     }
 
     private static uint? ParseWatchedWriteAddress()
@@ -86,21 +137,33 @@ public sealed class PSMemory : IMemory
         _hwregs[o + 3] = (byte)(v >> 24);
     }
 
-    private void TrackWrite(uint phys, int size)
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private uint TrackWrite(uint phys, int size)
     {
         if (phys < MemoryMap.RamWindow)
         {
-            uint off = phys % (uint)_ram.Length;
-            Runtime.RamLog.RecordWrite(phys % (uint)_ram.Length, size);
+            uint off = phys & _ramMask;
+            if (RamLogger.TrackWrites)
+                Runtime.RamLog.RecordWrite(off, size);
             Dispatcher.NotifyWrite(off);
+            return off;
         }
-
+        return phys;
     }
 
-    private void TrackRead(uint phys, int size)
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private uint TrackRead(uint phys, int size)
     {
-        if (RamLogger.TrackReads && phys < MemoryMap.RamWindow)
-            Runtime.RamLog.RecordRead(phys % (uint)_ram.Length, size);
+        if (phys < MemoryMap.RamWindow)
+        {
+            uint off = phys & _ramMask;
+            if (RamLogger.TrackReads)
+                Runtime.RamLog.RecordRead(off, size);
+            return off;
+        }
+        return phys;
     }
 
     private Span<byte> Resolve(uint address, int size)
@@ -108,7 +171,7 @@ public sealed class PSMemory : IMemory
         uint phys = MemoryMap.ToPhysical(address);
 
         if (phys < MemoryMap.RamWindow)
-            return _ram.AsSpan((int)(phys % (uint)_ram.Length), size);
+            return _ram.AsSpan((int)(phys & _ramMask), size);
 
         if (phys >= MemoryMap.ScratchpadBase && phys < MemoryMap.ScratchpadBase + MemoryMap.ScratchpadSize)
             return _scratchpad.AsSpan((int)(phys - MemoryMap.ScratchpadBase), size);
@@ -146,7 +209,7 @@ public sealed class PSMemory : IMemory
     {
         if (phys < MemoryMap.RamWindow)
         {
-            projectedAddress = phys % (uint)_ram.Length;
+            projectedAddress = phys & _ramMask;
             return true;
         }
         if (phys >= MemoryMap.ScratchpadBase &&
@@ -165,20 +228,12 @@ public sealed class PSMemory : IMemory
         if (projectedAddress >= MemoryMap.ScratchpadBase)
         {
             int i = (int)(projectedAddress - MemoryMap.ScratchpadBase);
-            value = (uint)(
-                _scratchpad[i] |
-                (_scratchpad[i + 1] << 8) |
-                (_scratchpad[i + 2] << 16) |
-                (_scratchpad[i + 3] << 24));
+            value = ReadLittleEndianU32(_scratchpad, i);
         }
         else
         {
             int i = (int)projectedAddress;
-            value = (uint)(
-                _ram[i] |
-                (_ram[i + 1] << 8) |
-                (_ram[i + 2] << 16) |
-                (_ram[i + 3] << 24));
+            value = ReadLittleEndianU32(_ram, i);
         }
         Gte.NotifyRamWrite(projectedAddress, value);
     }
@@ -186,7 +241,9 @@ public sealed class PSMemory : IMemory
     public byte ReadU8(uint address)
     {
         uint phys = MemoryMap.ToPhysical(address);
-        TrackRead(phys, 1);
+        uint ramOffset = TrackRead(phys, 1);
+        if (phys < MemoryMap.RamWindow)
+            return _ram[(int)ramOffset];
         if (_cd != null && IsCd(phys)) return _cd.Read(phys);
         return Resolve(address, 1)[0];
     }
@@ -194,7 +251,12 @@ public sealed class PSMemory : IMemory
     public ushort ReadU16(uint address)
     {
         uint phys = MemoryMap.ToPhysical(address);
-        TrackRead(phys, 2);
+        uint ramOffset = TrackRead(phys, 2);
+        if (phys < MemoryMap.RamWindow)
+        {
+            int i = (int)ramOffset;
+            return ReadLittleEndianU16(_ram, i);
+        }
         if (_cd != null && IsCd(phys)) return _cd.Read(phys);
         if (IsSpu(phys)) return _spu.ReadReg16(phys);
         if (Timers.InRange(phys) && _timers.TryRead(phys, out uint tv)) return (ushort)tv;
@@ -202,10 +264,20 @@ public sealed class PSMemory : IMemory
         return (ushort)(s[0] | (s[1] << 8));
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     public uint ReadU32(uint address)
     {
         uint phys = MemoryMap.ToPhysical(address);
-        TrackRead(phys, 4);
+        uint ramOffset = TrackRead(phys, 4);
+        if (phys < MemoryMap.RamWindow)
+        {
+            int i = (int)ramOffset;
+            uint ramValue = ReadLittleEndianU32(_ram, i);
+            if ((phys & 3u) == 0)
+                Gte.NotifyRamRead(ramOffset, ramValue);
+            return ramValue;
+        }
         if (phys == 0x1F801810u) return _gpu.ReadData();
         if (phys == 0x1F801814u) return _gpu.ReadStat();
         if (phys == 0x1F801820u) return _mdec.ReadData();
@@ -223,10 +295,31 @@ public sealed class PSMemory : IMemory
         return value;
     }
 
+    /// <summary>
+    /// Reads a main-RAM word for a DMA controller. DMA traffic remains visible
+    /// to the optional RAM logger, but it must not mutate CPU-register GTE
+    /// provenance; the GPU receives the packet address separately.
+    /// </summary>
+    internal uint ReadDmaRamU32(uint address)
+    {
+        uint phys = MemoryMap.ToPhysical(address);
+        uint offset = phys & _ramMask;
+        if (RamLogger.TrackReads)
+            Runtime.RamLog.RecordRead(offset, 4);
+        int i = (int)offset;
+        return ReadLittleEndianU32(_ram, i);
+    }
+
     public void WriteU8(uint address, byte value)
     {
         uint phys = MemoryMap.ToPhysical(address);
-        TrackWrite(phys, 1);
+        uint ramOffset = TrackWrite(phys, 1);
+        if (phys < MemoryMap.RamWindow)
+        {
+            _ram[(int)ramOffset] = value;
+            NotifyProjectedRamWords(phys, 1);
+            return;
+        }
         if (_cd != null && IsCd(phys)) { _cd.Write(phys, value); return; }
         Resolve(address, 1)[0] = value;
         NotifyProjectedRamWords(phys, 1);
@@ -235,7 +328,14 @@ public sealed class PSMemory : IMemory
     public void WriteU16(uint address, ushort value)
     {
         uint phys = MemoryMap.ToPhysical(address);
-        TrackWrite(phys, 2);
+        uint ramOffset = TrackWrite(phys, 2);
+        if (phys < MemoryMap.RamWindow)
+        {
+            int i = (int)ramOffset;
+            WriteLittleEndianU16(_ram, i, value);
+            NotifyProjectedRamWords(phys, 2);
+            return;
+        }
         if (_cd != null && IsCd(phys)) { _cd.Write(phys, (byte)value); return; }
         if (IsSpu(phys)) { _spu.WriteReg16(phys, value); return; }
         if (_timers.TryWrite(phys, value)) return;
@@ -245,11 +345,24 @@ public sealed class PSMemory : IMemory
         NotifyProjectedRamWords(phys, 2);
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     public void WriteU32(uint address, uint value)
     {
         uint phys = MemoryMap.ToPhysical(address);
-        TraceWatchedWrite(phys, value);
-        TrackWrite(phys, 4);
+        if (_watchedWriteAddress.HasValue)
+            TraceWatchedWrite(phys, value);
+        uint ramOffset = TrackWrite(phys, 4);
+        if (phys < MemoryMap.RamWindow)
+        {
+            int i = (int)ramOffset;
+            WriteLittleEndianU32(_ram, i, value);
+            if ((phys & 3u) == 0)
+                Gte.NotifyRamWrite(ramOffset, value);
+            else
+                NotifyProjectedRamWords(phys, 4);
+            return;
+        }
         if (phys == 0x1F801810u) { _gpu.WriteGp0(value); return; }
         if (phys == 0x1F801814u) { _gpu.WriteGp1(value); return; }
         if (phys == 0x1F801820u) { _mdec.Write0(value); return; }

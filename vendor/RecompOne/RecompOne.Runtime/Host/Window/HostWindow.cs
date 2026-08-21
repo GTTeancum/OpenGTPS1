@@ -50,6 +50,7 @@ internal static class HostWindow
     static bool _nativeWorldPrebuffering;
     static bool _nativeRealTimeThrottleWasActive;
     static bool _nativeInitialPrebufferPending;
+    static bool _nativeInitialPrebufferInProgress;
     static int _nativeWorldNonRecentHandoffPolls;
     static int _nativeWorldPrebufferTarget = NativeWorldPrebufferOutputs;
     const int NativeWorldPrebufferOutputs = 8;
@@ -420,6 +421,8 @@ internal static class HostWindow
         Console.WriteLine(
             $"[Host] texture smoothing={(ConfigManager.View.TextureSmoothing ? "On (modern fixed)" : "Off")}");
         Console.WriteLine(
+            $"[Host] external 4x texture assets={(ConfigManager.View.HighResolutionTextures ? "On (when pack installed)" : "Off")}");
+        Console.WriteLine(
             $"[Host] texture projection fix={(ConfigManager.View.PerspectiveCorrectTextures ? "On (modern fixed)" : "Off")}");
         Console.WriteLine(
             $"[Host] graphics preset={ConfigManager.View.GraphicsPreset} modern-only " +
@@ -510,9 +513,11 @@ internal static class HostWindow
             : 0;
 
         Runtime.RamLog.Tick();
-        Memory.RamLogger.TrackReads =
+        bool trackRamActivity =
             PanelManager.Get<RamMapPanel>()?.IsOpen == true ||
             PanelManager.Get<MemoryEditorPanel>()?.IsOpen == true;
+        Memory.RamLogger.TrackReads = trackRamActivity;
+        Memory.RamLogger.TrackWrites = trackRamActivity;
 
         var gpu = _gpu;
         if (gpu != null)
@@ -715,7 +720,18 @@ internal static class HostWindow
             _nativeInitialPrebufferPending = true;
         if (!worldExpected)
         {
-            _nativeWorldPrebuffering = false;
+            int nextNonRecentHandoffPolls = worldRecentlySeen
+                ? 0
+                : _nativeWorldNonRecentHandoffPolls + 1;
+            bool preserveInitialPrebuffer =
+                ShouldPreserveInitialNativeWorldPrebuffer(
+                    _nativeInitialPrebufferInProgress,
+                    nextNonRecentHandoffPolls);
+            if (!preserveInitialPrebuffer)
+            {
+                _nativeWorldPrebuffering = false;
+                _nativeInitialPrebufferInProgress = false;
+            }
             _nativeWorldAvailable = false;
             _nativeWorldTemporalResetBoundary = false;
             if (worldRecentlySeen)
@@ -724,7 +740,10 @@ internal static class HostWindow
             {
                 if (++_nativeWorldNonRecentHandoffPolls >
                     NativeWorldHandoffFlushPolls)
+                {
                     gpu.DiscardLiveWorldOutputs();
+                    _nativeInitialPrebufferInProgress = false;
+                }
             }
             int handoffOutputAge =
                 InputManager.CurrentPoll - _nativeWorldInputPoll;
@@ -757,19 +776,29 @@ internal static class HostWindow
                 SelectNativeWorldStaleDiscardBeforePoll(
                     InputManager.CurrentPoll));
         }
+        bool initialPrebufferStart = _nativeInitialPrebufferPending;
         if (ShouldStartNativeWorldPrebuffer(
             worldStarted,
             realTimeThrottleStarted,
             worldRecentlySeen,
             nonRecentHandoffPolls))
         {
-            _nativeWorldPrebuffering = true;
-            _nativeWorldPrebufferTarget =
-                SelectNativeWorldPrebufferTarget(
-                    _nativeInitialPrebufferPending,
-                    worldStarted,
-                    worldRecentlySeen,
-                    gpu.LiveWorldOutputCount);
+            // GT2 can withdraw world ownership for one vblank immediately
+            // after release pacing begins. Returning from that bounded gap is
+            // not a new prebuffer: retain the original target and its
+            // in-progress marker until the full reserve is actually ready.
+            if (!_nativeWorldPrebuffering || initialPrebufferStart)
+            {
+                _nativeWorldPrebuffering = true;
+                _nativeInitialPrebufferInProgress =
+                    initialPrebufferStart;
+                _nativeWorldPrebufferTarget =
+                    SelectNativeWorldPrebufferTarget(
+                        initialPrebufferStart,
+                        worldStarted,
+                        worldRecentlySeen,
+                        gpu.LiveWorldOutputCount);
+            }
             _nativeInitialPrebufferPending = false;
         }
         bool receivedNewFrame = false;
@@ -827,6 +856,7 @@ internal static class HostWindow
             return false;
         }
         _nativeWorldPrebuffering = false;
+        _nativeInitialPrebufferInProgress = false;
 
         int preTakeOutputAge =
             InputManager.CurrentPoll - _nativeWorldInputPoll;
@@ -1109,6 +1139,12 @@ internal static class HostWindow
             return false;
         return true;
     }
+
+    internal static bool ShouldPreserveInitialNativeWorldPrebuffer(
+        bool initialPrebufferInProgress,
+        int nonRecentHandoffPolls) =>
+        initialPrebufferInProgress &&
+        nonRecentHandoffPolls <= NativeWorldHandoffFlushPolls;
 
     internal static bool ShouldHoldForPendingNativeWorldOutput(
         bool worldExpected,

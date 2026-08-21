@@ -122,10 +122,10 @@ internal static class FrameClock
         _pacedThreadPriorityApplied = true;
         try
         {
-            Thread.CurrentThread.Priority = ThreadPriority.AboveNormal;
+            Thread.CurrentThread.Priority = ThreadPriority.Highest;
             if (_tracePerformance)
                 Console.Error.WriteLine(
-                    "[PERF] paced emulation thread priority=AboveNormal");
+                    "[PERF] paced emulation thread priority=Highest");
         }
         catch (Exception exception) when (
             exception is ThreadStateException or System.Security.SecurityException)

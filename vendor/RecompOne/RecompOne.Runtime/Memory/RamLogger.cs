@@ -12,7 +12,8 @@ public sealed class RamLogger
     readonly uint[] _readTimestamps = new uint[Width * Height];
     uint _cycle;
 
-    public static bool TrackReads;
+    public static volatile bool TrackReads;
+    public static volatile bool TrackWrites;
 
     public float DecayFrames = 90f;
     public Vector4 BackdropColor = new(0.25f, 0.15f, 0.15f, 1f);

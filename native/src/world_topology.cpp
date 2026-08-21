@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <iterator>
 #include <map>
+#include <memory_resource>
 #include <numeric>
 #include <set>
 #include <tuple>
@@ -834,9 +835,14 @@ auto ownership_key(const WorldDrawCommand& command) {
 }
 
 struct DisjointSet {
-    std::vector<std::size_t> parent;
+    std::pmr::vector<std::size_t> parent;
 
-    explicit DisjointSet(std::size_t count) : parent(count) {
+    explicit DisjointSet(
+        std::size_t count,
+        std::pmr::memory_resource* resource
+    ) : parent(
+        count,
+        std::pmr::polymorphic_allocator<std::size_t>{resource}) {
         std::iota(parent.begin(), parent.end(), 0);
     }
 
@@ -876,41 +882,62 @@ WorldTopologyResult apply_world_topology(
         auto exact_finished = topology_started;
         auto ownership_finished = topology_started;
         WorldTopologyStats stats{};
+        // Diagnostics are process-wide switches. Read them once: querying the
+        // CRT environment in every edge/candidate iteration dominated this
+        // pass on full-distance race packets.
+        const bool adjacent_diagnostics =
+            std::getenv("OPENGT_TOPOLOGY_ADJACENT_DIAGNOSTICS") != nullptr;
+        const bool projected_pair_diagnostics =
+            std::getenv(
+                "OPENGT_TOPOLOGY_PROJECTED_PAIR_DIAGNOSTICS") != nullptr;
+        // Topology rebuilds several thousand short-lived lookup nodes for each
+        // authored field. A frame-local arena preserves the exact containers
+        // and iteration semantics while removing general-heap allocation and
+        // deallocation from the 59.94 Hz path.
+        // Dense GT2 fields retain the setup indexes while the raster, LOD,
+        // projected-edge and exact-boundary indexes are built. Four MiB was
+        // enough for light scenes but forced the later phases of a crowded
+        // race through monotonic_buffer_resource's general-heap fallback.
+        // Keep the full authored-field working set in thread-local scratch.
+        static thread_local std::array<std::byte, 32U * 1024U * 1024U>
+            topology_arena_storage{};
+        std::pmr::monotonic_buffer_resource topology_arena(
+            topology_arena_storage.data(), topology_arena_storage.size());
         stats.input_commands =
             static_cast<std::uint32_t>(draw_list->commands.size());
 
-        using PositionOccurrences = std::unordered_map<
+        using PositionOccurrences = std::pmr::unordered_map<
             Position,
             OccurrenceList,
             PositionHash>;
-        PositionOccurrences positions;
+        PositionOccurrences positions{&topology_arena};
         using ModelOccurrences =
             PositionOccurrences;
-        std::unordered_map<std::uint32_t, ModelOccurrences>
-            object_models;
-        using PositionModels = std::unordered_map<
+        std::pmr::unordered_map<std::uint32_t, ModelOccurrences>
+            object_models{&topology_arena};
+        using PositionModels = std::pmr::unordered_map<
             Position,
-            std::unordered_set<Position, PositionHash>,
+            std::pmr::unordered_set<Position, PositionHash>,
             PositionHash>;
-        std::unordered_map<
+        std::pmr::unordered_map<
             std::uint32_t,
-            PositionModels> object_view_models;
-        std::unordered_map<
+            PositionModels> object_view_models{&topology_arena};
+        std::pmr::unordered_map<
             std::uint32_t,
-            PositionOccurrences> object_view_occurrences;
-        std::unordered_map<
+            PositionOccurrences> object_view_occurrences{&topology_arena};
+        std::pmr::unordered_map<
             std::uint32_t,
-            std::unordered_map<Edge, std::uint32_t, EdgeHash>>
-            object_edge_counts;
-        std::unordered_map<std::uint32_t, std::size_t>
-            object_command_counts;
-        std::unordered_set<std::uint64_t> sources;
+            std::pmr::unordered_map<Edge, std::uint32_t, EdgeHash>>
+            object_edge_counts{&topology_arena};
+        std::pmr::unordered_map<std::uint32_t, std::size_t>
+            object_command_counts{&topology_arena};
+        std::pmr::unordered_set<std::uint64_t> sources{&topology_arena};
         object_models.reserve(64);
         object_view_models.reserve(64);
         object_view_occurrences.reserve(64);
         object_edge_counts.reserve(64);
         object_command_counts.reserve(64);
-        std::vector<std::size_t> eligible_commands;
+        std::pmr::vector<std::size_t> eligible_commands{&topology_arena};
         eligible_commands.reserve(draw_list->track_commands);
         for (std::size_t command_index = 0;
              command_index < draw_list->commands.size();
@@ -981,10 +1008,10 @@ WorldTopologyResult apply_world_topology(
         stats.unique_source_vertices =
             static_cast<std::uint32_t>(sources.size());
 
-        std::unordered_map<
+        std::pmr::unordered_map<
             std::uint32_t,
-            std::unordered_set<Position, PositionHash>>
-            object_boundary_positions;
+            std::pmr::unordered_set<Position, PositionHash>>
+            object_boundary_positions{&topology_arena};
         object_boundary_positions.reserve(object_edge_counts.size());
         for (const auto& object : object_edge_counts) {
             auto& boundary = object_boundary_positions[object.first];
@@ -995,8 +1022,8 @@ WorldTopologyResult apply_world_topology(
                 }
             }
         }
-        std::set<std::pair<std::uint32_t, std::uint32_t>>
-            proven_adjacent_objects;
+        std::pmr::set<std::pair<std::uint32_t, std::uint32_t>>
+            proven_adjacent_objects{&topology_arena};
         const auto adjacent_key = [] (
             std::uint32_t left,
             std::uint32_t right
@@ -1006,8 +1033,8 @@ WorldTopologyResult apply_world_topology(
                 : std::make_pair(right, left);
         };
 
-        std::unordered_map<Position, Occurrence, PositionHash>
-            canonical_occurrences;
+        std::pmr::unordered_map<Position, Occurrence, PositionHash>
+            canonical_occurrences{&topology_arena};
         canonical_occurrences.reserve(positions.size());
         for (auto& entry : positions) {
             auto& occurrences = entry.second;
@@ -1086,7 +1113,8 @@ WorldTopologyResult apply_world_topology(
                     object_models.find(left_object->first + 1U);
                 if (right_object == object_models.end())
                     continue;
-                std::set<std::pair<Position, Position>> demonstrated;
+                std::pmr::set<std::pair<Position, Position>> demonstrated{
+                    &topology_arena};
                 for (const auto& left : left_object->second) {
                     if (right_object->second.find(left.first) !=
                         right_object->second.end())
@@ -1105,7 +1133,8 @@ WorldTopologyResult apply_world_topology(
                             demonstrated.emplace(
                                 left_model, right_model);
                 }
-                std::map<Position, std::uint32_t> translations;
+                std::pmr::map<Position, std::uint32_t> translations{
+                    &topology_arena};
                 for (const auto& pair : demonstrated) {
                     const Position delta{
                         pair.second.x - pair.first.x,
@@ -1128,10 +1157,7 @@ WorldTopologyResult apply_world_topology(
                             return left.second < right.second;
                         return right.first < left.first;
                     });
-                if (
-                    std::getenv("OPENGT_TOPOLOGY_ADJACENT_DIAGNOSTICS") !=
-                    nullptr
-                ) {
+                if (adjacent_diagnostics) {
                     std::fprintf(
                         stderr,
                         "[Topology-Adjacent] left=%u right=%u "
@@ -1160,7 +1186,7 @@ WorldTopologyResult apply_world_topology(
                         right_object->second.find(target);
                     if (right == right_object->second.end())
                         continue;
-                    std::vector<Occurrence> component;
+                    std::pmr::vector<Occurrence> component{&topology_arena};
                     component.reserve(
                         left.second.size() + right->second.size());
                     component.insert(
@@ -1218,10 +1244,10 @@ WorldTopologyResult apply_world_topology(
                     object_view_occurrences[right_object->first];
                 constexpr float maximum_seam_distance_squared =
                     0.75F * 0.75F;
-                using PositionMatch = std::unordered_map<
+                using PositionMatch = std::pmr::unordered_map<
                     Position, Position, PositionHash>;
-                PositionMatch left_to_right;
-                PositionMatch right_to_left;
+                PositionMatch left_to_right{&topology_arena};
+                PositionMatch right_to_left{&topology_arena};
                 left_to_right.reserve(left_boundary_it->second.size());
                 right_to_left.reserve(right_boundary_it->second.size());
                 const auto find_matches = [&] (
@@ -1232,9 +1258,10 @@ WorldTopologyResult apply_world_topology(
                     PositionMatch* matches
                 ) {
                     constexpr int seam_cell_size = 2;
-                    std::unordered_map<
+                    std::pmr::unordered_map<
                         std::uint64_t,
-                        std::vector<Position>> target_bins;
+                        std::pmr::vector<Position>> target_bins{
+                            &topology_arena};
                     target_bins.reserve(target_boundary.size());
                     const auto cell_key = [] (int x, int y) {
                         return
@@ -1355,7 +1382,7 @@ WorldTopologyResult apply_world_topology(
                         right_group == right_occurrences.end()
                     )
                         continue;
-                    std::vector<Occurrence> component;
+                    std::pmr::vector<Occurrence> component{&topology_arena};
                     component.reserve(
                         left_group->second.size() +
                         right_group->second.size());
@@ -1402,14 +1429,14 @@ WorldTopologyResult apply_world_topology(
             // road endpoints whose two 8x LOD projections differ by roughly
             // 0.27 native px, which otherwise exposes a clear-color sliver at
             // 4x output resolution.
-            std::unordered_map<
+            std::pmr::unordered_map<
                 std::uint32_t,
-                std::unordered_set<Position, PositionHash>>
-                raster_joined_positions;
-            std::unordered_map<
+                std::pmr::unordered_set<Position, PositionHash>>
+                raster_joined_positions{&topology_arena};
+            std::pmr::unordered_map<
                 RasterLayerKey,
-                std::vector<Occurrence>,
-                RasterLayerKeyHash> raster_groups;
+                std::pmr::vector<Occurrence>,
+                RasterLayerKeyHash> raster_groups{&topology_arena};
             raster_groups.reserve(stats.eligible_track_commands * 3U);
             for (const std::size_t command_index : eligible_commands) {
                 const auto& command = draw_list->commands[command_index];
@@ -1431,7 +1458,8 @@ WorldTopologyResult apply_world_topology(
             for (const auto& group : raster_groups) {
                 if (group.second.size() < 2)
                     continue;
-                std::unordered_set<Position, PositionHash> view_positions;
+                std::pmr::unordered_set<Position, PositionHash>
+                    view_positions{&topology_arena};
                 view_positions.reserve(group.second.size());
                 for (const auto& occurrence : group.second) {
                     view_positions.insert(position(
@@ -1581,13 +1609,13 @@ WorldTopologyResult apply_world_topology(
                 std::int32_t authored_x;
                 std::int32_t authored_y;
             };
-            std::unordered_map<
+            std::pmr::unordered_map<
                 LodLayerKey,
-                std::unordered_map<
+                std::pmr::unordered_map<
                     Position,
                     LodBoundaryVertex,
                     PositionHash>,
-                LodLayerKeyHash> lod_layers;
+                LodLayerKeyHash> lod_layers{&topology_arena};
             lod_layers.reserve(object_edge_counts.size() * 4U);
             for (const std::size_t command_index : eligible_commands) {
                 const auto& command = draw_list->commands[command_index];
@@ -1659,19 +1687,22 @@ WorldTopologyResult apply_world_topology(
                 return false;
             };
             for (const auto& layer : lod_layers) {
-                std::vector<LodBoundaryVertex> vertices;
+                std::pmr::vector<LodBoundaryVertex> vertices{
+                    &topology_arena};
                 vertices.reserve(layer.second.size());
                 for (const auto& entry : layer.second)
                     vertices.push_back(entry.second);
                 const std::size_t no_match = vertices.size();
-                std::vector<std::size_t> nearest(vertices.size(), no_match);
-                std::vector<float> nearest_distance(
+                std::pmr::vector<std::size_t> nearest(
+                    vertices.size(), no_match, &topology_arena);
+                std::pmr::vector<float> nearest_distance(
                     vertices.size(),
-                    maximum_raster_join_distance_squared);
-                std::unordered_map<
+                    maximum_raster_join_distance_squared,
+                    &topology_arena);
+                std::pmr::unordered_map<
                     std::pair<std::int32_t, std::int32_t>,
-                    std::vector<std::size_t>,
-                    AuthoredPixelHash> authored_bins;
+                    std::pmr::vector<std::size_t>,
+                    AuthoredPixelHash> authored_bins{&topology_arena};
                 authored_bins.reserve(vertices.size());
                 for (std::size_t index = 0; index < vertices.size(); ++index) {
                     authored_bins[{
@@ -1819,9 +1850,10 @@ WorldTopologyResult apply_world_topology(
                 std::uint32_t object_id;
                 bool adjacent_copy;
             };
-            std::unordered_map<
+            std::pmr::unordered_map<
                 std::uint32_t,
-                std::vector<ProjectedBoundaryEdge>> projected_edges;
+                std::pmr::vector<ProjectedBoundaryEdge>> projected_edges{
+                    &topology_arena};
             projected_edges.reserve(object_edge_counts.size());
             for (const std::size_t command_index : eligible_commands) {
                 const auto& command = draw_list->commands[command_index];
@@ -1880,12 +1912,7 @@ WorldTopologyResult apply_world_topology(
                         projected_edges[command.object_id + 1U].push_back(
                             adjacent_edge);
                     }
-                    if (
-                        std::getenv(
-                            "OPENGT_TOPOLOGY_PROJECTED_PAIR_DIAGNOSTICS") !=
-                            nullptr &&
-                        command_index == 870
-                    ) {
+                    if (projected_pair_diagnostics && command_index == 870) {
                         std::fprintf(
                             stderr,
                             "[Topology-Projected-EdgeBuild] command=%zu "
@@ -1912,11 +1939,11 @@ WorldTopologyResult apply_world_topology(
             // the candidate's cell after the one-pixel expansion, so this
             // changes search cost without changing eligible joins.
             constexpr int projected_edge_cell_size = 8;
-            using ProjectedEdgeBins = std::unordered_map<
+            using ProjectedEdgeBins = std::pmr::unordered_map<
                 std::uint64_t,
-                std::vector<std::size_t>>;
-            std::unordered_map<std::uint32_t, ProjectedEdgeBins>
-                projected_edge_bins;
+                std::pmr::vector<std::size_t>>;
+            std::pmr::unordered_map<std::uint32_t, ProjectedEdgeBins>
+                projected_edge_bins{&topology_arena};
             projected_edge_bins.reserve(projected_edges.size());
             const auto projected_cell_key = [] (int x, int y) {
                 return
@@ -2067,9 +2094,7 @@ WorldTopologyResult apply_world_topology(
                         candidates->second.size();
                     projected_candidate_edge_tests += candidate_count;
                     if (
-                        std::getenv(
-                            "OPENGT_TOPOLOGY_PROJECTED_PAIR_DIAGNOSTICS") !=
-                            nullptr &&
+                        projected_pair_diagnostics &&
                         representative.command == 942
                     ) {
                             std::fprintf(
@@ -2113,9 +2138,7 @@ WorldTopologyResult apply_world_topology(
                         if (!candidate_is_visible && edge.adjacent_copy)
                             continue;
                         const bool diagnose_pair =
-                            std::getenv(
-                                "OPENGT_TOPOLOGY_PROJECTED_PAIR_DIAGNOSTICS")
-                                != nullptr &&
+                            projected_pair_diagnostics &&
                             representative.command == 942 &&
                             edge.command == 870;
                         if (
@@ -2426,7 +2449,8 @@ WorldTopologyResult apply_world_topology(
             EdgeOccurrence first{};
             std::uint32_t count = 0;
         };
-        std::unordered_map<Edge, EdgeOccurrenceBucket, EdgeHash> edges;
+        std::pmr::unordered_map<Edge, EdgeOccurrenceBucket, EdgeHash> edges{
+            &topology_arena};
         edges.reserve(
             static_cast<std::size_t>(stats.eligible_track_commands) * 3U);
         for (const std::size_t command_index : eligible_commands) {
@@ -2443,7 +2467,9 @@ WorldTopologyResult apply_world_topology(
                 ++entry->second.count;
             }
         }
-        std::vector<std::pair<Edge, EdgeOccurrence>> boundaries;
+        std::pmr::vector<std::pair<Edge, EdgeOccurrence>> boundaries{
+            &topology_arena};
+        boundaries.reserve(edges.size());
         for (const auto& entry : edges) {
             if (entry.second.count == 1) {
                 ++stats.boundary_edges;
@@ -2455,9 +2481,14 @@ WorldTopologyResult apply_world_topology(
             }
         }
 
-        std::array<std::vector<Position>, 3> sorted_boundary_points;
+        std::array<std::pmr::vector<Position>, 3> sorted_boundary_points{
+            std::pmr::vector<Position>{&topology_arena},
+            std::pmr::vector<Position>{&topology_arena},
+            std::pmr::vector<Position>{&topology_arena},
+        };
         {
-            std::unordered_set<Position, PositionHash> unique;
+            std::pmr::unordered_set<Position, PositionHash> unique{
+                &topology_arena};
             unique.reserve(boundaries.size() * 2);
             for (const auto& boundary : boundaries) {
                 unique.insert(boundary.first.a);
@@ -2480,7 +2511,8 @@ WorldTopologyResult apply_world_topology(
         }
 
         using EdgeSplits = std::array<std::vector<Position>, 3>;
-        std::unordered_map<std::size_t, EdgeSplits> command_splits;
+        std::pmr::unordered_map<std::size_t, EdgeSplits> command_splits{
+            &topology_arena};
         command_splits.reserve(boundaries.size());
         if (options.split_exact_t_junctions) {
             for (const auto& boundary : boundaries) {
@@ -2529,14 +2561,18 @@ WorldTopologyResult apply_world_topology(
                     continue;
                 }
                 const auto& source = draw_list->commands[command_index];
-                const auto& split_edges = found->second;
+                auto& split_edges = found->second;
+                std::size_t polygon_capacity = 3;
+                for (const auto& edge_splits : split_edges)
+                    polygon_capacity += edge_splits.size();
                 std::vector<WorldDrawVertex> polygon;
+                polygon.reserve(polygon_capacity);
                 for (int edge_index = 0; edge_index < 3; ++edge_index) {
                     const auto& a = source.vertices[edge_index];
                     const auto& b =
                         source.vertices[(edge_index + 1) % 3];
                     polygon.push_back(a);
-                    auto splits = split_edges[edge_index];
+                    auto& splits = split_edges[edge_index];
                     const Position pa = position(a);
                     const Position pb = position(b);
                     const int axis = dominant_axis(pa, pb);
@@ -2588,10 +2624,10 @@ WorldTopologyResult apply_world_topology(
         exact_finished = TopologyClock::now();
 
         if (options.deterministic_coplanar_ownership) {
-            std::unordered_map<
+            std::pmr::unordered_map<
                 Plane,
-                std::vector<std::size_t>,
-                PlaneHash> planes;
+                std::pmr::vector<std::size_t>,
+                PlaneHash> planes{&topology_arena};
             planes.reserve(draw_list->commands.size());
             for (std::size_t index = 0;
                  index < draw_list->commands.size();
@@ -2607,8 +2643,10 @@ WorldTopologyResult apply_world_topology(
                 if (plane(command, &key))
                     planes[key].push_back(index);
             }
-            DisjointSet sets(draw_list->commands.size());
-            std::unordered_set<std::size_t> ownership_members;
+            DisjointSet sets(
+                draw_list->commands.size(), &topology_arena);
+            std::pmr::unordered_set<std::size_t> ownership_members{
+                &topology_arena};
             ownership_members.reserve(draw_list->commands.size() / 4);
             for (const auto& plane_group : planes) {
                 const auto& indices = plane_group.second;
@@ -2627,7 +2665,7 @@ WorldTopologyResult apply_world_topology(
                         ? 0
                         : absolute(plane_group.first.y) >=
                             absolute(plane_group.first.z) ? 1 : 2;
-                std::vector<ProjectedBounds> bounds;
+                std::pmr::vector<ProjectedBounds> bounds{&topology_arena};
                 bounds.reserve(indices.size());
                 for (const std::size_t index : indices) {
                     const auto& command = draw_list->commands[index];
@@ -2685,9 +2723,9 @@ WorldTopologyResult apply_world_topology(
                     }
                 }
             }
-            std::unordered_map<
+            std::pmr::unordered_map<
                 std::size_t,
-                std::vector<std::size_t>> components;
+                std::pmr::vector<std::size_t>> components{&topology_arena};
             components.reserve(draw_list->commands.size());
             for (const std::size_t index : ownership_members)
                 components[sets.find(index)].push_back(index);
@@ -2697,7 +2735,7 @@ WorldTopologyResult apply_world_topology(
                     continue;
                 ++stats.ownership_components;
                 std::sort(slots.begin(), slots.end());
-                std::vector<WorldDrawCommand> ordered;
+                std::pmr::vector<WorldDrawCommand> ordered{&topology_arena};
                 ordered.reserve(slots.size());
                 for (const auto slot : slots)
                     ordered.push_back(draw_list->commands[slot]);

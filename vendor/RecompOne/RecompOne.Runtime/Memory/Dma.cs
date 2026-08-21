@@ -7,6 +7,7 @@ public sealed class Dma
     const uint Start = 0x01000000u;
 
     readonly IMemory _mem;
+    readonly PSMemory? _psMemory;
     readonly Gpu _gpu;
     readonly Spu _spu;
     readonly Mdec _mdec;
@@ -18,6 +19,7 @@ public sealed class Dma
     public Dma(IMemory mem, Gpu gpu, Spu spu, Mdec mdec, Action raiseIrq)
     {
         _mem = mem;
+        _psMemory = mem as PSMemory;
         _gpu = gpu;
         _spu = spu;
         _mdec = mdec;
@@ -89,12 +91,12 @@ public sealed class Dma
             uint addr = madr & ramAddressMask;
             for (int guard = 0; guard < 0x100000; guard++)
             {
-                uint header = _mem.ReadU32(addr);
+                uint header = ReadGpuRamWord(addr);
                 uint count = header >> 24;
                 for (uint i = 0; i < count; i++)
                 {
                     uint sourceAddress = addr + 4u + i * 4u;
-                    _gpu.WriteGp0(_mem.ReadU32(sourceAddress), sourceAddress);
+                    _gpu.WriteGp0(ReadGpuRamWord(sourceAddress), sourceAddress);
                 }
                 uint next = header & 0xFFFFFFu;
                 if (next == 0xFFFFFFu || (next & 0x800000u) != 0) break;
@@ -108,7 +110,7 @@ public sealed class Dma
             bool trace = Log.DmaOn;
             for (uint i = 0; i < words; i++)
             {
-                uint word = _mem.ReadU32(madr + i * 4u);
+                uint word = ReadGpuRamWord(madr + i * 4u);
                 if (trace) wordOr |= word;
                 _gpu.WriteGp0(word);
             }
@@ -121,6 +123,11 @@ public sealed class Dma
                 _mem.WriteU32(madr + i * 4u, _gpu.ReadData());
         }
     }
+
+    uint ReadGpuRamWord(uint address) =>
+        _psMemory != null
+            ? _psMemory.ReadDmaRamU32(address)
+            : _mem.ReadU32(address);
 
     void TransferSpu(uint madr, uint bcr, uint chcr)
     {

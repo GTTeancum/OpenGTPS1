@@ -13,8 +13,16 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <limits>
+#include <optional>
+#include <regex>
+#include <string>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -39,10 +47,11 @@ bool soft_vehicle_shadow(
         ((material.texture_page >> 5) & 3U) != 2U
     )
         return false;
-    const std::int16_t model_y = command.vertices[0].model_y;
-    return
-        command.vertices[1].model_y == model_y &&
-        command.vertices[2].model_y == model_y;
+    // This is GT2's dedicated untextured reverse-subtract vehicle-shadow
+    // contract. Clipped/interpolated vertices can lack model provenance and
+    // retain unrelated view-space coordinates, so geometry is not a safe
+    // secondary discriminator for this otherwise unique signature.
+    return true;
 }
 
 bool vehicle_wheel_tread(
@@ -807,6 +816,9 @@ struct GpuVertex {
     std::uint32_t command_index;
 };
 
+constexpr std::uint32_t replacement_mode_rgb = 0;
+constexpr std::uint32_t replacement_mode_palette_detail = 1;
+
 struct GpuMaterial {
     std::uint32_t primitive_flags;
     std::uint32_t texture_page;
@@ -817,6 +829,21 @@ struct GpuMaterial {
     std::int32_t texture_offset_x;
     std::int32_t texture_offset_y;
     std::uint32_t coverage_flags;
+    std::int32_t source_min_u;
+    std::int32_t source_min_v;
+    std::uint32_t source_width;
+    std::uint32_t source_height;
+    std::uint32_t replacement_x;
+    std::uint32_t replacement_y;
+    std::uint32_t replacement_width;
+    std::uint32_t replacement_height;
+    std::uint32_t replacement_mode;
+    float replacement_scale_r;
+    float replacement_scale_g;
+    float replacement_scale_b;
+    float replacement_bias_r;
+    float replacement_bias_g;
+    float replacement_bias_b;
 };
 
 struct DrawConstants {
@@ -826,12 +853,14 @@ struct DrawConstants {
     std::uint32_t perspective_correct;
     std::uint32_t texture_smoothing;
     std::uint32_t footprint_coverage;
-    // Constant buffers must stay a multiple of 16 bytes.
-    std::uint32_t padding[2];
+    std::uint32_t replacement_atlas_width;
+    std::uint32_t replacement_atlas_height;
 };
 
 const char shader_source[] = R"(
 Texture2D<uint> Vram : register(t0);
+Texture2D<float4> ReplacementAtlas : register(t2);
+SamplerState ReplacementSampler : register(s0);
 
 struct MaterialData {
     uint primitiveFlags;
@@ -843,6 +872,21 @@ struct MaterialData {
     int textureOffsetX;
     int textureOffsetY;
     uint coverageFlags;
+    int sourceMinU;
+    int sourceMinV;
+    uint sourceWidth;
+    uint sourceHeight;
+    uint replacementX;
+    uint replacementY;
+    uint replacementWidth;
+    uint replacementHeight;
+    uint replacementMode;
+    float replacementScaleR;
+    float replacementScaleG;
+    float replacementScaleB;
+    float replacementBiasR;
+    float replacementBiasG;
+    float replacementBiasB;
 };
 
 StructuredBuffer<MaterialData> Materials : register(t1);
@@ -854,6 +898,8 @@ cbuffer DrawConstants : register(b0) {
     uint PerspectiveCorrect;
     uint TextureSmoothing;
     uint FootprintCoverage;
+    uint ReplacementAtlasWidth;
+    uint ReplacementAtlasHeight;
 };
 
 struct VsInput {
@@ -1020,6 +1066,42 @@ float3 FilteredTextureColor(
         : TextureColor(centerWord);
 }
 
+float4 ReplacementTextureSample(float2 uv, MaterialData material) {
+    int2 integerUv = int2(floor(uv));
+    float2 mappedUv = float2(
+        (integerUv.x & ~(material.textureMaskX * 8)) |
+            ((material.textureOffsetX & material.textureMaskX) * 8),
+        (integerUv.y & ~(material.textureMaskY * 8)) |
+            ((material.textureOffsetY & material.textureMaskY) * 8)) +
+        frac(uv);
+    float2 sourceSize = float2(
+        max(material.sourceWidth, 1U),
+        max(material.sourceHeight, 1U));
+    float2 local =
+        (mappedUv - float2(material.sourceMinU, material.sourceMinV) + 0.5) /
+        sourceSize;
+    float2 outputSize = float2(
+        max(material.replacementWidth, 1U),
+        max(material.replacementHeight, 1U));
+    float2 halfTexel = 0.5 / outputSize;
+    local = clamp(local, halfTexel, 1.0 - halfTexel);
+    float2 minimumPixel = float2(
+        material.replacementX, material.replacementY) + 0.5;
+    float2 maximumPixel = float2(
+        material.replacementX + material.replacementWidth,
+        material.replacementY + material.replacementHeight) - 0.5;
+    float2 atlasPixel = clamp(
+        float2(material.replacementX, material.replacementY) +
+            local * outputSize,
+        minimumPixel,
+        maximumPixel);
+    float2 atlasSize = float2(
+        max(ReplacementAtlasWidth, 1U),
+        max(ReplacementAtlasHeight, 1U));
+    return ReplacementAtlas.SampleLevel(
+        ReplacementSampler, atlasPixel / atlasSize, 0);
+}
+
 float3 Quantize(float3 color, int2 pixel) {
     static const int ditherMatrix[16] = {
         -4, 0, -3, 1,
@@ -1114,6 +1196,32 @@ PsOutput PSMain(VsOutput input) {
             : screenSpace || TextureSmoothing == 0
             ? TextureColor(word)
             : FilteredTextureColor(uv, word, material);
+        if (!screenSpace && material.replacementWidth != 0) {
+            float4 replacement = ReplacementTextureSample(uv, material);
+            if (material.replacementMode == 1) {
+                // Cars retain GT2's native indexed bitmap -> selected live
+                // material CLUT path above. The neural asset contributes only
+                // paint-neutral 4x detail: R is neural luminance and G is the
+                // matching bilinear source luminance. Their bounded ratio
+                // cannot bake a paint choice or track-light palette into RGB.
+                float detailRatio = clamp(
+                    (replacement.r + 0.0625) /
+                        (replacement.g + 0.0625),
+                    0.5,
+                    2.0);
+                texel = saturate(texel * detailRatio);
+            } else {
+                texel = saturate(
+                    replacement.rgb * float3(
+                        material.replacementScaleR,
+                        material.replacementScaleG,
+                        material.replacementScaleB) +
+                    float3(
+                        material.replacementBiasR,
+                        material.replacementBiasG,
+                        material.replacementBiasB));
+            }
+        }
         color = rawTexture
             ? texel
             : saturate(texel * input.color.rgb * 2.0);
@@ -1254,6 +1362,97 @@ ComPtr<ID3D11DepthStencilState> depth_state(
     return result;
 }
 
+struct ReplacementRect {
+    std::uint32_t x{};
+    std::uint32_t y{};
+    std::uint32_t width{};
+    std::uint32_t height{};
+
+    explicit operator bool() const noexcept {
+        return width != 0 && height != 0;
+    }
+};
+
+struct ReplacementSignature {
+    std::uint16_t texture_page{};
+    std::uint16_t clut{};
+    std::int16_t mask_x{};
+    std::int16_t mask_y{};
+    std::int16_t offset_x{};
+    std::int16_t offset_y{};
+    std::int16_t minimum_u{};
+    std::int16_t minimum_v{};
+    std::int16_t maximum_u{};
+    std::int16_t maximum_v{};
+
+    bool operator==(const ReplacementSignature& right) const noexcept {
+        return std::memcmp(this, &right, sizeof(*this)) == 0;
+    }
+};
+
+struct ReplacementSignatureHash {
+    std::size_t operator()(const ReplacementSignature& value) const noexcept {
+        const auto* bytes = reinterpret_cast<const std::uint8_t*>(&value);
+        std::uint64_t hash = 14695981039346656037ULL;
+        for (std::size_t index = 0; index < sizeof(value); ++index) {
+            hash ^= bytes[index];
+            hash *= 1099511628211ULL;
+        }
+        return static_cast<std::size_t>(hash);
+    }
+};
+
+struct ReplacementResolution {
+    ReplacementRect rect{};
+    std::int32_t minimum_u{};
+    std::int32_t minimum_v{};
+    std::uint32_t source_width{};
+    std::uint32_t source_height{};
+    std::uint64_t key{};
+    std::uint64_t palette_key{};
+    std::uint32_t mode{replacement_mode_rgb};
+    float color_scale[3]{1.0F, 1.0F, 1.0F};
+    float color_bias[3]{};
+};
+
+struct ReplacementEntry {
+    ReplacementRect rect{};
+    std::uint32_t source_width{};
+    std::uint32_t source_height{};
+    std::uint32_t pixel_mode{};
+    std::uint64_t palette_key{};
+    std::uint32_t mode{replacement_mode_rgb};
+    bool color_fit{true};
+    std::vector<std::uint8_t> canonical_rgb;
+};
+
+struct ReplacementIdentity {
+    std::uint64_t key{};
+    std::uint64_t palette_key{};
+
+    bool operator==(const ReplacementIdentity& right) const noexcept {
+        return key == right.key && palette_key == right.palette_key;
+    }
+};
+
+struct ReplacementIdentityHash {
+    std::size_t operator()(const ReplacementIdentity& value) const noexcept {
+        std::uint64_t hash = 14695981039346656037ULL;
+        for (const std::uint64_t part : {value.key, value.palette_key}) {
+            for (int byte = 0; byte < 8; ++byte) {
+                hash ^= static_cast<std::uint8_t>(part >> (byte * 8));
+                hash *= 1099511628211ULL;
+            }
+        }
+        return static_cast<std::size_t>(hash);
+    }
+};
+
+struct CachedReplacementResolution {
+    std::uint64_t texture_revision{};
+    ReplacementResolution resolution{};
+};
+
 struct BaseResources {
     bool ready;
     bool software_adapter;
@@ -1304,9 +1503,976 @@ struct BaseResources {
     ComPtr<ID3D11Texture2D> vram_texture;
     ComPtr<ID3D11ShaderResourceView> vram_view;
     bool vram_texture_initialized;
+    bool replacement_pack_attempted;
+    ComPtr<ID3D11Texture2D> replacement_texture;
+    ComPtr<ID3D11ShaderResourceView> replacement_view;
+    ComPtr<ID3D11SamplerState> replacement_sampler;
+    std::unordered_map<
+        std::uint64_t,
+        std::vector<ReplacementEntry>> replacement_entries;
+    std::vector<WorldTextureUpload> replacement_uploads;
+    std::unordered_set<
+        ReplacementIdentity,
+        ReplacementIdentityHash> replacement_hit_keys;
+    std::unordered_map<
+        ReplacementSignature,
+        CachedReplacementResolution,
+        ReplacementSignatureHash> replacement_resolution_cache;
+    std::vector<std::uint16_t> replacement_vram_shadow;
+    std::array<std::uint64_t, 16 * 8> replacement_block_revisions{};
+    std::uint64_t replacement_revision{1};
+    std::unordered_set<std::uint64_t> dumped_replacement_keys;
+    std::filesystem::path replacement_dump_directory;
+    std::uint32_t replacement_width;
+    std::uint32_t replacement_height;
+    std::uint64_t replacement_resolves;
+    std::uint64_t replacement_hits;
+    std::size_t replacement_entry_count;
     std::uint32_t output_width;
     std::uint32_t output_height;
 };
+
+struct LooseReplacementImage {
+    std::string name;
+    std::uint32_t width{};
+    std::uint32_t height{};
+    std::vector<std::uint8_t> rgba;
+    std::uint32_t packed_x{};
+    std::uint32_t packed_y{};
+};
+
+struct PendingReplacementEntry {
+    std::uint64_t key{};
+    std::uint64_t palette_key{};
+    std::string image;
+    std::int32_t x{};
+    std::int32_t y{};
+    std::int32_t width{};
+    std::int32_t height{};
+    std::int32_t source_width{};
+    std::int32_t source_height{};
+    std::int32_t pixel_mode{};
+    std::uint32_t mode{replacement_mode_rgb};
+    bool color_fit{true};
+};
+
+std::uint32_t read_little_u32(
+    const std::vector<std::uint8_t>& bytes,
+    std::size_t offset
+) {
+    if (offset + 4 > bytes.size())
+        return 0;
+    return
+        static_cast<std::uint32_t>(bytes[offset]) |
+        static_cast<std::uint32_t>(bytes[offset + 1]) << 8 |
+        static_cast<std::uint32_t>(bytes[offset + 2]) << 16 |
+        static_cast<std::uint32_t>(bytes[offset + 3]) << 24;
+}
+
+std::uint8_t dds_channel(
+    std::uint32_t pixel,
+    std::uint32_t mask,
+    std::uint8_t absent
+) {
+    if (mask == 0)
+        return absent;
+    unsigned shift = 0;
+    while (((mask >> shift) & 1U) == 0U)
+        ++shift;
+    const std::uint32_t maximum = mask >> shift;
+    const std::uint32_t value = (pixel & mask) >> shift;
+    return static_cast<std::uint8_t>(
+        (value * 255U + maximum / 2U) / maximum);
+}
+
+std::optional<LooseReplacementImage> read_loose_dds(
+    const std::filesystem::path& path,
+    const std::string& name
+) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream)
+        return std::nullopt;
+    std::vector<std::uint8_t> bytes{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+    if (
+        bytes.size() < 128 ||
+        read_little_u32(bytes, 0) != 0x20534444U ||
+        read_little_u32(bytes, 4) != 124U ||
+        read_little_u32(bytes, 76) != 32U
+    )
+        return std::nullopt;
+    const std::uint32_t height = read_little_u32(bytes, 12);
+    const std::uint32_t width = read_little_u32(bytes, 16);
+    const std::uint32_t pitch = read_little_u32(bytes, 20);
+    const std::uint32_t four_cc = read_little_u32(bytes, 84);
+    const std::uint32_t bits = read_little_u32(bytes, 88);
+    const std::uint32_t red_mask = read_little_u32(bytes, 92);
+    const std::uint32_t green_mask = read_little_u32(bytes, 96);
+    const std::uint32_t blue_mask = read_little_u32(bytes, 100);
+    const std::uint32_t alpha_mask = read_little_u32(bytes, 104);
+    if (
+        width == 0 || height == 0 || width > 4096 || height > 4096 ||
+        four_cc != 0 || bits != 32 || pitch < width * 4 ||
+        bytes.size() < 128ULL + static_cast<std::uint64_t>(pitch) * height
+    )
+        return std::nullopt;
+    LooseReplacementImage image{name, width, height};
+    image.rgba.resize(static_cast<std::size_t>(width) * height * 4);
+    for (std::uint32_t y = 0; y < height; ++y) {
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const std::uint32_t pixel = read_little_u32(
+                bytes, 128ULL + static_cast<std::size_t>(y) * pitch + x * 4);
+            const std::size_t output =
+                (static_cast<std::size_t>(y) * width + x) * 4;
+            image.rgba[output] = dds_channel(pixel, red_mask, 0);
+            image.rgba[output + 1] = dds_channel(pixel, green_mask, 0);
+            image.rgba[output + 2] = dds_channel(pixel, blue_mask, 0);
+            image.rgba[output + 3] = dds_channel(pixel, alpha_mask, 255);
+        }
+    }
+    return image;
+}
+
+std::optional<std::string> json_string_field(
+    const std::string& object,
+    const char* key
+) {
+    const std::regex expression{
+        std::string{"\""} + key + "\"\\s*:\\s*\"([^\"]*)\""};
+    std::smatch match;
+    if (!std::regex_search(object, match, expression))
+        return std::nullopt;
+    return match[1].str();
+}
+
+std::optional<std::int32_t> json_integer_field(
+    const std::string& object,
+    const char* key
+) {
+    const std::regex expression{
+        std::string{"\""} + key + "\"\\s*:\\s*(-?[0-9]+)"};
+    std::smatch match;
+    if (!std::regex_search(object, match, expression))
+        return std::nullopt;
+    try {
+        return static_cast<std::int32_t>(std::stoll(match[1].str()));
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+std::vector<std::string> json_entry_objects(const std::string& document) {
+    std::vector<std::string> result;
+    const std::size_t entries = document.find("\"entries\"");
+    const std::size_t begin = entries == std::string::npos
+        ? std::string::npos
+        : document.find('[', entries);
+    if (begin == std::string::npos)
+        return result;
+    bool quoted = false;
+    bool escaped = false;
+    int object_depth = 0;
+    std::size_t object_begin = std::string::npos;
+    for (std::size_t index = begin + 1; index < document.size(); ++index) {
+        const char value = document[index];
+        if (quoted) {
+            if (escaped)
+                escaped = false;
+            else if (value == '\\')
+                escaped = true;
+            else if (value == '"')
+                quoted = false;
+            continue;
+        }
+        if (value == '"') {
+            quoted = true;
+            continue;
+        }
+        if (value == '{') {
+            if (object_depth++ == 0)
+                object_begin = index;
+        } else if (value == '}') {
+            if (object_depth <= 0)
+                return {};
+            if (--object_depth == 0 && object_begin != std::string::npos)
+                result.push_back(document.substr(
+                    object_begin, index - object_begin + 1));
+        } else if (value == ']' && object_depth == 0) {
+            return result;
+        }
+    }
+    return {};
+}
+
+bool path_is_below(
+    const std::filesystem::path& root,
+    const std::filesystem::path& candidate
+) {
+    auto root_part = root.begin();
+    auto candidate_part = candidate.begin();
+    while (root_part != root.end()) {
+        if (
+            candidate_part == candidate.end() ||
+            root_part->wstring() != candidate_part->wstring()
+        )
+            return false;
+        ++root_part;
+        ++candidate_part;
+    }
+    return true;
+}
+
+bool layout_replacement_images(
+    std::vector<LooseReplacementImage>* images,
+    std::uint32_t size,
+    std::uint32_t padding
+) {
+    std::vector<std::size_t> order(images->size());
+    for (std::size_t index = 0; index < order.size(); ++index)
+        order[index] = index;
+    std::sort(order.begin(), order.end(), [&] (std::size_t left, std::size_t right) {
+        const auto& a = (*images)[left];
+        const auto& b = (*images)[right];
+        if (a.height != b.height)
+            return a.height > b.height;
+        if (a.width != b.width)
+            return a.width > b.width;
+        return a.name < b.name;
+    });
+    std::uint32_t x = 0;
+    std::uint32_t y = 0;
+    std::uint32_t row_height = 0;
+    for (const std::size_t index : order) {
+        auto& image = (*images)[index];
+        const std::uint32_t packed_width = image.width + padding * 2;
+        const std::uint32_t packed_height = image.height + padding * 2;
+        if (packed_width > size || packed_height > size)
+            return false;
+        if (x + packed_width > size) {
+            x = 0;
+            y += row_height;
+            row_height = 0;
+        }
+        if (y + packed_height > size)
+            return false;
+        image.packed_x = x + padding;
+        image.packed_y = y + padding;
+        x += packed_width;
+        row_height = (std::max)(row_height, packed_height);
+    }
+    return true;
+}
+
+void configure_replacement_pack(BaseResources* resources) noexcept {
+    if (resources->replacement_pack_attempted)
+        return;
+    resources->replacement_pack_attempted = true;
+    try {
+        std::filesystem::path directory;
+        if (const char* override_directory =
+                std::getenv("OPENGT_TEXTURE_PACK_DIR")) {
+            if (*override_directory != '\0')
+                directory = override_directory;
+        }
+        if (directory.empty())
+            directory = std::filesystem::current_path() /
+                "mods" / "enhanced_textures_4x";
+        directory = std::filesystem::absolute(directory).lexically_normal();
+        const std::filesystem::path manifest_path =
+            directory / "manifest.json";
+        std::ifstream manifest_stream(manifest_path, std::ios::binary);
+        if (!manifest_stream) {
+            std::fprintf(
+                stderr,
+                "[TexturePack] no external DDS pack at %s\n",
+                directory.string().c_str());
+            return;
+        }
+        const std::string manifest{
+            std::istreambuf_iterator<char>(manifest_stream),
+            std::istreambuf_iterator<char>()};
+        const auto format = json_integer_field(manifest, "format");
+        if (!format || (*format != 5 && *format != 6 && *format != 7))
+            throw std::runtime_error(
+                "manifest format must be individual-upload DDS format 5, 6, or 7");
+        const std::int32_t manifest_scale =
+            json_integer_field(manifest, "scale").value_or(2);
+        if (manifest_scale <= 0)
+            throw std::runtime_error("manifest scale must be positive");
+
+        std::vector<PendingReplacementEntry> pending;
+        for (const std::string& object : json_entry_objects(manifest)) {
+            const auto key_text = json_string_field(object, "key");
+            const auto image = json_string_field(object, "image");
+            const auto x = json_integer_field(object, "x");
+            const auto y = json_integer_field(object, "y");
+            const auto width = json_integer_field(object, "width");
+            const auto height = json_integer_field(object, "height");
+            const auto pixel_mode = json_integer_field(object, "pixelMode");
+            const auto palette_key_text =
+                json_string_field(object, "paletteKey");
+            const auto replacement_mode_text =
+                json_string_field(object, "replacementMode");
+            if (
+                !key_text || !image || !x || !y || !width || !height ||
+                !pixel_mode || (*pixel_mode != 0 && *pixel_mode != 1)
+            )
+                throw std::runtime_error("manifest entry is incomplete");
+            std::size_t parsed = 0;
+            const std::uint64_t key = std::stoull(*key_text, &parsed, 16);
+            if (parsed != key_text->size())
+                throw std::runtime_error("manifest key is not hexadecimal");
+            std::uint64_t palette_key = 0;
+            if (palette_key_text) {
+                parsed = 0;
+                palette_key = std::stoull(*palette_key_text, &parsed, 16);
+                if (parsed != palette_key_text->size() || palette_key == 0)
+                    throw std::runtime_error(
+                        "manifest palette key is not nonzero hexadecimal");
+            }
+            const std::int32_t color_fit = json_integer_field(
+                object, "colorFit").value_or(palette_key == 0 ? 1 : 0);
+            if (color_fit != 0 && color_fit != 1)
+                throw std::runtime_error(
+                    "manifest colorFit must be zero or one");
+            std::uint32_t replacement_mode = replacement_mode_rgb;
+            if (replacement_mode_text) {
+                if (*replacement_mode_text == "rgb")
+                    replacement_mode = replacement_mode_rgb;
+                else if (*replacement_mode_text == "paletteDetail")
+                    replacement_mode = replacement_mode_palette_detail;
+                else
+                    throw std::runtime_error(
+                        "manifest replacementMode is invalid");
+            } else if (*format == 7) {
+                throw std::runtime_error(
+                    "format 7 manifest entry has no replacementMode");
+            }
+            if (
+                replacement_mode == replacement_mode_palette_detail &&
+                (palette_key != 0 || color_fit != 0)
+            )
+                throw std::runtime_error(
+                    "paletteDetail must use the live GT2 palette");
+            pending.push_back(PendingReplacementEntry{
+                key, palette_key, *image, *x, *y, *width, *height,
+                json_integer_field(object, "sourceWidth")
+                    .value_or(*width / manifest_scale),
+                json_integer_field(object, "sourceHeight")
+                    .value_or(*height / manifest_scale),
+                *pixel_mode, replacement_mode, color_fit != 0});
+        }
+        if (pending.empty())
+            throw std::runtime_error("manifest has no texture entries");
+
+        std::vector<LooseReplacementImage> images;
+        std::unordered_map<std::string, std::size_t> image_indices;
+        for (const auto& entry : pending) {
+            if (image_indices.find(entry.image) != image_indices.end())
+                continue;
+            std::filesystem::path relative{entry.image};
+            if (relative.is_absolute())
+                throw std::runtime_error("manifest image path is absolute");
+            const std::filesystem::path path =
+                std::filesystem::absolute(directory / relative)
+                    .lexically_normal();
+            if (!path_is_below(directory, path))
+                throw std::runtime_error("manifest image escapes pack directory");
+            auto image = read_loose_dds(path, entry.image);
+            if (!image)
+                throw std::runtime_error(
+                    "invalid uncompressed RGBA DDS: " + entry.image);
+            image_indices.emplace(entry.image, images.size());
+            images.push_back(std::move(*image));
+        }
+
+        constexpr std::uint32_t padding = 2;
+        std::uint32_t atlas_size = 1024;
+        while (
+            atlas_size <= 16384 &&
+            !layout_replacement_images(&images, atlas_size, padding)
+        )
+            atlas_size *= 2;
+        if (atlas_size > 16384)
+            throw std::runtime_error("replacement images exceed 16384 atlas");
+        std::vector<std::uint8_t> atlas(
+            static_cast<std::size_t>(atlas_size) * atlas_size * 4);
+        for (const auto& image : images) {
+            for (std::int32_t y = -static_cast<std::int32_t>(padding);
+                 y < static_cast<std::int32_t>(image.height + padding);
+                 ++y) {
+                for (std::int32_t x = -static_cast<std::int32_t>(padding);
+                     x < static_cast<std::int32_t>(image.width + padding);
+                     ++x) {
+                    const std::uint32_t source_x = static_cast<std::uint32_t>(
+                        std::clamp(x, 0, static_cast<std::int32_t>(image.width) - 1));
+                    const std::uint32_t source_y = static_cast<std::uint32_t>(
+                        std::clamp(y, 0, static_cast<std::int32_t>(image.height) - 1));
+                    const std::size_t source =
+                        (static_cast<std::size_t>(source_y) * image.width +
+                            source_x) * 4;
+                    const std::size_t target =
+                        (static_cast<std::size_t>(
+                            static_cast<std::int32_t>(image.packed_y) + y) *
+                            atlas_size +
+                            static_cast<std::int32_t>(image.packed_x) + x) * 4;
+                    std::memcpy(atlas.data() + target,
+                        image.rgba.data() + source, 4);
+                }
+            }
+        }
+        for (const auto& entry : pending) {
+            const auto& image = images[image_indices.at(entry.image)];
+            if (
+                entry.x < 0 || entry.y < 0 ||
+                entry.width <= 0 || entry.height <= 0 ||
+                static_cast<std::uint64_t>(entry.x) + entry.width > image.width ||
+                static_cast<std::uint64_t>(entry.y) + entry.height > image.height
+            )
+                throw std::runtime_error("manifest crop is outside its DDS");
+            if (
+                entry.source_width <= 0 || entry.source_height <= 0 ||
+                entry.width % entry.source_width != 0 ||
+                entry.height % entry.source_height != 0 ||
+                entry.width / entry.source_width !=
+                    entry.height / entry.source_height
+            )
+                throw std::runtime_error(
+                    "manifest replacement has a non-integer source scale");
+            ReplacementEntry replacement{};
+            replacement.rect = ReplacementRect{
+                image.packed_x + static_cast<std::uint32_t>(entry.x),
+                image.packed_y + static_cast<std::uint32_t>(entry.y),
+                static_cast<std::uint32_t>(entry.width),
+                static_cast<std::uint32_t>(entry.height)};
+            replacement.source_width =
+                static_cast<std::uint32_t>(entry.source_width);
+            replacement.source_height =
+                static_cast<std::uint32_t>(entry.source_height);
+            replacement.pixel_mode =
+                static_cast<std::uint32_t>(entry.pixel_mode);
+            replacement.palette_key = entry.palette_key;
+            replacement.mode = entry.mode;
+            replacement.color_fit = entry.color_fit;
+            const std::uint32_t source_scale = static_cast<std::uint32_t>(
+                entry.width / entry.source_width);
+            if (replacement.color_fit) {
+                replacement.canonical_rgb.resize(
+                    static_cast<std::size_t>(replacement.source_width) *
+                    replacement.source_height * 3);
+                for (std::uint32_t source_y = 0;
+                     source_y < replacement.source_height;
+                     ++source_y) {
+                    for (std::uint32_t source_x = 0;
+                         source_x < replacement.source_width;
+                         ++source_x) {
+                        std::uint32_t sums[3]{};
+                        for (std::uint32_t dy = 0; dy < source_scale; ++dy) {
+                            for (std::uint32_t dx = 0; dx < source_scale; ++dx) {
+                                const std::size_t pixel = (
+                                    static_cast<std::size_t>(
+                                        entry.y + source_y * source_scale + dy) *
+                                        image.width +
+                                    entry.x + source_x * source_scale + dx) * 4;
+                                for (int channel = 0; channel < 3; ++channel)
+                                    sums[channel] += image.rgba[pixel + channel];
+                            }
+                        }
+                        const std::size_t output = (
+                            static_cast<std::size_t>(source_y) *
+                                replacement.source_width + source_x) * 3;
+                        const std::uint32_t samples = source_scale * source_scale;
+                        for (int channel = 0; channel < 3; ++channel)
+                            replacement.canonical_rgb[output + channel] =
+                                static_cast<std::uint8_t>(
+                                    (sums[channel] + samples / 2) / samples);
+                    }
+                }
+            }
+            auto& variants = resources->replacement_entries[entry.key];
+            if (std::any_of(
+                    variants.begin(), variants.end(),
+                    [&] (const ReplacementEntry& existing) {
+                        return existing.palette_key == entry.palette_key;
+                    }))
+                throw std::runtime_error(
+                    "manifest has a duplicate bitmap/palette identity");
+            variants.push_back(std::move(replacement));
+            ++resources->replacement_entry_count;
+        }
+
+        D3D11_TEXTURE2D_DESC texture_description{};
+        texture_description.Width = atlas_size;
+        texture_description.Height = atlas_size;
+        texture_description.MipLevels = 1;
+        texture_description.ArraySize = 1;
+        texture_description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        texture_description.SampleDesc.Count = 1;
+        texture_description.Usage = D3D11_USAGE_IMMUTABLE;
+        texture_description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        const D3D11_SUBRESOURCE_DATA texture_data{
+            atlas.data(), atlas_size * 4, 0};
+        if (
+            FAILED(resources->device->CreateTexture2D(
+                &texture_description,
+                &texture_data,
+                resources->replacement_texture.GetAddressOf())) ||
+            FAILED(resources->device->CreateShaderResourceView(
+                resources->replacement_texture.Get(),
+                nullptr,
+                resources->replacement_view.GetAddressOf()))
+        )
+            throw std::runtime_error("could not upload replacement atlas");
+        D3D11_SAMPLER_DESC sampler_description{};
+        sampler_description.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+        sampler_description.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampler_description.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampler_description.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampler_description.MaxLOD = D3D11_FLOAT32_MAX;
+        if (FAILED(resources->device->CreateSamplerState(
+                &sampler_description,
+                resources->replacement_sampler.GetAddressOf())))
+            throw std::runtime_error("could not create replacement sampler");
+        resources->replacement_width = atlas_size;
+        resources->replacement_height = atlas_size;
+        resources->replacement_hit_keys.clear();
+        resources->replacement_resolves = 0;
+        resources->replacement_hits = 0;
+        std::fprintf(
+            stderr,
+            "[TexturePack] loaded %zu individual DDS assets / %zu uploads from %s "
+            "gpu-cache=%ux%u\n",
+            images.size(),
+            resources->replacement_entry_count,
+            directory.string().c_str(),
+            atlas_size,
+            atlas_size);
+    } catch (const std::exception& error) {
+        resources->replacement_texture.Reset();
+        resources->replacement_view.Reset();
+        resources->replacement_sampler.Reset();
+        resources->replacement_entries.clear();
+        resources->replacement_entry_count = 0;
+        resources->replacement_width = 0;
+        resources->replacement_height = 0;
+        std::fprintf(stderr, "[TexturePack] rejected pack: %s\n", error.what());
+    }
+}
+
+std::uint8_t expand_ps1_five(std::uint16_t value) {
+    return static_cast<std::uint8_t>((value << 3) | (value >> 2));
+}
+
+std::uint16_t read_vram_word(
+    const std::uint16_t* vram,
+    std::int32_t x,
+    std::int32_t y
+) {
+    return vram[
+        static_cast<std::size_t>(y & 511) * 1024 +
+        static_cast<std::size_t>(x & 1023)];
+}
+
+std::uint16_t material_texture_word_impl(
+    const std::uint16_t* vram,
+    const WorldMaterial& material,
+    std::int32_t raw_u,
+    std::int32_t raw_v,
+    bool apply_texture_window,
+    std::uint8_t* index_output = nullptr
+) {
+    const std::int32_t u = apply_texture_window
+        ? ((raw_u & ~(material.texture_mask_x * 8)) |
+            ((material.texture_offset_x & material.texture_mask_x) * 8)) & 255
+        : raw_u & 255;
+    const std::int32_t v = apply_texture_window
+        ? ((raw_v & ~(material.texture_mask_y * 8)) |
+            ((material.texture_offset_y & material.texture_mask_y) * 8)) & 255
+        : raw_v & 255;
+    const std::int32_t page_x = (material.texture_page & 15) * 64;
+    const std::int32_t page_y = ((material.texture_page >> 4) & 1) * 256;
+    const std::int32_t mode = (material.texture_page >> 7) & 3;
+    const std::int32_t clut_x = (material.clut & 63) * 16;
+    const std::int32_t clut_y = (material.clut >> 6) & 511;
+    if (mode == 0) {
+        const std::uint16_t packed =
+            read_vram_word(vram, page_x + (u >> 2), page_y + v);
+        const std::uint8_t index = static_cast<std::uint8_t>(
+            (packed >> ((u & 3) * 4)) & 15);
+        if (index_output != nullptr)
+            *index_output = index;
+        return read_vram_word(vram, clut_x + index, clut_y);
+    }
+    if (mode == 1) {
+        const std::uint16_t packed =
+            read_vram_word(vram, page_x + (u >> 1), page_y + v);
+        const std::uint8_t index = static_cast<std::uint8_t>(
+            (packed >> ((u & 1) * 8)) & 255);
+        if (index_output != nullptr)
+            *index_output = index;
+        return read_vram_word(vram, clut_x + index, clut_y);
+    }
+    return read_vram_word(vram, page_x + u, page_y + v);
+}
+
+std::uint16_t material_texture_word(
+    const std::uint16_t* vram,
+    const WorldMaterial& material,
+    std::int32_t raw_u,
+    std::int32_t raw_v,
+    std::uint8_t* index_output = nullptr
+) {
+    return material_texture_word_impl(
+        vram, material, raw_u, raw_v, true, index_output);
+}
+
+std::uint16_t raw_material_texture_word(
+    const std::uint16_t* vram,
+    const WorldMaterial& material,
+    std::int32_t raw_u,
+    std::int32_t raw_v,
+    std::uint8_t* index_output = nullptr
+) {
+    return material_texture_word_impl(
+        vram, material, raw_u, raw_v, false, index_output);
+}
+
+void update_replacement_vram_revisions(
+    BaseResources* resources,
+    const std::uint16_t* vram
+) {
+    constexpr std::size_t word_count = 1024U * 512U;
+    if (resources->replacement_vram_shadow.size() != word_count) {
+        resources->replacement_vram_shadow.assign(vram, vram + word_count);
+        const std::uint64_t revision = ++resources->replacement_revision;
+        resources->replacement_block_revisions.fill(revision);
+        resources->replacement_resolution_cache.clear();
+        return;
+    }
+    for (std::int32_t block_y = 0; block_y < 8; ++block_y) {
+        for (std::int32_t block_x = 0; block_x < 16; ++block_x) {
+            bool changed = false;
+            for (std::int32_t row = 0; row < 64 && !changed; ++row) {
+                const std::size_t offset =
+                    static_cast<std::size_t>(block_y * 64 + row) * 1024 +
+                    block_x * 64;
+                changed = std::memcmp(
+                    resources->replacement_vram_shadow.data() + offset,
+                    vram + offset,
+                    64 * sizeof(std::uint16_t)) != 0;
+            }
+            if (!changed)
+                continue;
+            const std::uint64_t revision = ++resources->replacement_revision;
+            resources->replacement_block_revisions[
+                block_y * 16 + block_x] = revision;
+            for (std::int32_t row = 0; row < 64; ++row) {
+                const std::size_t offset =
+                    static_cast<std::size_t>(block_y * 64 + row) * 1024 +
+                    block_x * 64;
+                std::memcpy(
+                    resources->replacement_vram_shadow.data() + offset,
+                    vram + offset,
+                    64 * sizeof(std::uint16_t));
+            }
+        }
+    }
+}
+
+std::uint64_t replacement_texture_revision(
+    const BaseResources& resources,
+    const WorldMaterial& material
+) {
+    const std::int32_t mode = (material.texture_page >> 7) & 3;
+    const std::int32_t page_x = (material.texture_page & 15) * 64;
+    const std::int32_t page_y = ((material.texture_page >> 4) & 1) * 256;
+    const std::int32_t word_width = mode == 0 ? 64 : mode == 1 ? 128 : 256;
+    std::uint64_t revision = 0;
+    for (std::int32_t block_y = page_y >> 6;
+         block_y <= (page_y + 255) >> 6;
+         ++block_y) {
+        for (std::int32_t block_x = page_x >> 6;
+             block_x <= (page_x + word_width - 1) >> 6;
+             ++block_x) {
+            revision = (std::max)(
+                revision,
+                resources.replacement_block_revisions[
+                    (block_y & 7) * 16 + (block_x & 15)]);
+        }
+    }
+    return revision;
+}
+
+void fit_replacement_palette(
+    ReplacementResolution* resolution,
+    const ReplacementEntry& entry,
+    const WorldMaterial& material,
+    const std::uint16_t* vram
+) {
+    if (
+        entry.source_width != resolution->source_width ||
+        entry.source_height != resolution->source_height ||
+        entry.canonical_rgb.size() !=
+            static_cast<std::size_t>(entry.source_width) *
+                entry.source_height * 3
+    )
+        return;
+    const std::size_t pixels =
+        static_cast<std::size_t>(entry.source_width) * entry.source_height;
+    const std::size_t stride = (std::max<std::size_t>)(1, pixels / 64);
+    double sx[3]{}, sy[3]{}, sxx[3]{}, sxy[3]{};
+    std::uint32_t count = 0;
+    for (std::size_t pixel = 0; pixel < pixels; pixel += stride) {
+        const std::int32_t raw_u = resolution->minimum_u +
+            static_cast<std::int32_t>(pixel % entry.source_width);
+        const std::int32_t raw_v = resolution->minimum_v +
+            static_cast<std::int32_t>(pixel / entry.source_width);
+        const std::uint16_t live = raw_material_texture_word(
+            vram, material, raw_u, raw_v);
+        if (live == 0)
+            continue;
+        const double source[3]{
+            entry.canonical_rgb[pixel * 3] / 255.0,
+            entry.canonical_rgb[pixel * 3 + 1] / 255.0,
+            entry.canonical_rgb[pixel * 3 + 2] / 255.0};
+        const double target[3]{
+            expand_ps1_five(live & 31) / 255.0,
+            expand_ps1_five((live >> 5) & 31) / 255.0,
+            expand_ps1_five((live >> 10) & 31) / 255.0};
+        for (int channel = 0; channel < 3; ++channel) {
+            sx[channel] += source[channel];
+            sy[channel] += target[channel];
+            sxx[channel] += source[channel] * source[channel];
+            sxy[channel] += source[channel] * target[channel];
+        }
+        ++count;
+    }
+    if (count == 0)
+        return;
+    for (int channel = 0; channel < 3; ++channel) {
+        const double denominator = count * sxx[channel] -
+            sx[channel] * sx[channel];
+        double scale = 1.0;
+        double bias = (sy[channel] - sx[channel]) / count;
+        if (std::abs(denominator) >= 1.0e-9) {
+            scale = (count * sxy[channel] -
+                sx[channel] * sy[channel]) / denominator;
+            bias = (sy[channel] - scale * sx[channel]) / count;
+        }
+        resolution->color_scale[channel] = static_cast<float>(
+            std::clamp(scale, 0.0, 4.0));
+        resolution->color_bias[channel] = static_cast<float>(
+            std::clamp(bias, -1.0, 1.0));
+    }
+}
+
+ReplacementResolution resolve_texture_replacement(
+    BaseResources* resources,
+    const WorldDrawCommand& command,
+    const WorldMaterial& material,
+    const std::uint16_t* vram,
+    bool enabled,
+    std::unordered_map<
+        ReplacementSignature,
+        ReplacementResolution,
+        ReplacementSignatureHash>* cache
+) {
+    ReplacementResolution result{};
+    if (
+        (material.primitive_flags & textured_flag) == 0 ||
+        (material.primitive_flags & world_primitive_screen_space_flag) != 0
+    )
+        return result;
+    const float minimum_u_float = (std::min)({
+        command.vertices[0].u,
+        command.vertices[1].u,
+        command.vertices[2].u});
+    const float minimum_v_float = (std::min)({
+        command.vertices[0].v,
+        command.vertices[1].v,
+        command.vertices[2].v});
+    const float maximum_u_float = (std::max)({
+        command.vertices[0].u,
+        command.vertices[1].u,
+        command.vertices[2].u});
+    const float maximum_v_float = (std::max)({
+        command.vertices[0].v,
+        command.vertices[1].v,
+        command.vertices[2].v});
+    const std::int32_t authored_minimum_u =
+        static_cast<std::int32_t>(std::floor(minimum_u_float));
+    const std::int32_t authored_minimum_v =
+        static_cast<std::int32_t>(std::floor(minimum_v_float));
+    const std::int32_t authored_maximum_u =
+        static_cast<std::int32_t>(std::ceil(maximum_u_float));
+    const std::int32_t authored_maximum_v =
+        static_cast<std::int32_t>(std::ceil(maximum_v_float));
+    const std::int32_t mode = (material.texture_page >> 7) & 3;
+    if (
+        authored_minimum_u < 0 || authored_minimum_v < 0 ||
+        authored_maximum_u > 255 || authored_maximum_v > 255 ||
+        authored_minimum_u > authored_maximum_u ||
+        authored_minimum_v > authored_maximum_v ||
+        // Direct-color pages commonly contain live framebuffer effects.
+        // Upscale stable authored 4/8-bit texture assets first; never turn
+        // dynamic render targets into an unbounded replacement inventory.
+        mode >= 2
+    )
+        return result;
+    ReplacementSignature signature{};
+    signature.texture_page = material.texture_page;
+    signature.clut = material.clut;
+    signature.mask_x = material.texture_mask_x;
+    signature.mask_y = material.texture_mask_y;
+    signature.offset_x = material.texture_offset_x;
+    signature.offset_y = material.texture_offset_y;
+    signature.minimum_u = static_cast<std::int16_t>(authored_minimum_u);
+    signature.minimum_v = static_cast<std::int16_t>(authored_minimum_v);
+    signature.maximum_u = static_cast<std::int16_t>(authored_maximum_u);
+    signature.maximum_v = static_cast<std::int16_t>(authored_maximum_v);
+    if (const auto found = cache->find(signature); found != cache->end())
+        return found->second;
+    const auto map_coordinate = [] (
+        float coordinate,
+        std::int32_t mask,
+        std::int32_t offset
+    ) {
+        const std::int32_t integer =
+            static_cast<std::int32_t>(std::floor(coordinate));
+        return static_cast<float>(
+            ((integer & ~(mask * 8)) | ((offset & mask) * 8)) & 255) +
+            (coordinate - std::floor(coordinate));
+    };
+    float mapped_minimum_u = 256.0F;
+    float mapped_minimum_v = 256.0F;
+    float mapped_maximum_u = 0.0F;
+    float mapped_maximum_v = 0.0F;
+    for (const auto& vertex : command.vertices) {
+        const float u = map_coordinate(
+            vertex.u, material.texture_mask_x, material.texture_offset_x);
+        const float v = map_coordinate(
+            vertex.v, material.texture_mask_y, material.texture_offset_y);
+        mapped_minimum_u = (std::min)(mapped_minimum_u, u);
+        mapped_minimum_v = (std::min)(mapped_minimum_v, v);
+        mapped_maximum_u = (std::max)(mapped_maximum_u, u);
+        mapped_maximum_v = (std::max)(mapped_maximum_v, v);
+    }
+    const std::int32_t page_x = (material.texture_page & 15) * 64;
+    const std::int32_t page_y =
+        ((material.texture_page >> 4) & 1) * 256;
+    const std::int32_t pixels_per_word = mode == 0 ? 4 : 2;
+    std::uint64_t smallest_area =
+        (std::numeric_limits<std::uint64_t>::max)();
+    const ReplacementEntry* selected = nullptr;
+    bool selected_exact_palette = false;
+    for (const auto& upload : resources->replacement_uploads) {
+        const auto entries = resources->replacement_entries.find(upload.key);
+        if (
+            entries == resources->replacement_entries.end() ||
+            upload.word_width <= 0 || upload.height <= 0
+        )
+            continue;
+        const std::int32_t minimum_u =
+            (upload.x - page_x) * pixels_per_word;
+        const std::int32_t minimum_v = upload.y - page_y;
+        const std::int32_t width = upload.word_width * pixels_per_word;
+        const std::int32_t height = upload.height;
+        if (
+            minimum_u < 0 || minimum_v < 0 ||
+            minimum_u + width > 256 || minimum_v + height > 256 ||
+            mapped_minimum_u < minimum_u ||
+            mapped_minimum_v < minimum_v ||
+            mapped_maximum_u >= minimum_u + width ||
+            mapped_maximum_v >= minimum_v + height
+        )
+            continue;
+        const std::uint64_t area =
+            static_cast<std::uint64_t>(width) * height;
+        for (const ReplacementEntry& entry : entries->second) {
+            if (
+                entry.pixel_mode != static_cast<std::uint32_t>(mode) ||
+                entry.source_width != static_cast<std::uint32_t>(width) ||
+                entry.source_height != static_cast<std::uint32_t>(height)
+            )
+                continue;
+            const bool exact_palette = entry.palette_key != 0;
+            if (
+                exact_palette &&
+                std::none_of(
+                    resources->replacement_uploads.begin(),
+                    resources->replacement_uploads.end(),
+                    [&] (const WorldTextureUpload& palette_upload) {
+                        return world_texture_upload_contains_clut(
+                            palette_upload, entry.palette_key, material.clut);
+                    })
+            )
+                continue;
+            if (
+                selected != nullptr &&
+                ((selected_exact_palette && !exact_palette) ||
+                 (selected_exact_palette == exact_palette &&
+                    area >= smallest_area))
+            )
+                continue;
+            smallest_area = area;
+            selected = &entry;
+            selected_exact_palette = exact_palette;
+            result.minimum_u = minimum_u;
+            result.minimum_v = minimum_v;
+            result.source_width = static_cast<std::uint32_t>(width);
+            result.source_height = static_cast<std::uint32_t>(height);
+            result.key = upload.key;
+            result.palette_key = entry.palette_key;
+            result.mode = entry.mode;
+            result.rect = entry.rect;
+        }
+    }
+    ++resources->replacement_resolves;
+    if (enabled && selected != nullptr) {
+        if (
+            selected->mode == replacement_mode_rgb &&
+            selected->color_fit
+        )
+            fit_replacement_palette(&result, *selected, material, vram);
+        ++resources->replacement_hits;
+        const auto [_, first_hit] = resources->replacement_hit_keys.insert(
+            ReplacementIdentity{result.key, result.palette_key});
+        if (
+            first_hit &&
+            result.mode == replacement_mode_palette_detail
+        ) {
+            std::fprintf(
+                stderr,
+                "[TexturePack] matched palette-native car bitmap=%016llx\n",
+                static_cast<unsigned long long>(result.key));
+        } else if (first_hit && result.palette_key != 0) {
+            std::fprintf(
+                stderr,
+                "[TexturePack] matched exact car paint bitmap=%016llx "
+                "palette=%016llx\n",
+                static_cast<unsigned long long>(result.key),
+                static_cast<unsigned long long>(result.palette_key));
+        }
+    } else if (!enabled) {
+        result.rect = {};
+    }
+    if ((resources->replacement_resolves & 0xFFFFFULL) == 0) {
+        std::fprintf(
+            stderr,
+            "[TexturePack] individual-asset hits=%llu/%llu (%.1f%%) "
+            "matched-assets=%zu/%zu active-uploads=%zu\n",
+            static_cast<unsigned long long>(resources->replacement_hits),
+            static_cast<unsigned long long>(resources->replacement_resolves),
+            100.0 * resources->replacement_hits /
+            (std::max<std::uint64_t>)(1, resources->replacement_resolves),
+            resources->replacement_hit_keys.size(),
+            resources->replacement_entry_count,
+            resources->replacement_uploads.size());
+    }
+    cache->emplace(signature, result);
+    return result;
+}
 
 bool initialize_base(
     BaseResources* resources,
@@ -1864,6 +3030,7 @@ WorldGpuRenderResult render_world_d3d11(
     auto& base = base_resources(options.use_software_adapter);
     if (!base.ready)
         return WorldGpuRenderResult::device_failed;
+    configure_replacement_pack(&base);
     ID3D11DeviceContext* context = base.context.Get();
     const std::size_t authored_vertex_count =
         draw_list.commands.size() * 3;
@@ -2035,11 +3202,17 @@ WorldGpuRenderResult render_world_d3d11(
     ID3D11ShaderResourceView* shader_views[] = {
         base.vram_view.Get(),
         base.material_view.Get(),
+        options.high_resolution_textures
+            ? base.replacement_view.Get()
+            : nullptr,
     };
     context->PSSetShaderResources(
         0,
         static_cast<UINT>(std::size(shader_views)),
         shader_views);
+    ID3D11SamplerState* replacement_sampler =
+        base.replacement_sampler.Get();
+    context->PSSetSamplers(0, 1, &replacement_sampler);
 
     D3D11_MAPPED_SUBRESOURCE mapped_vertices{};
     if (FAILED(context->Map(
@@ -2248,6 +3421,14 @@ WorldGpuRenderResult render_world_d3d11(
             return WorldGpuRenderResult::render_failed;
         auto* gpu_materials =
             static_cast<GpuMaterial*>(mapped_materials.pData);
+        std::unordered_map<
+            ReplacementSignature,
+            ReplacementResolution,
+            ReplacementSignatureHash> replacement_cache;
+        const bool inspect_replacements =
+            options.high_resolution_textures &&
+            !base.replacement_entries.empty() &&
+            !base.replacement_uploads.empty();
         for (std::size_t command_index = 0;
              command_index < draw_list.commands.size();
              ++command_index) {
@@ -2297,6 +3478,15 @@ WorldGpuRenderResult render_world_d3d11(
                 smooth_wheel != smooth_wheels.end() &&
                 (wheel_tread || vehicle_wheel_sidewall_ring(
                     command, material, *smooth_wheel));
+            const ReplacementResolution replacement = inspect_replacements
+                ? resolve_texture_replacement(
+                    &base,
+                    command,
+                    material,
+                    vram,
+                    options.high_resolution_textures,
+                    &replacement_cache)
+                : ReplacementResolution{};
             gpu_materials[command_index] = GpuMaterial{
                 material.primitive_flags,
                 material.texture_page,
@@ -2309,6 +3499,21 @@ WorldGpuRenderResult render_world_d3d11(
                     (opaque_track_surface ? 1U : 0U) |
                     (vehicle_shadow ? 2U : 0U) |
                     (smoothed_wheel_surface ? 4U : 0U),
+                replacement.minimum_u,
+                replacement.minimum_v,
+                replacement.source_width,
+                replacement.source_height,
+                replacement.rect.x,
+                replacement.rect.y,
+                replacement.rect.width,
+                replacement.rect.height,
+                replacement.mode,
+                replacement.color_scale[0],
+                replacement.color_scale[1],
+                replacement.color_scale[2],
+                replacement.color_bias[0],
+                replacement.color_bias[1],
+                replacement.color_bias[2],
             };
         }
         for (std::size_t wheel_index = 0;
@@ -2333,7 +3538,12 @@ WorldGpuRenderResult render_world_d3d11(
             std::getenv("OPENGT_DISABLE_FOOTPRINT_COVERAGE") != nullptr
                 ? 0U
                 : 1U,
-            {},
+            options.high_resolution_textures
+                ? base.replacement_width
+                : 0U,
+            options.high_resolution_textures
+                ? base.replacement_height
+                : 0U,
         };
         context->UpdateSubresource(
             base.constant_buffers[pass].Get(),
@@ -2845,6 +4055,78 @@ WorldGpuReadbackResult try_read_world_d3d11_pair(
     return WorldGpuReadbackResult::success;
 }
 
+WorldGpuReadbackResult try_read_world_d3d11_image(
+    bool use_software_adapter,
+    std::uint8_t* output_rgba,
+    std::size_t output_size,
+    bool wait_for_completion
+) noexcept {
+    if (output_rgba == nullptr)
+        return WorldGpuReadbackResult::invalid_argument;
+    auto& base = base_resources(use_software_adapter);
+    if (!base.ready || base.context == nullptr)
+        return WorldGpuReadbackResult::device_failed;
+    if (base.async_staging_count == 0)
+        return WorldGpuReadbackResult::not_ready;
+    const std::size_t required_output =
+        static_cast<std::size_t>(base.output_width) *
+        static_cast<std::size_t>(base.output_height) * 4U;
+    if (required_output == 0 || output_size < required_output)
+        return WorldGpuReadbackResult::invalid_argument;
+
+    ID3D11DeviceContext* context = base.context.Get();
+    const UINT index = base.async_staging_read_index;
+    while (true) {
+        BOOL complete = FALSE;
+        const HRESULT result = context->GetData(
+            base.async_completion_queries[index].Get(),
+            &complete,
+            sizeof(complete),
+            D3D11_ASYNC_GETDATA_DONOTFLUSH);
+        if (result == S_OK && complete)
+            break;
+        if (FAILED(result))
+            return WorldGpuReadbackResult::read_failed;
+        if (!wait_for_completion)
+            return WorldGpuReadbackResult::not_ready;
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+
+    const std::size_t row_size =
+        static_cast<std::size_t>(base.output_width) * 4U;
+    while (true) {
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        const HRESULT result = context->Map(
+            base.async_staging_textures[index].Get(),
+            0,
+            D3D11_MAP_READ,
+            D3D11_MAP_FLAG_DO_NOT_WAIT,
+            &mapped);
+        if (SUCCEEDED(result)) {
+            for (std::uint32_t y = 0; y < base.output_height; ++y) {
+                std::memcpy(
+                    output_rgba + static_cast<std::size_t>(y) * row_size,
+                    static_cast<const std::uint8_t*>(mapped.pData) +
+                        static_cast<std::size_t>(y) * mapped.RowPitch,
+                    row_size);
+            }
+            context->Unmap(base.async_staging_textures[index].Get(), 0);
+            break;
+        }
+        if (result != DXGI_ERROR_WAS_STILL_DRAWING)
+            return WorldGpuReadbackResult::read_failed;
+        if (!wait_for_completion)
+            return WorldGpuReadbackResult::not_ready;
+        std::this_thread::yield();
+    }
+
+    base.async_staging_read_index =
+        (index + 1U) %
+        static_cast<UINT>(base.async_staging_textures.size());
+    --base.async_staging_count;
+    return WorldGpuReadbackResult::success;
+}
+
 std::size_t pending_world_d3d11_readback_pairs(
     bool use_software_adapter
 ) noexcept {
@@ -2860,6 +4142,26 @@ void reset_world_d3d11_readback(bool use_software_adapter) noexcept {
     base.async_staging_read_index = 0;
     base.async_staging_write_index = 0;
     base.async_staging_count = 0;
+}
+
+bool set_world_d3d11_texture_uploads(
+    bool use_software_adapter,
+    const WorldTextureUpload* uploads,
+    std::size_t upload_count
+) noexcept {
+    if (upload_count != 0 && uploads == nullptr)
+        return false;
+    try {
+        auto& base = base_resources(use_software_adapter);
+        if (upload_count == 0)
+            base.replacement_uploads.clear();
+        else
+            base.replacement_uploads.assign(uploads, uploads + upload_count);
+        base.replacement_resolution_cache.clear();
+        return base.ready;
+    } catch (...) {
+        return false;
+    }
 }
 
 } // namespace opengt::render
@@ -2881,6 +4183,14 @@ WorldGpuRenderResult render_world_d3d11(
 }
 
 void reset_world_d3d11_readback(bool) noexcept {}
+
+bool set_world_d3d11_texture_uploads(
+    bool,
+    const WorldTextureUpload*,
+    std::size_t
+) noexcept {
+    return false;
+}
 
 } // namespace opengt::render
 

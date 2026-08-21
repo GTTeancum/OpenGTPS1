@@ -21,6 +21,7 @@ enum {
     OPENGT_LIVE_WARP = 1u << 4,
     OPENGT_LIVE_TEXTURE_SMOOTHING = 1u << 5,
     OPENGT_LIVE_REALTIME_READBACK = 1u << 6,
+    OPENGT_LIVE_HIGH_RESOLUTION_TEXTURES = 1u << 7,
 };
 
 typedef struct opengt_live_options {
@@ -56,6 +57,13 @@ typedef struct opengt_live_stats {
     uint64_t pipeline_microseconds;
 } opengt_live_stats;
 
+enum {
+    // No pixel buffer was produced by this real-time submission yet.  The
+    // asynchronous readback queue retains the authored frame and publishes it
+    // later with the matching metadata.
+    OPENGT_LIVE_STATS_NO_OUTPUT = 1u << 3,
+};
+
 typedef struct opengt_live_interpolation_stats {
     uint32_t struct_size;
     uint32_t result;
@@ -73,9 +81,9 @@ typedef struct opengt_live_interpolation_stats {
     uint32_t matched_transform_groups;
     uint32_t temporal_reset;
     // Bit 0 records that the midpoint reused exactly compatible prior-frame
-    // VRAM/material uploads. Bit 1 records that the current authored state had
-    // eligible track commands, so performance telemetry can exclude menus and
-    // Results screens from its aligned track-world percentile window.
+    // VRAM/material uploads. Bit 1 records that the current authored draw
+    // list contained track commands, so performance telemetry can exclude
+    // menus and Results screens from its aligned track-world window.
     uint32_t reserved;
     uint32_t exact_rigid_transform_groups;
     uint32_t incoherent_exact_transform_groups;
@@ -86,16 +94,28 @@ typedef struct opengt_live_interpolation_stats {
     uint64_t pair_pipeline_microseconds;
     uint64_t midpoint_render_microseconds;
     uint64_t actual_render_microseconds;
-    // Topology is built once for the current authored state before either
-    // output is rendered. Expose it at pair scope; midpoint output stats are
-    // intentionally topology-free and cannot represent this cost.
+    // Topology is built once for the interpolated midpoint. Expose that
+    // pair-scoped cost here so live telemetry can keep pipeline, submit, and
+    // topology percentile samples aligned.
     uint64_t current_topology_microseconds;
 } opengt_live_interpolation_stats;
+
+typedef struct opengt_live_texture_upload {
+    uint64_t key;
+    int32_t x;
+    int32_t y;
+    int32_t word_width;
+    int32_t height;
+} opengt_live_texture_upload;
 
 OPENGT_LIVE_EXPORT void* opengt_live_create(void);
 
 OPENGT_LIVE_EXPORT void opengt_live_destroy(void* handle);
 
+// With OPENGT_LIVE_REALTIME_READBACK, this submits the authored frame to the
+// asynchronous image queue.  stats.reserved carries
+// OPENGT_LIVE_STATS_NO_OUTPUT while the initial queue is priming; afterward
+// the returned pixels and metadata always identify the same authored frame.
 OPENGT_LIVE_EXPORT int32_t opengt_live_render(
     void* handle,
     const uint8_t* capture_bytes,
@@ -133,6 +153,12 @@ OPENGT_LIVE_EXPORT int32_t opengt_live_try_read_pair(
     size_t output_capacity,
     opengt_live_stats* first_stats,
     opengt_live_stats* second_stats);
+
+OPENGT_LIVE_EXPORT int32_t opengt_live_set_texture_uploads(
+    void* handle,
+    int32_t software_adapter,
+    const opengt_live_texture_upload* uploads,
+    size_t upload_count);
 
 OPENGT_LIVE_EXPORT uint32_t opengt_live_api_version(void);
 

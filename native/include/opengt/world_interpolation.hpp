@@ -21,9 +21,9 @@ struct WorldInterpolationStats {
     std::uint32_t exact_rigid_transform_groups;
     std::uint32_t incoherent_exact_transform_groups;
     std::uint32_t held_incoherent_vehicle_commands;
-    // Vehicle commands restored because interpolation collapsed or
-    // exploded a triangle in their group.
-    std::uint32_t held_degenerate_vehicle_commands;
+    // Vehicle commands restored because a sibling group in the same car
+    // could not advance coherently.
+    std::uint32_t held_atomic_vehicle_commands;
     std::uint32_t held_track_visibility_commands;
     std::uint32_t held_unsafe_track_commands;
     std::uint32_t vertex_exact_track_groups;

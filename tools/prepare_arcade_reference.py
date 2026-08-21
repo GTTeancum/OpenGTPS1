@@ -47,6 +47,11 @@ OVERLAY_ENTRIES = (
 ARCADE_PATCHES = [
     ("80010954", "RecompOne.Runtime.Sdk.GT2Compat.WaitForInitialVBlanks", "replace"),
     ("8007D14C", "RecompOne.Runtime.Sdk.GT2Compat.VSync", "replace"),
+    (
+        "80080A20",
+        "RecompOne.Runtime.Sdk.GT2Compat.TraceRenderSchedulerEntry",
+        "pre",
+    ),
     ("8007C460", "RecompOne.Runtime.Sdk.GT2Compat.WaitForCdCommand", "replace"),
     ("80081F64", "RecompOne.Runtime.Sdk.GT2Compat.WaitForCdBuffer", "replace"),
     ("80089F98", "RecompOne.Runtime.Sdk.LibCd.CdSyncCallback", "replace"),
