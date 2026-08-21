@@ -1353,12 +1353,17 @@ int main() {
         std::fabs(midpoint.commands[1].vertices[0].screen_x - 102.0F) < 0.01F,
         "interpolate each billboard against its nearest matching anchor");
 
-    // Two GT triangles can share the same authored SXY edge while separate
-    // transform groups advance their continuous midpoint projections by a
-    // fraction of a pixel. Preserve the original triangles and cover only
-    // that proven temporal strip with an internal affine seam primitive.
+    // Two GT triangles can share the same authored SXY edge across texture
+    // materials while separate transform groups advance their continuous
+    // midpoint projections by a fraction of a pixel. Preserve the original
+    // triangles and cover only that proven temporal strip with an internal
+    // affine seam primitive.
     auto temporal_seam_previous = list();
     auto temporal_seam_current = list();
+    temporal_seam_previous.materials.resize(2);
+    temporal_seam_current.materials.resize(2);
+    temporal_seam_previous.materials[1].texture_page = 7;
+    temporal_seam_current.materials[1].texture_page = 7;
     const auto make_temporal_seam_command = [] (
         std::uint32_t source,
         bool reverse_edge,
@@ -1407,11 +1412,13 @@ int main() {
         make_temporal_seam_command(100, false, 40.0F));
     temporal_seam_previous.commands.push_back(
         make_temporal_seam_command(101, true, 40.0F));
+    temporal_seam_previous.commands[1].material_index = 1;
     temporal_seam_previous.track_commands = 2;
     temporal_seam_current.commands.push_back(
         make_temporal_seam_command(100, false, 40.4F));
     temporal_seam_current.commands.push_back(
         make_temporal_seam_command(101, true, 40.0F));
+    temporal_seam_current.commands[1].material_index = 1;
     temporal_seam_current.track_commands = 2;
     okay &= expect(
         interpolate_world_draw_lists(

@@ -590,7 +590,10 @@ void print_hit_commands(
         x,
         y - list.display_y,
         hits);
-    if (hits == 0) {
+    if (
+        hits == 0 ||
+        std::getenv("OPENGT_INSPECT_NEAREST_TRACK") != nullptr
+    ) {
         std::sort(nearest_track.begin(), nearest_track.end());
         const std::size_t count = std::min<std::size_t>(
             nearest_track.size(), 8U);

@@ -2853,25 +2853,71 @@ TemporalTrackWeldStats preserve_authored_track_welds(
         }
     }
     const auto by_key = [] (const auto& left, const auto& right) {
-        return left.first < right.first;
+        if (left.first != right.first)
+            return left.first < right.first;
+        return left.second < right.second;
     };
     std::sort(weld_occurrences.begin(), weld_occurrences.end(), by_key);
     std::sort(edge_occurrences.begin(), edge_occurrences.end(), by_key);
-    std::vector<std::pair<std::size_t, std::size_t>> edge_groups;
-    edge_groups.reserve(edge_occurrences.size());
-    for (std::size_t group_begin = 0;
-         group_begin < edge_occurrences.size();) {
-        std::size_t group_end = group_begin + 1U;
-        while (
-            group_end < edge_occurrences.size() &&
-            edge_occurrences[group_end].first ==
-                edge_occurrences[group_begin].first
-        ) {
-            ++group_end;
+    const auto build_edge_groups = [] (const auto& occurrences) {
+        std::vector<std::pair<std::size_t, std::size_t>> result;
+        result.reserve(occurrences.size());
+        for (std::size_t group_begin = 0;
+             group_begin < occurrences.size();) {
+            std::size_t group_end = group_begin + 1U;
+            while (
+                group_end < occurrences.size() &&
+                occurrences[group_end].first ==
+                    occurrences[group_begin].first
+            ) {
+                ++group_end;
+            }
+            result.emplace_back(group_begin, group_end);
+            group_begin = group_end;
         }
-        edge_groups.emplace_back(group_begin, group_end);
-        group_begin = group_end;
+        return result;
+    };
+    const auto edge_groups = build_edge_groups(edge_occurrences);
+    std::vector<std::pair<EdgeKey, EdgeOccurrence>>
+        compatible_edge_occurrences;
+    compatible_edge_occurrences.reserve(edge_groups.size());
+    for (const auto& group : edge_groups) {
+        if (group.second - group.first != 1U)
+            continue;
+        const auto& edge = edge_occurrences[group.first].second;
+        const auto& command = previous.commands[edge.first.first];
+        const auto primitive_flags =
+            previous.materials[command.material_index].primitive_flags;
+        EdgePoint first{
+            previous.commands[edge.first.first]
+                .vertices[edge.first.second].authored_screen_x,
+            previous.commands[edge.first.first]
+                .vertices[edge.first.second].authored_screen_y,
+        };
+        EdgePoint second{
+            previous.commands[edge.second.first]
+                .vertices[edge.second.second].authored_screen_x,
+            previous.commands[edge.second.first]
+                .vertices[edge.second.second].authored_screen_y,
+        };
+        if (second < first)
+            std::swap(first, second);
+        compatible_edge_occurrences.emplace_back(EdgeKey{
+            command.object_id,
+            command.model_pointer,
+            primitive_flags,
+            command.ordering_table_index,
+            command.channel,
+            first,
+            second,
+        }, edge);
     }
+    std::sort(
+        compatible_edge_occurrences.begin(),
+        compatible_edge_occurrences.end(),
+        by_key);
+    const auto compatible_edge_groups =
+        build_edge_groups(compatible_edge_occurrences);
     log_phase("indexes");
     const auto same_projection = [](const WorldDrawVertex& left,
                                     const WorldDrawVertex& right) {
@@ -2976,9 +3022,10 @@ TemporalTrackWeldStats preserve_authored_track_welds(
     // Do not pull a proven authored edge away from the rest of either
     // triangle: that merely moves the crack to its next edge. Instead emit a
     // narrow stitch over the subpixel strip between the two independently
-    // advanced copies. The complete prior edge, same object/model/material,
-    // identical projection state, and bounded midpoint divergence together
-    // are the GT-specific topology proof; unrelated crossings cannot enter.
+    // advanced copies. The complete prior edge, same object/model/rendering
+    // mode, identical projection state, and bounded midpoint divergence
+    // together are the GT-specific topology proof; texture-material borders
+    // remain valid joins while unrelated crossings cannot enter.
     constexpr double maximum_edge_divergence_squared = 0.75 * 0.75;
     std::vector<WorldDrawCommand> seam_commands;
     std::unordered_map<std::uint32_t, std::uint32_t>
@@ -3008,7 +3055,8 @@ TemporalTrackWeldStats preserve_authored_track_welds(
     };
     const auto emit_edge_stitch = [&] (
         const EdgeOccurrence& left,
-        const EdgeOccurrence& right
+        const EdgeOccurrence& right,
+        bool retain_left_edge_attributes = false
     ) {
         const auto& left_first = midpoint->commands[
             left.first.first].vertices[left.first.second];
@@ -3018,6 +3066,18 @@ TemporalTrackWeldStats preserve_authored_track_welds(
             right.first.first].vertices[right.first.second];
         const auto& right_second = midpoint->commands[
             right.second.first].vertices[right.second.second];
+        auto right_first_on_left_edge = right_first;
+        right_first_on_left_edge.u = left_first.u;
+        right_first_on_left_edge.v = left_first.v;
+        right_first_on_left_edge.r = left_first.r;
+        right_first_on_left_edge.g = left_first.g;
+        right_first_on_left_edge.b = left_first.b;
+        auto right_second_on_left_edge = right_second;
+        right_second_on_left_edge.u = left_second.u;
+        right_second_on_left_edge.v = left_second.v;
+        right_second_on_left_edge.r = left_second.r;
+        right_second_on_left_edge.g = left_second.g;
+        right_second_on_left_edge.b = left_second.b;
         const auto& source_command = midpoint->commands[left.first.first];
         const auto& other_command = midpoint->commands[right.first.first];
         WorldDrawCommand first_seam = source_command;
@@ -3028,10 +3088,16 @@ TemporalTrackWeldStats preserve_authored_track_welds(
         second_seam.material_index = material_index;
         first_seam.vertices[0] = left_first;
         first_seam.vertices[1] = left_second;
-        first_seam.vertices[2] = right_second;
+        first_seam.vertices[2] = retain_left_edge_attributes
+            ? right_second_on_left_edge
+            : right_second;
         second_seam.vertices[0] = left_first;
-        second_seam.vertices[1] = right_second;
-        second_seam.vertices[2] = right_first;
+        second_seam.vertices[1] = retain_left_edge_attributes
+            ? right_second_on_left_edge
+            : right_second;
+        second_seam.vertices[2] = retain_left_edge_attributes
+            ? right_first_on_left_edge
+            : right_first;
         const auto prepare_seam = [&] (WorldDrawCommand* command) {
             command->exact_transform_valid = false;
             command->clip_x0 = std::min(
@@ -3069,13 +3135,13 @@ TemporalTrackWeldStats preserve_authored_track_welds(
         if (seam_commands.size() != before)
             ++stats.groups;
     };
-    for (const auto& group : edge_groups) {
-        if (group.second - group.first != 2U)
-            continue;
-        const auto& left = edge_occurrences[group.first].second;
-        const auto& right = edge_occurrences[group.first + 1U].second;
+    const auto stitch_authored_edge = [&] (
+        const EdgeOccurrence& left,
+        const EdgeOccurrence& right,
+        bool retain_left_edge_attributes
+    ) {
         if (left.first.first == right.first.first)
-            continue;
+            return;
         const auto& left_first_previous = previous.commands[
             left.first.first].vertices[left.first.second];
         const auto& left_second_previous = previous.commands[
@@ -3088,7 +3154,7 @@ TemporalTrackWeldStats preserve_authored_track_welds(
             !same_projection(left_first_previous, right_first_previous) ||
             !same_projection(left_second_previous, right_second_previous)
         ) {
-            continue;
+            return;
         }
         const double first_distance = edge_distance_squared(
             left.first, right.first, *midpoint);
@@ -3142,9 +3208,32 @@ TemporalTrackWeldStats preserve_authored_track_welds(
             left_dx * right_dx + left_dy * right_dy <= 0.0 ||
             (first_distance == 0.0 && second_distance == 0.0)
         ) {
+            return;
+        }
+        emit_edge_stitch(left, right, retain_left_edge_attributes);
+    };
+    for (const auto& group : edge_groups) {
+        if (group.second - group.first != 2U)
+            continue;
+        stitch_authored_edge(
+            edge_occurrences[group.first].second,
+            edge_occurrences[group.first + 1U].second,
+            false);
+    }
+    for (const auto& group : compatible_edge_groups) {
+        if (group.second - group.first != 2U)
+            continue;
+        const auto& left =
+            compatible_edge_occurrences[group.first].second;
+        const auto& right =
+            compatible_edge_occurrences[group.first + 1U].second;
+        if (
+            previous.commands[left.first.first].material_index ==
+            previous.commands[right.first.first].material_index
+        ) {
             continue;
         }
-        emit_edge_stitch(left, right);
+        stitch_authored_edge(left, right, true);
     }
     log_phase("authored-edges");
     // Neighboring GT track objects can use separate tessellation while the
