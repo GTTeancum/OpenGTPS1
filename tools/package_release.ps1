@@ -10,7 +10,6 @@ $artifact = Join-Path $repo "artifacts\$ArtifactName"
 $folderName = "OpenGTPS1-$Version-win-x64"
 $stage = Join-Path $artifact $folderName
 $archive = Join-Path $artifact "$folderName.zip"
-$nativeDll = Join-Path $repo 'build\native\Release\opengt_live_renderer.dll'
 
 if (Test-Path -LiteralPath $artifact) {
     throw "Refusing to overwrite an existing release artifact: $artifact"
@@ -34,6 +33,7 @@ try {
         -r win-x64 `
         --self-contained true `
         -p:PublishSingleFile=true `
+        -p:IncludeNativeLibrariesForSelfExtract=true `
         -p:PublishReadyToRun=true `
         -p:Version=0.8.0-beta `
         -p:DebugType=None `
@@ -43,8 +43,6 @@ try {
         throw "Release publish failed: $LASTEXITCODE"
     }
 
-    Copy-Item -LiteralPath $nativeDll `
-        -Destination (Join-Path $stage 'opengt_live_renderer.dll')
     Copy-Item -LiteralPath (Join-Path $repo 'interface.ini') `
         -Destination (Join-Path $stage 'interface.ini')
     Copy-Item -LiteralPath (Join-Path $repo 'tools\recompone.loose.json') `
@@ -61,7 +59,6 @@ try {
 
     $required = @(
         'GranTurismo2PC.exe',
-        'opengt_live_renderer.dll',
         'interface.ini',
         'recompone.loose.json',
         'README.md',
@@ -73,6 +70,9 @@ try {
         if (-not (Test-Path -LiteralPath (Join-Path $stage $name) -PathType Leaf)) {
             throw "Release package is missing required file: $name"
         }
+    }
+    if (Test-Path -LiteralPath (Join-Path $stage 'opengt_live_renderer.dll')) {
+        throw 'Release exposed the native renderer instead of bundling it'
     }
 
     $forbidden = @(Get-ChildItem -LiteralPath $stage -Recurse -File |

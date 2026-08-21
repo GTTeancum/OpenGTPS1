@@ -180,12 +180,12 @@ Require(
     "self-contained apphost no longer prefers its bundled runtime");
 Require(
     unifiedHostProject.Contains(
-        "CopyToPublishDirectory=\"PreserveNewest\"",
+        "<IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>",
         StringComparison.Ordinal) &&
     unifiedHostProject.Contains(
-        "opengt_live_renderer.dll",
+        "ExcludeFromSingleFile=\"false\"",
         StringComparison.Ordinal),
-    "self-contained publish can retain a stale native renderer DLL");
+    "single-file publish no longer embeds the native renderer bridge");
 Require(
     unifiedHostProgram.Contains(
         "ResolveUnifiedGameRoot(AppContext.BaseDirectory, launchDirectory)",

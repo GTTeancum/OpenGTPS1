@@ -43,16 +43,12 @@ try {
     $install = Join-Path $repo 'OpenGTPS1'
     dotnet publish generated\recompiled\GranTurismo2PC.csproj -c Release `
         -r win-x64 --self-contained true -p:PublishSingleFile=true `
+        -p:IncludeNativeLibrariesForSelfExtract=true `
         -p:PublishReadyToRun=true `
         -p:Version=$packageVersion `
         -p:DebugType=None -p:DebugSymbols=false `
         -o $install
     if ($LASTEXITCODE -ne 0) { throw "GT2 publish failed: $LASTEXITCODE" }
-
-    Copy-Item -LiteralPath `
-        (Join-Path $repo 'build\native\Release\opengt_live_renderer.dll') `
-        -Destination (Join-Path $install 'opengt_live_renderer.dll') `
-        -Force
 
     # Convenience cards and the developer's settings file are intentionally
     # excluded from the public source tree. Seed them when present locally,

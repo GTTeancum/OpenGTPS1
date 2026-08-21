@@ -10,6 +10,7 @@
     <!-- Prefer the bundled runtime in self-contained releases while retaining
          global-runtime fallback for ordinary framework-dependent builds. -->
     <AppHostDotNetSearch>AppLocal;Global</AppHostDotNetSearch>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <PublishReadyToRun Condition="'$(Configuration)' == 'Release' and '$(RuntimeIdentifier)' != ''">true</PublishReadyToRun>
   </PropertyGroup>
   <ItemGroup>
@@ -26,6 +27,7 @@
           Condition="Exists('..\..\build\native\Release\opengt_live_renderer.dll')"
           Link="opengt_live_renderer.dll"
           CopyToOutputDirectory="PreserveNewest"
-          CopyToPublishDirectory="PreserveNewest" />
+          CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="false" />
   </ItemGroup>
 </Project>

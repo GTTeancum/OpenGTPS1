@@ -82,6 +82,43 @@ def include_livery_preview_helper() -> None:
     )
 
 
+def include_bundled_native_renderer() -> None:
+    source = PROJECT.read_text(encoding="utf-8")
+    property_present = "IncludeNativeLibrariesForSelfExtract" in source
+    item_present = "ExcludeFromSingleFile=\"false\"" in source
+    if property_present and item_present:
+        return
+    if property_present or item_present:
+        raise RuntimeError(
+            "native renderer single-file project configuration is incomplete"
+        )
+    replace_once(
+        PROJECT,
+        """    <AssemblyName>GranTurismo2PC</AssemblyName>
+""",
+        """    <AssemblyName>GranTurismo2PC</AssemblyName>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+""",
+        "single-file native renderer extraction property",
+    )
+    replace_once(
+        PROJECT,
+        """    <ProjectReference Include="..\\..\\vendor\\RecompOne\\RecompOne.Runtime\\RecompOne.Runtime.csproj" />
+  </ItemGroup>
+""",
+        """    <ProjectReference Include="..\\..\\vendor\\RecompOne\\RecompOne.Runtime\\RecompOne.Runtime.csproj" />
+    <None Include="..\\..\\build\\native\\Release\\opengt_live_renderer.dll"
+          Condition="Exists('..\\..\\build\\native\\Release\\opengt_live_renderer.dll')"
+          Link="opengt_live_renderer.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="false" />
+  </ItemGroup>
+""",
+        "single-file native renderer project item",
+    )
+
+
 def apply_livery_preview_reload(track: Path) -> None:
     replace_once(
         track,
@@ -211,6 +248,7 @@ def main() -> int:
     entry = GENERATED / "Entry.cs"
 
     include_livery_preview_helper()
+    include_bundled_native_renderer()
 
     replace_once(
         race,

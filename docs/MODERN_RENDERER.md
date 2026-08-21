@@ -274,9 +274,11 @@ assets separately.
 
 ## Live PC integration
 
-Race and replay presentation use a bounded C ABI bridge in
-`opengt_live_renderer.dll`. RecompOne records the newest complete world frame
-directly into one of three reusable OGTWCAP v4 buffers, including exact
+Race and replay presentation use a bounded native C ABI bridge. Release builds
+embed that bridge in the single-file `GranTurismo2PC.exe`; the .NET host
+extracts it into its private runtime directory when needed, so the distributed
+package has no loose renderer DLL. RecompOne records the newest complete world
+frame directly into one of three reusable OGTWCAP v4 buffers, including exact
 provenance and a complete VRAM snapshot. A persistent native worker consumes a
 bounded two-capture FIFO, builds the same draw list/topology used by the
 standalone viewer, and renders through D3D11 without filesystem traffic or a
