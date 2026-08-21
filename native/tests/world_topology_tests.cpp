@@ -330,10 +330,34 @@ int main() {
         31);
     projected_t_edge.object_id = 99;
     projected_t_point.object_id = 99;
+    projected_t_edge.transform_id = 0xA1;
+    projected_t_point.transform_id = 0xA1;
+    projected_t_point.vertices[0].transform_id = 0xB2;
     projected_t_point.vertices[0].screen_y = 0.10F;
+    auto projected_t_copy = triangle(
+        vertex(5, 0, 0, 0xC100),
+        vertex(7, 4, 0, 0xC114),
+        vertex(3, 4, 0, 0xC128),
+        0x8000B000,
+        32);
+    projected_t_copy.object_id = 99;
+    // This command's first vertex is already in view space, so its per-vertex
+    // transform agrees with the point while its command-level transform does
+    // not. Both exact copies still have one projection contract and must be
+    // welded to the same corrected screen position.
+    projected_t_copy.transform_id = 0xC3;
+    projected_t_copy.vertices[0].transform_id = 0xB2;
+    projected_t_copy.vertices[0].screen_y = 0.12F;
+    auto projected_t_other_projection = projected_t_copy;
+    projected_t_other_projection.source_command_index = 33;
+    projected_t_other_projection.transform_id = 0xD4;
+    projected_t_other_projection.vertices[0].projection_offset_x = 1.0F;
+    projected_t_other_projection.vertices[0].screen_y = 0.14F;
     projected_t_list.commands.push_back(projected_t_edge);
     projected_t_list.commands.push_back(projected_t_point);
-    projected_t_list.track_commands = 2;
+    projected_t_list.commands.push_back(projected_t_copy);
+    projected_t_list.commands.push_back(projected_t_other_projection);
+    projected_t_list.track_commands = 4;
     WorldTopologyStats projected_t_stats{};
     okay &= expect(
         apply_world_topology(
@@ -345,8 +369,11 @@ int main() {
         projected_t_stats.projected_t_junctions >= 1 &&
         projected_t_stats.adjusted_projected_t_junction_instances >= 1 &&
         std::fabs(
-            projected_t_list.commands[1].vertices[0].screen_y) < 0.001F,
-        "close a bounded projected vertex-to-edge T-junction");
+            projected_t_list.commands[1].vertices[0].screen_y) < 0.001F &&
+        projected_t_list.commands[1].vertices[0].screen_y ==
+            projected_t_list.commands[2].vertices[0].screen_y &&
+        projected_t_list.commands[3].vertices[0].screen_y == 0.14F,
+        "close and weld a mixed-transform projected T-junction");
 
     // A GT2 road LOD can describe the same original raster edge at a
     // different view-space scale. Preserve the authored integer SXY as proof

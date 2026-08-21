@@ -2802,11 +2802,39 @@ WorldTopologyResult apply_world_topology(
                     for (const Occurrence& occurrence : point_occurrences) {
                         auto& command =
                             draw_list->commands[occurrence.command];
+                        auto& vertex = command.vertices[occurrence.vertex];
+                        // A GT packet can mix a locally transformed vertex
+                        // with vertices that are already in view space.  The
+                        // command-level transform then describes only one
+                        // vertex and is not a valid weld boundary.  Exact
+                        // view-space copies under the same projection must
+                        // receive the same T-junction correction or the
+                        // modern subpixel raster opens a dotted seam between
+                        // otherwise adjacent triangles.
+                        const bool shared_exact_projection =
+                            command.object_id ==
+                                representative_command.object_id &&
+                            command.model_pointer ==
+                                representative_command.model_pointer &&
+                            command.ordering_table_index ==
+                                representative_command
+                                    .ordering_table_index &&
+                            vertex.projection_plane ==
+                                representative_vertex.projection_plane &&
+                            vertex.projection_offset_x ==
+                                representative_vertex.projection_offset_x &&
+                            vertex.projection_offset_y ==
+                                representative_vertex.projection_offset_y &&
+                            vertex.draw_offset_x ==
+                                representative_vertex.draw_offset_x &&
+                            vertex.draw_offset_y ==
+                                representative_vertex.draw_offset_y;
                         if (
                             command.ordering_table_index !=
                                 representative_command
                                     .ordering_table_index ||
                             (
+                                !shared_exact_projection &&
                                 (
                                     command.model_pointer !=
                                         best->model_pointer ||
@@ -2835,7 +2863,6 @@ WorldTopologyResult apply_world_topology(
                             )
                         )
                             continue;
-                        auto& vertex = command.vertices[occurrence.vertex];
                         if (
                             vertex.screen_x == best_x &&
                             vertex.screen_y == best_y
