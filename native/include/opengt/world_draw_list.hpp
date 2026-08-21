@@ -11,6 +11,10 @@ namespace opengt::render {
 // Internal material bit added by draw-list construction. Captured PS1
 // primitive bits occupy only the low nibble.
 constexpr std::uint32_t world_primitive_screen_space_flag = 1U << 31;
+// Internal-only material tag for narrow triangles emitted to preserve a
+// proven authored edge through a synthetic temporal sample. These stitches
+// must not merge otherwise independent GT UV-projection islands.
+constexpr std::uint32_t world_primitive_temporal_seam_flag = 1U << 30;
 constexpr std::uint16_t world_vertex_source_identity_flag = 1U << 0;
 constexpr std::uint16_t world_vertex_screen_offset_anchor_flag = 1U << 1;
 

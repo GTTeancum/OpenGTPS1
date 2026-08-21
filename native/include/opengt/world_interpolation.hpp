@@ -45,6 +45,11 @@ struct WorldInterpolationStats {
     float first_unsafe_track_minimum_depth;
     std::uint32_t previous_group_cache_hit;
     std::uint32_t current_group_cache_hit;
+    // Proven authored joins carried through the synthetic midpoint so track
+    // sectors cannot advance their shared endpoints independently.
+    std::uint32_t temporal_track_weld_groups;
+    std::uint32_t adjusted_temporal_track_weld_vertices;
+    std::uint32_t temporal_track_seam_triangles;
 };
 
 enum class WorldInterpolationResult {

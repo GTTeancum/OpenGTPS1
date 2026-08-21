@@ -1039,7 +1039,9 @@ bool perspective_uv_eligible(
     const WorldMaterial& material
 ) {
     if ((material.primitive_flags & textured_flag) == 0 ||
-        (material.primitive_flags & world_primitive_screen_space_flag) != 0)
+        (material.primitive_flags &
+            (world_primitive_screen_space_flag |
+                world_primitive_temporal_seam_flag)) != 0)
         return false;
     float minimum = (std::numeric_limits<float>::max)();
     float maximum = 0.0F;
@@ -1213,7 +1215,8 @@ std::vector<std::uint8_t> perspective_uv_island_eligibility(
             draw_list.materials[command.material_index];
         if ((material.primitive_flags & textured_flag) == 0 ||
             (material.primitive_flags &
-                world_primitive_screen_space_flag) != 0)
+                (world_primitive_screen_space_flag |
+                    world_primitive_temporal_seam_flag)) != 0)
             continue;
         for (int edge_index = 0; edge_index < 3; ++edge_index) {
             const auto& first_vertex = command.vertices[edge_index];

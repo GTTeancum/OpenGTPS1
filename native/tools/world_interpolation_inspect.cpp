@@ -58,7 +58,9 @@ bool load(const char* path, Frame* frame) {
     return
         apply_world_topology(
             &frame->draw_list,
-            WorldTopologyOptions{true, true, true},
+            // Match the live renderer's bounded visible-frame topology
+            // contract so this diagnostic reproduces production midpoints.
+            WorldTopologyOptions{true, true, true, true, false},
             &stats) == WorldTopologyResult::success;
 }
 
@@ -489,6 +491,7 @@ void print_hit_commands(
     float y
 ) {
     std::size_t hits = 0;
+    std::vector<std::pair<double, std::size_t>> nearest_track;
     for (std::size_t command_index = 0;
          command_index < list.commands.size();
          ++command_index) {
@@ -502,6 +505,29 @@ void print_hit_commands(
             minimum_y = std::min(minimum_y, vertex.screen_y);
             maximum_x = std::max(maximum_x, vertex.screen_x);
             maximum_y = std::max(maximum_y, vertex.screen_y);
+        }
+        if (command.object_kind == 1U) {
+            double nearest_edge =
+                (std::numeric_limits<double>::max)();
+            for (int edge_index = 0; edge_index < 3; ++edge_index) {
+                const auto& a = command.vertices[edge_index];
+                const auto& b = command.vertices[(edge_index + 1) % 3];
+                const double dx = b.screen_x - a.screen_x;
+                const double dy = b.screen_y - a.screen_y;
+                const double length_squared = dx * dx + dy * dy;
+                const double t = length_squared > 0.0
+                    ? std::clamp(
+                        ((x - a.screen_x) * dx +
+                            (y - a.screen_y) * dy) / length_squared,
+                        0.0,
+                        1.0)
+                    : 0.0;
+                const double ex = x - (a.screen_x + t * dx);
+                const double ey = y - (a.screen_y + t * dy);
+                nearest_edge = std::min(
+                    nearest_edge, ex * ex + ey * ey);
+            }
+            nearest_track.emplace_back(nearest_edge, command_index);
         }
         if (
             x < minimum_x - 1.0F || x > maximum_x + 1.0F ||
@@ -564,6 +590,33 @@ void print_hit_commands(
         x,
         y - list.display_y,
         hits);
+    if (hits == 0) {
+        std::sort(nearest_track.begin(), nearest_track.end());
+        const std::size_t count = std::min<std::size_t>(
+            nearest_track.size(), 8U);
+        for (std::size_t index = 0; index < count; ++index) {
+            const auto command_index = nearest_track[index].second;
+            const auto& command = list.commands[command_index];
+            std::printf(
+                "near command=%zu distance=%.6f object=%u model=%08x "
+                "source=%u transform=%016llx material=%u ot=%d "
+                "v0=(%.3f,%.3f) v1=(%.3f,%.3f) v2=(%.3f,%.3f)\n",
+                command_index,
+                std::sqrt(nearest_track[index].first),
+                command.object_id,
+                command.model_pointer,
+                command.source_command_index,
+                static_cast<unsigned long long>(command.transform_id),
+                command.material_index,
+                command.ordering_table_index,
+                command.vertices[0].screen_x,
+                command.vertices[0].screen_y - list.display_y,
+                command.vertices[1].screen_x,
+                command.vertices[1].screen_y - list.display_y,
+                command.vertices[2].screen_x,
+                command.vertices[2].screen_y - list.display_y);
+        }
+    }
 }
 
 void print_vehicle_shadow_census(
@@ -644,6 +697,7 @@ int main(int argc, char** argv) {
             "[midpoint.png] [--no-depth] [--model hex] "
             "[--command-range first last] [--summary-only] "
             "[--repeat count] [--cached-index] "
+            "[--affine-textures] "
             "[--sample-pixel x y]\n");
         return 2;
     }
@@ -652,6 +706,7 @@ int main(int argc, char** argv) {
     bool summary_only = false;
     bool cached_index = false;
     bool topology_midpoint = false;
+    bool perspective_correct = true;
     bool sample_pixel = false;
     float sample_x = 0.0F;
     float sample_y = 0.0F;
@@ -668,6 +723,8 @@ int main(int argc, char** argv) {
             cached_index = true;
         else if (std::strcmp(argv[argument], "--topology-midpoint") == 0)
             topology_midpoint = true;
+        else if (std::strcmp(argv[argument], "--affine-textures") == 0)
+            perspective_correct = false;
         else if (
             std::strcmp(argv[argument], "--repeat") == 0 &&
             argument + 1 < argc
@@ -789,7 +846,7 @@ int main(int argc, char** argv) {
         "unsafeShift=%u unsafeSpan=%u "
         "firstUnsafeCommand=%u previousSpan=%.3f,%.3f "
         "midpointSpan=%.3f,%.3f maxShift=%.3f minDepth=%.3f "
-        "cache=%u/%u repeats=%u\n",
+        "cache=%u/%u temporalWelds=%u/%u seamTriangles=%u repeats=%u\n",
         static_cast<unsigned long long>(previous.header.frame_index),
         static_cast<unsigned long long>(current.header.frame_index),
         stats.previous_commands,
@@ -831,6 +888,9 @@ int main(int argc, char** argv) {
         stats.first_unsafe_track_minimum_depth,
         stats.previous_group_cache_hit,
         stats.current_group_cache_hit,
+        stats.temporal_track_weld_groups,
+        stats.adjusted_temporal_track_weld_vertices,
+        stats.temporal_track_seam_triangles,
         repeat_count);
     print_vehicle_shadow_census(midpoint);
     if (topology_midpoint) {
@@ -838,7 +898,8 @@ int main(int argc, char** argv) {
         if (
             opengt::render::apply_world_topology(
                 &midpoint,
-                opengt::render::WorldTopologyOptions{true, true, true},
+                opengt::render::WorldTopologyOptions{
+                    true, true, true, true, false},
                 &midpoint_topology) !=
             opengt::render::WorldTopologyResult::success
         ) {
@@ -875,10 +936,24 @@ int main(int argc, char** argv) {
         std::string value(point);
         const auto comma = value.find(',');
         if (comma != std::string::npos) {
-            const float x = std::strtof(value.c_str(), nullptr);
-            const float y = std::strtof(value.c_str() + comma + 1, nullptr) +
-                static_cast<float>(midpoint.display_y);
-            print_hit_commands(midpoint, x, y);
+            const float relative_x = std::strtof(value.c_str(), nullptr);
+            const float relative_y =
+                std::strtof(value.c_str() + comma + 1, nullptr);
+            std::printf("inspectList=previous\n");
+            print_hit_commands(
+                previous.draw_list,
+                relative_x + previous.draw_list.display_x,
+                relative_y + previous.draw_list.display_y);
+            std::printf("inspectList=current\n");
+            print_hit_commands(
+                current.draw_list,
+                relative_x + current.draw_list.display_x,
+                relative_y + current.draw_list.display_y);
+            std::printf("inspectList=midpoint\n");
+            print_hit_commands(
+                midpoint,
+                relative_x + midpoint.display_x,
+                relative_y + midpoint.display_y);
         }
     }
     if (output_path == nullptr && !summary_only) {
@@ -938,7 +1013,14 @@ int main(int argc, char** argv) {
             output.data(),
             output.size(),
             opengt::render::WorldGpuRenderOptions{
-                false, depth, false, true, true, false, scale, 0xFF402820U},
+                false,
+                depth,
+                false,
+                perspective_correct,
+                true,
+                false,
+                scale,
+                0xFF402820U},
             &render_stats);
         if (
             render_result !=

@@ -1,5 +1,6 @@
 #include "opengt/world_interpolation.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <utility>
@@ -1351,6 +1352,93 @@ int main() {
         std::fabs(midpoint.commands[0].vertices[0].screen_x - 12.0F) < 0.01F &&
         std::fabs(midpoint.commands[1].vertices[0].screen_x - 102.0F) < 0.01F,
         "interpolate each billboard against its nearest matching anchor");
+
+    // Two GT triangles can share the same authored SXY edge while separate
+    // transform groups advance their continuous midpoint projections by a
+    // fraction of a pixel. Preserve the original triangles and cover only
+    // that proven temporal strip with an internal affine seam primitive.
+    auto temporal_seam_previous = list();
+    auto temporal_seam_current = list();
+    const auto make_temporal_seam_command = [] (
+        std::uint32_t source,
+        bool reverse_edge,
+        float edge_y
+    ) {
+        auto result = command(1, 31, 0.0F, source);
+        result.ordering_table_index = 5;
+        const std::array<std::pair<float, float>, 3> points = reverse_edge
+            ? std::array<std::pair<float, float>, 3>{
+                  std::pair{80.0F, edge_y},
+                  std::pair{40.0F, edge_y},
+                  std::pair{80.0F, 10.0F},
+              }
+            : std::array<std::pair<float, float>, 3>{
+                  std::pair{40.0F, edge_y},
+                  std::pair{80.0F, edge_y},
+                  std::pair{40.0F, 70.0F},
+              };
+        const std::array<std::pair<std::int32_t, std::int32_t>, 3>
+            authored = reverse_edge
+                ? std::array<std::pair<std::int32_t, std::int32_t>, 3>{
+                      std::pair{80, 40},
+                      std::pair{40, 40},
+                      std::pair{80, 10},
+                  }
+                : std::array<std::pair<std::int32_t, std::int32_t>, 3>{
+                      std::pair{40, 40},
+                      std::pair{80, 40},
+                      std::pair{40, 70},
+                  };
+        for (std::size_t index = 0; index < 3; ++index) {
+            auto& seam_vertex = result.vertices[index];
+            seam_vertex.screen_x = points[index].first;
+            seam_vertex.screen_y = points[index].second;
+            seam_vertex.authored_screen_x = authored[index].first;
+            seam_vertex.authored_screen_y = authored[index].second;
+            seam_vertex.source_vertex_identity =
+                source * 16U + static_cast<std::uint32_t>(index);
+            seam_vertex.provenance_flags =
+                world_vertex_source_identity_flag |
+                world_vertex_screen_offset_anchor_flag;
+        }
+        return result;
+    };
+    temporal_seam_previous.commands.push_back(
+        make_temporal_seam_command(100, false, 40.0F));
+    temporal_seam_previous.commands.push_back(
+        make_temporal_seam_command(101, true, 40.0F));
+    temporal_seam_previous.track_commands = 2;
+    temporal_seam_current.commands.push_back(
+        make_temporal_seam_command(100, false, 40.4F));
+    temporal_seam_current.commands.push_back(
+        make_temporal_seam_command(101, true, 40.0F));
+    temporal_seam_current.track_commands = 2;
+    okay &= expect(
+        interpolate_world_draw_lists(
+            temporal_seam_previous,
+            temporal_seam_current,
+            0.5F,
+            &midpoint,
+            &stats) == WorldInterpolationResult::success &&
+        stats.temporal_track_seam_triangles == 2 &&
+        midpoint.commands.size() == 4,
+        "stitch a topology-proven divergent authored track edge");
+    okay &= expect(
+        std::fabs(midpoint.commands[0].vertices[0].screen_y - 40.2F) <
+                0.001F &&
+        std::fabs(midpoint.commands[1].vertices[0].screen_y - 40.0F) <
+                0.001F,
+        "leave the surrounding track triangles at their true midpoints");
+    okay &= expect(
+        midpoint.commands[2].material_index < midpoint.materials.size() &&
+        midpoint.commands[3].material_index < midpoint.materials.size() &&
+        (midpoint.materials[
+             midpoint.commands[2].material_index].primitive_flags &
+            world_primitive_temporal_seam_flag) != 0 &&
+        (midpoint.materials[
+             midpoint.commands[3].material_index].primitive_flags &
+            world_primitive_temporal_seam_flag) != 0,
+        "tag temporal seams so the modern renderer keeps affine fallback");
 
     auto field_previous = rotating_previous;
     field_previous.display_y = 240;

@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <map>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -2734,6 +2735,807 @@ TrackCandidateResult build_track_visibility_candidates(
     return TrackCandidateResult::success;
 }
 
+struct TemporalTrackWeldStats {
+    std::uint32_t groups{};
+    std::uint32_t adjusted_vertices{};
+    std::uint32_t seam_triangles{};
+};
+
+TemporalTrackWeldStats preserve_authored_track_welds(
+    const WorldDrawList& previous,
+    WorldDrawList* midpoint
+) {
+    using RepairClock = std::chrono::steady_clock;
+    const bool log_timings =
+        std::getenv("OPENGT_TEMPORAL_TRACK_REPAIR_TIMINGS") != nullptr;
+    const auto repair_started = RepairClock::now();
+    auto phase_started = repair_started;
+    const auto log_phase = [&] (const char* name) {
+        if (!log_timings)
+            return;
+        const auto now = RepairClock::now();
+        const double milliseconds =
+            std::chrono::duration<double, std::milli>(
+                now - phase_started).count();
+        std::fprintf(
+            stderr,
+            "temporalTrackRepair phase=%s ms=%.3f\n",
+            name,
+            milliseconds);
+        phase_started = now;
+    };
+    TemporalTrackWeldStats stats{};
+    if (
+        midpoint == nullptr ||
+        midpoint->commands.size() != previous.commands.size()
+    )
+        return stats;
+    using WeldKey = std::tuple<
+        std::int32_t,
+        std::int32_t,
+        std::int32_t,
+        std::uint32_t,
+        WorldViewChannel>;
+    using Occurrence = std::pair<std::size_t, int>;
+    std::vector<std::pair<WeldKey, Occurrence>> weld_occurrences;
+    using EdgePoint = std::pair<std::int32_t, std::int32_t>;
+    using EdgeKey = std::tuple<
+        std::uint32_t,
+        std::uint32_t,
+        std::uint32_t,
+        std::int32_t,
+        WorldViewChannel,
+        EdgePoint,
+        EdgePoint>;
+    using EdgeOccurrence = std::pair<Occurrence, Occurrence>;
+    std::vector<std::pair<EdgeKey, EdgeOccurrence>> edge_occurrences;
+    weld_occurrences.reserve(previous.track_commands * 3U);
+    edge_occurrences.reserve(previous.track_commands * 3U);
+    const auto fixed = [](float value) {
+        return static_cast<std::int32_t>(std::lround(
+            static_cast<double>(value) * 65536.0));
+    };
+    for (std::size_t command_index = 0;
+         command_index < previous.commands.size();
+         ++command_index) {
+        const auto& command = previous.commands[command_index];
+        if (
+            command.object_kind != 1U ||
+            command.material_index >= previous.materials.size() ||
+            screen_space_command(previous, command)
+        )
+            continue;
+        const auto primitive_flags =
+            previous.materials[command.material_index].primitive_flags;
+        for (int vertex_index = 0; vertex_index < 3; ++vertex_index) {
+            const auto& vertex = command.vertices[vertex_index];
+            // The authored topology pass copies a proven weld to one exact
+            // continuous screen coordinate. Quantizing only removes float
+            // signed-zero differences; unrelated subpixel positions cannot
+            // enter the same 1/65536-pixel bucket.
+            weld_occurrences.emplace_back(WeldKey{
+                fixed(vertex.screen_x - previous.display_x),
+                fixed(vertex.screen_y - previous.display_y),
+                command.ordering_table_index,
+                primitive_flags,
+                command.channel,
+            }, Occurrence{command_index, vertex_index});
+        }
+        for (int edge_index = 0; edge_index < 3; ++edge_index) {
+            const int next_index = (edge_index + 1) % 3;
+            const auto& first_vertex = command.vertices[edge_index];
+            const auto& second_vertex = command.vertices[next_index];
+            EdgePoint first{
+                first_vertex.authored_screen_x,
+                first_vertex.authored_screen_y,
+            };
+            EdgePoint second{
+                second_vertex.authored_screen_x,
+                second_vertex.authored_screen_y,
+            };
+            Occurrence first_occurrence{command_index, edge_index};
+            Occurrence second_occurrence{command_index, next_index};
+            if (second < first) {
+                std::swap(first, second);
+                std::swap(first_occurrence, second_occurrence);
+            }
+            if (first == second)
+                continue;
+            edge_occurrences.emplace_back(EdgeKey{
+                command.object_id,
+                command.model_pointer,
+                command.material_index,
+                command.ordering_table_index,
+                command.channel,
+                first,
+                second,
+            }, EdgeOccurrence{first_occurrence, second_occurrence});
+        }
+    }
+    const auto by_key = [] (const auto& left, const auto& right) {
+        return left.first < right.first;
+    };
+    std::sort(weld_occurrences.begin(), weld_occurrences.end(), by_key);
+    std::sort(edge_occurrences.begin(), edge_occurrences.end(), by_key);
+    std::vector<std::pair<std::size_t, std::size_t>> edge_groups;
+    edge_groups.reserve(edge_occurrences.size());
+    for (std::size_t group_begin = 0;
+         group_begin < edge_occurrences.size();) {
+        std::size_t group_end = group_begin + 1U;
+        while (
+            group_end < edge_occurrences.size() &&
+            edge_occurrences[group_end].first ==
+                edge_occurrences[group_begin].first
+        ) {
+            ++group_end;
+        }
+        edge_groups.emplace_back(group_begin, group_end);
+        group_begin = group_end;
+    }
+    log_phase("indexes");
+    const auto same_projection = [](const WorldDrawVertex& left,
+                                    const WorldDrawVertex& right) {
+        return
+            left.projection_plane == right.projection_plane &&
+            left.projection_offset_x == right.projection_offset_x &&
+            left.projection_offset_y == right.projection_offset_y &&
+            left.draw_offset_x == right.draw_offset_x &&
+            left.draw_offset_y == right.draw_offset_y;
+    };
+    const auto set_position = [&] (const Occurrence& occurrence,
+                                   float target_x,
+                                   float target_y) {
+        auto& vertex = midpoint->commands[
+            occurrence.first].vertices[occurrence.second];
+        if (vertex.screen_x == target_x && vertex.screen_y == target_y)
+            return;
+        vertex.screen_x = target_x;
+        vertex.screen_y = target_y;
+        const float ndc_x =
+            ((target_x - midpoint->display_x) /
+                static_cast<float>(midpoint->display_width)) * 2.0F - 1.0F;
+        const float ndc_y =
+            1.0F -
+            ((target_y - midpoint->display_y) /
+                static_cast<float>(midpoint->display_height)) * 2.0F;
+        vertex.clip_x = ndc_x * vertex.clip_w;
+        vertex.clip_y = ndc_y * vertex.clip_w;
+        ++stats.adjusted_vertices;
+    };
+    for (std::size_t group_begin = 0;
+         group_begin < weld_occurrences.size();) {
+        std::size_t group_end = group_begin + 1U;
+        while (
+            group_end < weld_occurrences.size() &&
+            weld_occurrences[group_end].first ==
+                weld_occurrences[group_begin].first
+        ) {
+            ++group_end;
+        }
+        if (group_end - group_begin < 2U) {
+            group_begin = group_end;
+            continue;
+        }
+        std::map<std::uint32_t, Occurrence> objects;
+        for (std::size_t index = group_begin; index < group_end; ++index) {
+            const Occurrence& occurrence = weld_occurrences[index].second;
+            const auto& command = previous.commands[occurrence.first];
+            objects.try_emplace(command.object_id, occurrence);
+        }
+        if (objects.size() < 2) {
+            group_begin = group_end;
+            continue;
+        }
+        for (auto left = objects.begin(); left != objects.end(); ++left) {
+            const auto right = objects.find(left->first + 1U);
+            if (right == objects.end())
+                continue;
+            const auto& left_previous = previous.commands[
+                left->second.first].vertices[left->second.second];
+            const auto& right_previous = previous.commands[
+                right->second.first].vertices[right->second.second];
+            // Do not carry a coincidental screen crossing. The prior topology
+            // pass only makes cross-object vertices bit-identical after it
+            // proves those neighboring track sections; retain that authored
+            // result only when both vertices also share one projection state.
+            if (!same_projection(left_previous, right_previous))
+                continue;
+            const auto& left_midpoint = midpoint->commands[
+                left->second.first].vertices[left->second.second];
+            const auto& right_midpoint = midpoint->commands[
+                right->second.first].vertices[right->second.second];
+            if (
+                !std::isfinite(left_midpoint.screen_x) ||
+                !std::isfinite(left_midpoint.screen_y) ||
+                !std::isfinite(right_midpoint.screen_x) ||
+                !std::isfinite(right_midpoint.screen_y)
+            )
+                continue;
+            const float target_x =
+                (left_midpoint.screen_x + right_midpoint.screen_x) * 0.5F;
+            const float target_y =
+                (left_midpoint.screen_y + right_midpoint.screen_y) * 0.5F;
+            ++stats.groups;
+            for (std::size_t index = group_begin;
+                 index < group_end;
+                 ++index) {
+                const Occurrence& occurrence =
+                    weld_occurrences[index].second;
+                auto& command = midpoint->commands[occurrence.first];
+                if (
+                    command.object_id != left->first &&
+                    command.object_id != right->first
+                )
+                    continue;
+                set_position(occurrence, target_x, target_y);
+            }
+        }
+        group_begin = group_end;
+    }
+    log_phase("vertex-welds");
+    // Do not pull a proven authored edge away from the rest of either
+    // triangle: that merely moves the crack to its next edge. Instead emit a
+    // narrow stitch over the subpixel strip between the two independently
+    // advanced copies. The complete prior edge, same object/model/material,
+    // identical projection state, and bounded midpoint divergence together
+    // are the GT-specific topology proof; unrelated crossings cannot enter.
+    constexpr double maximum_edge_divergence_squared = 0.75 * 0.75;
+    std::vector<WorldDrawCommand> seam_commands;
+    std::unordered_map<std::uint32_t, std::uint32_t>
+        seam_material_indices;
+    const auto seam_material_index = [&] (std::uint32_t source) {
+        const auto found = seam_material_indices.find(source);
+        if (found != seam_material_indices.end())
+            return found->second;
+        const auto result = static_cast<std::uint32_t>(
+            midpoint->materials.size());
+        auto material = midpoint->materials[source];
+        material.primitive_flags |= world_primitive_temporal_seam_flag;
+        midpoint->materials.push_back(material);
+        seam_material_indices.emplace(source, result);
+        return result;
+    };
+    const auto edge_distance_squared = [&] (
+        const Occurrence& left,
+        const Occurrence& right,
+        const WorldDrawList& list
+    ) {
+        const auto& a = list.commands[left.first].vertices[left.second];
+        const auto& b = list.commands[right.first].vertices[right.second];
+        const double dx = a.screen_x - b.screen_x;
+        const double dy = a.screen_y - b.screen_y;
+        return dx * dx + dy * dy;
+    };
+    const auto emit_edge_stitch = [&] (
+        const EdgeOccurrence& left,
+        const EdgeOccurrence& right
+    ) {
+        const auto& left_first = midpoint->commands[
+            left.first.first].vertices[left.first.second];
+        const auto& left_second = midpoint->commands[
+            left.second.first].vertices[left.second.second];
+        const auto& right_first = midpoint->commands[
+            right.first.first].vertices[right.first.second];
+        const auto& right_second = midpoint->commands[
+            right.second.first].vertices[right.second.second];
+        const auto& source_command = midpoint->commands[left.first.first];
+        const auto& other_command = midpoint->commands[right.first.first];
+        WorldDrawCommand first_seam = source_command;
+        WorldDrawCommand second_seam = source_command;
+        const auto material_index = seam_material_index(
+            source_command.material_index);
+        first_seam.material_index = material_index;
+        second_seam.material_index = material_index;
+        first_seam.vertices[0] = left_first;
+        first_seam.vertices[1] = left_second;
+        first_seam.vertices[2] = right_second;
+        second_seam.vertices[0] = left_first;
+        second_seam.vertices[1] = right_second;
+        second_seam.vertices[2] = right_first;
+        const auto prepare_seam = [&] (WorldDrawCommand* command) {
+            command->exact_transform_valid = false;
+            command->clip_x0 = std::min(
+                source_command.clip_x0, other_command.clip_x0);
+            command->clip_y0 = std::min(
+                source_command.clip_y0, other_command.clip_y0);
+            command->clip_x1 = std::max(
+                source_command.clip_x1, other_command.clip_x1);
+            command->clip_y1 = std::max(
+                source_command.clip_y1, other_command.clip_y1);
+        };
+        prepare_seam(&first_seam);
+        prepare_seam(&second_seam);
+        const auto append_if_visible = [&] (WorldDrawCommand&& command) {
+            const double ax =
+                command.vertices[1].screen_x -
+                command.vertices[0].screen_x;
+            const double ay =
+                command.vertices[1].screen_y -
+                command.vertices[0].screen_y;
+            const double bx =
+                command.vertices[2].screen_x -
+                command.vertices[0].screen_x;
+            const double by =
+                command.vertices[2].screen_y -
+                command.vertices[0].screen_y;
+            if (std::fabs(ax * by - ay * bx) <= 1.0e-9)
+                return;
+            seam_commands.push_back(std::move(command));
+            ++stats.seam_triangles;
+        };
+        const auto before = seam_commands.size();
+        append_if_visible(std::move(first_seam));
+        append_if_visible(std::move(second_seam));
+        if (seam_commands.size() != before)
+            ++stats.groups;
+    };
+    for (const auto& group : edge_groups) {
+        if (group.second - group.first != 2U)
+            continue;
+        const auto& left = edge_occurrences[group.first].second;
+        const auto& right = edge_occurrences[group.first + 1U].second;
+        if (left.first.first == right.first.first)
+            continue;
+        const auto& left_first_previous = previous.commands[
+            left.first.first].vertices[left.first.second];
+        const auto& left_second_previous = previous.commands[
+            left.second.first].vertices[left.second.second];
+        const auto& right_first_previous = previous.commands[
+            right.first.first].vertices[right.first.second];
+        const auto& right_second_previous = previous.commands[
+            right.second.first].vertices[right.second.second];
+        if (
+            !same_projection(left_first_previous, right_first_previous) ||
+            !same_projection(left_second_previous, right_second_previous)
+        ) {
+            continue;
+        }
+        const double first_distance = edge_distance_squared(
+            left.first, right.first, *midpoint);
+        const double second_distance = edge_distance_squared(
+            left.second, right.second, *midpoint);
+        const auto& left_first = midpoint->commands[
+            left.first.first].vertices[left.first.second];
+        const auto& left_second = midpoint->commands[
+            left.second.first].vertices[left.second.second];
+        const auto& right_first = midpoint->commands[
+            right.first.first].vertices[right.first.second];
+        const auto& right_second = midpoint->commands[
+            right.second.first].vertices[right.second.second];
+        const auto point_line_distance_squared = [] (
+            const WorldDrawVertex& point,
+            const WorldDrawVertex& first,
+            const WorldDrawVertex& second
+        ) {
+            const double dx = second.screen_x - first.screen_x;
+            const double dy = second.screen_y - first.screen_y;
+            const double length_squared = dx * dx + dy * dy;
+            if (length_squared <= 0.0)
+                return (std::numeric_limits<double>::max)();
+            const double px = point.screen_x - first.screen_x;
+            const double py = point.screen_y - first.screen_y;
+            const double cross = dx * py - dy * px;
+            return cross * cross / length_squared;
+        };
+        const double maximum_perpendicular_distance = std::max({
+            point_line_distance_squared(
+                left_first, right_first, right_second),
+            point_line_distance_squared(
+                left_second, right_first, right_second),
+            point_line_distance_squared(
+                right_first, left_first, left_second),
+            point_line_distance_squared(
+                right_second, left_first, left_second),
+        });
+        const double left_dx = left_second.screen_x - left_first.screen_x;
+        const double left_dy = left_second.screen_y - left_first.screen_y;
+        const double right_dx =
+            right_second.screen_x - right_first.screen_x;
+        const double right_dy =
+            right_second.screen_y - right_first.screen_y;
+        if (
+            !std::isfinite(first_distance) ||
+            !std::isfinite(second_distance) ||
+            !std::isfinite(maximum_perpendicular_distance) ||
+            maximum_perpendicular_distance >
+                maximum_edge_divergence_squared ||
+            left_dx * right_dx + left_dy * right_dy <= 0.0 ||
+            (first_distance == 0.0 && second_distance == 0.0)
+        ) {
+            continue;
+        }
+        emit_edge_stitch(left, right);
+    }
+    log_phase("authored-edges");
+    // Neighboring GT track objects can use separate tessellation while the
+    // authored topology still proves their boundary through one exact anchor
+    // and one mutually-nearest endpoint. Match only boundary edges from
+    // consecutive objects and require the same proof in both the authored
+    // frame and the synthetic midpoint before stitching their narrow strip.
+    std::unordered_map<std::uint32_t, std::vector<EdgeOccurrence>>
+        boundary_edges;
+    using AuthoredEndpointKey = std::tuple<
+        std::uint32_t,
+        std::uint32_t,
+        std::int32_t,
+        WorldViewChannel,
+        std::int32_t,
+        std::int32_t>;
+    std::vector<std::pair<AuthoredEndpointKey, EdgeOccurrence>>
+        edges_by_authored_endpoint;
+    boundary_edges.reserve(32);
+    edges_by_authored_endpoint.reserve(previous.track_commands * 6U);
+    for (const auto& group : edge_groups) {
+        const auto& edge = edge_occurrences[group.first].second;
+        const auto& command = previous.commands[edge.first.first];
+        if (group.second - group.first == 1U)
+            boundary_edges[command.object_id].push_back(edge);
+        for (const Occurrence& endpoint : {edge.first, edge.second}) {
+            const auto& vertex = previous.commands[
+                endpoint.first].vertices[endpoint.second];
+            edges_by_authored_endpoint.emplace_back(AuthoredEndpointKey{
+                command.object_id,
+                command.material_index,
+                command.ordering_table_index,
+                command.channel,
+                vertex.authored_screen_x,
+                vertex.authored_screen_y,
+            }, edge);
+        }
+    }
+    std::sort(
+        edges_by_authored_endpoint.begin(),
+        edges_by_authored_endpoint.end(),
+        by_key);
+    log_phase("boundary-index");
+    const auto edge_length_squared = [&] (
+        const EdgeOccurrence& edge,
+        const WorldDrawList& list
+    ) {
+        return edge_distance_squared(edge.first, edge.second, list);
+    };
+    const auto append_t_junction_stitch = [&] (
+        const EdgeOccurrence& short_edge,
+        const EdgeOccurrence& long_edge
+    ) {
+        const auto& short_command = previous.commands[
+            short_edge.first.first];
+        const auto& long_command = previous.commands[
+            long_edge.first.first];
+        if (
+            short_command.material_index != long_command.material_index ||
+            short_command.ordering_table_index !=
+                long_command.ordering_table_index ||
+            short_command.channel != long_command.channel
+        ) {
+            return;
+        }
+        Occurrence short_common{};
+        Occurrence long_common{};
+        Occurrence point{};
+        bool found_common = false;
+        for (const auto& candidate : {
+                 std::tuple<Occurrence, Occurrence, Occurrence>{
+                     short_edge.first, long_edge.first, short_edge.second},
+                 std::tuple<Occurrence, Occurrence, Occurrence>{
+                     short_edge.first, long_edge.second, short_edge.second},
+                 std::tuple<Occurrence, Occurrence, Occurrence>{
+                     short_edge.second, long_edge.first, short_edge.first},
+                 std::tuple<Occurrence, Occurrence, Occurrence>{
+                     short_edge.second, long_edge.second, short_edge.first},
+             }) {
+            if (edge_distance_squared(
+                    std::get<0>(candidate),
+                    std::get<1>(candidate),
+                    previous) != 0.0) {
+                continue;
+            }
+            short_common = std::get<0>(candidate);
+            long_common = std::get<1>(candidate);
+            point = std::get<2>(candidate);
+            found_common = true;
+            break;
+        }
+        if (!found_common)
+            return;
+        const auto& point_previous = previous.commands[
+            point.first].vertices[point.second];
+        const auto& long_first_previous = previous.commands[
+            long_edge.first.first].vertices[long_edge.first.second];
+        const auto& long_second_previous = previous.commands[
+            long_edge.second.first].vertices[long_edge.second.second];
+        if (
+            !same_projection(point_previous, long_first_previous) ||
+            !same_projection(point_previous, long_second_previous)
+        ) {
+            return;
+        }
+        const auto project_to_edge = [] (
+            const WorldDrawVertex& sample,
+            const WorldDrawVertex& first,
+            const WorldDrawVertex& second,
+            double* output_x,
+            double* output_y,
+            double* output_error
+        ) {
+            const double dx = second.screen_x - first.screen_x;
+            const double dy = second.screen_y - first.screen_y;
+            const double length_squared = dx * dx + dy * dy;
+            if (length_squared <= 0.0)
+                return false;
+            const double t =
+                ((sample.screen_x - first.screen_x) * dx +
+                    (sample.screen_y - first.screen_y) * dy) /
+                length_squared;
+            if (t <= 0.0 || t >= 1.0)
+                return false;
+            *output_x = first.screen_x + t * dx;
+            *output_y = first.screen_y + t * dy;
+            const double error_x = sample.screen_x - *output_x;
+            const double error_y = sample.screen_y - *output_y;
+            *output_error = error_x * error_x + error_y * error_y;
+            return true;
+        };
+        const std::int64_t authored_dx =
+            static_cast<std::int64_t>(
+                long_second_previous.authored_screen_x) -
+            long_first_previous.authored_screen_x;
+        const std::int64_t authored_dy =
+            static_cast<std::int64_t>(
+                long_second_previous.authored_screen_y) -
+            long_first_previous.authored_screen_y;
+        const std::int64_t authored_px =
+            static_cast<std::int64_t>(point_previous.authored_screen_x) -
+            long_first_previous.authored_screen_x;
+        const std::int64_t authored_py =
+            static_cast<std::int64_t>(point_previous.authored_screen_y) -
+            long_first_previous.authored_screen_y;
+        const std::int64_t authored_length_squared =
+            authored_dx * authored_dx + authored_dy * authored_dy;
+        const std::int64_t authored_dot =
+            authored_px * authored_dx + authored_py * authored_dy;
+        const std::int64_t authored_cross =
+            authored_dx * authored_py - authored_dy * authored_px;
+        // The PS1 raster's integer SXY is the GT-authored tessellation
+        // contract. Continuous high-resolution projection can separate these
+        // points slightly even when the game placed the short endpoint
+        // exactly on the longer edge.
+        if (
+            authored_cross != 0 ||
+            authored_dot <= 0 ||
+            authored_dot >= authored_length_squared
+        ) {
+            return;
+        }
+        const auto& point_midpoint = midpoint->commands[
+            point.first].vertices[point.second];
+        const auto& long_first_midpoint = midpoint->commands[
+            long_edge.first.first].vertices[long_edge.first.second];
+        const auto& long_second_midpoint = midpoint->commands[
+            long_edge.second.first].vertices[long_edge.second.second];
+        double target_x = 0.0;
+        double target_y = 0.0;
+        double midpoint_error = 0.0;
+        if (
+            !project_to_edge(
+                point_midpoint,
+                long_first_midpoint,
+                long_second_midpoint,
+                &target_x,
+                &target_y,
+                &midpoint_error) ||
+            midpoint_error == 0.0 ||
+            midpoint_error > maximum_edge_divergence_squared
+        ) {
+            return;
+        }
+        WorldDrawVertex target = point_midpoint;
+        target.screen_x = static_cast<float>(target_x);
+        target.screen_y = static_cast<float>(target_y);
+        const float ndc_x =
+            ((target.screen_x - midpoint->display_x) /
+                static_cast<float>(midpoint->display_width)) * 2.0F - 1.0F;
+        const float ndc_y =
+            1.0F -
+            ((target.screen_y - midpoint->display_y) /
+                static_cast<float>(midpoint->display_height)) * 2.0F;
+        target.clip_x = ndc_x * target.clip_w;
+        target.clip_y = ndc_y * target.clip_w;
+        const auto& short_common_midpoint = midpoint->commands[
+            short_common.first].vertices[short_common.second];
+        const auto& long_common_midpoint = midpoint->commands[
+            long_common.first].vertices[long_common.second];
+        const auto& source_command = midpoint->commands[
+            short_edge.first.first];
+        const auto& other_command = midpoint->commands[
+            long_edge.first.first];
+        const auto append = [&] (
+            const WorldDrawVertex& a,
+            const WorldDrawVertex& b,
+            const WorldDrawVertex& c
+        ) {
+            const double ab_x = b.screen_x - a.screen_x;
+            const double ab_y = b.screen_y - a.screen_y;
+            const double ac_x = c.screen_x - a.screen_x;
+            const double ac_y = c.screen_y - a.screen_y;
+            if (std::fabs(ab_x * ac_y - ab_y * ac_x) <= 1.0e-9)
+                return false;
+            WorldDrawCommand seam = source_command;
+            seam.vertices[0] = a;
+            seam.vertices[1] = b;
+            seam.vertices[2] = c;
+            seam.exact_transform_valid = false;
+            seam.material_index = seam_material_index(
+                source_command.material_index);
+            seam.clip_x0 = std::min(
+                source_command.clip_x0, other_command.clip_x0);
+            seam.clip_y0 = std::min(
+                source_command.clip_y0, other_command.clip_y0);
+            seam.clip_x1 = std::max(
+                source_command.clip_x1, other_command.clip_x1);
+            seam.clip_y1 = std::max(
+                source_command.clip_y1, other_command.clip_y1);
+            seam_commands.push_back(std::move(seam));
+            ++stats.seam_triangles;
+            return true;
+        };
+        const bool first_added = append(
+            short_common_midpoint, point_midpoint, target);
+        const bool second_added = append(
+            short_common_midpoint, target, long_common_midpoint);
+        if (first_added || second_added)
+            ++stats.groups;
+    };
+    for (const auto& object : boundary_edges) {
+        for (const auto& short_edge : object.second) {
+            const double short_length = edge_length_squared(
+                short_edge, previous);
+            const auto& command = previous.commands[short_edge.first.first];
+            for (const Occurrence& endpoint : {
+                     short_edge.first, short_edge.second}) {
+                const auto& vertex = previous.commands[
+                    endpoint.first].vertices[endpoint.second];
+                const AuthoredEndpointKey key{
+                    command.object_id,
+                    command.material_index,
+                    command.ordering_table_index,
+                    command.channel,
+                    vertex.authored_screen_x,
+                    vertex.authored_screen_y,
+                };
+                const auto first_candidate = std::lower_bound(
+                    edges_by_authored_endpoint.begin(),
+                    edges_by_authored_endpoint.end(),
+                    key,
+                    [] (const auto& candidate,
+                        const AuthoredEndpointKey& target) {
+                        return candidate.first < target;
+                    });
+                for (auto candidate = first_candidate;
+                     candidate != edges_by_authored_endpoint.end() &&
+                     candidate->first == key;
+                     ++candidate) {
+                    const auto& long_edge = candidate->second;
+                    if (
+                        short_length <
+                            edge_length_squared(long_edge, previous)
+                    ) {
+                        append_t_junction_stitch(short_edge, long_edge);
+                    }
+                }
+            }
+        }
+    }
+    log_phase("t-junctions");
+    for (auto left_object = boundary_edges.begin();
+         left_object != boundary_edges.end();
+         ++left_object) {
+        const auto right_object = boundary_edges.find(
+            left_object->first + 1U);
+        if (right_object == boundary_edges.end())
+            continue;
+        std::vector<std::size_t> left_best(
+            left_object->second.size(), right_object->second.size());
+        std::vector<double> left_cost(
+            left_object->second.size(),
+            (std::numeric_limits<double>::max)());
+        std::vector<std::size_t> right_best(
+            right_object->second.size(), left_object->second.size());
+        std::vector<double> right_cost(
+            right_object->second.size(),
+            (std::numeric_limits<double>::max)());
+        for (std::size_t left_index = 0;
+             left_index < left_object->second.size();
+             ++left_index) {
+            const auto& left = left_object->second[left_index];
+            const auto& left_command = previous.commands[left.first.first];
+            for (std::size_t right_index = 0;
+                 right_index < right_object->second.size();
+                 ++right_index) {
+                const auto& right = right_object->second[right_index];
+                const auto& right_command =
+                    previous.commands[right.first.first];
+                if (
+                    left_command.material_index !=
+                        right_command.material_index ||
+                    left_command.ordering_table_index !=
+                        right_command.ordering_table_index ||
+                    left_command.channel != right_command.channel
+                ) {
+                    continue;
+                }
+                const auto& left_first_previous = previous.commands[
+                    left.first.first].vertices[left.first.second];
+                const auto& left_second_previous = previous.commands[
+                    left.second.first].vertices[left.second.second];
+                const auto& right_first_previous = previous.commands[
+                    right.first.first].vertices[right.first.second];
+                const auto& right_second_previous = previous.commands[
+                    right.second.first].vertices[right.second.second];
+                if (
+                    !same_projection(
+                        left_first_previous, right_first_previous) ||
+                    !same_projection(
+                        left_second_previous, right_second_previous)
+                ) {
+                    continue;
+                }
+                const double authored_first = edge_distance_squared(
+                    left.first, right.first, previous);
+                const double authored_second = edge_distance_squared(
+                    left.second, right.second, previous);
+                const double midpoint_first = edge_distance_squared(
+                    left.first, right.first, *midpoint);
+                const double midpoint_second = edge_distance_squared(
+                    left.second, right.second, *midpoint);
+                if (
+                    authored_first > maximum_edge_divergence_squared ||
+                    authored_second > maximum_edge_divergence_squared ||
+                    midpoint_first > maximum_edge_divergence_squared ||
+                    midpoint_second > maximum_edge_divergence_squared ||
+                    (authored_first != 0.0 && authored_second != 0.0)
+                ) {
+                    continue;
+                }
+                const double cost =
+                    authored_first + authored_second +
+                    midpoint_first + midpoint_second;
+                if (cost < left_cost[left_index]) {
+                    left_cost[left_index] = cost;
+                    left_best[left_index] = right_index;
+                }
+                if (cost < right_cost[right_index]) {
+                    right_cost[right_index] = cost;
+                    right_best[right_index] = left_index;
+                }
+            }
+        }
+        for (std::size_t left_index = 0;
+             left_index < left_best.size();
+             ++left_index) {
+            const std::size_t right_index = left_best[left_index];
+            if (
+                right_index >= right_best.size() ||
+                right_best[right_index] != left_index
+            ) {
+                continue;
+            }
+            emit_edge_stitch(
+                left_object->second[left_index],
+                right_object->second[right_index]);
+        }
+    }
+    log_phase("object-boundaries");
+    midpoint->track_commands += static_cast<std::uint32_t>(
+        seam_commands.size());
+    midpoint->commands.insert(
+        midpoint->commands.end(),
+        std::make_move_iterator(seam_commands.begin()),
+        std::make_move_iterator(seam_commands.end()));
+    log_phase("append");
+    return stats;
+}
+
 } // namespace
 
 WorldInterpolationCache::~WorldInterpolationCache() {
@@ -3536,6 +4338,15 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
                     previous.commands[command_index];
             }
         }
+        const TemporalTrackWeldStats temporal_welds =
+            std::getenv("OPENGT_DISABLE_TEMPORAL_TRACK_REPAIR") == nullptr
+                ? preserve_authored_track_welds(previous, &midpoint)
+                : TemporalTrackWeldStats{};
+        stats.temporal_track_weld_groups = temporal_welds.groups;
+        stats.adjusted_temporal_track_weld_vertices =
+            temporal_welds.adjusted_vertices;
+        stats.temporal_track_seam_triangles =
+            temporal_welds.seam_triangles;
         const auto commands_finished = InterpolationClock::now();
         if (std::getenv("OPENGT_INTERPOLATION_HELD_DIAGNOSTICS") != nullptr) {
             // A held command is one the loop left exactly as copied from the
