@@ -129,6 +129,34 @@ public sealed partial class Gpu
     readonly HashSet<string> _screenEffectBaselineSignatures = new();
     readonly HashSet<string> _screenEffectNewPacketSignatures = new();
     readonly HashSet<string> _screenEffectPrimitiveSignatures = new();
+    readonly bool _traceMixedProjectionTriangles =
+        string.Equals(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_MIXED_PROJECTION_TRIANGLES"),
+            "1",
+            StringComparison.Ordinal);
+    readonly int _traceMixedProjectionStartPoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_MIXED_PROJECTION_START_POLL"),
+            out int traceMixedProjectionStartPoll)
+            ? traceMixedProjectionStartPoll
+            : 0;
+    readonly int _traceMixedProjectionEndPoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_MIXED_PROJECTION_END_POLL"),
+            out int traceMixedProjectionEndPoll)
+            ? traceMixedProjectionEndPoll
+            : int.MaxValue;
+    readonly int _traceMixedProjectionLimit =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_MIXED_PROJECTION_LIMIT"),
+            out int traceMixedProjectionLimit)
+            ? Math.Max(1, traceMixedProjectionLimit)
+            : 4096;
+    int _mixedProjectionTraceCount;
 
     public Gpu()
     {
@@ -201,6 +229,14 @@ public sealed partial class Gpu
         var hc = HV(c);
         if (_projectedCapture.Enabled)
             CaptureHleTri(in ha, in hb, in hc, in flags);
+        TraceMixedProjectionTriangle(
+            in a,
+            in b,
+            in c,
+            in originA,
+            in originB,
+            in originC,
+            in flags);
         bool fileWorldCapture = _worldCapture.Enabled;
         bool liveWorldCapture = _liveWorldCapture.Enabled;
         bool containsWorldProvenance =
@@ -281,6 +317,65 @@ public sealed partial class Gpu
         // is stopping so neither the GL-HLE nor software compatibility
         // rasterizer can silently reappear as a world-renderer fallback.
         return containsWorldProvenance;
+    }
+
+    void TraceMixedProjectionTriangle(
+        in Vert a,
+        in Vert b,
+        in Vert c,
+        in GteProjectionOrigin originA,
+        in GteProjectionOrigin originB,
+        in GteProjectionOrigin originC,
+        in PrimFlags flags)
+    {
+        if (!_traceMixedProjectionTriangles)
+            return;
+        int poll = Host.InputManager.CurrentPoll;
+        if (poll < _traceMixedProjectionStartPoll ||
+            poll > _traceMixedProjectionEndPoll)
+            return;
+        if (!originA.Valid || !originB.Valid || !originC.Valid)
+            return;
+        bool coherent =
+            originA.TransformId == originB.TransformId &&
+            originA.TransformId == originC.TransformId &&
+            originA.ProjectionPlane == originB.ProjectionPlane &&
+            originA.ProjectionPlane == originC.ProjectionPlane &&
+            originA.ProjectionOffsetX == originB.ProjectionOffsetX &&
+            originA.ProjectionOffsetX == originC.ProjectionOffsetX &&
+            originA.ProjectionOffsetY == originB.ProjectionOffsetY &&
+            originA.ProjectionOffsetY == originC.ProjectionOffsetY;
+        if (coherent)
+            return;
+        int trace = Interlocked.Increment(ref _mixedProjectionTraceCount);
+        if (trace > _traceMixedProjectionLimit)
+            return;
+
+        static string DescribeVertex(
+            char name,
+            in Vert vertex,
+            in GteProjectionOrigin origin) =>
+            $"{name}[packet=0x{vertex.SourceAddress:X8} " +
+            $"screen={vertex.X},{vertex.Y} uv={vertex.U},{vertex.V} " +
+            $"z={vertex.Z} age={vertex.DepthAge} " +
+            $"depth={vertex.DepthProvenance} " +
+            $"object={origin.Object.Kind}/0x{origin.Object.StableId:X8}/" +
+            $"0x{origin.Object.ModelPointer:X8} " +
+            $"model={origin.ModelX},{origin.ModelY},{origin.ModelZ} " +
+            $"view={origin.ViewX},{origin.ViewY},{origin.ViewZ} " +
+            $"transform=0x{origin.TransformId:X16} " +
+            $"projection={origin.ProjectionPlane}/" +
+            $"{origin.ProjectionOffsetX},{origin.ProjectionOffsetY} " +
+            $"flags={origin.Flags}]";
+
+        Console.Error.WriteLine(
+            $"[GTE-MIXED-TRI] n={trace} poll={poll} " +
+            $"frame={_projectedCaptureFrame + 1} " +
+            $"textured={flags.Textured} tpage=0x{flags.TPage:X4} " +
+            $"clut=0x{flags.Clut:X4} " +
+            DescribeVertex('A', in a, in originA) + " " +
+            DescribeVertex('B', in b, in originB) + " " +
+            DescribeVertex('C', in c, in originC));
     }
 
     void TraceScreenEffectPrimitive(

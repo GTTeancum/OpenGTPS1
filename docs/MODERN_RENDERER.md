@@ -845,6 +845,28 @@ The development viewer can still request perspective interpolation for A/B
 captures. It is diagnostic-only until a GT2-aware reconstruction can preserve
 the affine reference coverage without road corruption.
 
+The first GT-aware diagnostic stage now treats projection as a surface
+contract rather than a frame-wide shader switch. A textured triangle remains
+projective only when all three positive captured depths stay within GT2's
+bounded 8:1 range. Triangles sharing an exact geometry-and-UV edge are grouped
+into one UV island, and horizontal opaque track islands are also joined across
+intentional atlas seams by their exact view-space edge. If one member requires
+the affine contract, the connected surface uses it consistently; this prevents
+the renderer from creating a new affine/projective crack inside a road strip.
+Vehicles and other shallow coherent islands retain true homogeneous texture
+interpolation. Shipping remains globally affine while this reconstruction is
+validated on stock tracks.
+
+`OPENGT_RENDER_UV_DIAGNOSTICS=1` reports individual and island-level
+perspective counts, track/vehicle fallback counts, and the largest connected
+island. The upstream packet correlation trace is independently gated by
+`RECOMPONE_TRACE_MIXED_PROJECTION_TRIANGLES=1`; start/end-poll and record-limit
+variants use `RECOMPONE_TRACE_MIXED_PROJECTION_START_POLL`,
+`RECOMPONE_TRACE_MIXED_PROJECTION_END_POLL`, and
+`RECOMPONE_TRACE_MIXED_PROJECTION_LIMIT`. That trace includes packet address,
+depth age/provenance, object/model identity, model and view coordinates,
+transform ID, and projection state for every mixed-basis triangle.
+
 ## Road and model seams
 
 Screen-space triangle expansion is not part of the new architecture.

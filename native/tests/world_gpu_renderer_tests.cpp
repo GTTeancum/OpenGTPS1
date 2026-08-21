@@ -409,6 +409,107 @@ bool is_soft_shadow(const std::array<std::uint8_t, 4>& pixel) {
         pixel[1] < 16U && pixel[2] < 16U;
 }
 
+std::vector<std::uint8_t> render_uv_island(
+    bool perspective,
+    float near_depth
+) {
+    using namespace opengt::render;
+    WorldDrawList list{};
+    list.display_width = 32;
+    list.display_height = 32;
+    list.materials.push_back(WorldMaterial{
+        1U | 4U,
+        2U << 7U,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    });
+    const auto point = [](
+        float ndc_x,
+        float ndc_y,
+        float depth,
+        float u,
+        float v,
+        std::int32_t identity_x,
+        std::int32_t identity_y
+    ) {
+        WorldDrawVertex result{};
+        result.clip_x = ndc_x * depth;
+        result.clip_y = ndc_y * depth;
+        result.clip_z = 0.5F * depth;
+        result.clip_w = depth;
+        result.u = u;
+        result.v = v;
+        result.r = result.g = result.b = 128;
+        result.exact_view_x = identity_x;
+        result.exact_view_y = identity_y;
+        result.exact_view_z = static_cast<std::int32_t>(depth);
+        result.exact_transform_valid = true;
+        return result;
+    };
+    const auto a = point(-0.9F, -0.9F, near_depth, 4, 4, 0, 0);
+    const auto b = point(0.9F, -0.9F, 16, 20, 4, 16, 0);
+    const auto c = point(-0.9F, 0.9F, 16, 4, 20, 0, 16);
+    const auto d = point(0.9F, 0.9F, 4, 20, 20, 16, 16);
+    const auto append = [&list](
+        const WorldDrawVertex& first,
+        const WorldDrawVertex& second,
+        const WorldDrawVertex& third
+    ) {
+        WorldDrawCommand command{};
+        command.vertices[0] = first;
+        command.vertices[1] = second;
+        command.vertices[2] = third;
+        command.material_index = 0;
+        command.clip_x0 = command.clip_y0 = 0;
+        command.clip_x1 = command.clip_y1 = 31;
+        command.object_kind = 1;
+        command.object_id = 9;
+        command.model_pointer = 0x80003000U;
+        command.channel = WorldViewChannel::main_view;
+        list.commands.push_back(command);
+    };
+    append(a, b, c);
+    append(b, d, c);
+    list.track_commands = 2;
+
+    std::vector<std::uint16_t> vram(1024U * 512U);
+    for (std::uint32_t y = 1; y < 32; ++y) {
+        for (std::uint32_t x = 1; x < 32; ++x) {
+            vram[y * 1024U + x] = static_cast<std::uint16_t>(
+                (x & 31U) |
+                ((y & 31U) << 5U) |
+                (((x + y) & 31U) << 10U));
+        }
+    }
+    std::vector<std::uint8_t> output(32U * 32U * 4U);
+    WorldGpuRenderStats stats{};
+    reset_world_d3d11_readback(false);
+    const auto result = render_world_d3d11(
+        list,
+        vram.data(),
+        vram.size(),
+        output.data(),
+        output.size(),
+        WorldGpuRenderOptions{
+            false,
+            true,
+            false,
+            perspective,
+            false,
+            false,
+            1,
+            clear_rgba,
+        },
+        &stats);
+    if (result != WorldGpuRenderResult::success || !stats.output_valid)
+        return {};
+    return output;
+}
+
 // A GT2 rear-view mirror pass submits vehicles through a narrow guest drawing
 // area. Build one wheel group whose replacement shell projects far wider than
 // that rectangle, then prove the renderer honours the guest clip.
@@ -617,6 +718,17 @@ int main() {
     okay &= expect(
         unclipped[0] > clipped[0],
         "keep the full shell when the drawing area covers the display");
+    const auto deep_affine = render_uv_island(false, 1.0F);
+    const auto deep_perspective = render_uv_island(true, 1.0F);
+    okay &= expect(
+        !deep_affine.empty() && deep_affine == deep_perspective,
+        "keep a deep GT2 UV island on one affine interpolation contract");
+    const auto shallow_affine = render_uv_island(false, 4.0F);
+    const auto shallow_perspective = render_uv_island(true, 4.0F);
+    okay &= expect(
+        !shallow_affine.empty() &&
+            shallow_affine != shallow_perspective,
+        "retain perspective correction on a coherent shallow UV island");
     if (!okay)
         return 1;
     std::puts("world GPU renderer tests passed");

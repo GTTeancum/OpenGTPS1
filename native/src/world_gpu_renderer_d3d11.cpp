@@ -1001,6 +1001,341 @@ struct GpuVertex {
 
 constexpr std::uint32_t replacement_mode_rgb = 0;
 constexpr std::uint32_t replacement_mode_palette_detail = 1;
+constexpr std::uint32_t perspective_uv_eligible_flag = 1U << 3U;
+constexpr float maximum_gt2_perspective_depth_ratio = 8.0F;
+
+bool is_opaque_track_surface(
+    const WorldDrawCommand& command,
+    const WorldMaterial& material
+) noexcept {
+    const auto& a = command.vertices[0];
+    const auto& b = command.vertices[1];
+    const auto& c = command.vertices[2];
+    const std::int64_t ab_x =
+        static_cast<std::int64_t>(b.model_x) - a.model_x;
+    const std::int64_t ab_y =
+        static_cast<std::int64_t>(b.model_y) - a.model_y;
+    const std::int64_t ab_z =
+        static_cast<std::int64_t>(b.model_z) - a.model_z;
+    const std::int64_t ac_x =
+        static_cast<std::int64_t>(c.model_x) - a.model_x;
+    const std::int64_t ac_y =
+        static_cast<std::int64_t>(c.model_y) - a.model_y;
+    const std::int64_t ac_z =
+        static_cast<std::int64_t>(c.model_z) - a.model_z;
+    const std::int64_t normal_x = ab_y * ac_z - ab_z * ac_y;
+    const std::int64_t normal_y = ab_z * ac_x - ab_x * ac_z;
+    const std::int64_t normal_z = ab_x * ac_y - ab_y * ac_x;
+    return command.object_kind == 1U &&
+        (material.primitive_flags & textured_flag) != 0 &&
+        (material.primitive_flags & semi_transparent_flag) == 0 &&
+        (material.primitive_flags & world_primitive_screen_space_flag) == 0 &&
+        std::llabs(normal_y) >= std::llabs(normal_x) &&
+        std::llabs(normal_y) >= std::llabs(normal_z);
+}
+
+bool perspective_uv_eligible(
+    const WorldDrawCommand& command,
+    const WorldMaterial& material
+) {
+    if ((material.primitive_flags & textured_flag) == 0 ||
+        (material.primitive_flags & world_primitive_screen_space_flag) != 0)
+        return false;
+    float minimum = (std::numeric_limits<float>::max)();
+    float maximum = 0.0F;
+    for (const auto& vertex : command.vertices) {
+        if (!std::isfinite(vertex.clip_w) || vertex.clip_w <= 0.0F)
+            return false;
+        minimum = (std::min)(minimum, vertex.clip_w);
+        maximum = (std::max)(maximum, vertex.clip_w);
+    }
+    // GT2 subdivides and assigns UVs for the PS1's affine rasterizer. Across
+    // very deep track strips those coordinates are deliberately close to
+    // screen-linear; treating them as an unmodified projective parameterization
+    // double-corrects the strip and expands a one-texel atlas edge into a large
+    // polygon. The original RecompOne perspective path used the same bounded
+    // depth contract. Preserve perspective correction on coherent local
+    // surfaces while the GT-specific UV-island reconstruction is developed.
+    return maximum / minimum <= maximum_gt2_perspective_depth_ratio;
+}
+
+struct PerspectiveUvVertexKey {
+    std::int32_t view_x{};
+    std::int32_t view_y{};
+    std::int32_t view_z{};
+    std::int32_t u{};
+    std::int32_t v{};
+
+    bool operator==(const PerspectiveUvVertexKey& other) const noexcept {
+        return view_x == other.view_x &&
+            view_y == other.view_y &&
+            view_z == other.view_z &&
+            u == other.u &&
+            v == other.v;
+    }
+
+    bool operator<(const PerspectiveUvVertexKey& other) const noexcept {
+        if (view_x != other.view_x) return view_x < other.view_x;
+        if (view_y != other.view_y) return view_y < other.view_y;
+        if (view_z != other.view_z) return view_z < other.view_z;
+        if (u != other.u) return u < other.u;
+        return v < other.v;
+    }
+};
+
+struct PerspectiveUvEdgeKey {
+    std::uint32_t continuity_kind{};
+    std::uint32_t object_kind{};
+    std::uint32_t object_id{};
+    std::uint32_t model_pointer{};
+    std::uint32_t primitive_flags{};
+    std::uint32_t texture_page{};
+    std::uint32_t clut{};
+    std::int32_t texture_mask_x{};
+    std::int32_t texture_mask_y{};
+    std::int32_t texture_offset_x{};
+    std::int32_t texture_offset_y{};
+    PerspectiveUvVertexKey first{};
+    PerspectiveUvVertexKey second{};
+
+    bool operator==(const PerspectiveUvEdgeKey& other) const noexcept {
+        return continuity_kind == other.continuity_kind &&
+            object_kind == other.object_kind &&
+            object_id == other.object_id &&
+            model_pointer == other.model_pointer &&
+            primitive_flags == other.primitive_flags &&
+            texture_page == other.texture_page &&
+            clut == other.clut &&
+            texture_mask_x == other.texture_mask_x &&
+            texture_mask_y == other.texture_mask_y &&
+            texture_offset_x == other.texture_offset_x &&
+            texture_offset_y == other.texture_offset_y &&
+            first == other.first &&
+            second == other.second;
+    }
+};
+
+struct PerspectiveUvEdgeHash {
+    std::size_t operator()(const PerspectiveUvEdgeKey& key) const noexcept {
+        std::size_t result = 1469598103934665603ULL;
+        const auto mix = [&result](std::uint64_t value) {
+            result ^= static_cast<std::size_t>(value);
+            result *= 1099511628211ULL;
+        };
+        mix(key.continuity_kind);
+        mix(key.object_kind);
+        mix(key.object_id);
+        mix(key.model_pointer);
+        mix(key.primitive_flags);
+        mix(key.texture_page);
+        mix(key.clut);
+        mix(static_cast<std::uint32_t>(key.texture_mask_x));
+        mix(static_cast<std::uint32_t>(key.texture_mask_y));
+        mix(static_cast<std::uint32_t>(key.texture_offset_x));
+        mix(static_cast<std::uint32_t>(key.texture_offset_y));
+        for (const auto& vertex : {key.first, key.second}) {
+            mix(static_cast<std::uint32_t>(vertex.view_x));
+            mix(static_cast<std::uint32_t>(vertex.view_y));
+            mix(static_cast<std::uint32_t>(vertex.view_z));
+            mix(static_cast<std::uint32_t>(vertex.u));
+            mix(static_cast<std::uint32_t>(vertex.v));
+        }
+        return result;
+    }
+};
+
+std::vector<std::uint8_t> perspective_uv_island_eligibility(
+    const WorldDrawList& draw_list
+) {
+    const std::size_t count = draw_list.commands.size();
+    std::vector<std::size_t> parent(count);
+    std::vector<std::uint8_t> rank(count, 0);
+    std::vector<std::uint8_t> eligible(count, 0);
+    std::size_t individually_eligible = 0;
+    for (std::size_t index = 0; index < count; ++index) {
+        parent[index] = index;
+        const auto& command = draw_list.commands[index];
+        if (command.material_index < draw_list.materials.size()) {
+            eligible[index] = perspective_uv_eligible(
+                command,
+                draw_list.materials[command.material_index])
+                ? 1U
+                : 0U;
+            individually_eligible += eligible[index] != 0 ? 1U : 0U;
+        }
+    }
+    const auto find_root = [&parent](std::size_t value) {
+        std::size_t root = value;
+        while (parent[root] != root)
+            root = parent[root];
+        while (parent[value] != value) {
+            const std::size_t next = parent[value];
+            parent[value] = root;
+            value = next;
+        }
+        return root;
+    };
+    const auto unite = [&parent, &rank, &find_root](
+        std::size_t left,
+        std::size_t right
+    ) {
+        left = find_root(left);
+        right = find_root(right);
+        if (left == right)
+            return;
+        if (rank[left] < rank[right])
+            std::swap(left, right);
+        parent[right] = left;
+        if (rank[left] == rank[right])
+            ++rank[left];
+    };
+    const auto vertex_key = [](const WorldDrawVertex& vertex) {
+        return PerspectiveUvVertexKey{
+            vertex.exact_view_x,
+            vertex.exact_view_y,
+            vertex.exact_view_z,
+            static_cast<std::int32_t>(std::lround(vertex.u * 1024.0F)),
+            static_cast<std::int32_t>(std::lround(vertex.v * 1024.0F)),
+        };
+    };
+    std::unordered_map<
+        PerspectiveUvEdgeKey,
+        std::size_t,
+        PerspectiveUvEdgeHash> edges;
+    edges.reserve(count * 3);
+    for (std::size_t command_index = 0;
+         command_index < count;
+         ++command_index) {
+        const auto& command = draw_list.commands[command_index];
+        if (command.material_index >= draw_list.materials.size())
+            continue;
+        const auto& material =
+            draw_list.materials[command.material_index];
+        if ((material.primitive_flags & textured_flag) == 0 ||
+            (material.primitive_flags &
+                world_primitive_screen_space_flag) != 0)
+            continue;
+        for (int edge_index = 0; edge_index < 3; ++edge_index) {
+            const auto& first_vertex = command.vertices[edge_index];
+            const auto& second_vertex =
+                command.vertices[(edge_index + 1) % 3];
+            if (!first_vertex.exact_transform_valid ||
+                !second_vertex.exact_transform_valid)
+                continue;
+            auto first = vertex_key(first_vertex);
+            auto second = vertex_key(second_vertex);
+            if (second < first)
+                std::swap(first, second);
+            const PerspectiveUvEdgeKey key{
+                0U,
+                command.object_kind,
+                command.object_id,
+                command.model_pointer,
+                material.primitive_flags,
+                material.texture_page,
+                material.clut,
+                material.texture_mask_x,
+                material.texture_mask_y,
+                material.texture_offset_x,
+                material.texture_offset_y,
+                first,
+                second,
+            };
+            const auto [found, inserted] = edges.emplace(
+                key, command_index);
+            if (!inserted)
+                unite(found->second, command_index);
+
+            // Road and terrain UV islands meet at deliberate atlas seams.
+            // Even though their UV endpoints differ, changing interpolation
+            // mode on that shared geometric edge introduces a new crack that
+            // GT2 never authored. Join horizontal opaque track surfaces by
+            // their exact view-space edge so one continuous ground surface
+            // receives one projection contract across all of its UV islands.
+            if (is_opaque_track_surface(command, material)) {
+                first.u = first.v = 0;
+                second.u = second.v = 0;
+                const PerspectiveUvEdgeKey surface_key{
+                    1U,
+                    command.object_kind,
+                    command.object_id,
+                    command.model_pointer,
+                    0U,
+                    0U,
+                    0U,
+                    0,
+                    0,
+                    0,
+                    0,
+                    first,
+                    second,
+                };
+                const auto [surface_found, surface_inserted] =
+                    edges.emplace(surface_key, command_index);
+                if (!surface_inserted)
+                    unite(surface_found->second, command_index);
+            }
+        }
+    }
+    std::vector<std::uint8_t> island_eligible(count, 1U);
+    for (std::size_t index = 0; index < count; ++index) {
+        const std::size_t root = find_root(index);
+        island_eligible[root] = static_cast<std::uint8_t>(
+            island_eligible[root] != 0 && eligible[index] != 0);
+    }
+    for (std::size_t index = 0; index < count; ++index)
+        eligible[index] = island_eligible[find_root(index)];
+    if (std::getenv("OPENGT_RENDER_UV_DIAGNOSTICS") != nullptr) {
+        std::size_t textured_commands = 0;
+        std::size_t island_eligible_count = 0;
+        std::size_t track_fallback = 0;
+        std::size_t vehicle_fallback = 0;
+        std::size_t other_fallback = 0;
+        std::vector<std::size_t> island_sizes(count, 0);
+        for (std::size_t index = 0; index < count; ++index) {
+            const auto& command = draw_list.commands[index];
+            if (command.material_index >= draw_list.materials.size())
+                continue;
+            const auto& material =
+                draw_list.materials[command.material_index];
+            if ((material.primitive_flags & textured_flag) == 0 ||
+                (material.primitive_flags &
+                    world_primitive_screen_space_flag) != 0)
+                continue;
+            ++textured_commands;
+            island_eligible_count += eligible[index] != 0 ? 1U : 0U;
+            if (eligible[index] == 0) {
+                const auto kind = command.object_kind;
+                if (kind == 1U) ++track_fallback;
+                else if (kind == 2U) ++vehicle_fallback;
+                else ++other_fallback;
+            }
+            ++island_sizes[find_root(index)];
+        }
+        const std::size_t largest_island = island_sizes.empty()
+            ? 0
+            : *std::max_element(island_sizes.begin(), island_sizes.end());
+        std::fprintf(
+            stderr,
+            "[Render-UV] commands=%zu textured=%zu "
+            "individualPerspective=%zu "
+            "islandPerspective=%zu fallback=%zu trackFallback=%zu "
+            "vehicleFallback=%zu otherFallback=%zu edgeKeys=%zu "
+            "largestIsland=%zu maxDepthRatio=%.1f\n",
+            count,
+            textured_commands,
+            individually_eligible,
+            island_eligible_count,
+            textured_commands - island_eligible_count,
+            track_fallback,
+            vehicle_fallback,
+            other_fallback,
+            edges.size(),
+            largest_island,
+            maximum_gt2_perspective_depth_ratio);
+    }
+    return eligible;
+}
 
 struct GpuMaterial {
     std::uint32_t primitive_flags;
@@ -1309,7 +1644,9 @@ PsOutput PSMain(VsOutput input) {
     bool rawTexture = (material.primitiveFlags & 4) != 0;
     bool screenSpace =
         (material.primitiveFlags & 0x80000000) != 0;
-    float2 uv = PerspectiveCorrect != 0
+    bool perspectiveEligible =
+        (material.coverageFlags & 8) != 0;
+    float2 uv = PerspectiveCorrect != 0 && perspectiveEligible
         ? input.perspectiveUv
         : input.affineUv;
     float3 color = saturate(input.color.rgb);
@@ -3268,6 +3605,10 @@ WorldGpuRenderResult render_world_d3d11(
     ID3D11DeviceContext* context = base.context.Get();
     const std::size_t authored_vertex_count =
         draw_list.commands.size() * 3;
+    const std::vector<std::uint8_t> perspective_uv_eligibility =
+        options.perspective_correct
+            ? perspective_uv_island_eligibility(draw_list)
+            : std::vector<std::uint8_t>{};
     const std::size_t vertex_count = std::max<std::size_t>(
         3,
         authored_vertex_count +
@@ -3654,32 +3995,8 @@ WorldGpuRenderResult render_world_d3d11(
             }
             const auto& material =
                 draw_list.materials[command.material_index];
-            const auto& a = command.vertices[0];
-            const auto& b = command.vertices[1];
-            const auto& c = command.vertices[2];
-            const std::int64_t ab_x =
-                static_cast<std::int64_t>(b.model_x) - a.model_x;
-            const std::int64_t ab_y =
-                static_cast<std::int64_t>(b.model_y) - a.model_y;
-            const std::int64_t ab_z =
-                static_cast<std::int64_t>(b.model_z) - a.model_z;
-            const std::int64_t ac_x =
-                static_cast<std::int64_t>(c.model_x) - a.model_x;
-            const std::int64_t ac_y =
-                static_cast<std::int64_t>(c.model_y) - a.model_y;
-            const std::int64_t ac_z =
-                static_cast<std::int64_t>(c.model_z) - a.model_z;
-            const std::int64_t normal_x = ab_y * ac_z - ab_z * ac_y;
-            const std::int64_t normal_y = ab_z * ac_x - ab_x * ac_z;
-            const std::int64_t normal_z = ab_x * ac_y - ab_y * ac_x;
             const bool opaque_track_surface =
-                command.object_kind == 1U &&
-                (material.primitive_flags & textured_flag) != 0 &&
-                (material.primitive_flags & semi_transparent_flag) == 0 &&
-                (material.primitive_flags &
-                    world_primitive_screen_space_flag) == 0 &&
-                std::llabs(normal_y) >= std::llabs(normal_x) &&
-                std::llabs(normal_y) >= std::llabs(normal_z);
+                is_opaque_track_surface(command, material);
             const bool vehicle_shadow =
                 soft_vehicle_shadow(command, material);
             const bool wheel_tread =
@@ -3693,6 +4010,9 @@ WorldGpuRenderResult render_world_d3d11(
                 smooth_wheel != smooth_wheels.end() &&
                 (wheel_tread || vehicle_wheel_sidewall_ring(
                     command, material, *smooth_wheel));
+            const bool perspective_eligible =
+                options.perspective_correct &&
+                perspective_uv_eligibility[command_index] != 0;
             const ReplacementResolution replacement = inspect_replacements
                 ? resolve_texture_replacement(
                     &base,
@@ -3713,7 +4033,10 @@ WorldGpuRenderResult render_world_d3d11(
                 material.texture_offset_y,
                     (opaque_track_surface ? 1U : 0U) |
                     (vehicle_shadow ? 2U : 0U) |
-                    (smoothed_wheel_surface ? 4U : 0U),
+                    (smoothed_wheel_surface ? 4U : 0U) |
+                    (perspective_eligible
+                        ? perspective_uv_eligible_flag
+                        : 0U),
                 replacement.minimum_u,
                 replacement.minimum_v,
                 replacement.source_width,

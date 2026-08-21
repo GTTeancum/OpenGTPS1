@@ -549,6 +549,42 @@ int main(int argc, char** argv) {
                 command.vertices[2].exact_view_y,
                 command.vertices[2].exact_view_z,
                 e0, e1, e2);
+            if (inside) {
+                std::printf(
+                    "    provenance vertexTransform=(%016llx,%016llx,%016llx) "
+                    "projectionPlane=(%.3f,%.3f,%.3f) "
+                    "projectionOffset=(%.3f,%.3f)(%.3f,%.3f)(%.3f,%.3f) "
+                    "clip=(%.4f,%.4f,%.4f,%.4f)"
+                    "(%.4f,%.4f,%.4f,%.4f)"
+                    "(%.4f,%.4f,%.4f,%.4f)\n",
+                    static_cast<unsigned long long>(
+                        command.vertices[0].transform_id),
+                    static_cast<unsigned long long>(
+                        command.vertices[1].transform_id),
+                    static_cast<unsigned long long>(
+                        command.vertices[2].transform_id),
+                    command.vertices[0].projection_plane,
+                    command.vertices[1].projection_plane,
+                    command.vertices[2].projection_plane,
+                    command.vertices[0].projection_offset_x,
+                    command.vertices[0].projection_offset_y,
+                    command.vertices[1].projection_offset_x,
+                    command.vertices[1].projection_offset_y,
+                    command.vertices[2].projection_offset_x,
+                    command.vertices[2].projection_offset_y,
+                    command.vertices[0].clip_x,
+                    command.vertices[0].clip_y,
+                    command.vertices[0].clip_z,
+                    command.vertices[0].clip_w,
+                    command.vertices[1].clip_x,
+                    command.vertices[1].clip_y,
+                    command.vertices[1].clip_z,
+                    command.vertices[1].clip_w,
+                    command.vertices[2].clip_x,
+                    command.vertices[2].clip_y,
+                    command.vertices[2].clip_z,
+                    command.vertices[2].clip_w);
+            }
             if (inside && (material.primitive_flags & 1U) != 0) {
                 const auto& a = command.vertices[0];
                 const auto& b = command.vertices[1];
@@ -574,16 +610,36 @@ int main(int argc, char** argv) {
                         lambda_a / a.clip_w +
                         lambda_b / b.clip_w +
                         lambda_c / c.clip_w;
-                    const float u =
+                    const float perspective_u =
                         (lambda_a * a.u / a.clip_w +
                             lambda_b * b.u / b.clip_w +
                             lambda_c * c.u / c.clip_w) /
                         reciprocal_w;
-                    const float v =
+                    const float perspective_v =
                         (lambda_a * a.v / a.clip_w +
                             lambda_b * b.v / b.clip_w +
                             lambda_c * c.v / c.clip_w) /
                         reciprocal_w;
+                    const float affine_u =
+                        lambda_a * a.u + lambda_b * b.u + lambda_c * c.u;
+                    const float affine_v =
+                        lambda_a * a.v + lambda_b * b.v + lambda_c * c.v;
+                    const float minimum_w = std::min(
+                        a.clip_w, std::min(b.clip_w, c.clip_w));
+                    const float maximum_w = std::max(
+                        a.clip_w, std::max(b.clip_w, c.clip_w));
+                    const bool individual_perspective_eligible =
+                        minimum_w > 0.0F &&
+                        maximum_w / minimum_w <= 8.0F;
+                    const bool individual_perspective_selected =
+                        perspective_correct &&
+                        individual_perspective_eligible;
+                    const float u = individual_perspective_selected
+                        ? perspective_u
+                        : affine_u;
+                    const float v = individual_perspective_selected
+                        ? perspective_v
+                        : affine_v;
                     const bool screen_space =
                         (material.primitive_flags &
                             world_primitive_screen_space_flag) != 0;
@@ -613,11 +669,28 @@ int main(int argc, char** argv) {
                         std::llabs(normal_y) >= std::llabs(normal_x) &&
                         std::llabs(normal_y) >= std::llabs(normal_z);
                     std::printf(
-                        "    sample uv=(%.4f,%.4f) texel=(%d,%d) "
+                        "    sample requested=%s individualSelected=%s "
+                        "depthRatio=%.4f uv=(%.4f,%.4f) "
+                        "affine=(%.4f,%.4f) perspective=(%.4f,%.4f) "
+                        "lambda=(%.6f,%.6f,%.6f) reciprocalW=%.9f "
+                        "texel=(%d,%d) "
                         "word=%04x neighbors=%04x,%04x,%04x,%04x "
                         "opaqueTrackRecovery=%s normal=(%lld,%lld,%lld)\n",
+                        perspective_correct ? "perspective" : "affine",
+                        individual_perspective_selected
+                            ? "perspective"
+                            : "affine",
+                        maximum_w / std::max(1.0F, minimum_w),
                         u,
                         v,
+                        affine_u,
+                        affine_v,
+                        perspective_u,
+                        perspective_v,
+                        lambda_a,
+                        lambda_b,
+                        lambda_c,
+                        reciprocal_w,
                         sample_u,
                         sample_v,
                         texture_word(sample_u, sample_v, material),
