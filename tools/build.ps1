@@ -50,9 +50,24 @@ try {
         -o $install
     if ($LASTEXITCODE -ne 0) { throw "GT2 publish failed: $LASTEXITCODE" }
 
-    $legacyNativeRenderer = Join-Path $install 'opengt_live_renderer.dll'
-    if (Test-Path -LiteralPath $legacyNativeRenderer -PathType Leaf) {
-        Remove-Item -LiteralPath $legacyNativeRenderer -Force
+    # A single-file publish does not overwrite framework-dependent sidecars
+    # left by an older deployment. Remove only top-level runtime DLLs and the
+    # app-specific sidecars that are now embedded in GranTurismo2PC.exe.
+    foreach ($legacyDll in Get-ChildItem -LiteralPath $install `
+            -Filter '*.dll' -File -ErrorAction SilentlyContinue) {
+        Remove-Item -LiteralPath $legacyDll.FullName -Force
+    }
+    foreach ($legacyName in @(
+            'GranTurismo2PC.deps.json',
+            'GranTurismo2PC.dll',
+            'GranTurismo2PC.pdb',
+            'GranTurismo2PC.runtimeconfig.json',
+            'RecompOne.Runtime.dll',
+            'RecompOne.Runtime.pdb')) {
+        $legacyPath = Join-Path $install $legacyName
+        if (Test-Path -LiteralPath $legacyPath -PathType Leaf) {
+            Remove-Item -LiteralPath $legacyPath -Force
+        }
     }
 
     # Convenience cards and the developer's settings file are intentionally
