@@ -34,6 +34,8 @@ struct WorldTopologyStats {
     std::uint32_t adjusted_seam_instances;
     std::uint32_t authored_raster_groups;
     std::uint32_t adjusted_authored_raster_instances;
+    std::uint32_t authored_overlap_seam_groups;
+    std::uint32_t adjusted_authored_overlap_instances;
     std::uint32_t projected_t_junctions;
     std::uint32_t adjusted_projected_t_junction_instances;
     std::uint32_t boundary_edges;

@@ -1009,8 +1009,8 @@ FootprintSample SampleFootprint(
         for (int offsetU = -1; offsetU <= 1; ++offsetU) {
             float2 offset = float2(offsetU, offsetV) * stride;
             uint word = TextureWord(
-                (int)floor(uv.x + offset.x + 0.5),
-                (int)floor(uv.y + offset.y + 0.5),
+                (int)floor(uv.x + offset.x + 0.0001),
+                (int)floor(uv.y + offset.y + 0.0001),
                 material);
             if (word == 0)
                 continue;
@@ -1132,12 +1132,13 @@ PsOutput PSMain(VsOutput input) {
     float3 color = saturate(input.color.rgb);
     bool textureStp = false;
     if (textured) {
-        int sampleU = screenSpace
-            ? (int)floor(uv.x)
-            : (int)floor(uv.x + 0.5);
-        int sampleV = screenSpace
-            ? (int)floor(uv.y)
-            : (int)floor(uv.y + 0.5);
+        // PS1 UV interpolation assigns the complete [N,N+1) interval to
+        // texel N. Keep the world alpha/STP and footprint decisions aligned
+        // with that contract, the bilinear color base, and replacement UVs.
+        // Rounding here shifted only the visibility test by half a texel, so
+        // scenery could be discarded while its color came from its neighbor.
+        int sampleU = (int)floor(uv.x + 0.0001);
+        int sampleV = (int)floor(uv.y + 0.0001);
         // Screen-space HUD material keeps exact PS1 texel selection. Only a
         // world surface small enough that one pixel spans several texels
         // takes the coverage path.

@@ -295,6 +295,48 @@ struct AuthoredPixelHash {
     }
 };
 
+struct AuthoredRasterLineKey {
+    std::uint32_t object_id;
+    std::uint32_t model_pointer;
+    std::int32_t ordering_table_index;
+    std::int32_t direction_x;
+    std::int32_t direction_y;
+    std::int64_t offset;
+
+    bool operator==(const AuthoredRasterLineKey& other) const noexcept {
+        return
+            object_id == other.object_id &&
+            model_pointer == other.model_pointer &&
+            ordering_table_index == other.ordering_table_index &&
+            direction_x == other.direction_x &&
+            direction_y == other.direction_y &&
+            offset == other.offset;
+    }
+};
+
+struct AuthoredRasterLineKeyHash {
+    std::size_t operator()(
+        const AuthoredRasterLineKey& key
+    ) const noexcept {
+        std::size_t seed = 0;
+        hash_combine(&seed, key.object_id);
+        hash_combine(&seed, key.model_pointer);
+        hash_combine(&seed, static_cast<std::uint32_t>(
+            key.ordering_table_index));
+        hash_combine(&seed, static_cast<std::uint32_t>(key.direction_x));
+        hash_combine(&seed, static_cast<std::uint32_t>(key.direction_y));
+        hash_combine(&seed, static_cast<std::uint64_t>(key.offset));
+        return seed;
+    }
+};
+
+struct AuthoredOverlapEdge {
+    std::size_t command;
+    int edge;
+    std::int64_t minimum_coordinate;
+    std::int64_t maximum_coordinate;
+};
+
 Position position(const WorldDrawVertex& vertex) {
     // GTE view coordinates are exact transformed integers. Unlike GT2's
     // sector-local model coordinates, they place neighboring 4096-unit track
@@ -343,6 +385,42 @@ bool eligible(
             return false;
     }
     return true;
+}
+
+bool opaque_track_surface(
+    const WorldDrawList& list,
+    const WorldDrawCommand& command
+) {
+    if (command.material_index >= list.materials.size())
+        return false;
+    const auto& material = list.materials[command.material_index];
+    if (
+        (material.primitive_flags & 1U) == 0 ||
+        (material.primitive_flags & 2U) != 0 ||
+        (material.primitive_flags & world_primitive_screen_space_flag) != 0
+    )
+        return false;
+    const auto& a = command.vertices[0];
+    const auto& b = command.vertices[1];
+    const auto& c = command.vertices[2];
+    const std::int64_t ab_x =
+        static_cast<std::int64_t>(b.model_x) - a.model_x;
+    const std::int64_t ab_y =
+        static_cast<std::int64_t>(b.model_y) - a.model_y;
+    const std::int64_t ab_z =
+        static_cast<std::int64_t>(b.model_z) - a.model_z;
+    const std::int64_t ac_x =
+        static_cast<std::int64_t>(c.model_x) - a.model_x;
+    const std::int64_t ac_y =
+        static_cast<std::int64_t>(c.model_y) - a.model_y;
+    const std::int64_t ac_z =
+        static_cast<std::int64_t>(c.model_z) - a.model_z;
+    const std::int64_t normal_x = ab_y * ac_z - ab_z * ac_y;
+    const std::int64_t normal_y = ab_z * ac_x - ab_x * ac_z;
+    const std::int64_t normal_z = ab_x * ac_y - ab_y * ac_x;
+    return
+        std::llabs(normal_y) >= std::llabs(normal_x) &&
+        std::llabs(normal_y) >= std::llabs(normal_z);
 }
 
 auto occurrence_key(
@@ -1825,15 +1903,317 @@ WorldTopologyResult apply_world_topology(
             }
             lod_finished = TopologyClock::now();
 
+            // GT2 also joins some near/far road strips only in the original
+            // integer SXY raster. The strips can belong to the same track
+            // object and model while using different GTE transforms and
+            // texture pages, so neither exact 3D topology nor a
+            // same-material LOD key can identify the join. Continuous
+            // projection then leaves a subpixel sliver even though the two
+            // authored boundary edges occupy the same raster line.
+            //
+            // Close only the exact case the PS1 raster proves: opaque road
+            // boundary edges in the same object/model/OT layer, exactly
+            // collinear in authored SXY, with one authored interval wholly
+            // contained by the other. Snap the contained edge orthogonally
+            // to the longer projected edge only when both endpoints are at
+            // most one eighth of a native pixel away. The rule contains no
+            // output-resolution or aspect-ratio coordinates.
+            using AuthoredOverlapEdges = std::pmr::unordered_map<
+                AuthoredRasterLineKey,
+                std::pmr::vector<AuthoredOverlapEdge>,
+                AuthoredRasterLineKeyHash>;
+            AuthoredOverlapEdges authored_overlap_edges{&topology_arena};
+            authored_overlap_edges.reserve(
+                stats.eligible_track_commands * 2U);
+            for (const std::size_t command_index : eligible_commands) {
+                const auto& command = draw_list->commands[command_index];
+                if (!opaque_track_surface(*draw_list, command))
+                    continue;
+                const auto counts = object_edge_counts.find(
+                    command.object_id);
+                if (counts == object_edge_counts.end())
+                    continue;
+                for (int edge_index = 0; edge_index < 3; ++edge_index) {
+                    const int next = (edge_index + 1) % 3;
+                    const auto count = counts->second.find(Edge{
+                        position(command.vertices[edge_index]),
+                        position(command.vertices[next])});
+                    if (
+                        count == counts->second.end() ||
+                        count->second != 1U
+                    )
+                        continue;
+                    const auto& a = command.vertices[edge_index];
+                    const auto& b = command.vertices[next];
+                    std::int32_t dx =
+                        b.authored_screen_x - a.authored_screen_x;
+                    std::int32_t dy =
+                        b.authored_screen_y - a.authored_screen_y;
+                    const std::int32_t divisor = std::gcd(
+                        static_cast<std::int32_t>(std::abs(dx)),
+                        static_cast<std::int32_t>(std::abs(dy)));
+                    if (divisor == 0)
+                        continue;
+                    dx /= divisor;
+                    dy /= divisor;
+                    if (dx < 0 || (dx == 0 && dy < 0)) {
+                        dx = -dx;
+                        dy = -dy;
+                    }
+                    const std::int64_t offset =
+                        static_cast<std::int64_t>(dx) *
+                            a.authored_screen_y -
+                        static_cast<std::int64_t>(dy) *
+                            a.authored_screen_x;
+                    const auto coordinate = [dx, dy] (
+                        const WorldDrawVertex& vertex
+                    ) {
+                        return
+                            static_cast<std::int64_t>(dx) *
+                                vertex.authored_screen_x +
+                            static_cast<std::int64_t>(dy) *
+                                vertex.authored_screen_y;
+                    };
+                    const std::int64_t coordinate_a = coordinate(a);
+                    const std::int64_t coordinate_b = coordinate(b);
+                    authored_overlap_edges[AuthoredRasterLineKey{
+                        command.object_id,
+                        command.model_pointer,
+                        command.ordering_table_index,
+                        dx,
+                        dy,
+                        offset,
+                    }].push_back(AuthoredOverlapEdge{
+                        command_index,
+                        edge_index,
+                        std::min(coordinate_a, coordinate_b),
+                        std::max(coordinate_a, coordinate_b),
+                    });
+                }
+            }
+            struct AuthoredOverlapCandidate {
+                AuthoredOverlapEdge inner;
+                AuthoredOverlapEdge outer;
+                std::int64_t outer_span;
+                float maximum_distance_squared;
+            };
+            std::pmr::unordered_map<
+                std::size_t,
+                AuthoredOverlapCandidate> authored_overlap_candidates{
+                    &topology_arena};
+            constexpr float maximum_authored_overlap_distance = 0.125F;
+            constexpr float maximum_authored_overlap_distance_squared =
+                maximum_authored_overlap_distance *
+                maximum_authored_overlap_distance;
+            for (const auto& group : authored_overlap_edges) {
+                const auto& edges = group.second;
+                for (std::size_t left = 0; left < edges.size(); ++left) {
+                    for (std::size_t right = left + 1;
+                         right < edges.size();
+                         ++right) {
+                        if (edges[left].command == edges[right].command)
+                            continue;
+                        const std::int64_t left_span =
+                            edges[left].maximum_coordinate -
+                            edges[left].minimum_coordinate;
+                        const std::int64_t right_span =
+                            edges[right].maximum_coordinate -
+                            edges[right].minimum_coordinate;
+                        if (left_span == right_span)
+                            continue;
+                        const AuthoredOverlapEdge& outer =
+                            left_span > right_span ? edges[left] : edges[right];
+                        const AuthoredOverlapEdge& inner =
+                            left_span > right_span ? edges[right] : edges[left];
+                        if (
+                            inner.minimum_coordinate <
+                                outer.minimum_coordinate ||
+                            inner.maximum_coordinate >
+                                outer.maximum_coordinate
+                        )
+                            continue;
+                        const auto& outer_command =
+                            draw_list->commands[outer.command];
+                        const auto& inner_command =
+                            draw_list->commands[inner.command];
+                        const auto& outer_a =
+                            outer_command.vertices[outer.edge];
+                        const auto& outer_b =
+                            outer_command.vertices[(outer.edge + 1) % 3];
+                        const float outer_dx =
+                            outer_b.screen_x - outer_a.screen_x;
+                        const float outer_dy =
+                            outer_b.screen_y - outer_a.screen_y;
+                        const float outer_length_squared =
+                            outer_dx * outer_dx + outer_dy * outer_dy;
+                        if (outer_length_squared < 0.000001F)
+                            continue;
+                        float maximum_distance_squared = 0.0F;
+                        bool bounded = true;
+                        for (const int vertex_index : {
+                                 inner.edge, (inner.edge + 1) % 3}) {
+                            const auto& vertex =
+                                inner_command.vertices[vertex_index];
+                            const float t =
+                                ((vertex.screen_x - outer_a.screen_x) *
+                                    outer_dx +
+                                 (vertex.screen_y - outer_a.screen_y) *
+                                    outer_dy) /
+                                outer_length_squared;
+                            if (t < 0.0F || t > 1.0F) {
+                                bounded = false;
+                                break;
+                            }
+                            const float target_x =
+                                outer_a.screen_x + t * outer_dx;
+                            const float target_y =
+                                outer_a.screen_y + t * outer_dy;
+                            const float distance_x =
+                                vertex.screen_x - target_x;
+                            const float distance_y =
+                                vertex.screen_y - target_y;
+                            maximum_distance_squared = std::max(
+                                maximum_distance_squared,
+                                distance_x * distance_x +
+                                    distance_y * distance_y);
+                        }
+                        if (
+                            !bounded ||
+                            maximum_distance_squared >
+                                maximum_authored_overlap_distance_squared
+                        )
+                            continue;
+                        const std::size_t candidate_key =
+                            inner.command * 3U +
+                            static_cast<std::size_t>(inner.edge);
+                        const AuthoredOverlapCandidate candidate{
+                            inner,
+                            outer,
+                            std::max(left_span, right_span),
+                            maximum_distance_squared,
+                        };
+                        const auto existing =
+                            authored_overlap_candidates.find(candidate_key);
+                        if (
+                            existing == authored_overlap_candidates.end() ||
+                            candidate.maximum_distance_squared <
+                                existing->second.maximum_distance_squared ||
+                            (candidate.maximum_distance_squared ==
+                                    existing->second.maximum_distance_squared &&
+                                candidate.outer_span >
+                                    existing->second.outer_span)
+                        )
+                            authored_overlap_candidates[candidate_key] =
+                                candidate;
+                    }
+                }
+            }
+            std::pmr::vector<AuthoredOverlapCandidate>
+                ordered_authored_overlap_candidates{&topology_arena};
+            ordered_authored_overlap_candidates.reserve(
+                authored_overlap_candidates.size());
+            for (const auto& candidate : authored_overlap_candidates)
+                ordered_authored_overlap_candidates.push_back(
+                    candidate.second);
+            std::sort(
+                ordered_authored_overlap_candidates.begin(),
+                ordered_authored_overlap_candidates.end(),
+                [] (const auto& left, const auto& right) {
+                    if (left.outer_span != right.outer_span)
+                        return left.outer_span > right.outer_span;
+                    return std::tie(
+                        left.outer.command,
+                        left.outer.edge,
+                        left.inner.command,
+                        left.inner.edge) <
+                        std::tie(
+                            right.outer.command,
+                            right.outer.edge,
+                            right.inner.command,
+                            right.inner.edge);
+                });
+            for (const auto& candidate :
+                 ordered_authored_overlap_candidates) {
+                const auto& outer_command =
+                    draw_list->commands[candidate.outer.command];
+                const auto& inner_command =
+                    draw_list->commands[candidate.inner.command];
+                const auto& outer_a =
+                    outer_command.vertices[candidate.outer.edge];
+                const auto& outer_b =
+                    outer_command.vertices[(candidate.outer.edge + 1) % 3];
+                const float outer_dx =
+                    outer_b.screen_x - outer_a.screen_x;
+                const float outer_dy =
+                    outer_b.screen_y - outer_a.screen_y;
+                const float outer_length_squared =
+                    outer_dx * outer_dx + outer_dy * outer_dy;
+                if (outer_length_squared < 0.000001F)
+                    continue;
+                ++stats.authored_overlap_seam_groups;
+                for (const int vertex_index : {
+                         candidate.inner.edge,
+                         (candidate.inner.edge + 1) % 3}) {
+                    const auto& seed = inner_command.vertices[vertex_index];
+                    const float t =
+                        ((seed.screen_x - outer_a.screen_x) * outer_dx +
+                         (seed.screen_y - outer_a.screen_y) * outer_dy) /
+                        outer_length_squared;
+                    const float target_x =
+                        outer_a.screen_x + t * outer_dx;
+                    const float target_y =
+                        outer_a.screen_y + t * outer_dy;
+                    const Position seed_position = position(seed);
+                    if (
+                        inner_command.transform_id !=
+                            outer_command.transform_id ||
+                        inner_command.material_index !=
+                            outer_command.material_index
+                    ) {
+                        raster_joined_positions[inner_command.object_id]
+                            .insert(seed_position);
+                    }
+                    const auto object_it = object_view_occurrences.find(
+                        inner_command.object_id);
+                    if (object_it == object_view_occurrences.end())
+                        continue;
+                    const auto copies = object_it->second.find(seed_position);
+                    if (copies == object_it->second.end())
+                        continue;
+                    for (const auto& occurrence : copies->second) {
+                        auto& command =
+                            draw_list->commands[occurrence.command];
+                        if (
+                            command.model_pointer !=
+                                inner_command.model_pointer ||
+                            command.transform_id !=
+                                inner_command.transform_id ||
+                            command.ordering_table_index !=
+                                inner_command.ordering_table_index
+                        )
+                            continue;
+                        auto& vertex = command.vertices[occurrence.vertex];
+                        const bool changed =
+                            vertex.screen_x != target_x ||
+                            vertex.screen_y != target_y;
+                        set_projected_position(
+                            &vertex, target_x, target_y, *draw_list);
+                        if (changed)
+                            ++stats.adjusted_authored_overlap_instances;
+                    }
+                }
+            }
+
             if (options.repair_projected_t_junctions) {
             // GT2's integer GTE transforms can place an authored intermediate
             // road vertex a fraction of a guest unit away from the neighboring
             // triangle's long edge. The 320x240 raster hides that T-junction,
-            // while continuous 4x projection exposes isolated background
-            // samples. Close only topology-proven cases: same track object,
-            // model, material and ordering layer; a view-space point no more
-            // than one guest unit from the strict interior of a boundary edge;
-            // and a projected displacement no larger than one quarter pixel.
+            // while continuous projection exposes isolated background samples.
+            // Same-surface joins require matching track provenance, a point no
+            // more than one guest unit from the strict interior of a boundary
+            // edge, and at most a quarter-pixel projected displacement. Road
+            // LOD joins may cross transforms/materials only when the authored
+            // raster and an exact power-of-two view-space scale prove them.
             struct ProjectedBoundaryEdge {
                 std::size_t command;
                 int edge;
@@ -2022,9 +2402,11 @@ WorldTopologyResult apply_world_topology(
             }
             constexpr double maximum_view_distance_squared = 1.0;
             constexpr double maximum_authored_distance_squared =
-                0.75 * 0.75;
+                1.0 * 1.0;
             constexpr double maximum_screen_distance_squared =
                 0.25 * 0.25;
+            constexpr double maximum_raster_lod_screen_distance_squared =
+                0.5 * 0.5;
             constexpr double maximum_adjacent_screen_distance_squared =
                 0.75 * 0.75;
             // The edge must be an exact topology boundary. The candidate
@@ -2086,6 +2468,7 @@ WorldTopologyResult apply_world_topology(
                         maximum_adjacent_screen_distance_squared;
                     float best_x = representative_vertex.screen_x;
                     float best_y = representative_vertex.screen_y;
+                    bool best_raster_lod_join = false;
                     const bool candidate_is_boundary =
                         boundary_it != object_boundary_positions.end() &&
                         boundary_it->second.find(point) !=
@@ -2146,6 +2529,8 @@ WorldTopologyResult apply_world_topology(
                             point == edge.view_a || point == edge.view_b
                         )
                             continue;
+                        const auto& edge_command =
+                            draw_list->commands[edge.command];
                         const bool same_surface =
                             edge.object_id == representative_command.object_id &&
                             edge.model_pointer ==
@@ -2156,6 +2541,17 @@ WorldTopologyResult apply_world_topology(
                                 representative_command.material_index &&
                             edge.ordering_table_index ==
                                 representative_command.ordering_table_index;
+                        const bool same_lod_layer =
+                            edge.object_id ==
+                                representative_command.object_id &&
+                            edge.model_pointer ==
+                                representative_command.model_pointer &&
+                            edge.ordering_table_index ==
+                                representative_command.ordering_table_index &&
+                            opaque_track_surface(
+                                *draw_list, edge_command) &&
+                            opaque_track_surface(
+                                *draw_list, representative_command);
                         bool same_render_layer =
                             edge.ordering_table_index ==
                                 representative_command.ordering_table_index;
@@ -2203,7 +2599,11 @@ WorldTopologyResult apply_world_topology(
                                 representative_command.ordering_table_index,
                                 candidate_is_boundary ? 1U : 0U);
                         }
-                        if (!same_surface && !adjacent_surface)
+                        if (
+                            !same_surface &&
+                            !same_lod_layer &&
+                            !adjacent_surface
+                        )
                             continue;
                         const double dx =
                             static_cast<double>(edge.view_b.x) - edge.view_a.x;
@@ -2232,12 +2632,11 @@ WorldTopologyResult apply_world_topology(
                             view_error_y * view_error_y +
                             view_error_z * view_error_z;
                         // Most joins are proven in exact integer GTE view
-                        // space. GT2's road LOD strips are the exception:
-                        // the same transform can submit an overlapping edge
-                        // at another fixed-point scale. In that case require
-                        // the candidate to be within 3/4 pixel of the edge in
-                        // the authored integer SXY raster, where it was
-                        // originally watertight.
+                        // space. GT2's road LOD strips are the exception: two
+                        // transforms/materials can submit the same boundary at
+                        // different power-of-two fixed-point scales. In that
+                        // case the authored integer SXY raster must also place
+                        // the candidate within one native pixel of the edge.
                         const bool view_space_join =
                             view_t > 0.0 && view_t < 1.0 &&
                             view_distance_squared <=
@@ -2248,9 +2647,11 @@ WorldTopologyResult apply_world_topology(
                             !candidate_is_boundary
                         )
                             continue;
-                        if (!adjacent_surface && !view_space_join) {
-                            const auto& edge_command =
-                                draw_list->commands[edge.command];
+                        bool raster_lod_join = false;
+                        if (
+                            !adjacent_surface &&
+                            (!view_space_join || !same_surface)
+                        ) {
                             const auto& authored_a =
                                 edge_command.vertices[edge.edge];
                             const auto& authored_b =
@@ -2280,7 +2681,7 @@ WorldTopologyResult apply_world_topology(
                                 (authored_px * authored_dx +
                                     authored_py * authored_dy) /
                                 authored_length_squared;
-                            if (authored_t <= 0.0 || authored_t >= 1.0)
+                            if (authored_t < 0.0 || authored_t > 1.0)
                                 continue;
                             const double authored_error_x =
                                 authored_px - authored_t * authored_dx;
@@ -2345,6 +2746,7 @@ WorldTopologyResult apply_world_topology(
                             }
                             if (!scale_proven)
                                 continue;
+                            raster_lod_join = true;
                         }
                         const double screen_dx =
                             edge.screen_bx - edge.screen_ax;
@@ -2377,7 +2779,9 @@ WorldTopologyResult apply_world_topology(
                         const double maximum_allowed_screen_distance_squared =
                             adjacent_surface
                                 ? maximum_adjacent_screen_distance_squared
-                                : maximum_screen_distance_squared;
+                                : raster_lod_join
+                                    ? maximum_raster_lod_screen_distance_squared
+                                    : maximum_screen_distance_squared;
                         if (
                             screen_distance_squared >
                                 maximum_allowed_screen_distance_squared ||
@@ -2390,6 +2794,7 @@ WorldTopologyResult apply_world_topology(
                         best_screen_distance = screen_distance_squared;
                         best_x = target_x;
                         best_y = target_y;
+                        best_raster_lod_join = raster_lod_join;
                     }
                     if (best == nullptr)
                         continue;
@@ -2409,6 +2814,15 @@ WorldTopologyResult apply_world_topology(
                                         best->transform_id ||
                                     command.ordering_table_index !=
                                         best->ordering_table_index
+                                ) &&
+                                !(
+                                    best_raster_lod_join &&
+                                    command.object_id ==
+                                        representative_command.object_id &&
+                                    command.model_pointer ==
+                                        representative_command.model_pointer &&
+                                    command.transform_id ==
+                                        representative_command.transform_id
                                 ) &&
                                 !(
                                     command.object_id ==

@@ -223,6 +223,7 @@ int main(int argc, char** argv) {
             "[--warp] [--no-depth] [--dither] "
             "[--no-topology] [--include-secondary] "
             "[--include-screen-space] "
+            "[--affine-textures] "
             "[--no-texture-smoothing] "
             "[--scale <1-8>] [--clear-color <RRGGBB>] "
             "[--inspect-pixel <x> <y>] "
@@ -236,6 +237,7 @@ int main(int argc, char** argv) {
     bool topology = true;
     bool include_secondary = false;
     bool include_screen_space = false;
+    bool perspective_correct = true;
     bool texture_smoothing = true;
     std::uint32_t scale = 1;
     std::uint32_t clear_color = 0xFF402820U;
@@ -257,6 +259,8 @@ int main(int argc, char** argv) {
             include_secondary = true;
         else if (std::strcmp(argv[index], "--include-screen-space") == 0)
             include_screen_space = true;
+        else if (std::strcmp(argv[index], "--affine-textures") == 0)
+            perspective_correct = false;
         else if (std::strcmp(argv[index], "--no-texture-smoothing") == 0)
             texture_smoothing = false;
         else if (
@@ -466,10 +470,13 @@ int main(int argc, char** argv) {
             std::printf(
                 "  cmd=%zu inside=%s kind=%u object=%u model=%08x "
                 "transform=%016llx ot=%d source=%u material=%u flags=%08x "
-                "tpage=%04x clut=%04x "
+                "tpage=%04x clut=%04x env=%08x "
+                "clip=(%d,%d..%d,%d) "
                 "window=(%d,%d,%d,%d) "
                 "p=(%.3f,%.3f)(%.3f,%.3f)(%.3f,%.3f) "
+                "sxy=(%d,%d)(%d,%d)(%d,%d) "
                 "uv=(%.3f,%.3f)(%.3f,%.3f)(%.3f,%.3f) "
+                "rgb=(%u,%u,%u)(%u,%u,%u)(%u,%u,%u) "
                 "model=(%d,%d,%d)(%d,%d,%d)(%d,%d,%d) "
                 "view=(%d,%d,%d)(%d,%d,%d)(%d,%d,%d) "
                 "edge=(%.3f,%.3f,%.3f)\n",
@@ -485,6 +492,11 @@ int main(int argc, char** argv) {
                 material.primitive_flags,
                 material.texture_page,
                 material.clut,
+                material.environment_flags,
+                command.clip_x0,
+                command.clip_y0,
+                command.clip_x1,
+                command.clip_y1,
                 material.texture_mask_x,
                 material.texture_mask_y,
                 material.texture_offset_x,
@@ -495,12 +507,27 @@ int main(int argc, char** argv) {
                 command.vertices[1].screen_y,
                 command.vertices[2].screen_x,
                 command.vertices[2].screen_y,
+                command.vertices[0].authored_screen_x,
+                command.vertices[0].authored_screen_y,
+                command.vertices[1].authored_screen_x,
+                command.vertices[1].authored_screen_y,
+                command.vertices[2].authored_screen_x,
+                command.vertices[2].authored_screen_y,
                 command.vertices[0].u,
                 command.vertices[0].v,
                 command.vertices[1].u,
                 command.vertices[1].v,
                 command.vertices[2].u,
                 command.vertices[2].v,
+                command.vertices[0].r,
+                command.vertices[0].g,
+                command.vertices[0].b,
+                command.vertices[1].r,
+                command.vertices[1].g,
+                command.vertices[1].b,
+                command.vertices[2].r,
+                command.vertices[2].g,
+                command.vertices[2].b,
                 command.vertices[0].model_x,
                 command.vertices[0].model_y,
                 command.vertices[0].model_z,
@@ -617,7 +644,7 @@ int main(int argc, char** argv) {
         warp,
         depth,
         dither,
-        true,
+        perspective_correct,
         texture_smoothing,
         false,
         scale,
@@ -740,6 +767,7 @@ int main(int argc, char** argv) {
         "topologyProjectionGroups=%u topologyProjectionAdjusted=%u "
         "topologySeamGroups=%u topologySeamAdjusted=%u "
         "topologyRasterGroups=%u topologyRasterAdjusted=%u "
+        "topologyOverlapSeamGroups=%u topologyOverlapSeamAdjusted=%u "
         "topologyProjectedTJunctions=%u "
         "topologyProjectedTJunctionAdjusted=%u "
         "topologyBoundaryEdges=%u topologyManifoldEdges=%u "
@@ -783,6 +811,8 @@ int main(int argc, char** argv) {
         topology_stats.adjusted_seam_instances,
         topology_stats.authored_raster_groups,
         topology_stats.adjusted_authored_raster_instances,
+        topology_stats.authored_overlap_seam_groups,
+        topology_stats.adjusted_authored_overlap_instances,
         topology_stats.projected_t_junctions,
         topology_stats.adjusted_projected_t_junction_instances,
         topology_stats.boundary_edges,

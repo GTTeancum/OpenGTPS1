@@ -848,7 +848,8 @@ int main(int argc, char** argv) {
         std::printf(
             "midpointTopology input=%u output=%u eligible=%u "
             "boundary=%u adjusted=%u projection=%u/%u "
-            "seam=%u/%u raster=%u/%u projectedTJ=%u/%u "
+            "seam=%u/%u raster=%u/%u overlapSeam=%u/%u "
+            "projectedTJ=%u/%u "
             "tJunctions=%u coplanar=%u reorders=%u\n",
             midpoint_topology.input_commands,
             midpoint_topology.output_commands,
@@ -861,6 +862,8 @@ int main(int argc, char** argv) {
             midpoint_topology.adjusted_seam_instances,
             midpoint_topology.authored_raster_groups,
             midpoint_topology.adjusted_authored_raster_instances,
+            midpoint_topology.authored_overlap_seam_groups,
+            midpoint_topology.adjusted_authored_overlap_instances,
             midpoint_topology.projected_t_junctions,
             midpoint_topology.adjusted_projected_t_junction_instances,
             midpoint_topology.exact_t_junctions +

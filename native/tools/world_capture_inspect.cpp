@@ -310,6 +310,7 @@ int main(int argc, char** argv) {
         "topologyProjectionAdjusted=%u topologySeamGroups=%u "
         "topologySeamAdjusted=%u topologyProjectedTJunctions=%u "
         "topologyRasterGroups=%u topologyRasterAdjusted=%u "
+        "topologyOverlapSeamGroups=%u topologyOverlapSeamAdjusted=%u "
         "topologyProjectedTJunctionAdjusted=%u topologyBoundaryEdges=%u "
         "topologyManifoldEdges=%u topologyNonmanifoldEdges=%u "
         "topologyTJunctions=%u topologySplitSources=%u "
@@ -362,6 +363,8 @@ int main(int argc, char** argv) {
         topology.projected_t_junctions,
         topology.authored_raster_groups,
         topology.adjusted_authored_raster_instances,
+        topology.authored_overlap_seam_groups,
+        topology.adjusted_authored_overlap_instances,
         topology.adjusted_projected_t_junction_instances,
         topology.boundary_edges,
         topology.manifold_edges,

@@ -427,6 +427,176 @@ int main() {
         std::fabs(lod_px * lod_dy - lod_py * lod_dx) < 0.001F,
         "close an authored-raster-proven road LOD boundary");
 
+    // At the bottom of Red Rock's 0:18 frame, the native raster keeps two
+    // road LOD strips watertight on adjacent authored scanlines. Continuous
+    // projection separates them by 0.40 native pixels, enough to expose one
+    // high-resolution row even though the 4x view-space relation is exact.
+    WorldDrawList scanline_lod_list{};
+    scanline_lod_list.display_y = 240;
+    scanline_lod_list.display_width = 320;
+    scanline_lod_list.display_height = 240;
+    scanline_lod_list.continuous_projection = true;
+    scanline_lod_list.materials.resize(2);
+    scanline_lod_list.materials[0].primitive_flags = 1;
+    scanline_lod_list.materials[1].primitive_flags = 1;
+    auto scanline_lod_edge = triangle(
+        vertex(110, 220, 463, 0xE100),
+        vertex(148, 221, 464, 0xE114),
+        vertex(144, 220, 626, 0xE128),
+        0x800C0304,
+        42,
+        1);
+    auto scanline_lod_point = triangle(
+        vertex(445, 884, 1853, 0xE200),
+        vertex(453, 882, 1527, 0xE214),
+        vertex(520, 884, 1855, 0xE228),
+        0x800C0304,
+        43);
+    scanline_lod_edge.object_id = 21;
+    scanline_lod_point.object_id = 21;
+    scanline_lod_edge.transform_id = 0x5678;
+    scanline_lod_point.transform_id = 0x1234;
+    scanline_lod_edge.vertices[0].screen_x = 211.317F;
+    scanline_lod_edge.vertices[0].screen_y = 462.635F;
+    scanline_lod_edge.vertices[0].authored_screen_x = 211;
+    scanline_lod_edge.vertices[0].authored_screen_y = 462;
+    scanline_lod_edge.vertices[1].screen_x = 228.897F;
+    scanline_lod_edge.vertices[1].screen_y = 462.879F;
+    scanline_lod_edge.vertices[1].authored_screen_x = 228;
+    scanline_lod_edge.vertices[1].authored_screen_y = 462;
+    scanline_lod_point.vertices[0].screen_x = 211.873F;
+    scanline_lod_point.vertices[0].screen_y = 463.046F;
+    scanline_lod_point.vertices[0].authored_screen_x = 211;
+    scanline_lod_point.vertices[0].authored_screen_y = 463;
+    scanline_lod_list.commands.push_back(scanline_lod_edge);
+    scanline_lod_list.commands.push_back(scanline_lod_point);
+    scanline_lod_list.track_commands = 2;
+    WorldTopologyStats scanline_lod_stats{};
+    const auto scanline_lod_result = apply_world_topology(
+            &scanline_lod_list,
+            WorldTopologyOptions{false, false, false},
+            &scanline_lod_stats);
+    okay &= expect(
+        scanline_lod_result == WorldTopologyResult::success &&
+        scanline_lod_stats.projected_t_junctions >= 1 &&
+        std::fabs(
+            scanline_lod_list.commands[1].vertices[0].screen_y -
+            scanline_lod_list.commands[0].vertices[0].screen_y) < 0.02F,
+        "close an adjacent-scanline road LOD boundary");
+
+    // Red Rock turn 1 submits a near road strip and its containing far strip
+    // through different transforms and texture pages. Both boundary edges
+    // occupy the same integer SXY line in the PS1 raster, but their continuous
+    // projections miss by 0.03 native pixels and expose a clear-color row.
+    WorldDrawList authored_overlap_list{};
+    authored_overlap_list.display_width = 320;
+    authored_overlap_list.display_height = 240;
+    authored_overlap_list.continuous_projection = true;
+    authored_overlap_list.materials.resize(2);
+    authored_overlap_list.materials[0].primitive_flags = 1;
+    authored_overlap_list.materials[1].primitive_flags = 1;
+    auto overlap_outer = triangle(
+        vertex(0, 0, 0, 0xF000),
+        vertex(100, 0, 0, 0xF014),
+        vertex(0, 0, 100, 0xF028),
+        0x800C0304,
+        50,
+        0);
+    auto overlap_inner = triangle(
+        vertex(40, 0, 200, 0x10000),
+        vertex(60, 0, 200, 0x10014),
+        vertex(40, 0, 300, 0x10028),
+        0x800C0304,
+        51,
+        1);
+    overlap_outer.object_id = 21;
+    overlap_inner.object_id = 21;
+    overlap_outer.transform_id = 0x1111;
+    overlap_inner.transform_id = 0x2222;
+    overlap_outer.vertices[0].authored_screen_x = 40;
+    overlap_outer.vertices[0].authored_screen_y = 387;
+    overlap_outer.vertices[0].screen_x = 40.606F;
+    overlap_outer.vertices[0].screen_y = 387.273F;
+    overlap_outer.vertices[1].authored_screen_x = 113;
+    overlap_outer.vertices[1].authored_screen_y = 387;
+    overlap_outer.vertices[1].screen_x = 113.817F;
+    overlap_outer.vertices[1].screen_y = 387.180F;
+    overlap_outer.vertices[2].authored_screen_x = 108;
+    overlap_outer.vertices[2].authored_screen_y = 371;
+    overlap_outer.vertices[2].screen_x = 108.290F;
+    overlap_outer.vertices[2].screen_y = 371.376F;
+    overlap_inner.vertices[0].authored_screen_x = 77;
+    overlap_inner.vertices[0].authored_screen_y = 387;
+    overlap_inner.vertices[0].screen_x = 77.355F;
+    overlap_inner.vertices[0].screen_y = 387.257F;
+    overlap_inner.vertices[1].authored_screen_x = 59;
+    overlap_inner.vertices[1].authored_screen_y = 387;
+    overlap_inner.vertices[1].screen_x = 59.017F;
+    overlap_inner.vertices[1].screen_y = 387.265F;
+    overlap_inner.vertices[2].authored_screen_x = 33;
+    overlap_inner.vertices[2].authored_screen_y = 402;
+    overlap_inner.vertices[2].screen_x = 33.257F;
+    overlap_inner.vertices[2].screen_y = 402.137F;
+    authored_overlap_list.commands.push_back(overlap_outer);
+    authored_overlap_list.commands.push_back(overlap_inner);
+    authored_overlap_list.track_commands = 2;
+    auto rejected_overlap_list = authored_overlap_list;
+    rejected_overlap_list.commands[1].model_pointer = 0x800C0404;
+    WorldTopologyStats authored_overlap_stats{};
+    okay &= expect(
+        apply_world_topology(
+            &authored_overlap_list,
+            WorldTopologyOptions{false, false, false},
+            &authored_overlap_stats) == WorldTopologyResult::success,
+        "apply authored overlap seam join");
+    const auto& joined_outer = authored_overlap_list.commands[0];
+    const auto& joined_inner = authored_overlap_list.commands[1];
+    const float overlap_dx =
+        joined_outer.vertices[1].screen_x -
+        joined_outer.vertices[0].screen_x;
+    const float overlap_dy =
+        joined_outer.vertices[1].screen_y -
+        joined_outer.vertices[0].screen_y;
+    const auto overlap_distance = [&] (const WorldDrawVertex& point) {
+        return std::fabs(
+            (point.screen_x - joined_outer.vertices[0].screen_x) *
+                overlap_dy -
+            (point.screen_y - joined_outer.vertices[0].screen_y) *
+                overlap_dx);
+    };
+    okay &= expect(
+        authored_overlap_stats.authored_overlap_seam_groups == 1 &&
+        authored_overlap_stats.adjusted_authored_overlap_instances == 2 &&
+        overlap_distance(joined_inner.vertices[0]) < 0.01F &&
+        overlap_distance(joined_inner.vertices[1]) < 0.01F,
+        "close a cross-transform/material authored raster seam");
+    auto same_layer_overlap_list = authored_overlap_list;
+    same_layer_overlap_list.commands[1].transform_id =
+        same_layer_overlap_list.commands[0].transform_id;
+    same_layer_overlap_list.commands[1].material_index =
+        same_layer_overlap_list.commands[0].material_index;
+    same_layer_overlap_list.commands[1].vertices[0].screen_y += 0.08F;
+    same_layer_overlap_list.commands[1].vertices[1].screen_y += 0.08F;
+    WorldTopologyStats same_layer_overlap_stats{};
+    okay &= expect(
+        apply_world_topology(
+            &same_layer_overlap_list,
+            WorldTopologyOptions{false, false, false},
+            &same_layer_overlap_stats) == WorldTopologyResult::success &&
+        same_layer_overlap_stats.authored_overlap_seam_groups == 1 &&
+        same_layer_overlap_stats.adjusted_authored_overlap_instances == 2,
+        "close a same-layer authored raster seam");
+    WorldTopologyStats rejected_overlap_stats{};
+    okay &= expect(
+        apply_world_topology(
+            &rejected_overlap_list,
+            WorldTopologyOptions{false, false, false},
+            &rejected_overlap_stats) == WorldTopologyResult::success &&
+        rejected_overlap_stats.authored_overlap_seam_groups == 0 &&
+        rejected_overlap_list.commands[1].vertices[0].screen_y ==
+            overlap_inner.vertices[0].screen_y,
+        "do not join a matching raster line from a different model");
+
     if (!okay)
         return 1;
     std::puts("world topology tests passed");

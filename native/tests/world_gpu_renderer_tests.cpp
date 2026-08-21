@@ -143,6 +143,46 @@ bool is_clear(const std::array<std::uint8_t, 4>& pixel) {
     return pixel[0] > 240U && pixel[1] < 16U && pixel[2] < 16U;
 }
 
+std::array<std::uint8_t, 4> render_fractional_uv_center() {
+    using namespace opengt::render;
+    std::vector<std::uint16_t> vram(1024U * 512U);
+    vram[10U * 1024U + 10U] = green_555;
+    auto list = draw_list(2U, true);
+    for (auto& point : list.commands[0].vertices) {
+        point.u = 10.75F;
+        point.v = 10.75F;
+    }
+    std::vector<std::uint8_t> output(16U * 16U * 4U);
+    WorldGpuRenderStats stats{};
+    reset_world_d3d11_readback(false);
+    const auto result = render_world_d3d11(
+        list,
+        vram.data(),
+        vram.size(),
+        output.data(),
+        output.size(),
+        WorldGpuRenderOptions{
+            false,
+            true,
+            false,
+            true,
+            false,
+            false,
+            1,
+            clear_rgba,
+        },
+        &stats);
+    if (result != WorldGpuRenderResult::success || !stats.output_valid)
+        return {};
+    const std::size_t center = (8U * 16U + 8U) * 4U;
+    return {
+        output[center],
+        output[center + 1],
+        output[center + 2],
+        output[center + 3],
+    };
+}
+
 bool reset_isolates_async_readback_generation() {
     using namespace opengt::render;
     constexpr std::uint32_t blue_clear_rgba = 0xFFFF0000U;
@@ -551,6 +591,9 @@ int main() {
     okay &= expect(
         is_clear(render_center(1U, true, 2U)),
         "preserve an authored track-texture cutout");
+    okay &= expect(
+        is_green(render_fractional_uv_center()),
+        "use PS1 floor semantics for fractional world-texture visibility");
     okay &= expect(
         reset_isolates_async_readback_generation(),
         "isolate asynchronous pixels and queries across a temporal reset");
