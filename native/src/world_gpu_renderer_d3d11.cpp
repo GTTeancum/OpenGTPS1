@@ -3441,11 +3441,20 @@ WorldGpuRenderResult render_world_d3d11(
         static_cast<std::uint32_t>(draw_list.commands.size());
     stats->secondary_commands = draw_list.secondary_commands;
 
+    // GT2 already submits complete tire and sidewall geometry with an exact
+    // per-wheel guest transform.  Reconstructing a second cylindrical shell
+    // from those commands can cross the camera plane during replay close-ups
+    // and turn one tire into a detached, screen-filling object.  Keep the old
+    // reconstruction available for focused diagnostics, but render the
+    // authored wheel mesh in normal builds.
     std::vector<SmoothWheel> smooth_wheels;
-    try {
-        smooth_wheels = build_smooth_wheels(draw_list);
-    } catch (const std::bad_alloc&) {
-        return WorldGpuRenderResult::resource_failed;
+    if (const char* enabled = std::getenv("OPENGT_RENDER_SMOOTH_WHEELS");
+        enabled != nullptr && std::strcmp(enabled, "1") == 0) {
+        try {
+            smooth_wheels = build_smooth_wheels(draw_list);
+        } catch (const std::bad_alloc&) {
+            return WorldGpuRenderResult::resource_failed;
+        }
     }
     try {
         emit_vehicle_diagnostics(

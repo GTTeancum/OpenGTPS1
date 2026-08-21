@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 namespace {
@@ -606,8 +607,16 @@ opengt::render::WorldDrawList mirror_wheel_draw_list(
 }
 
 // Returns shell coverage counts as {inside the clip rect, outside it}.
-std::array<int, 2> mirror_shell_coverage(std::int16_t clip_x1) {
+std::array<int, 2> mirror_shell_coverage(
+    std::int16_t clip_x1,
+    bool enable_reconstructed_shell
+) {
     using namespace opengt::render;
+#if defined(_WIN32)
+    _putenv_s(
+        "OPENGT_RENDER_SMOOTH_WHEELS",
+        enable_reconstructed_shell ? "1" : "");
+#endif
     std::vector<std::uint16_t> vram(1024U * 512U);
     std::vector<std::uint8_t> output(32U * 32U * 4U);
     WorldGpuRenderStats stats{};
@@ -707,14 +716,18 @@ int main() {
     okay &= expect(
         is_soft_shadow(render_vehicle_shadow_center(true)),
         "preserve soft shadows when clipped shadow triangles are batched");
-    const auto clipped = mirror_shell_coverage(15);
+    const auto authored = mirror_shell_coverage(31, false);
+    okay &= expect(
+        authored[0] == 0 && authored[1] == 0,
+        "render GT2 authored wheel geometry by default");
+    const auto clipped = mirror_shell_coverage(15, true);
     okay &= expect(
         clipped[0] > 0,
         "draw a mirror wheel shell inside the guest drawing area");
     okay &= expect(
         clipped[1] == 0,
         "clip a mirror wheel shell to the guest drawing area");
-    const auto unclipped = mirror_shell_coverage(31);
+    const auto unclipped = mirror_shell_coverage(31, true);
     okay &= expect(
         unclipped[0] > clipped[0],
         "keep the full shell when the drawing area covers the display");
