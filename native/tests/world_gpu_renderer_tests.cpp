@@ -143,6 +143,142 @@ bool is_clear(const std::array<std::uint8_t, 4>& pixel) {
     return pixel[0] > 240U && pixel[1] < 16U && pixel[2] < 16U;
 }
 
+bool reset_isolates_async_readback_generation() {
+    using namespace opengt::render;
+    constexpr std::uint32_t blue_clear_rgba = 0xFFFF0000U;
+    std::vector<std::uint16_t> vram(1024U * 512U);
+    std::vector<std::uint8_t> output(16U * 16U * 4U);
+    const auto list = draw_list(1U, true);
+    const auto submit = [&] (std::uint32_t clear) {
+        WorldGpuRenderStats stats{};
+        const auto result = render_world_d3d11(
+            list,
+            vram.data(),
+            vram.size(),
+            output.data(),
+            output.size(),
+            WorldGpuRenderOptions{
+                false,
+                true,
+                false,
+                true,
+                false,
+                false,
+                1,
+                clear,
+                false,
+                false,
+                false,
+                false,
+                true,
+            },
+            &stats);
+        return result == WorldGpuRenderResult::success &&
+            !stats.output_valid;
+    };
+
+    reset_world_d3d11_readback(false);
+    for (std::size_t index = 0;
+         index < world_gpu_readback_pair_delay * 2;
+         ++index) {
+        if (!submit(clear_rgba))
+            return false;
+    }
+    if (pending_world_d3d11_readback_pairs(false) == 0)
+        return false;
+
+    // Abandon the red generation without draining it, exactly as a live guest
+    // cadence gap does while the GPU is under load.
+    reset_world_d3d11_readback(false);
+    if (pending_world_d3d11_readback_pairs(false) != 0)
+        return false;
+    for (std::size_t index = 0;
+         index < world_gpu_readback_pair_delay * 2;
+         ++index) {
+        if (!submit(blue_clear_rgba))
+            return false;
+    }
+    for (std::size_t index = 0;
+         index < world_gpu_readback_pair_delay * 2;
+         ++index) {
+        const auto result = try_read_world_d3d11_image(
+            false,
+            output.data(),
+            output.size(),
+            true);
+        if (result != WorldGpuReadbackResult::success)
+            return false;
+        // The upper-left pixel is outside the test triangle and therefore
+        // identifies which clear-color generation supplied the image.
+        if (output[0] > 16U || output[1] > 16U || output[2] < 240U)
+            return false;
+    }
+    return true;
+}
+
+bool async_frames_preserve_mutable_inputs() {
+    using namespace opengt::render;
+    constexpr std::array<std::uint16_t, 3> words{{
+        31U,
+        31U << 5U,
+        31U << 10U,
+    }};
+    std::vector<std::uint16_t> vram(1024U * 512U);
+    std::vector<std::uint8_t> output(16U * 16U * 4U);
+    const auto list = draw_list(2U, true);
+    reset_world_d3d11_readback(false);
+
+    for (std::size_t index = 0;
+         index < world_gpu_async_readback_image_capacity;
+         ++index) {
+        vram[10U * 1024U + 10U] = words[index % words.size()];
+        WorldGpuRenderStats stats{};
+        const auto result = render_world_d3d11(
+            list,
+            vram.data(),
+            vram.size(),
+            output.data(),
+            output.size(),
+            WorldGpuRenderOptions{
+                false,
+                true,
+                false,
+                true,
+                false,
+                false,
+                1,
+                clear_rgba,
+                false,
+                false,
+                false,
+                false,
+                true,
+            },
+            &stats);
+        if (result != WorldGpuRenderResult::success || stats.output_valid)
+            return false;
+    }
+
+    constexpr std::size_t center = (8U * 16U + 8U) * 4U;
+    for (std::size_t index = 0;
+         index < world_gpu_async_readback_image_capacity;
+         ++index) {
+        if (try_read_world_d3d11_image(
+                false,
+                output.data(),
+                output.size(),
+                true) != WorldGpuReadbackResult::success)
+            return false;
+        const std::size_t expected_channel = index % words.size();
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            const std::uint8_t value = output[center + channel];
+            if (channel == expected_channel ? value < 240U : value > 16U)
+                return false;
+        }
+    }
+    return true;
+}
+
 std::array<std::uint8_t, 4> render_vehicle_shadow_center(
     bool prepend_clipped_shadow
 ) {
@@ -415,6 +551,12 @@ int main() {
     okay &= expect(
         is_clear(render_center(1U, true, 2U)),
         "preserve an authored track-texture cutout");
+    okay &= expect(
+        reset_isolates_async_readback_generation(),
+        "isolate asynchronous pixels and queries across a temporal reset");
+    okay &= expect(
+        async_frames_preserve_mutable_inputs(),
+        "preserve each asynchronous frame's mutable GPU inputs");
     okay &= expect(
         is_soft_shadow(render_vehicle_shadow_center(false)),
         "recognize a vehicle shadow with no model-space-flat edge");

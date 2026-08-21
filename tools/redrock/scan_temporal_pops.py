@@ -27,6 +27,7 @@ def frames(video: pathlib.Path):
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-i", str(video),
+            "-vf", f"scale={WIDTH}:{HEIGHT}:flags=area",
             "-f", "rawvideo", "-pix_fmt", "gray", "-",
         ],
         stdout=subprocess.PIPE,
@@ -76,7 +77,9 @@ def main() -> None:
     scores.sort(reverse=True)
     print("worst pop frames (frame, seconds, popped pixels):")
     for score, index in scores[:arguments.top]:
-        print(f"  frame={index:5d} t={index / 60.0:7.2f}s pixels={score}")
+        print(
+            f"  frame={index:5d} "
+            f"t={index * 1001.0 / 60000.0:7.2f}s pixels={score}")
 
 
 if __name__ == "__main__":

@@ -27,8 +27,9 @@ struct WorldGpuRenderOptions {
     bool high_resolution_textures;
     std::uint32_t output_scale;
     std::uint32_t clear_color_rgba8;
-    // A generated midpoint can reuse the prior authored frame's immutable
-    // texture/material inputs when the caller has proven exact compatibility.
+    // Retained for callers from the retired pair-rendering path. The live
+    // renderer may ignore these hints when distinct in-flight resource slots
+    // are required for correctness.
     bool reuse_uploaded_vram = false;
     bool reuse_uploaded_materials = false;
     // Diagnostics only: identifies the generated half-step submitted before
@@ -126,8 +127,8 @@ std::size_t pending_world_d3d11_readback_pairs(
     bool use_software_adapter
 ) noexcept;
 
-// Begins a new temporal stream. The next render is read back synchronously;
-// later renders resume the two-pair staging overlap.
+// Begins a new temporal stream. All mutable resources from the prior stream are
+// detached so an unfinished GPU tail cannot be mistaken for new readback work.
 void reset_world_d3d11_readback(bool use_software_adapter) noexcept;
 
 bool set_world_d3d11_texture_uploads(

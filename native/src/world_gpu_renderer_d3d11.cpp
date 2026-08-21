@@ -1453,6 +1453,17 @@ struct CachedReplacementResolution {
     ReplacementResolution resolution{};
 };
 
+struct FrameInputResources {
+    ComPtr<ID3D11Buffer> vertex_buffer;
+    UINT vertex_buffer_bytes{};
+    ComPtr<ID3D11Buffer> material_buffer;
+    ComPtr<ID3D11ShaderResourceView> material_view;
+    UINT material_buffer_bytes{};
+    std::array<ComPtr<ID3D11Buffer>, 3> constant_buffers;
+    ComPtr<ID3D11Texture2D> vram_texture;
+    ComPtr<ID3D11ShaderResourceView> vram_view;
+};
+
 struct BaseResources {
     bool ready;
     bool software_adapter;
@@ -1464,13 +1475,13 @@ struct BaseResources {
     ComPtr<ID3D11RasterizerState> rasterizer;
     std::array<ComPtr<ID3D11BlendState>, 7> blend_states;
     ComPtr<ID3D11DepthStencilState> depth_states[2][2][2][2];
-    ComPtr<ID3D11Buffer> vertex_buffer;
-    UINT vertex_buffer_bytes;
-    ComPtr<ID3D11Buffer> material_buffer;
-    ComPtr<ID3D11ShaderResourceView> material_view;
-    UINT material_buffer_bytes;
-    bool material_buffer_initialized;
-    std::array<ComPtr<ID3D11Buffer>, 3> constant_buffers;
+    // Mutable inputs can follow the full sixteen-slot asynchronous readback
+    // cadence. The low-latency authored path keeps four slots hot; a deeper
+    // queue expands to the staging slot's unique resource set. In either case,
+    // a slot cannot be uploaded again until its image has been drained.
+    std::array<
+        FrameInputResources,
+        world_gpu_async_readback_image_capacity> frame_inputs;
     ComPtr<ID3D11Texture2D> color_texture;
     ComPtr<ID3D11RenderTargetView> color_view;
     ComPtr<ID3D11Texture2D> depth_texture;
@@ -1500,9 +1511,6 @@ struct BaseResources {
     UINT async_staging_write_index;
     UINT async_staging_count;
     std::vector<std::uint8_t> staging_warmup_output;
-    ComPtr<ID3D11Texture2D> vram_texture;
-    ComPtr<ID3D11ShaderResourceView> vram_view;
-    bool vram_texture_initialized;
     bool replacement_pack_attempted;
     ComPtr<ID3D11Texture2D> replacement_texture;
     ComPtr<ID3D11ShaderResourceView> replacement_view;
@@ -2596,10 +2604,58 @@ BaseResources& base_resources(bool software_adapter) {
     return resources;
 }
 
-bool ensure_frame_resources(
+void release_readback_resources(BaseResources* resources) {
+    resources->color_view.Reset();
+    resources->color_texture.Reset();
+    resources->depth_view.Reset();
+    resources->depth_texture.Reset();
+    for (auto& staging : resources->staging_textures)
+        staging.Reset();
+    for (auto& query : resources->staging_completion_queries)
+        query.Reset();
+    for (auto& staging : resources->async_staging_textures)
+        staging.Reset();
+    for (auto& query : resources->async_completion_queries)
+        query.Reset();
+    resources->staging_write_index = 0;
+    resources->staging_fill_count = 0;
+    resources->async_staging_read_index = 0;
+    resources->async_staging_write_index = 0;
+    resources->async_staging_count = 0;
+    resources->staging_warmup_output.clear();
+    resources->output_width = 0;
+    resources->output_height = 0;
+}
+
+void release_mutable_frame_resources(FrameInputResources* frame) {
+    frame->vertex_buffer.Reset();
+    frame->vertex_buffer_bytes = 0;
+    frame->material_view.Reset();
+    frame->material_buffer.Reset();
+    frame->material_buffer_bytes = 0;
+    for (auto& constant_buffer : frame->constant_buffers)
+        constant_buffer.Reset();
+    frame->vram_view.Reset();
+    frame->vram_texture.Reset();
+}
+
+void release_mutable_frame_resources(BaseResources* resources) {
+    for (auto& frame : resources->frame_inputs)
+        release_mutable_frame_resources(&frame);
+}
+
+void release_frame_generation(BaseResources* resources) {
+    if (resources->context != nullptr) {
+        resources->context->ClearState();
+        resources->context->Flush();
+    }
+    release_readback_resources(resources);
+    release_mutable_frame_resources(resources);
+}
+
+bool ensure_mutable_frame_resources(
     BaseResources* resources,
-    std::uint32_t output_width,
-    std::uint32_t output_height,
+    FrameInputResources* frame,
     std::size_t vertex_count,
     std::size_t material_count
 ) {
@@ -2612,14 +2668,14 @@ bool ensure_frame_resources(
     )
         return false;
     if (
-        !resources->vertex_buffer ||
-        resources->vertex_buffer_bytes < required_vertex_bytes
+        !frame->vertex_buffer ||
+        frame->vertex_buffer_bytes < required_vertex_bytes
     ) {
         const UINT requested =
             static_cast<UINT>(required_vertex_bytes);
-        const UINT doubled = resources->vertex_buffer_bytes <=
+        const UINT doubled = frame->vertex_buffer_bytes <=
                 (std::numeric_limits<UINT>::max)() / 2
-            ? resources->vertex_buffer_bytes * 2
+            ? frame->vertex_buffer_bytes * 2
             : (std::numeric_limits<UINT>::max)();
         const UINT capacity = (std::max)(requested, doubled);
         D3D11_BUFFER_DESC description{};
@@ -2633,8 +2689,8 @@ bool ensure_frame_resources(
                 nullptr,
                 replacement.GetAddressOf())))
             return false;
-        resources->vertex_buffer = std::move(replacement);
-        resources->vertex_buffer_bytes = capacity;
+        frame->vertex_buffer = std::move(replacement);
+        frame->vertex_buffer_bytes = capacity;
     }
     const std::size_t required_material_bytes =
         material_count * sizeof(GpuMaterial);
@@ -2644,15 +2700,15 @@ bool ensure_frame_resources(
     )
         return false;
     if (
-        !resources->material_buffer ||
-        resources->material_buffer_bytes < required_material_bytes
+        !frame->material_buffer ||
+        frame->material_buffer_bytes < required_material_bytes
     ) {
         const UINT requested = static_cast<UINT>(
             (std::max<std::size_t>)(1, material_count) *
             sizeof(GpuMaterial));
-        const UINT doubled = resources->material_buffer_bytes <=
+        const UINT doubled = frame->material_buffer_bytes <=
                 (std::numeric_limits<UINT>::max)() / 2
-            ? resources->material_buffer_bytes * 2
+            ? frame->material_buffer_bytes * 2
             : (std::numeric_limits<UINT>::max)();
         UINT capacity = (std::max)(requested, doubled);
         capacity -= capacity % sizeof(GpuMaterial);
@@ -2685,12 +2741,11 @@ bool ensure_frame_resources(
                 &view_description,
                 replacement_view.GetAddressOf())))
             return false;
-        resources->material_buffer = std::move(replacement);
-        resources->material_view = std::move(replacement_view);
-        resources->material_buffer_bytes = capacity;
-        resources->material_buffer_initialized = false;
+        frame->material_buffer = std::move(replacement);
+        frame->material_view = std::move(replacement_view);
+        frame->material_buffer_bytes = capacity;
     }
-    for (auto& constant_buffer : resources->constant_buffers) {
+    for (auto& constant_buffer : frame->constant_buffers) {
         if (!constant_buffer) {
             D3D11_BUFFER_DESC description{};
             description.ByteWidth = sizeof(DrawConstants);
@@ -2703,7 +2758,7 @@ bool ensure_frame_resources(
                 return false;
         }
     }
-    if (!resources->vram_texture) {
+    if (!frame->vram_texture) {
         D3D11_TEXTURE2D_DESC description{};
         description.Width = 1024;
         description.Height = 512;
@@ -2717,15 +2772,23 @@ bool ensure_frame_resources(
             FAILED(device->CreateTexture2D(
                 &description,
                 nullptr,
-                resources->vram_texture.GetAddressOf())) ||
+                frame->vram_texture.GetAddressOf())) ||
             FAILED(device->CreateShaderResourceView(
-                resources->vram_texture.Get(),
+                frame->vram_texture.Get(),
                 nullptr,
-                resources->vram_view.GetAddressOf()))
+                frame->vram_view.GetAddressOf()))
         )
             return false;
-        resources->vram_texture_initialized = false;
     }
+    return true;
+}
+
+bool ensure_output_resources(
+    BaseResources* resources,
+    std::uint32_t output_width,
+    std::uint32_t output_height
+) {
+    ID3D11Device* device = resources->device.Get();
     if (
         resources->color_texture &&
         resources->output_width == output_width &&
@@ -2733,24 +2796,10 @@ bool ensure_frame_resources(
     )
         return true;
 
-    resources->color_view.Reset();
-    resources->color_texture.Reset();
-    resources->depth_view.Reset();
-    resources->depth_texture.Reset();
-    for (auto& staging : resources->staging_textures)
-        staging.Reset();
-    for (auto& query : resources->staging_completion_queries)
-        query.Reset();
-    for (auto& staging : resources->async_staging_textures)
-        staging.Reset();
-    for (auto& query : resources->async_completion_queries)
-        query.Reset();
-    resources->staging_write_index = 0;
-    resources->staging_fill_count = 0;
-    resources->async_staging_read_index = 0;
-    resources->async_staging_write_index = 0;
-    resources->async_staging_count = 0;
-    resources->staging_warmup_output.clear();
+    // Output-size changes also rewind the staging indices. Detach the matching
+    // mutable inputs so an unfinished prior-size frame cannot alias slot zero
+    // in the new generation.
+    release_frame_generation(resources);
     D3D11_TEXTURE2D_DESC color_description{};
     color_description.Width = output_width;
     color_description.Height = output_height;
@@ -3038,15 +3087,24 @@ WorldGpuRenderResult render_world_d3d11(
         3,
         authored_vertex_count +
             smooth_wheels.size() * smooth_wheel_vertices);
-    if (!ensure_frame_resources(
-            &base,
-            output_width,
-            output_height,
-            vertex_count,
-            draw_list.commands.size() + smooth_wheels.size()))
+    if (!ensure_output_resources(&base, output_width, output_height))
         return WorldGpuRenderResult::resource_failed;
     const UINT staging_write = base.staging_write_index;
     const UINT staging_fill_count = base.staging_fill_count;
+    const UINT async_staging_write = base.async_staging_write_index;
+    const UINT frame_input_index = options.asynchronous_readback
+        ? (base.async_staging_count < world_gpu_readback_pair_delay * 2U
+            ? async_staging_write %
+                static_cast<UINT>(world_gpu_readback_pair_delay * 2U)
+            : async_staging_write)
+        : staging_write;
+    auto& frame = base.frame_inputs[frame_input_index];
+    if (!ensure_mutable_frame_resources(
+            &base,
+            &frame,
+            vertex_count,
+            draw_list.commands.size() + smooth_wheels.size()))
+        return WorldGpuRenderResult::resource_failed;
     using PhaseClock = std::chrono::steady_clock;
     const auto render_started = PhaseClock::now();
     std::uint64_t readback_microseconds = 0;
@@ -3145,25 +3203,21 @@ WorldGpuRenderResult render_world_d3d11(
             required_output);
         output_valid = true;
     }
-    const UINT async_staging_write = base.async_staging_write_index;
     if (
         options.asynchronous_readback &&
         base.async_staging_count >= base.async_staging_textures.size()
     )
         return WorldGpuRenderResult::resource_failed;
-    if (
-        !options.reuse_uploaded_vram ||
-        !base.vram_texture_initialized
-    ) {
-        context->UpdateSubresource(
-            base.vram_texture.Get(),
-            0,
-            nullptr,
-            vram,
-            1024U * sizeof(std::uint16_t),
-            1024U * 512U * sizeof(std::uint16_t));
-        base.vram_texture_initialized = true;
-    }
+    // Each in-flight image owns this VRAM texture. Always populate the selected
+    // slot: an immediate-previous-frame reuse hint cannot apply to a slot last
+    // used up to sixteen submissions ago.
+    context->UpdateSubresource(
+        frame.vram_texture.Get(),
+        0,
+        nullptr,
+        vram,
+        1024U * sizeof(std::uint16_t),
+        1024U * 512U * sizeof(std::uint16_t));
 
     const float clear[] = {
         (options.clear_color_rgba8 & 0xFF) / 255.0F,
@@ -3192,31 +3246,10 @@ WorldGpuRenderResult render_world_d3d11(
     context->IASetInputLayout(base.input_layout.Get());
     context->IASetPrimitiveTopology(
         D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    const UINT stride = sizeof(GpuVertex);
-    const UINT offset = 0;
-    ID3D11Buffer* raw_vertex_buffer = base.vertex_buffer.Get();
-    context->IASetVertexBuffers(
-        0, 1, &raw_vertex_buffer, &stride, &offset);
-    context->VSSetShader(base.vertex_shader.Get(), nullptr, 0);
-    context->PSSetShader(base.pixel_shader.Get(), nullptr, 0);
-    ID3D11ShaderResourceView* shader_views[] = {
-        base.vram_view.Get(),
-        base.material_view.Get(),
-        options.high_resolution_textures
-            ? base.replacement_view.Get()
-            : nullptr,
-    };
-    context->PSSetShaderResources(
-        0,
-        static_cast<UINT>(std::size(shader_views)),
-        shader_views);
-    ID3D11SamplerState* replacement_sampler =
-        base.replacement_sampler.Get();
-    context->PSSetSamplers(0, 1, &replacement_sampler);
 
     D3D11_MAPPED_SUBRESOURCE mapped_vertices{};
     if (FAILED(context->Map(
-            base.vertex_buffer.Get(),
+            frame.vertex_buffer.Get(),
             0,
             D3D11_MAP_WRITE_DISCARD,
             0,
@@ -3405,15 +3438,12 @@ WorldGpuRenderResult render_world_d3d11(
                 draw_list.display_y + draw_list.display_height);
         }
     }
-    context->Unmap(base.vertex_buffer.Get(), 0);
+    context->Unmap(frame.vertex_buffer.Get(), 0);
 
-    if (
-        !options.reuse_uploaded_materials ||
-        !base.material_buffer_initialized
-    ) {
+    {
         D3D11_MAPPED_SUBRESOURCE mapped_materials{};
         if (FAILED(context->Map(
-                base.material_buffer.Get(),
+                frame.material_buffer.Get(),
                 0,
                 D3D11_MAP_WRITE_DISCARD,
                 0,
@@ -3434,7 +3464,7 @@ WorldGpuRenderResult render_world_d3d11(
              ++command_index) {
             const auto& command = draw_list.commands[command_index];
             if (command.material_index >= draw_list.materials.size()) {
-                context->Unmap(base.material_buffer.Get(), 0);
+                context->Unmap(frame.material_buffer.Get(), 0);
                 return WorldGpuRenderResult::render_failed;
             }
             const auto& material =
@@ -3522,9 +3552,33 @@ WorldGpuRenderResult render_world_d3d11(
             gpu_materials[draw_list.commands.size() + wheel_index] =
                 GpuMaterial{};
         }
-        context->Unmap(base.material_buffer.Get(), 0);
-        base.material_buffer_initialized = true;
+        context->Unmap(frame.material_buffer.Get(), 0);
     }
+
+    // Bind only after both dynamic buffers have been populated. This keeps the
+    // D3D resource/allocation selected by WRITE_DISCARD identical to the one
+    // observed by every draw in this submission.
+    const UINT stride = sizeof(GpuVertex);
+    const UINT offset = 0;
+    ID3D11Buffer* raw_vertex_buffer = frame.vertex_buffer.Get();
+    context->IASetVertexBuffers(
+        0, 1, &raw_vertex_buffer, &stride, &offset);
+    context->VSSetShader(base.vertex_shader.Get(), nullptr, 0);
+    context->PSSetShader(base.pixel_shader.Get(), nullptr, 0);
+    ID3D11ShaderResourceView* shader_views[] = {
+        frame.vram_view.Get(),
+        frame.material_view.Get(),
+        options.high_resolution_textures
+            ? base.replacement_view.Get()
+            : nullptr,
+    };
+    context->PSSetShaderResources(
+        0,
+        static_cast<UINT>(std::size(shader_views)),
+        shader_views);
+    ID3D11SamplerState* replacement_sampler =
+        base.replacement_sampler.Get();
+    context->PSSetSamplers(0, 1, &replacement_sampler);
 
     for (std::uint32_t pass = 0; pass < 3; ++pass) {
         const DrawConstants constants{
@@ -3546,7 +3600,7 @@ WorldGpuRenderResult render_world_d3d11(
                 : 0U,
         };
         context->UpdateSubresource(
-            base.constant_buffers[pass].Get(),
+            frame.constant_buffers[pass].Get(),
             0,
             nullptr,
             &constants,
@@ -3624,7 +3678,7 @@ WorldGpuRenderResult render_world_d3d11(
             context->RSSetScissorRects(1, &wheel_scissor);
             has_bound_scissor = false;
             ID3D11Buffer* raw_constant_buffer =
-                base.constant_buffers[0].Get();
+                frame.constant_buffers[0].Get();
             context->PSSetConstantBuffers(0, 1, &raw_constant_buffer);
             bound_pass = 0;
             const float blend_factor[4] = {1.0F, 1.0F, 1.0F, 1.0F};
@@ -3800,7 +3854,7 @@ WorldGpuRenderResult render_world_d3d11(
                 (combined_semitransparent || !textured || pass == 1);
             if (bound_pass != shader_pass) {
                 ID3D11Buffer* raw_constant_buffer =
-                    base.constant_buffers[shader_pass].Get();
+                    frame.constant_buffers[shader_pass].Get();
                 context->PSSetConstantBuffers(
                     0, 1, &raw_constant_buffer);
                 bound_pass = shader_pass;
@@ -4136,12 +4190,15 @@ std::size_t pending_world_d3d11_readback_pairs(
 
 void reset_world_d3d11_readback(bool use_software_adapter) noexcept {
     auto& base = base_resources(use_software_adapter);
-    base.staging_fill_count = 0;
-    base.staging_write_index = 0;
-    base.staging_warmup_output.clear();
-    base.async_staging_read_index = 0;
-    base.async_staging_write_index = 0;
-    base.async_staging_count = 0;
+    // A reset can follow a guest-frame gap while copies from the prior stream
+    // are still executing. Merely rewinding the ring indices reuses the same
+    // staging textures and event queries before that work has completed. Under
+    // a long GPU tail, GetData can then observe the prior query generation while
+    // the slot already contains a later frame, pairing stale identity with
+    // malformed pixels. Detach every mutable resource instead. Commands already
+    // submitted retain their own COM references, while the next render creates
+    // an independent generation that cannot alias the abandoned work.
+    release_frame_generation(&base);
 }
 
 bool set_world_d3d11_texture_uploads(
