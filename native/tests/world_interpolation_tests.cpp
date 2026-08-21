@@ -525,6 +525,84 @@ int main() {
             0.2F,
         "advance an unclassified sky mesh with one exact rigid midpoint");
 
+    // Repeated scenery can submit identical model coordinates through
+    // separate transforms. Near a visibility boundary, the correct temporal
+    // continuation may contain only a subset of the prior triangles while a
+    // different copy remains complete. Mesh cardinality must not make the
+    // complete but distant copy steal the clipped continuation.
+    const auto place_exact_mesh = [&] (
+        WorldDrawCommand* mesh_command,
+        std::uint64_t transform,
+        std::int32_t translate_x
+    ) {
+        mesh_command->object_kind = 0;
+        mesh_command->object_id = 0;
+        mesh_command->model_pointer = 0;
+        mesh_command->transform_id = transform;
+        set_exact_transform(
+            mesh_command,
+            identity_rotation,
+            translate_x,
+            0,
+            1000);
+        for (auto& mesh_vertex : mesh_command->vertices) {
+            mesh_vertex.view_x = mesh_vertex.model_x + translate_x;
+            mesh_vertex.view_y = mesh_vertex.model_y;
+            mesh_vertex.view_z = mesh_vertex.model_z + 1000.0F;
+            mesh_vertex.screen_x = 160.0F +
+                256.0F * mesh_vertex.view_x / mesh_vertex.view_z;
+            mesh_vertex.screen_y = 120.0F +
+                256.0F * mesh_vertex.view_y / mesh_vertex.view_z;
+            mesh_vertex.clip_w = mesh_vertex.view_z;
+            mesh_vertex.clip_z = mesh_vertex.view_z - 16.0F;
+        }
+    };
+    auto repeated_mesh_previous = list();
+    auto near_previous = exact_previous.commands;
+    auto distant_previous = exact_previous.commands;
+    for (auto& mesh_command : near_previous)
+        place_exact_mesh(&mesh_command, 0x4100, 0);
+    for (auto& mesh_command : distant_previous)
+        place_exact_mesh(&mesh_command, 0x4200, -300);
+    repeated_mesh_previous.commands.insert(
+        repeated_mesh_previous.commands.end(),
+        near_previous.begin(),
+        near_previous.end());
+    repeated_mesh_previous.commands.insert(
+        repeated_mesh_previous.commands.end(),
+        distant_previous.begin(),
+        distant_previous.end());
+    repeated_mesh_previous.unclassified_commands = 4;
+    auto repeated_mesh_current = list();
+    auto clipped_near_current = near_previous;
+    clipped_near_current.pop_back();
+    for (auto& mesh_command : clipped_near_current)
+        place_exact_mesh(&mesh_command, 0x5100, 8);
+    auto distant_current = distant_previous;
+    for (auto& mesh_command : distant_current)
+        place_exact_mesh(&mesh_command, 0x5200, -300);
+    repeated_mesh_current.commands.insert(
+        repeated_mesh_current.commands.end(),
+        clipped_near_current.begin(),
+        clipped_near_current.end());
+    repeated_mesh_current.commands.insert(
+        repeated_mesh_current.commands.end(),
+        distant_current.begin(),
+        distant_current.end());
+    repeated_mesh_current.unclassified_commands = 3;
+    okay &= expect(
+        interpolate_world_draw_lists(
+            repeated_mesh_previous,
+            repeated_mesh_current,
+            0.5F,
+            &midpoint,
+            &stats) == WorldInterpolationResult::success &&
+        stats.matched_commands == 3 &&
+        stats.held_unmatched_commands == 1 &&
+        std::fabs(midpoint.commands[0].vertices[0].view_x + 96.0F) <
+            0.2F,
+        "reserve the nearby clipped copy of repeated exact scenery");
+
     // Retail GT2 wheel matrices include model scale in the captured GTE
     // transform. A unit-quaternion conversion used to discard this 1/16
     // scale and turn every synthetic wheel into a screen-sized polygon.

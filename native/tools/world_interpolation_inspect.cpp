@@ -984,6 +984,12 @@ int main(int argc, char** argv) {
         print_transform_groups("previous", previous.draw_list, 1, "track");
         print_transform_groups("current", current.draw_list, 1, "track");
         print_transform_groups("midpoint", midpoint, 1, "track");
+        print_transform_groups(
+            "previous", previous.draw_list, 0, "unclassified");
+        print_transform_groups(
+            "current", current.draw_list, 0, "unclassified");
+        print_transform_groups(
+            "midpoint", midpoint, 0, "unclassified");
         print_transform_groups("previous", previous.draw_list, 2, "vehicle");
         print_transform_groups("current", current.draw_list, 2, "vehicle");
         print_transform_groups("midpoint", midpoint, 2, "vehicle");

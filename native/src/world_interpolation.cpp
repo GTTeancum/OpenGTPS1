@@ -752,6 +752,82 @@ std::vector<std::size_t> match_groups(
     const std::size_t unmatched = current.size();
     std::vector<std::size_t> matches(previous.size(), unmatched);
     std::vector<bool> current_used(current.size(), false);
+    struct NearbyMeshPair {
+        std::size_t previous_index;
+        std::size_t current_index;
+        double distance_squared;
+        std::size_t command_delta;
+    };
+    std::vector<NearbyMeshPair> nearby_mesh_pairs;
+    for (std::size_t previous_index = 0;
+         previous_index < previous.size();
+         ++previous_index) {
+        const auto& source = previous[previous_index];
+        if (
+            source.identity.category.object_kind != 0 ||
+            source.identity.category.model_pointer != 0 ||
+            !source.exact_transform_valid ||
+            source.vertices.empty()
+        )
+            continue;
+        for (std::size_t current_index = 0;
+             current_index < current.size();
+             ++current_index) {
+            const auto& candidate = current[current_index];
+            if (
+                !(candidate.identity.category == source.identity.category) ||
+                !candidate.exact_transform_valid ||
+                candidate.vertices.empty()
+            )
+                continue;
+            std::size_t shared_vertices = 0;
+            for (const auto& vertex : source.vertices) {
+                if (candidate.vertices.find(vertex.first) !=
+                    candidate.vertices.end()) {
+                    ++shared_vertices;
+                }
+            }
+            if (shared_vertices != std::min(
+                    source.vertices.size(), candidate.vertices.size()))
+                continue;
+            const double dx = source.centroid_x - candidate.centroid_x;
+            const double dy = source.centroid_y - candidate.centroid_y;
+            const double distance_squared = dx * dx + dy * dy;
+            // A visibility boundary can reduce a repeated mesh to a subset
+            // of its triangles. Reserve nearby same-mesh continuations before
+            // the broad unclassified group matcher can consume them for a
+            // different copy of the geometry.
+            if (distance_squared > 16.0 * 16.0)
+                continue;
+            const std::size_t source_commands = source.commands.size();
+            const std::size_t candidate_commands = candidate.commands.size();
+            nearby_mesh_pairs.push_back(NearbyMeshPair{
+                previous_index,
+                current_index,
+                distance_squared,
+                source_commands > candidate_commands
+                    ? source_commands - candidate_commands
+                    : candidate_commands - source_commands,
+            });
+        }
+    }
+    std::stable_sort(
+        nearby_mesh_pairs.begin(),
+        nearby_mesh_pairs.end(),
+        [](const NearbyMeshPair& left, const NearbyMeshPair& right) {
+            if (left.distance_squared != right.distance_squared)
+                return left.distance_squared < right.distance_squared;
+            return left.command_delta < right.command_delta;
+        });
+    for (const auto& pair : nearby_mesh_pairs) {
+        if (
+            matches[pair.previous_index] != unmatched ||
+            current_used[pair.current_index]
+        )
+            continue;
+        matches[pair.previous_index] = pair.current_index;
+        current_used[pair.current_index] = true;
+    }
     std::vector<std::size_t> order(previous.size());
     for (std::size_t index = 0; index < order.size(); ++index)
         order[index] = index;
@@ -765,6 +841,8 @@ std::vector<std::size_t> match_groups(
                 previous[right].commands.size();
         });
     for (const std::size_t previous_index : order) {
+        if (matches[previous_index] != unmatched)
+            continue;
         const auto& source = previous[previous_index];
         std::size_t best = unmatched;
         double best_cost = (std::numeric_limits<double>::max)();
@@ -809,7 +887,8 @@ std::vector<std::size_t> match_groups(
             // effects before centroid proximity is considered.
             const double cost =
                 static_cast<double>(unshared_vertices) * 1000000000.0 +
-                command_delta * 1000000.0 + dx * dx + dy * dy;
+                command_delta * 1000000.0 +
+                dx * dx + dy * dy;
             if (cost < best_cost) {
                 best = current_index;
                 best_cost = cost;
@@ -4483,7 +4562,7 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
             if (
                 use_vehicle_rigid_transform ||
                 use_exact_track_transform ||
-                use_exact_unclassified_transform
+                (use_exact_unclassified_transform && complete)
             ) {
                 if (!rigid_transform.exact)
                     command.exact_transform_valid = false;
