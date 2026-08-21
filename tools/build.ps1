@@ -50,6 +50,11 @@ try {
         -o $install
     if ($LASTEXITCODE -ne 0) { throw "GT2 publish failed: $LASTEXITCODE" }
 
+    $legacyNativeRenderer = Join-Path $install 'opengt_live_renderer.dll'
+    if (Test-Path -LiteralPath $legacyNativeRenderer -PathType Leaf) {
+        Remove-Item -LiteralPath $legacyNativeRenderer -Force
+    }
+
     # Convenience cards and the developer's settings file are intentionally
     # excluded from the public source tree. Seed them when present locally,
     # but allow a clean clone to create fresh runtime state.
