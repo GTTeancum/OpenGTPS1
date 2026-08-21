@@ -1,0 +1,29 @@
+# Unified title -> native Arcade Road Race -> GT1 Special Stage Route 11.
+600+8=CROSS,START
+1380+4=CROSS
+1980+4=CROSS
+2380+4=CROSS
+2780+4=CROSS
+3180+4=CROSS
+3600+4=CROSS
+4200+4=CROSS
+4800+4=CROSS
+
+# SSR11 is the fourth always-available native Arcade course.
+4860+1=CAPTURE
+5300+4=RIGHT
+5420+4=RIGHT
+5540+4=RIGHT
+5620+1=CAPTURE
+5660+4=CROSS
+
+# Hold the countdown dismissed and route the player car through GT2's native
+# AI racing-line controller. All captures after the first are live race frames.
+[race_1]
+0+8500=CROSS
+300+1=CAPTURE
+1000+1=CAPTURE
+2000+1=CAPTURE
+3000+1=CAPTURE
+6000+1=CAPTURE
+9000+1=CAPTURE

@@ -1,6 +1,6 @@
 using RecompOne.Runtime.Config;
 using RecompOne.Runtime.Memory;
-using Recompiled;
+using Recompiled.Simulation;
 
 string launchDirectory = Environment.CurrentDirectory;
 Environment.CurrentDirectory = AppContext.BaseDirectory;

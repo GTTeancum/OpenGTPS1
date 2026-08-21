@@ -1,14 +1,15 @@
 # OpenGTPS1
 
-OpenGTPS1 is an experimental static-recompilation port of the US Gran Turismo
-2 Simulation Disc (`SCUS-94488`, NTSC-U revision 2), built with
+OpenGTPS1 0.8beta is an experimental static-recompilation port of the US
+Gran Turismo 2 **Simulation Disc** (`SCUS-94488`, NTSC-U revision 2), built with
 [RecompOne](vendor/RecompOne/UPSTREAM.md).
 
 The project currently targets Windows x64. It boots through the original game
 flow, renders menus and videos, supports controllers and memory cards, and can
-run a purchased and upgraded car through a complete race and replay. The next
-major milestone is a portable native renderer designed for both modern PCs and
-the original Xbox through [NXDK](https://github.com/XboxDev/nxdk).
+run a purchased and upgraded car through complete races, championships, and
+replays. Its portable native race/replay renderer is designed to support both
+modern PCs and, in a future port, the original Xbox through
+[NXDK](https://github.com/XboxDev/nxdk).
 
 > [!IMPORTANT]
 > This repository contains no Gran Turismo 2 disc data, Sony BIOS, music, save
@@ -17,35 +18,156 @@ the original Xbox through [NXDK](https://github.com/XboxDev/nxdk).
 
 ## Project status
 
-OpenGTPS1 is a development build, not a finished release.
+OpenGTPS1 0.8beta is a public beta, not a finished 1.0 release.
 
 - The core Windows port is playable from boot through a complete race.
 - Menus, videos, input, memory-card persistence, sound effects, and XA audio
   are implemented.
 - The distributable runtime uses loose files only; it never needs a mounted or
   adjacent BIN/CUE/CCD/IMG/SUB image after preparation.
-- External OGG music, wrapper-level graphics presets, structured logging, and a
-  deterministic AI-driven test harness are available.
-- Perspective-correct textures, road-seam handling, extended draw distance,
-  maximum vehicle LOD, and dithering controls exist in the current renderer,
-  but graphics work remains active. The planned native renderer will replace
-  PS1-era rasterization workarounds with real geometry, depth, and material
-  handling.
-- Resolution and widescreen support are deliberately deferred until that
-  renderer is established.
+- External OGG music, fixed modern graphics settings, structured logging, and
+  a deterministic AI-driven test harness are available.
+- The packaged native race/replay renderer provides perspective-correct
+  textures, exact road-seam handling, extended draw distance, maximum vehicle
+  LOD, and geometry-aware 59.94/60 Hz presentation. Provenance-backed 3D never
+  reaches a PS1-era compatibility rasterizer. GT2's authored screen-command
+  compositor remains in use for menus, videos, HUD layers, Results, and
+  world-free transitions; it is the 2D layer of the modern presentation path,
+  not a selectable legacy 3D renderer.
+- Graphics work remains active; visual defects and hardware-specific problems
+  may still exist.
+- Resolution and widescreen expansion remain deferred while that renderer
+  matures.
 - Original Xbox support has not landed yet.
 
 [`TO-DO.MD`](TO-DO.MD) is the detailed implementation and validation record.
 [`docs/PORT_PLAN.md`](docs/PORT_PLAN.md) documents the playable vertical slice
-and the RecompOne-specific discoveries behind it.
+and the RecompOne-specific discoveries behind it. The
+[`modern renderer architecture`](docs/MODERN_RENDERER.md) defines the shared PC
+and original-Xbox direction.
 
-## Requirements
+## Planned unified first-run installation
+
+The completed unified release will include a first-run preparation tool. It
+may be built into `GranTurismo2PC.exe` or shipped as a separate installer
+executable. Before either game mode can run, it will ask the user to locate
+images of all three supported US discs:
+
+- Gran Turismo 2 Simulation Disc (`SCUS-94488`, NTSC-U revision 2)
+- Gran Turismo 2 Arcade Mode Disc (`SCUS-94455`, NTSC-U)
+- Gran Turismo (`SCUS-94194`, NTSC-U)
+
+The preparation tool will validate all three images, extract the required
+files, convert Gran Turismo 1-exclusive cars, liveries, and tracks to the
+native Gran Turismo 2 formats, and build the deterministic unified `GT2.VOL`
+and loose-file installation. Source disc images are treated as read-only and
+are not copied into the completed installation.
+
+`GranTurismo2PC.exe` must validate the prepared installation on startup and
+must not open the game or either mode until conversion and merging have
+succeeded. If preparation is incomplete, missing, or damaged, it directs the
+user to the preparation tool instead. Later launches use the validated
+prepared data and do not request the discs again.
+
+This is a product requirement for the unified release, not the behavior of the
+current 0.8beta package described below. The current package still uses its
+separate Simulation-Disc setup script.
+
+The development conversion pipeline now validates the US Gran Turismo image
+and imports Special Stage Route 11, all three GT1-exclusive EUNOS ROADSTER
+Arcade families, and the GT1 Civic Racer as native GT2 data. It converts all
+six Route 11 variants and
+the authored
+`dawn3` background, preserves the exact `ARCADE.DAT` entry 81 selection art,
+and adds the Roadsters as the tenth through twelfth Class C entries with their
+original wordmarks and all twenty-three authored GT1 paint/livery palettes.
+The third entry is the six-palette 145 PS `EUNOS ROADSTER RS`, whose separate
+GT1 day/night models are structurally converted to native GT2 CDO/CNO data
+without substituting GT2 body geometry. The Civic Racer is a native tenth
+Class B entry with its unique body and all three turquoise, pink, and yellow
+GT1 liveries. The GT1 DB7 Coupe is a native ninth Class A entry with its exact
+selection artwork and all three white, burgundy, and deep-purple paints. The
+GT1 Impreza WRX-STi Version III is a native tenth Class A entry with its unique
+converted body and all three liveries. The GT1 Soarer 2.5GT-T VVT-i is the
+eleventh Class A entry with its exact selection artwork, unique converted
+day/night body, and all three wine-red, yellow, and purple palettes. The GT1
+Supra RZ is the twelfth Class A entry with its exact selection artwork and
+three turquoise, purple, and bronze GT1 liveries. The GT1 S13 Silvia Q's
+1800cc is a native thirteenth Class C entry with its original named menu
+artwork and three wine-red, yellow, and green palettes. The GT1 Lancer
+Evolution IV GSR is the thirteenth Class A entry with its exact named logo and
+yellow, teal, and purple palettes. The GT1 Alcyone SVX S4 is the eleventh
+Class B entry with its exact named logo and white, blue, and purple palettes.
+The GT1 Celica SS-II is the twelfth Class B entry with its exact named menu
+art, structurally converted body/UV data, teal, purple, and yellow palettes,
+and target-owned 1,220 kg chassis record.
+The GT1 Civic CR-X '91 Si is the thirteenth Class B entry with its exact named
+Honda/CR-X art, structurally converted UV-preserving body, black, yellow, and
+purple palettes, and target-owned 970 kg chassis record.
+The deterministic
+`GTPATCH.VOL` also carries sorted native Racing and Drift parameter records
+assembled from the matching GT2 V-Special chassis/suspension, S-Special
+wheel/tire package, GT1-equivalent Mazda brake conversion, and direct Roadster
+RS, Civic, DB7, Impreza, Soarer, Supra, Silvia, Lancer, Alcyone, Celica, and
+CR-X specifications. Menu-to-race smokes have run the track and all thirteen
+cars under GT2's native AI controller
+without an
+unmapped call, managed exception, or software fault. Remaining exclusive cars
+and livery families are the next content milestone.
+
+## Install the 0.8beta Windows release
+
+The prebuilt release requires:
 
 - Windows 10 or 11, x64
 - PowerShell
+- Your own US Gran Turismo 2 **Simulation Disc**, revision 2
+
+The Arcade Disc, other regions, and earlier US revisions are not supported.
+The required raw Mode 2 IMG has:
+
+```text
+Serial:  SCUS-94488
+Size:    691,850,208 bytes
+SHA-256: D0AB6E70539601057590A36299543C0ADAD219254D712F7D4273219094ED5031
+```
+
+The release contains no game data. To install:
+
+1. Download `OpenGTPS1-0.8beta-win-x64.zip` from the GitHub release.
+2. Extract the entire `OpenGTPS1-0.8beta-win-x64` folder to a writable
+   location. Do not run it from inside the ZIP.
+3. Rip your matching Simulation Disc as a raw Mode 2/2352 `.img` file.
+4. Open PowerShell in the extracted folder and run:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File `
+     .\Setup-From-Simulation-Disc.ps1 `
+     -ImagePath "D:\Rips\Gran Turismo 2 [Simulation Disc] [U] [SCUS-94488].img"
+   ```
+
+5. When setup reports `Installation complete`, run `GranTurismo2PC.exe`.
+
+Setup validates the complete disc hash before writing anything, extracts only
+the required loose runtime files beside the executable, and does not copy or
+retain the original IMG. The game creates blank `carda.sav` and `cardb.sav`
+memory cards on first launch.
+
+Keep the installation in a writable folder because saves, settings, and the
+latest diagnostic log are stored beside the executable. Windows SmartScreen
+may warn because this beta is not code-signed.
+
+The ZIP also contains an installation-focused `README.md`. Existing users
+should back up `carda.sav`, `cardb.sav`, and `settings.json` before replacing
+an older build.
+
+## Build requirements
+
+Building from source additionally requires:
+
 - Python 3
 - .NET 10 SDK
-- Your own US Gran Turismo 2 Simulation Disc, revision 2
+- CMake and a Visual Studio C++ x64 toolchain
 
 The archival input must use these exact names in the repository root:
 
@@ -117,20 +239,17 @@ Default keyboard bindings are:
 Bindings, display, audio, and graphics options are available in the wrapper
 menus.
 
-## Graphics presets
+## Graphics
 
-Resolution and fullscreen are separate from the quality preset.
+OpenGTPS1 has one modern 3D path. It always uses 4x source rendering,
+perspective-correct textures, stabilized authored topology, complete authored
+draw distance, maximum track/scenery and vehicle LOD, smoothed sampling, and no
+PS1 color dithering. Old `PS1 Quality`, `Custom`, stock-distance/LOD, affine,
+and native-renderer-disable configuration values are migrated to that fixed
+contract and cannot reactivate a compatibility world renderer.
 
-- **PS1 Quality** uses affine texture projection, original visibility and
-  vehicle LOD behavior, no seam stabilization, and dithering.
-- **Enhanced** enables perspective-correct projection, seam stabilization,
-  extended track visibility, maximum vehicle LOD, and disables dithering.
-- **Custom** exposes projection, seam stabilization, draw distance, vehicle
-  LOD, and dithering as independent settings.
-
-These settings describe the current compatibility renderer. The native
-renderer roadmap keeps the same wrapper-facing controls while moving geometry,
-lighting, depth, and material work into portable C++ backends.
+Output resolution, fullscreen/window state, and presentation antialiasing are
+wrapper settings; they do not reduce world geometry or reinstate PS1 rendering.
 
 ## External music
 
@@ -168,6 +287,47 @@ settings.
 The scripts in `tools\` include bounded capture and regression helpers. The
 input fixtures under `tests\fixtures\` drive deterministic game flows; they do
 not contain game data.
+
+The `modern-renderer` branch includes bounded projected- and world-scene
+bridges. `tools\capture_projected_scene.ps1` captures one live draw stream plus
+VRAM and renders independent perspective and affine PNGs through the portable
+C++ core. `tools\capture_world_scene.ps1` additionally captures upstream
+model/view coordinates, camera transforms, stable track/vehicle identity,
+exact per-vertex projection state, materials, and original draw order, then
+validates and exports the scene through the native loader.
+
+The branch now also builds `opengt_world_viewer.exe`, a standalone D3D11
+backend over the API-neutral C++17 world draw list. It supports hardware
+rendering, deterministic WARP validation, perspective-correct PS1 materials,
+object-scoped depth that preserves GT2 ordering layers, explicit optional
+dithering, CPU-oracle comparison, a `--window` inspection mode, and viewer-only
+`--scale 1` through `--scale 8` diagnostic output. The scale switch rerasterizes
+at the requested size and is separate from the deferred wrapper
+resolution/widescreen work.
+
+World-capture format version 4 supplies capture-stable authored track vertex
+identity. The portable topology pass uses that identity plus exact integer GTE
+view coordinates to join authored sector boundaries, subdivide exact
+T-junctions, and choose deterministic ownership for same-material coplanar
+overlap. It performs no proximity search or screen-space triangle expansion.
+The D3D11 point sampler also treats PS1 integer UVs as texel centers; this
+removes the intermittent Red Rock replay road line around 0:33 without padding.
+The same native renderer is integrated into packaged live race/replay
+presentation; the standalone viewer remains available for deterministic
+capture inspection and renderer development.
+
+Validate a captured world frame twice with bounded lossless PNG output:
+
+```powershell
+cmake -S native -B build\native
+cmake --build build\native --config Release
+powershell -ExecutionPolicy Bypass -File tools\validate_world_renderer.ps1 `
+  -Capture artifacts\modern-world-v4-topology-live\race-frame.ogtwcap
+```
+
+See
+[`docs/MODERN_RENDERER.md`](docs/MODERN_RENDERER.md) for the formats, exact
+commands, audio-safety checks, and next renderer milestone.
 
 ## Repository layout
 

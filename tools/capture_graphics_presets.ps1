@@ -29,7 +29,7 @@ $settingsPath = Join-Path $deploy 'settings.json'
 $interfaceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $interfacePath).Hash
 $settingsHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $settingsPath).Hash
 
-foreach ($preset in @('PS1 Quality', 'Enhanced')) {
+foreach ($preset in @('Enhanced')) {
     $slug = $preset.Replace(' ', '-')
     if (Test-Path -LiteralPath $capture) {
         Remove-Item -LiteralPath $capture -Force
@@ -100,6 +100,6 @@ if ((Get-FileHash -Algorithm SHA256 -LiteralPath $settingsPath).Hash -ne
     throw 'Transient preset captures changed settings.json'
 }
 
-Write-Output "paired captures=$artifact"
-Write-Output 'audio safety=dummy backend proven for both runs'
+Write-Output "modern capture=$artifact"
+Write-Output 'audio safety=dummy backend proven'
 Write-Output 'persistent settings=unchanged'

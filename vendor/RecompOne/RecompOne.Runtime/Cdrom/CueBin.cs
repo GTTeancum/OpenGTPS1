@@ -172,6 +172,29 @@ public sealed class CueBin : IDisposable
         return buf;
     }
 
+    public void ReadSectorData(int lba, Span<byte> destination)
+    {
+        destination.Clear();
+        if (lba < 0 || destination.Length == 0)
+            return;
+        var t = DataTrack();
+        int size = destination.Length;
+        int offset = t.SectorSize == 2352
+            ? size switch { >= 2340 => 12, >= 2329 => 16, _ => 24 }
+            : t.DataOffset;
+        long pos = t.FileOffset + (long)lba * t.SectorSize + offset;
+        int want = Math.Min(size, t.SectorSize - offset);
+        var stream = GetStream(t.BinPath);
+        lock (_ioGate)
+        {
+            if (pos >= stream.Length)
+                return;
+            int available = (int)Math.Min(want, stream.Length - pos);
+            stream.Seek(pos, SeekOrigin.Begin);
+            stream.ReadExactly(destination[..available]);
+        }
+    }
+
     private Track DataTrack() => _tracks.Find(t => !t.Mode.Equals("AUDIO", StringComparison.OrdinalIgnoreCase)) ?? throw new InvalidOperationException("no data track was found in cue sheet");
 
     private FileStream GetStream(string path)

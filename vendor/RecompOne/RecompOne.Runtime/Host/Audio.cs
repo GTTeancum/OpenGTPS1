@@ -54,8 +54,8 @@ internal static unsafe class Audio
             if (noPhysicalOutput)
             {
                 // A hidden automated run must never touch the user's physical
-                // output device. SDL's dummy backend still consumes the queue,
-                // so timing/starvation diagnostics keep working.
+                // output device. Audio-capture runs still feed this dummy
+                // device; silent renderer soaks leave its mixer inactive.
                 Environment.SetEnvironmentVariable("SDL_AUDIODRIVER", "dummy");
                 Console.Error.WriteLine(
                     "[Host] headless audio backend=dummy (no physical output device)");
@@ -94,18 +94,35 @@ internal static unsafe class Audio
 
             Array.Clear(_sampleBuf);
             OpenCapture();
-            for (int i = 0; i < NumBuffers; i++)
-                QueueCurrentBuffer();
-
-            _running = true;
-            _mixerThread = new Thread(MixerLoop)
+            bool runMixer = !noPhysicalOutput || _capture != null;
+            if (runMixer)
             {
-                IsBackground = true,
-                Name = "spu-mixer",
-                Priority = System.Threading.ThreadPriority.AboveNormal,
-            };
-            _mixerThread.Start();
-            _sdl.PauseAudioDevice(_device, 0);
+                for (int i = 0; i < NumBuffers; i++)
+                    QueueCurrentBuffer();
+
+                _running = true;
+                _mixerThread = new Thread(MixerLoop)
+                {
+                    IsBackground = true,
+                    Name = "spu-mixer",
+                    Priority = System.Threading.ThreadPriority.AboveNormal,
+                };
+                _mixerThread.Start();
+                _sdl.PauseAudioDevice(_device, 0);
+            }
+            else
+            {
+                // A renderer soak is intentionally silent and has no audio
+                // capture consumer. SDL's dummy queued-audio implementation
+                // can spend roughly half of a CPU core mixing samples nobody
+                // can hear, distorting both guest and renderer scheduling.
+                // Keep the verified dummy device open for physical-output
+                // safety, but do not start the SPU sink unless a headless
+                // audio capture explicitly requires it.
+                _sdl.PauseAudioDevice(_device, 1);
+                Console.Error.WriteLine(
+                    "[Host] headless audio mixer inactive (no capture consumer)");
+            }
             Console.Error.WriteLine(
                 $"[Host] SDL audio ready: driver={audioDriver} device={_device} " +
                 $"{obtained.Freq} Hz stereo S16 queue={TargetQueuedBytes} bytes");
@@ -317,10 +334,27 @@ internal static unsafe class Audio
 
     public static void Shutdown()
     {
+        Console.Error.WriteLine("[Audio] shutdown stage=mixer-stop");
         _running = false;
-        _mixerThread?.Join();
+        Thread? mixerThread = _mixerThread;
+        if (
+            mixerThread != null &&
+            !mixerThread.Join(TimeSpan.FromSeconds(5))
+        )
+        {
+            // Runtime termination follows immediately after shutdown. Do not
+            // deadlock the render thread or tear SDL/capture storage out from
+            // under a mixer that is still returning from guest SPU mixing.
+            Console.Error.WriteLine(
+                "[Audio] shutdown mixer join timed out; " +
+                "deferring audio teardown to process exit");
+            _mixerThread = null;
+            _spu = null;
+            return;
+        }
         _mixerThread = null;
         _spu = null;
+        Console.Error.WriteLine("[Audio] shutdown stage=mixer-stopped");
         _mixedFrames = 0;
         _firstAudibleBufferReported = false;
         _traceSamples = 0;
@@ -349,5 +383,6 @@ internal static unsafe class Audio
             _sdl.Dispose();
             _sdl = null;
         }
+        Console.Error.WriteLine("[Audio] shutdown stage=complete");
     }
 }

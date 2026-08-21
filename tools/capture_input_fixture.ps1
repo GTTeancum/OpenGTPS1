@@ -5,14 +5,25 @@ param(
     [int]$ExitPoll,
     [Parameter(Mandatory = $true)]
     [string]$ArtifactName,
-    [ValidateSet('PS1 Quality', 'Enhanced', 'Custom')]
+    [string]$DeployPath,
+    [ValidateSet('Enhanced')]
     [string]$Preset = 'Enhanced',
-    [switch]$AiAutoDrive
+    [switch]$AiAutoDrive,
+    [ValidateRange(2, 64)]
+    [int]$AiAutoDriveMaxEngagements = 2,
+    [ValidateRange(0, 60000)]
+    [int]$SoakQuickWinAfterAiTicks = 0,
+    [switch]$SoakUnlockAllRaces,
+    [switch]$CreateTestSave
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$deploy = Join-Path $repo 'OpenGTPS1'
+if ($DeployPath) {
+    $deploy = (Resolve-Path $DeployPath).Path
+} else {
+    $deploy = Join-Path $repo 'OpenGTPS1'
+}
 $exe = Join-Path $deploy 'GranTurismo2PC.exe'
 if ([IO.Path]::IsPathRooted($Fixture)) {
     $fixtureCandidate = $Fixture
@@ -61,6 +72,20 @@ $start.EnvironmentVariables['RECOMPONE_GRAPHICS_PRESET_OVERRIDE'] = $Preset
 $start.EnvironmentVariables['RECOMPONE_EXIT_AFTER_INPUT_POLL'] = $ExitPoll.ToString()
 if ($AiAutoDrive) {
     $start.EnvironmentVariables['RECOMPONE_GT2_AI_AUTODRIVE'] = '1'
+    if ($AiAutoDriveMaxEngagements -ne 2) {
+        $start.EnvironmentVariables['RECOMPONE_GT2_AI_AUTODRIVE_MAX_ENGAGEMENTS'] =
+            $AiAutoDriveMaxEngagements.ToString()
+    }
+    if ($SoakQuickWinAfterAiTicks -gt 0) {
+        $start.EnvironmentVariables['RECOMPONE_GT2_SOAK_QUICK_WIN_AFTER_AI_TICKS'] =
+            $SoakQuickWinAfterAiTicks.ToString()
+    }
+}
+if ($SoakUnlockAllRaces) {
+    $start.EnvironmentVariables['RECOMPONE_GT2_SOAK_UNLOCK_ALL_RACES'] = '1'
+}
+if ($CreateTestSave) {
+    $start.EnvironmentVariables['RECOMPONE_GT2_CREATE_TEST_SAVE'] = '1'
 }
 
 $process = [Diagnostics.Process]::Start($start)

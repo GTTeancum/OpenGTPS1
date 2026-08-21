@@ -8,6 +8,12 @@ public static class Bios
 {
     public static void Init(IMemory m) { }
 
+    public static void ResetGuestState()
+    {
+        BiosA.ResetGuestState();
+        BiosB.ResetGuestState();
+    }
+
     public static bool TryDispatch(CpuContext c, IMemory m, uint addr)
     {
         switch (addr)

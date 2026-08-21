@@ -1,0 +1,126 @@
+# Unified title -> Gran Turismo Mode.
+560+1=CAPTURE
+600+4=DOWN
+640+8=CROSS,START
+760+3=RIGHT
+780+3=RIGHT
+820+4=CROSS
+
+# East City -> Mazda -> used-car listing -> purchase the Protege.
+920+4=CROSS
+1040+3=RIGHT
+1060+4=CROSS
+1140+4=CROSS
+1180+4=CROSS
+1260+3=RIGHT
+1280+3=RIGHT
+1300+4=CROSS
+1340+4=CIRCLE
+1420+4=CIRCLE
+1500+4=TRIANGLE
+1580+4=SQUARE
+1620+4=DOWN
+1660+4=CROSS
+
+# Tune -> Turbo Kit Stage 1 -> buy and equip.
+1780+3=RIGHT
+1800+3=RIGHT
+1840+4=CROSS
+1980+3=UP
+2000+3=UP
+2040+4=CROSS
+2200+4=SQUARE
+2240+4=DOWN
+2280+4=CROSS
+2400+4=UP
+2420+4=UP
+2440+4=RIGHT
+2460+4=RIGHT
+2500+4=CROSS
+2640+4=RIGHT
+2660+4=RIGHT
+2700+4=CROSS
+2780+4=CIRCLE
+2860+4=CIRCLE
+3000+4=CIRCLE
+
+# Map -> Sunday Cup -> Red Rock Valley -> automatic transmission.
+3340+4=SQUARE
+3420+4=SQUARE
+3500+4=SQUARE
+3700+4=SQUARE
+3900+4=SQUARE
+4080+4=LEFT
+4120+4=CROSS
+4300+4=CROSS
+4500+4=RIGHT
+4520+4=RIGHT
+4560+4=CROSS
+4760+4=CROSS
+5000+4=SQUARE
+5180+4=RIGHT
+5220+4=CROSS
+5400+4=LEFT
+5440+4=CROSS
+5640+4=SQUARE
+5760+4=UP
+5780+4=LEFT
+5820+4=CROSS
+6020+4=DOWN
+6040+4=RIGHT
+6060+4=RIGHT
+6100+4=CROSS
+7000+4=DOWN
+7040+4=DOWN
+7080+4=DOWN
+7120+4=DOWN
+7160+4=CROSS
+7760+4=LEFT
+7800+4=CROSS
+
+# The soak-only quick-win hook requests the original race flow to finish after
+# its configured AI grace period. These stage-relative pulses are harmless
+# during the race and confirm Results as soon as it becomes interactive.
+[race_1]
+300+1=CAPTURE
+1800+4=CROSS
+2400+4=CROSS
+3000+4=CROSS
+3600+4=CROSS
+4200+4=CROSS
+4800+4=CROSS
+5400+4=CROSS
+6000+4=CROSS
+7000+4=CROSS
+8000+4=CROSS
+9000+4=CROSS
+10000+4=CROSS
+11000+4=CROSS
+12000+4=CROSS
+13000+4=CROSS
+14000+4=CROSS
+15000+4=CROSS
+16000+4=CROSS
+17000+4=CROSS
+18000+4=CROSS
+19000+4=CROSS
+20000+4=CROSS
+21000+4=CROSS
+22000+4=CROSS
+
+# No replay input is required. The native AI hook signals this stage only when
+# GT2 has instantiated the replay vehicles, providing authoritative coverage.
+[replay_1]
+300+1=CAPTURE
+1000+1=CAPTURE
+2000+1=CAPTURE
+3000+1=CAPTURE
+4000+1=CAPTURE
+# Cover replay exit and GT2's wider rotating-car Results presentation. These
+# prove that modern world ownership is not restricted to the 320x240 viewport.
+7200+1=CAPTURE
+7400+1=CAPTURE
+7500+1=CAPTURE
+7600+1=CAPTURE
+7800+1=CAPTURE
+8000+1=CAPTURE

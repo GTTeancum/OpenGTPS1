@@ -61,9 +61,9 @@ public static class ConfigManager
             View = view;
             _pendingImGuiIni = imguiIni;
         }
-        // A named preset is authoritative. This repairs stale or contradictory
-        // files so the wrapper can never display "Enhanced" while running
-        // stock draw distance/LOD (or the inverse for PS1 Quality).
+        // Modern rendering is the sole shipping path. This also migrates old
+        // PS1-quality/custom files to full distance, maximum LOD, corrected
+        // projection, seam stabilization, smoothing, and 4x source rendering.
         View.EnforceGraphicsPreset();
 
         string? graphicsPresetOverride =
@@ -71,30 +71,15 @@ public static class ConfigManager
                 "RECOMPONE_GRAPHICS_PRESET_OVERRIDE");
         if (!string.IsNullOrWhiteSpace(graphicsPresetOverride))
         {
+            if (!graphicsPresetOverride.Equals(
+                    "Enhanced", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    "Only the fixed Enhanced modern-renderer preset is supported");
             _suppressViewPersistence = true;
-            View.ApplyGraphicsPreset(graphicsPresetOverride);
+            View.ApplyGraphicsPreset("Enhanced");
             Console.Error.WriteLine(
                 $"[Host] graphics preset test override={View.GraphicsPreset}");
         }
-
-        _suppressViewPersistence |= ApplyBoolOverride(
-            "RECOMPONE_PERSPECTIVE_CORRECT_TEXTURES",
-            value => View.PerspectiveCorrectTextures = value);
-        _suppressViewPersistence |= ApplyBoolOverride(
-            "RECOMPONE_STABILIZE_GEOMETRY_SEAMS",
-            value => View.StabilizeGeometrySeams = value);
-        _suppressViewPersistence |= ApplyBoolOverride(
-            "RECOMPONE_EXTENDED_DRAW_DISTANCE",
-            value => View.ExtendedDrawDistance = value);
-        _suppressViewPersistence |= ApplyBoolOverride(
-            "RECOMPONE_MAXIMUM_LOD",
-            value => View.LevelOfDetail = value ? "Maximum" : "Stock");
-        _suppressViewPersistence |= ApplyBoolOverride(
-            "RECOMPONE_PS1_DITHERING",
-            value => View.Ps1Dithering = value);
-        _suppressViewPersistence |= ApplyBoolOverride(
-            "RECOMPONE_TEXTURE_SMOOTHING",
-            value => View.TextureSmoothing = value);
         if (_suppressViewPersistence)
             Console.Error.WriteLine(
                 "[Host] graphics test overrides are transient; " +
@@ -102,28 +87,42 @@ public static class ConfigManager
         Gte.SetProjectionTrackingEnabled(
             View.PerspectiveCorrectTextures ||
             View.StabilizeGeometrySeams ||
+            Hle.LiveWorldRenderer.Requested ||
             ProjectionTrace.Enabled);
-    }
-
-    static bool ApplyBoolOverride(string name, Action<bool> apply)
-    {
-        string? text = Environment.GetEnvironmentVariable(name);
-        if (string.IsNullOrWhiteSpace(text))
-            return false;
-        bool value = text == "1" ||
-            (text != "0" && bool.TryParse(text, out bool parsed) && parsed);
-        apply(value);
-        Console.Error.WriteLine($"[Host] graphics test override {name}={value}");
-        return true;
     }
 
     
     public static bool ApplyImGuiLayout()
     {
         if (_pendingImGuiIni == null) return false;
-        ImGui.LoadIniSettingsFromMemory(_pendingImGuiIni);
+        string ini = _pendingImGuiIni;
+        bool hasDockedOutput = HasDockedOutputLayout(ini);
+        ImGui.LoadIniSettingsFromMemory(ini);
         _pendingImGuiIni = null;
-        return true;
+        // Returning false asks HostWindow to build the centered full-window
+        // Output dock. An interface file can legitimately contain panel
+        // visibility and an ImGui header while lacking a usable Output dock;
+        // accepting that incomplete state leaves the game floating at its
+        // 640x480 FirstUseEver size inside an otherwise maximized window.
+        return hasDockedOutput;
+    }
+
+    static bool HasDockedOutputLayout(string ini)
+    {
+        const string outputHeader = "[Window][Output]";
+        int outputStart = ini.IndexOf(outputHeader, StringComparison.Ordinal);
+        if (outputStart < 0 ||
+            ini.IndexOf("[Docking][Data]", StringComparison.Ordinal) < 0 ||
+            ini.IndexOf("DockSpace ", StringComparison.Ordinal) < 0)
+            return false;
+
+        int outputEnd = ini.IndexOf(
+            "\n[", outputStart + outputHeader.Length,
+            StringComparison.Ordinal);
+        if (outputEnd < 0)
+            outputEnd = ini.Length;
+        return ini.AsSpan(outputStart, outputEnd - outputStart)
+            .Contains("DockId=", StringComparison.Ordinal);
     }
 
     public static void ApplyViewToPanels(IReadOnlyList<IPanel> panels)

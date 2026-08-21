@@ -52,7 +52,13 @@ public static class XaAudio
 
     static int Clamp(int v) => v < -32768 ? -32768 : v > 32767 ? 32767 : v;
 
-    static void DecodeBlock(byte[] sec, int b, int blk, ref int old, ref int older, int[] dst)
+    static void DecodeBlock(
+        ReadOnlySpan<byte> sec,
+        int b,
+        int blk,
+        ref int old,
+        ref int older,
+        Span<int> dst)
     {
         byte hdr = sec[b + 4 + blk];
         int sv = hdr & 0xF; if (sv > 12) sv = 9;
@@ -80,8 +86,14 @@ public static class XaAudio
     {
         bool stereo = (coding & 0x01) != 0;
         int rate = (coding & 0x04) != 0 ? 18900 : 37800;
-        int[] l = new int[28], r = new int[28];
-        int[] frames = new int[stereo ? 2016 : 4032];
+        // XA decode runs continuously during races and can also run on the
+        // independent STR streaming thread. These buffers are strictly local
+        // scratch, so keep them on each caller's stack instead of allocating
+        // three managed arrays per sector and periodically forcing a full GC
+        // on the frame-pacing thread.
+        Span<int> l = stackalloc int[28];
+        Span<int> r = stackalloc int[28];
+        Span<int> frames = stackalloc int[stereo ? 2016 : 4032];
         int n = 0;
 
         for (int p = 0; p < 18; p++)

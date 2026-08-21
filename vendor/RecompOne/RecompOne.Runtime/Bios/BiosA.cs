@@ -23,6 +23,23 @@ public static class BiosA
     static List<(string name, int size)> _ff = new();
     static int _ffIdx;
 
+    internal static void ResetGuestState()
+    {
+        _heapBase = 0;
+        _heapEnd = 0;
+        _free.Clear();
+        _busy.Clear();
+        _randSeed = 1;
+        _strtokPtr = 0;
+        _fs = null;
+        _cd = null;
+        _openFiles.Clear();
+        _cardFiles.Clear();
+        _nextHandle = 2;
+        _ff = [];
+        _ffIdx = 0;
+    }
+
     public static MemoryCard? CardFor(string path)
     {
         if (path.StartsWith("bu00:", StringComparison.OrdinalIgnoreCase)) return Runtime.CardA.Enabled ? Runtime.CardA : null;
@@ -207,7 +224,13 @@ public static class BiosA
                 break;
             }
             case 0x05: c.V0 = 0xFFFFFFFFu; break;
-            case 0x06: Environment.Exit((int)c.A0); break;
+            case 0x06:
+                Console.Error.WriteLine(
+                    $"[BIOS] Exit status={(int)c.A0} " +
+                    $"poll={Host.InputManager.CurrentPoll} " +
+                    $"ra=0x{c.PeekRaw(31):X8}");
+                Environment.Exit((int)c.A0);
+                break;
             case 0x07: c.V0 = c.A0 <= 2u ? 2u : 0u; break;
             case 0x08: c.V0 = 0xFFFFFFFFu; break;
             case 0x09: Console.Write((char)(c.A0 & 0xFF)); c.V0 = c.A0; break;

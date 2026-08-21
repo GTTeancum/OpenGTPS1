@@ -1,5 +1,8 @@
-# Load the packaged convenience save and enter Sunday Cup's High Speed Ring.
-680+8=CROSS,START
+# Select Gran Turismo Mode from the unified title, load the packaged
+# convenience save, and enter Sunday Cup's High Speed Ring.
+560+1=CAPTURE
+600+4=DOWN
+640+8=CROSS,START
 760+3=RIGHT
 780+3=RIGHT
 820+4=CROSS

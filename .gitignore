@@ -28,6 +28,7 @@ OpenGTPS1/
 # .NET/Python transient files
 bin/
 obj/
+build/
 __pycache__/
 *.pyc
 *.dll

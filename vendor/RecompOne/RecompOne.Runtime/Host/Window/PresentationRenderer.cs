@@ -29,17 +29,7 @@ internal sealed class PresentationRenderer : IDisposable
         out vec4 oColor;
 
         vec3 sampleLinear(vec2 uv) {
-            vec2 p = clamp(uv, vec2(0.0), vec2(1.0)) * uSourceSize - 0.5;
-            ivec2 i0 = ivec2(floor(p));
-            vec2 f = fract(p);
-            ivec2 hi = ivec2(uSourceSize) - 1;
-            i0 = clamp(i0, ivec2(0), hi);
-            ivec2 i1 = min(i0 + 1, hi);
-            vec3 a = mix(texelFetch(uSource, ivec2(i0.x, i0.y), 0).rgb,
-                         texelFetch(uSource, ivec2(i1.x, i0.y), 0).rgb, f.x);
-            vec3 b = mix(texelFetch(uSource, ivec2(i0.x, i1.y), 0).rgb,
-                         texelFetch(uSource, ivec2(i1.x, i1.y), 0).rgb, f.x);
-            return mix(a, b, f.y);
+            return texture(uSource, clamp(uv, vec2(0.0), vec2(1.0))).rgb;
         }
 
         float luma(vec3 rgb) { return dot(rgb, vec3(0.299, 0.587, 0.114)); }
@@ -97,10 +87,29 @@ internal sealed class PresentationRenderer : IDisposable
         int.TryParse(Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_HEIGHT"), out int videoOutputHeight)
             ? Math.Clamp(videoOutputHeight, 120, 1080)
             : 480;
+    readonly bool _videoCaptureEveryPresentation =
+        Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_FPS") == "60";
+    readonly string _videoFrameRate =
+        Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_FPS") == "60"
+            ? "60000/1001"
+            : "30000/1001";
+    readonly int _videoCrf =
+        int.TryParse(
+            Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_CRF"),
+            out int videoCrf)
+            ? Math.Clamp(videoCrf, 0, 51)
+            : 12;
+    readonly int _videoFrameLimit =
+        int.TryParse(
+            Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_CAPTURE_FRAMES"),
+            out int videoFrameLimit)
+            ? Math.Max(0, videoFrameLimit)
+            : 0;
     Process? _videoProcess;
     Stream? _videoInput;
     byte[] _videoPixels = [];
     int _videoPresentationFrame;
+    int _videoWrittenFrames;
     bool _videoFinished;
 
     public bool Ready { get; private set; }
@@ -142,8 +151,12 @@ internal sealed class PresentationRenderer : IDisposable
     {
         uint texture = _gl.GenTexture();
         _gl.BindTexture(TextureTarget.Texture2D, texture);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)GLEnum.Nearest);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)GLEnum.Nearest);
+        // The upscale pass uses texelFetch and therefore remains exact-nearest.
+        // Linear target sampling lets the following FXAA pass use the GPU's
+        // bilinear unit instead of four explicit texelFetch operations for
+        // each of its nine taps.
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)GLEnum.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)GLEnum.Linear);
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)GLEnum.ClampToEdge);
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)GLEnum.ClampToEdge);
         uint fbo = _gl.GenFramebuffer();
@@ -248,6 +261,13 @@ internal sealed class PresentationRenderer : IDisposable
         if (_videoFinished || string.IsNullOrWhiteSpace(_videoCapturePath))
             return;
 
+        if (_videoFrameLimit > 0 &&
+            _videoWrittenFrames >= _videoFrameLimit)
+        {
+            FinishVideo();
+            return;
+        }
+
         int poll = InputManager.CurrentPoll;
         if (poll < _videoStartPoll)
             return;
@@ -257,10 +277,14 @@ internal sealed class PresentationRenderer : IDisposable
             return;
         }
 
-        // GT2 presents at 60 Hz. Capturing every other presentation produces
-        // a native-paced 30 fps recording without duplicate-frame bandwidth.
-        if ((_videoPresentationFrame++ & 1) != 0)
+        // GT2 presents at NTSC 60000/1001 Hz. Historical 30 fps evidence keeps
+        // every other presentation; explicit 60-mode proofs retain every
+        // independently authored presentation and label the stream 60000/1001.
+        if (!_videoCaptureEveryPresentation &&
+            (_videoPresentationFrame++ & 1) != 0)
             return;
+        if (_videoCaptureEveryPresentation)
+            _videoPresentationFrame++;
 
         try
         {
@@ -273,6 +297,10 @@ internal sealed class PresentationRenderer : IDisposable
             _gl.ReadPixels(0, 0, (uint)width, (uint)height,
                 PixelFormat.Rgb, PixelType.UnsignedByte, _videoPixels.AsSpan());
             _videoInput!.Write(_videoPixels);
+            _videoWrittenFrames++;
+            if (_videoFrameLimit > 0 &&
+                _videoWrittenFrames >= _videoFrameLimit)
+                FinishVideo();
         }
         catch (Exception e)
         {
@@ -302,13 +330,12 @@ internal sealed class PresentationRenderer : IDisposable
         {
             "-y", "-loglevel", "error",
             "-f", "rawvideo", "-pix_fmt", "rgb24",
-            "-video_size", $"{width}x{height}", "-framerate", "30",
+            "-video_size", $"{width}x{height}", "-framerate", _videoFrameRate,
             "-i", "pipe:0", "-an",
             "-vf",
             $"scale=w={_videoOutputWidth}:h={_videoOutputHeight}:force_original_aspect_ratio=decrease:flags=lanczos," +
             $"pad={_videoOutputWidth}:{_videoOutputHeight}:(ow-iw)/2:(oh-ih)/2:black",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "24",
-            "-maxrate", "1500k", "-bufsize", "3000k",
+            "-c:v", "libx264", "-preset", "medium", "-crf", _videoCrf.ToString(),
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", path,
         })
             start.ArgumentList.Add(argument);
@@ -318,8 +345,8 @@ internal sealed class PresentationRenderer : IDisposable
         _videoInput = _videoProcess.StandardInput.BaseStream;
         Console.Error.WriteLine(
             $"[Host] video capture started at input poll {InputManager.CurrentPoll}: " +
-            $"{width}x{height} source -> {_videoOutputWidth}x{_videoOutputHeight} 30 fps, " +
-            $"1.5 Mbps ceiling -> {path}");
+            $"{width}x{height} source -> {_videoOutputWidth}x{_videoOutputHeight} {_videoFrameRate} fps, " +
+            $"H.264 CRF {_videoCrf} without a bitrate ceiling -> {path}");
     }
 
     void FinishVideo()
@@ -338,6 +365,7 @@ internal sealed class PresentationRenderer : IDisposable
                     _videoProcess.Kill();
                 Console.Error.WriteLine(
                     $"[Host] video capture complete at input poll {InputManager.CurrentPoll}: " +
+                    $"frames={_videoWrittenFrames}/{_videoFrameLimit} " +
                     $"ffmpeg exit={_videoProcess.ExitCode}");
                 _videoProcess.Dispose();
                 _videoProcess = null;

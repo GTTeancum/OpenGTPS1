@@ -11,6 +11,142 @@
 6. Drive on the track surface under player control.
 7. Complete every lap and reach the original results/prize flow.
 
+## Long-term content and distribution roadmap
+
+- Make first-run preparation a blocking installation step, implemented either
+  inside `GranTurismo2PC.exe` or in a separate installer executable. The
+  preparation tool must prompt for the user's own Gran Turismo 2 Simulation
+  Disc (`SCUS-94488`, NTSC-U revision 2), Gran Turismo 2 Arcade Mode Disc
+  (`SCUS-94455`, NTSC-U), and Gran Turismo (`SCUS-94194`, NTSC-U).
+  `GranTurismo2PC.exe` must validate the prepared output and refuse to start
+  Arcade Mode or Gran Turismo Mode until all three images have been validated
+  and the conversion has completed successfully.
+- Promote the implemented deterministic Simulation/Arcade dual-member
+  `GT2.VOL` builder into the first-start installer. The development pipeline
+  already produces one generated volume and unified installation while
+  preserving each disc's exact original payloads and game flow.
+- Continue automatically extracting, converting, and merging Gran Turismo
+  1-exclusive content into the generated `GT2.VOL`. The supplied archives and
+  their embedded databases are the sole authority for this work; see
+  `docs/GT1_CONTENT_AUDIT.md`. A shared car with GT1-only paint or livery
+  artwork must gain those choices under its existing GT2 identity rather than
+  appear as a duplicate car. Special Stage Route 11 is
+  now implemented as native forward, reverse, Arcade, two-player, and HiFi
+  course data, including its `dawn3` background and exact `ARCADE.DAT` entry
+    81 selection art. The first car family is also implemented: GT1's
+    three Arcade-only EUNOS ROADSTER families are native tenth through twelfth
+    Class C entries with their exact wordmarks, all twenty-three authored
+    palettes, sorted Racing/Drift records, and content-matched GT2-native
+    physics. The ROADSTER RS includes native structural conversion of its
+    separate GT1 day/night models rather than a GT2 body substitution. Route
+    11 and all three Roadsters have clean menu-to-race AI smokes. The GT1
+    Civic Racer is integrated as a native tenth Class B entry with all three
+    liveries and clean menu/race proof. The GT1 DB7 Coupe is integrated as a
+    native ninth Class A entry with its exact selection artwork, all three
+    paints, correct nine-entry roster wrap, and clean full-lap AI smoke. The
+    GT1 IMPREZA Sedan WRX-STi version III is integrated as the tenth Class A
+    entry with its exact selection artwork, all three liveries, converted
+    day/night models, and a clean full-lap AI smoke. The GT1 SOARER 2.5GT-T
+    VVT-i is integrated as the eleventh Class A entry with exact selection
+    artwork, all three palettes, converted day/night models, correct
+    eleven-entry roster wrap, and a clean full-lap AI smoke. The GT1 SUPRA RZ
+    is integrated as the twelfth Class A entry with exact selection artwork,
+    all three liveries, correct twelve-entry roster wrap, and a clean full-lap
+    AI smoke. The GT1 S13 SILVIA Q's 1800cc is integrated as the thirteenth
+    Class C entry using its exact named GT1 menu TIM, all three palettes,
+    correct thirteen-entry roster wrap, and a clean full-lap AI smoke.
+    The GT1 LANCER Evolution IV GSR is integrated as the thirteenth Class A
+    entry with its exact named menu TIM, all three palettes, correct roster
+    wrap, and a clean 9,000-poll race smoke. The GT1 ALCYONE SVX S4 is
+    integrated as the eleventh Class B entry with its exact named menu TIM,
+    all three palettes, correct roster wrap, and a clean 9,000-poll race
+    smoke.
+    The GT1 CELICA SS-II is integrated as the twelfth Class B entry with its
+    exact named menu TIM, all three authored palettes, structurally converted
+    UV-preserving body, target-owned 1,220 kg chassis, correct roster wrap,
+    and a clean 9,000-poll race smoke.
+    The GT1 CIVIC CR-X '91 Si is integrated as the thirteenth Class B entry
+    with its exact named menu TIM, all three authored palettes, structurally
+    converted UV-preserving body, target-owned 970 kg chassis, correct roster
+    wrap, and a clean 9,000-poll race smoke.
+    Imported Arcade physics preserve GT2's native sharing of byte-identical
+    physical part records. The original `0xB000` database workspace has been
+    relocated into a dedicated 1 MiB native guest arena at `0x80200000`,
+    within the PC runtime's existing 8 MiB devkit RAM map and clear of retail
+    game state. The 45,930-byte thirteen-car database has completed a full
+    race smoke 874 bytes beyond the old corruption boundary. Normal Arcade
+    classes are capped at the proven thirteen-entry frontend size until their
+    arrays are explicitly expanded. The complete native `arc_carlogo`
+    frontend address family is relocated into the free `0x80400000`
+    devkit-RAM MiB with a validated `0xF0000` archive bound; this removes the
+    stock `0x66000` overflow exposed by the thirteenth Class B car. Named GT1
+    car artwork must be imported directly from the
+    validated `MENU_RAW.ARC`/`MENU_IMG.ARC` pair; synthesized wordmarks remain
+    prohibited.
+    These completed Arcade conversions remain the native body/race validation
+    harness. Six cross-stem candidates (`a-ian`, `h-vrn`, `s-pbn`, `t-oan`,
+    `t-eln`, and `h-rxn`) now also have a generated gated standalone GT Mode
+    scaffold containing all 24 GT2 part families, stock and Racing
+    Modification bodies, all seven localized databases and exact GT1
+    wordmarks, and all 60 rotations of each regional used-car roster. All six
+    have clean GT Mode purchase and garage proof; the EUNOS Roadster
+    additionally has clean upgrade, two-lap auto-drive, result, and replay
+    proof. Cross-stem review now shows that these are mostly Arcade aliases or
+    tuned visual variants of existing GT2 identities, so the standalone
+    acquisition entries are conversion proof rather than the final data
+    model. Fold them into their archive-proven targets, replace GT2-basis part
+    clones with decoded GT1 `EQUIP`/part records where applicable, and complete
+    per-car eligibility, upgrade, save, and reload coverage. Complete the
+    remaining GT1-exclusive cars, prize and Arcade liveries, paint schemes,
+    and wheel variants through the same deterministic `GTPATCH.VOL` layer.
+    The Cerbera LM `v-rbr` and Castrol Supra GT `tsplr` are explicit same-car
+    livery-fold cases; their differing GT1 body bitmaps cannot be reduced to
+    palette-only edits. Database-derived color-ID comparison authorizes 51
+    GT1-only choices across 34 same-stem identities; archive-proven cross-stem
+    comparison adds both `t-plr` Castrol body choices, for 53 imported choices
+    across 35 folds. Both mode-specific gated patch layers now contain their
+    converted day/night bodies, extended car-info records, and explicit
+    target-color-to-body-palette mappings. A 54th identity mapping marks the
+    retail Castrol palette so duplicate IDs 108/113 cannot select the wrong
+    body. The data-driven native resolver is wired into both executables'
+    palette-index selection construction, color-ID fallback, race, showroom,
+    and replay paths, and the installer validates/activates both mode layers
+    atomically. Direct resolver validation, ordinary Arcade frontend
+    regression, Castrol Supra four-choice selection/race proof, and Cerbera LM
+    alternate-body Arcade/GT Mode proof all pass. Default activation still
+    remains gated on the other 33 fold targets passing their rebuilt-host
+    interactive smoke matrix, plus final save/reload proof for repeated-ID
+    liveries and promotion of validated new-car dealer integration without
+    displacing any native entries. TVR is new-car-only in the merged design;
+    Cerbera LM must be sold as a new TVR and never enter used-car rotations.
+    The archive-derived review gallery at
+    `artifacts/gt1-visual-proofs-v1/gallery` renders every currently converted
+    choice: 53 standalone paints across 13 cars and 54 folded paints/liveries
+    across 34 GT2 targets. Each individual proof is 960x640 and the overview
+    sheets retain 720x480 per tile; within-car pixel hashing finds zero
+    duplicate visual groups. The focused Cerbera/Castrol sheet contains both
+    Cerbera LM bodies and all four accepted Castrol Supra liveries.
+- Mine supported Gran Turismo 2 demo builds for demo-exclusive LM colors,
+  liveries, and alternate body/texture packages, then fold them into the
+  corresponding retail GT2 identities. Treat each user-supplied demo image as
+  an optional, hash-validated first-run source: compare its car database color
+  IDs and native model/texture payloads directly against both retail GT2
+  volumes, preserve every authored demo-only combination without replacing
+  retail artwork, and record conflicts where duplicate color IDs select
+  different bodies. Web catalogs may identify candidates, but only the demo
+  archive data authorizes conversion.
+- Provide first-start BIN/CUE-to-loose-file conversion. The program prompts
+  for the user's own Gran Turismo 2 Simulation Disc, Gran Turismo 2 Arcade
+  Mode Disc, and Gran Turismo 1 disc, validates all three supported images,
+  converts the required files, and performs the reproducible `GT2.VOL` merge
+  into the unified loose installation without modifying or retaining the
+  source images. The original unified title menu is entered only after this
+  process succeeds. Subsequent starts reuse the validated generated install.
+  Missing or damaged output blocks the game and directs the user back to the
+  preparation tool.
+- Support mods, including manifests, dependency ordering, conflict detection,
+  and possible guided conflict resolution where changes can be merged safely.
+
 ## Fidelity gates
 
 - **Boot/CD:** `SYSTEM.CNF` launches `SCUS_944.88`; ordinary files and raw
@@ -19,9 +155,10 @@
   loaded target resolves to original recompiled code or a source-backed host
   shim.
 - **Graphics/video:** GPU command lists, VRAM transfers, MDEC input/output,
-  display modes, menu framebuffers, and race rendering remain live. Wrapper
-  presets select PS1 or enhanced projection, seam handling, track visibility,
-  vehicle LOD, and dithering without changing guest gameplay state.
+  display modes, menu framebuffers, and race rendering remain live. One fixed
+  modern world renderer owns every provenance-backed 3D command with corrected
+  projection, stabilized topology, complete authored visibility, maximum LOD,
+  smoothed sampling, and no dithering, without changing guest gameplay state.
 - **Input:** digital and analog controller state reaches the original pad data
   structures with stable edge timing.
 - **Audio:** SPU voices and streamed XA/CD input remain paced and audible.
@@ -36,20 +173,36 @@
 
 ## GT2 graphics enhancements
 
-- Texture projection correction uses the recovered per-vertex GTE depth in the
-  host shader. Disabling it restores the PS1's affine interpolation.
-- Road/model seam stabilization expands only projected 3D triangles by one
-  quarter of a native pixel. It does not alter collision, menus, videos, or 2D
-  art.
+- The shipping target has one modern 3D renderer. PS1 Quality, Custom, runtime
+  downgrade values, and legacy-world fallback have been removed from shipping
+  presentation. GT2's authored 2D GPU command compositor remains responsible
+  for menus, loading, Results, HUD, MDEC video, and world-free transitions; it
+  is not an alternate world renderer.
+
+- Texture projection correction uses recovered per-vertex GTE view/projection
+  state in the native backend and is mandatory in the shipping path. Affine
+  rendering remains available only to standalone development oracles.
+- Road/model seam stabilization uses authored boundary identity, exact
+  view-space T-junction subdivision, and deterministic coplanar ownership.
+  The known Red Rock replay line was a 3D texel-center sampling fault and is
+  corrected without screen-space expansion, collision changes, UV nudges, or
+  changes to menus/video/2D art.
 - Extended draw distance selects GT2's longer replay visibility path during a
   race. The maximum remains bounded by the authored track data.
 - Maximum vehicle LOD forces selector `1`, the player-quality model, for all
   cars instead of selecting three distance-dependent representations.
 - The enhanced geometry paths use the original development-console polygon
-  buffer layout at `0x80200000`, expanded to `0x70000` bytes, so additional
-  road and vehicle polygons are not silently discarded.
-- PS1 Quality, Enhanced, and Custom live in the wrapper. Output resolution is
-  deliberately independent and widescreen is deferred.
+  buffer layout expanded to `0x70000` bytes, so additional distant road and
+  vehicle polygons cannot overflow retail storage. Simulation uses
+  `0x80200000`; unified Arcade uses the non-overlapping `0x80500000` arena
+  because its merged parameter database already owns
+  `0x80200000`-`0x802FFFFF`. This keeps renderer geometry, imported car data,
+  and the `0x80400000` frontend archive reservation disjoint.
+- Old PS1 Quality/Enhanced/Custom values are migration inputs only: loading any
+  of them canonicalizes the fixed modern contract. Provenance-backed triangles
+  are rejected by both GL-HLE and software compatibility rasterizers even when
+  the native worker is unavailable, preventing a silent legacy-world fallback.
+  Output resolution remains independent and widescreen is deferred.
 
 ## RecompOne gotchas carried from the reference
 

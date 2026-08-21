@@ -5,7 +5,9 @@ namespace RecompOne.Recompiler.CodeGen;
 
 public static class EntryWriter
 {
-    public static void Write(PsxExe exe, string bootExe, uint systemStack, string className, string windowTitle, string? mainCall, List<string> overlays, string outDir)
+    public static void Write(PsxExe exe, string bootExe, uint systemStack,
+        string namespaceName, string className, string windowTitle,
+        string? mainCall, List<string> overlays, string outDir)
     {
         var entry = new StringBuilder();
         entry.AppendLine("using RecompOne.Runtime.Cdrom;");
@@ -14,7 +16,7 @@ public static class EntryWriter
         entry.AppendLine("using RecompOne.Runtime.Memory;");
         entry.AppendLine("using BiosKernel = RecompOne.Runtime.Bios.Bios;");
         entry.AppendLine();
-        entry.AppendLine("namespace Recompiled;");
+        entry.AppendLine($"namespace {namespaceName};");
         entry.AppendLine();
         entry.AppendLine("public static class Entry");
         entry.AppendLine("{");
@@ -57,7 +59,7 @@ public static class EntryWriter
         stubs.AppendLine("using RecompOne.Runtime.Context;");
         stubs.AppendLine("using RecompOne.Runtime.Memory;");
         stubs.AppendLine();
-        stubs.AppendLine("namespace Recompiled;");
+        stubs.AppendLine($"namespace {namespaceName};");
         stubs.AppendLine();
         stubs.AppendLine("public static class Bios");
         stubs.AppendLine("{");

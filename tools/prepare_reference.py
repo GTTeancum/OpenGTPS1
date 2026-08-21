@@ -10,8 +10,15 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[1]
-DISC_ROOT = REPO / "work" / "disc"
-CUE = REPO / "Gran Turismo 2 [Simulation Disc] [U] [SCUS-94488].cue"
+DISC_ROOT = Path(
+    os.environ.get("GT2_SIMULATION_DISC_ROOT", REPO / "work" / "disc")
+).resolve()
+CUE = Path(
+    os.environ.get(
+        "GT2_SIMULATION_CUE",
+        REPO / "Gran Turismo 2 [Simulation Disc] [U] [SCUS-94488].cue",
+    )
+).resolve()
 OUTPUT = REPO / "generated"
 
 EXTRA_MAIN_FUNCTIONS = [
@@ -90,6 +97,14 @@ OVERLAY_EXTRA_FUNCTIONS = {
         "0x800161E8",
         "0x80016258",
     ],
+    # Title overlay callbacks installed in the shared list object's function
+    # table. Option reaches 0x80018574 indirectly, and several branches use
+    # 0x800186D0 as a callable common epilogue. Neither has a direct JAL edge,
+    # so both must remain explicit recompiler roots.
+    1: [
+        "0x80018574",
+        "0x800186D0",
+    ],
 }
 
 
@@ -139,6 +154,7 @@ def main() -> int:
         "game": {
             "id": "SCUS-94488",
             "name": "GranTurismo2PC",
+            "namespace": "Recompiled.Simulation",
             "title": "Gran Turismo 2 PC",
             "output": "recompiled",
         },
@@ -161,6 +177,12 @@ def main() -> int:
                 "address": "8007D23C",
                 "target": "RecompOne.Runtime.Sdk.GT2Compat.VSync",
                 "mode": "replace",
+            },
+            {
+                "overlay": "main",
+                "address": "80080B10",
+                "target": "RecompOne.Runtime.Sdk.GT2Compat.TraceRenderSchedulerEntry",
+                "mode": "pre",
             },
             {
                 "overlay": "main",

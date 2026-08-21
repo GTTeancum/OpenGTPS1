@@ -1,5 +1,7 @@
-# Title -> GT Mode
-680+8=CROSS,START
+# Unified title -> Gran Turismo Mode
+560+1=CAPTURE
+600+4=DOWN
+640+8=CROSS,START
 760+3=RIGHT
 780+3=RIGHT
 820+4=CROSS
@@ -77,6 +79,7 @@
 7080+4=DOWN
 7120+4=DOWN
 7160+4=CROSS
+7760+4=LEFT
 7800+4=CROSS
 
 # No driving inputs follow. RECOMPONE_GT2_AI_AUTODRIVE routes the purchased

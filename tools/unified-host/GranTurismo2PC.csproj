@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>GranTurismo2PC</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- Prefer the bundled runtime in self-contained releases while retaining
+         global-runtime fallback for ordinary framework-dependent builds. -->
+    <AppHostDotNetSearch>AppLocal;Global</AppHostDotNetSearch>
+    <PublishReadyToRun Condition="'$(Configuration)' == 'Release' and '$(RuntimeIdentifier)' != ''">true</PublishReadyToRun>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="UnifiedEntry.cs" />
+    <Compile Include="ArcadeLiveryPreview.cs" />
+    <Compile Include="SimulationLiveryPreview.cs" />
+    <Compile Include="..\..\generated\recompiled\*.cs"
+             Exclude="..\..\generated\recompiled\Program.cs" />
+    <Compile Include="..\..\generated\arcade-recompiled\*.cs"
+             Exclude="..\..\generated\arcade-recompiled\Program.cs" />
+    <ProjectReference Include="..\..\vendor\RecompOne\RecompOne.Runtime\RecompOne.Runtime.csproj" />
+    <None Include="..\..\build\native\Release\opengt_live_renderer.dll"
+          Condition="Exists('..\..\build\native\Release\opengt_live_renderer.dll')"
+          Link="opengt_live_renderer.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -17,6 +17,38 @@ public readonly record struct GteProjectedValue(
     public bool Valid => Provenance != GteDepthProvenance.None && Z != 0;
 }
 
+[Flags]
+public enum GteProjectionOriginFlags : ushort
+{
+    None = 0,
+    ScreenOffsetAnchor = 1 << 0,
+}
+
+public readonly record struct GteProjectionOrigin(
+    short ModelX, short ModelY, short ModelZ,
+    int ViewX, int ViewY, int ViewZ,
+    short R00, short R01, short R02,
+    short R10, short R11, short R12,
+    short R20, short R21, short R22,
+    int TranslateX, int TranslateY, int TranslateZ,
+    int ProjectionOffsetX, int ProjectionOffsetY,
+    ushort ProjectionPlane,
+    ulong TransformId,
+    WorldObjectContext Object,
+    short ScreenOffsetX,
+    short ScreenOffsetY,
+    GteProjectionOriginFlags Flags)
+{
+    public bool Valid => TransformId != 0;
+}
+
+internal readonly record struct GteProjectionOriginHandle(
+    int Slot,
+    int Sequence)
+{
+    public bool Valid => Sequence != 0;
+}
+
 public static class Gte
 {
     public const float MaximumPerspectiveDepthRatio = 8f;
@@ -34,6 +66,23 @@ public static class Gte
     // Keep projection metadata attached to the SXY slot that Rtp produced.
     static readonly ushort[] SxyDepth = new ushort[3];
     static readonly bool[] SxyDepthValid = new bool[3];
+    static readonly GteProjectionOriginHandle[] SxyOrigin =
+        new GteProjectionOriginHandle[3];
+    // Projection provenance crosses several emulated transport stages before
+    // a GPU packet owns it. Keep each full value once in a fixed value-type
+    // ring and move only validated 8-byte handles through the GTE FIFO and CPU
+    // registers. Capacity covers more than two maximum-size live frames; a
+    // sequence tag makes overwrite fail closed instead of returning stale
+    // provenance.
+    const int ProjectionOriginCapacity = 262_144;
+    const int ProjectionOriginMask = ProjectionOriginCapacity - 1;
+    static readonly GteProjectionOrigin[] ProjectionOrigins =
+        new GteProjectionOrigin[ProjectionOriginCapacity];
+    static readonly int[] ProjectionOriginSequences =
+        new int[ProjectionOriginCapacity];
+    static int ProjectionOriginCursor;
+    static int ProjectionOriginSequence;
+    static int ProjectionOriginMisses;
     static readonly uint[] RGB = new uint[3];
     // Recovering depth from screen XY alone is ambiguous: a race frame can
     // project thousands of vertices and many unrelated vertices land on the
@@ -43,9 +92,102 @@ public static class Gte
     readonly record struct PacketDepthSample(
         uint PackedXy, ushort Z, int Generation,
         GteDepthProvenance Provenance);
+    readonly record struct PacketOriginSample(
+        uint PackedXy,
+        ushort Z,
+        int Generation,
+        GteDepthProvenance Provenance,
+        GteProjectionOrigin Origin);
     static PacketDepthSample? PendingDirectStore;
+    static GteProjectionOriginHandle PendingDirectOrigin;
     static GteProjectedValue PendingCpuValue;
-    static readonly Dictionary<uint, PacketDepthSample> PacketDepth = [];
+    static GteProjectionOriginHandle PendingCpuOrigin;
+    static GteProjectedValue DerivedScreenValue;
+    static GteProjectionOrigin DerivedScreenOrigin;
+    static float DerivedScreenOffsetScale = 1.0f;
+    static readonly bool TraceDerivedScreenProjection =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_TRACE_DERIVED_SCREEN_PROJECTION") == "1";
+    static int DerivedScreenBeginTraceCount;
+    static int DerivedScreenOffsetTraceCount;
+    // Packet addresses already provide a collision-free key. Keep depth
+    // samples in direct word-indexed storage instead of hashing every packet
+    // read, write, and invalidation on the guest thread. The validity bitsets
+    // below remain authoritative, so clearing tracking does not require
+    // touching the 32 MiB backing store.
+    static readonly PacketDepthSample[] PacketDepthRam =
+        new PacketDepthSample[Memory.MemoryMap.DevkitRamSize / 4u];
+    static readonly PacketDepthSample[] PacketDepthScratch =
+        new PacketDepthSample[Memory.MemoryMap.ScratchpadSize / 4u];
+    // Projection origins are much larger than depth samples, so a dense
+    // origin array for every possible 8 MiB RAM word would waste hundreds of
+    // MiB. Map packet words directly to compact reusable slots instead. This
+    // keeps the hot read/write path hash-free while allocating full origins
+    // only for addresses GT2 actually uses.
+    static readonly int[] PacketOriginRamSlots =
+        new int[Memory.MemoryMap.DevkitRamSize / 4u];
+    static readonly int[] PacketOriginScratchSlots =
+        new int[Memory.MemoryMap.ScratchpadSize / 4u];
+    static readonly List<PacketOriginSample> PacketOriginSamples =
+        new(65_536);
+    static readonly Stack<int> FreePacketOriginSlots = new();
+    static int PacketDepthCount;
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    static void ClearPendingCpuOrigin()
+    {
+        if (WorldCaptureContext.CaptureEnabled)
+            PendingCpuOrigin = default;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    static void ClearPendingDirectOrigin()
+    {
+        if (WorldCaptureContext.CaptureEnabled)
+            PendingDirectOrigin = default;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining |
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    static GteProjectionOriginHandle StoreProjectionOrigin(
+        in GteProjectionOrigin origin)
+    {
+        int slot = ProjectionOriginCursor++ & ProjectionOriginMask;
+        int sequence = unchecked(++ProjectionOriginSequence);
+        if (sequence == 0)
+            sequence = unchecked(++ProjectionOriginSequence);
+        ProjectionOrigins[slot] = origin;
+        ProjectionOriginSequences[slot] = sequence;
+        return new GteProjectionOriginHandle(slot, sequence);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining |
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    internal static bool TryResolveProjectionOrigin(
+        in GteProjectionOriginHandle handle,
+        out GteProjectionOrigin origin)
+    {
+        if (handle.Valid &&
+            (uint)handle.Slot < ProjectionOriginCapacity &&
+            ProjectionOriginSequences[handle.Slot] == handle.Sequence)
+        {
+            origin = ProjectionOrigins[handle.Slot];
+            return true;
+        }
+        origin = default;
+        if (handle.Valid && Interlocked.Increment(ref ProjectionOriginMisses) <= 8)
+        {
+            Console.Error.WriteLine(
+                $"[GTE-Origin] stale transport handle " +
+                $"slot={handle.Slot} sequence={handle.Sequence} " +
+                $"generation={ScreenDepthGeneration}");
+        }
+        return false;
+    }
     // Most guest RAM traffic has nothing to do with GPU packets. A compact
     // bitset prevents an expensive dictionary lookup on every RAM read/write
     // while still invalidating exact packet metadata on partial overwrites.
@@ -67,15 +209,45 @@ public static class Gte
             out int packetWriteStartPoll)
             ? Math.Max(0, packetWriteStartPoll)
             : 0;
+    static readonly int TracePacketWritesEndPoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_GTE_PACKET_WRITES_END_POLL"),
+            out int packetWriteEndPoll)
+            ? Math.Max(0, packetWriteEndPoll)
+            : int.MaxValue;
+    static readonly uint TracePacketWritesMinimumAddress =
+        uint.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_GTE_PACKET_WRITES_MIN_ADDRESS"),
+            out uint packetWriteMinimumAddress)
+            ? packetWriteMinimumAddress
+            : 0x00200000u;
+    static readonly uint TracePacketWritesMaximumAddress =
+        uint.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_GTE_PACKET_WRITES_MAX_ADDRESS"),
+            out uint packetWriteMaximumAddress)
+            ? packetWriteMaximumAddress
+            : 0x00270000u;
     static int PacketWriteTraceCount;
     static int ScreenDepthGeneration;
     public static int ProjectionGeneration => ScreenDepthGeneration;
     const int PacketDepthMaxAge = 2;
+
+    public static bool HasPendingCpuProjection
+    {
+        [System.Runtime.CompilerServices.MethodImpl(
+            System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        get => PendingCpuValue.Valid;
+    }
     static uint RES1;
     static int MAC0, MAC1, MAC2, MAC3;
     static uint LZCS, LZCR;
 
     static readonly short[] RT = new short[9];
+    static ulong ProjectionTransformHash;
+    static bool ProjectionTransformHashDirty = true;
     static readonly short[] LLM = new short[9];
     static readonly short[] LCM = new short[9];
     static readonly int[] TR = new int[3];
@@ -209,7 +381,7 @@ public static class Gte
         return n;
     }
 
-    static uint Divide(uint h, uint sz3)
+    internal static uint Divide(uint h, uint sz3)
     {
         if (h >= sz3 * 2) { Flag(17); return 0x1FFFF; }
         int z = Clz16(sz3);
@@ -253,6 +425,16 @@ public static class Gte
         SxyDepthValid[0] = SxyDepthValid[1];
         SxyDepthValid[1] = SxyDepthValid[2];
         SxyDepthValid[2] = sz != 0;
+        if (WorldCaptureContext.CaptureEnabled)
+        {
+            SxyOrigin[0] = SxyOrigin[1];
+            SxyOrigin[1] = SxyOrigin[2];
+            SxyOrigin[2] = CreateProjectionOrigin(
+                vx, vy, vz,
+                (int)(m1 >> 12),
+                (int)(m2 >> 12),
+                (int)(m3 >> 12));
+        }
         if (last)
         {
             long dp = CheckMac0((long)div * DQA + DQB);
@@ -261,12 +443,134 @@ public static class Gte
         }
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    static GteProjectionOriginHandle CreateProjectionOrigin(
+        int modelX, int modelY, int modelZ,
+        int viewX, int viewY, int viewZ)
+    {
+        ulong hash = ProjectionTransformHash;
+        if (ProjectionTransformHashDirty)
+        {
+            hash = 14695981039346656037UL;
+            static ulong Mix(ulong value, int item)
+            {
+                value ^= unchecked((uint)item);
+                return value * 1099511628211UL;
+            }
+            for (int index = 0; index < RT.Length; index++)
+                hash = Mix(hash, RT[index]);
+            for (int index = 0; index < TR.Length; index++)
+                hash = Mix(hash, TR[index]);
+            if (hash == 0)
+                hash = 1;
+            ProjectionTransformHash = hash;
+            ProjectionTransformHashDirty = false;
+        }
+        GteProjectionOrigin origin = new(
+            (short)modelX, (short)modelY, (short)modelZ,
+            viewX, viewY, viewZ,
+            RT[0], RT[1], RT[2],
+            RT[3], RT[4], RT[5],
+            RT[6], RT[7], RT[8],
+            TR[0], TR[1], TR[2],
+            OFX, OFY, H,
+            hash,
+            WorldCaptureContext.Current,
+            0, 0,
+            GteProjectionOriginFlags.None);
+        return StoreProjectionOrigin(in origin);
+    }
+
+    public static void BeginDerivedScreenProjection(
+        uint packedXy,
+        float screenOffsetScale = 1.0f)
+    {
+        GteProjectionOrigin origin = default;
+        GteProjectedValue projected = WorldCaptureContext.CaptureEnabled
+            ? ConsumeCpuRegisterWrite(packedXy, out origin)
+            : ConsumeCpuRegisterWrite(packedXy);
+        if (TraceDerivedScreenProjection &&
+            DerivedScreenBeginTraceCount++ < 48)
+            Console.Error.WriteLine(
+                $"[GTE-Derived] begin packed=0x{packedXy:X8} " +
+                $"scale={screenOffsetScale:F3} " +
+                $"capture={WorldCaptureContext.CaptureEnabled} " +
+                $"projected={projected.Valid} origin={origin.Valid} " +
+                $"plane={origin.ProjectionPlane} " +
+                $"object={origin.Object.Kind} " +
+                $"model=0x{origin.Object.ModelPointer:X8}");
+        if (!projected.Valid || !origin.Valid || origin.ProjectionPlane == 0)
+        {
+            DerivedScreenValue = default;
+            DerivedScreenOrigin = default;
+            DerivedScreenOffsetScale = 1.0f;
+            return;
+        }
+        DerivedScreenValue = projected;
+        DerivedScreenOrigin = origin;
+        DerivedScreenOffsetScale = Math.Clamp(screenOffsetScale, 0.0f, 1.0f);
+    }
+
+    public static void BeginDerivedScreenProjection(
+        bool scaleImportedOffsets,
+        uint packedXy) =>
+        BeginDerivedScreenProjection(
+            packedXy,
+            scaleImportedOffsets ? 0.25f : 1.0f);
+
+    public static void EndDerivedScreenProjection()
+    {
+        DerivedScreenValue = default;
+        DerivedScreenOrigin = default;
+        DerivedScreenOffsetScale = 1.0f;
+    }
+
+    static GteProjectionOrigin DeriveScreenOffsetOrigin(uint packedXy)
+    {
+        int x = (short)packedXy;
+        int y = (short)(packedXy >> 16);
+        int anchorX = (short)DerivedScreenValue.PackedXy;
+        int anchorY = (short)(DerivedScreenValue.PackedXy >> 16);
+        int authoredOffsetX = x - anchorX;
+        int authoredOffsetY = y - anchorY;
+        double offsetX = authoredOffsetX * DerivedScreenOffsetScale;
+        double offsetY = authoredOffsetY * DerivedScreenOffsetScale;
+        if (TraceDerivedScreenProjection &&
+            DerivedScreenOffsetTraceCount++ < 96)
+            Console.Error.WriteLine(
+                $"[GTE-Derived] offset packed=0x{packedXy:X8} " +
+                $"anchor=0x{DerivedScreenValue.PackedXy:X8} " +
+                $"authored={authoredOffsetX},{authoredOffsetY} " +
+                $"scaled={offsetX:F3},{offsetY:F3} " +
+                $"z={DerivedScreenValue.Z}");
+        double viewUnitsPerPixel =
+            (double)DerivedScreenOrigin.ViewZ /
+            DerivedScreenOrigin.ProjectionPlane;
+        int viewX = DerivedScreenOrigin.ViewX +
+            (int)Math.Round(offsetX * viewUnitsPerPixel);
+        int viewY = DerivedScreenOrigin.ViewY +
+            (int)Math.Round(offsetY * viewUnitsPerPixel);
+        return DerivedScreenOrigin with
+        {
+            ViewX = viewX,
+            ViewY = viewY,
+            ScreenOffsetX = (short)Math.Clamp(
+                (int)Math.Round(offsetX), short.MinValue, short.MaxValue),
+            ScreenOffsetY = (short)Math.Clamp(
+                (int)Math.Round(offsetY), short.MinValue, short.MaxValue),
+            Flags = DerivedScreenOrigin.Flags |
+                GteProjectionOriginFlags.ScreenOffsetAnchor,
+        };
+    }
+
     static uint ReadProjectedScreen(int screenIndex)
     {
         uint packed = (uint)((ushort)SX[screenIndex] | (SY[screenIndex] << 16));
         if (!ProjectionTrackingEnabled)
         {
             PendingCpuValue = default;
+            ClearPendingCpuOrigin();
             return packed;
         }
         ushort depth = SxyDepth[screenIndex];
@@ -277,43 +581,64 @@ public static class Gte
                 depth,
                 ScreenDepthGeneration,
                 GteDepthProvenance.CpuRegisterFlow);
+            if (WorldCaptureContext.CaptureEnabled)
+                PendingCpuOrigin = SxyOrigin[screenIndex];
         }
         else
         {
             PendingCpuValue = default;
+            ClearPendingCpuOrigin();
         }
         return packed;
     }
 
     public static void NotifyCpuRegisterRead(
-        uint value, in GteProjectedValue projected)
+        uint value,
+        in GteProjectedValue projected)
     {
         if (!ProjectionTrackingEnabled)
         {
             PendingCpuValue = default;
+            ClearPendingCpuOrigin();
             return;
         }
-        PendingCpuValue =
+        bool accepted =
             projected.Valid &&
             projected.PackedXy == value &&
             ScreenDepthGeneration - projected.Generation <=
-                PacketDepthMaxAge
-                ? projected with
-                {
-                    Provenance = GteDepthProvenance.CpuRegisterFlow,
-                }
-                : default;
+                PacketDepthMaxAge;
+        PendingCpuValue = accepted
+            ? projected with
+            {
+                Provenance = GteDepthProvenance.CpuRegisterFlow,
+            }
+            : default;
+        ClearPendingCpuOrigin();
     }
 
+    internal static void NotifyCpuRegisterRead(
+        uint value,
+        in GteProjectedValue projected,
+        in GteProjectionOriginHandle origin)
+    {
+        NotifyCpuRegisterRead(value, in projected);
+        if (PendingCpuValue.Valid)
+            PendingCpuOrigin = origin;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static GteProjectedValue ConsumeCpuRegisterWrite(uint value)
     {
         if (!ProjectionTrackingEnabled)
         {
             PendingCpuValue = default;
+            ClearPendingCpuOrigin();
             return default;
         }
         GteProjectedValue projected = PendingCpuValue;
         PendingCpuValue = default;
+        ClearPendingCpuOrigin();
         return projected.Valid && projected.PackedXy == value
             ? projected with
             {
@@ -322,20 +647,60 @@ public static class Gte
             : default;
     }
 
+    public static GteProjectedValue ConsumeCpuRegisterWrite(
+        uint value,
+        out GteProjectionOrigin origin)
+    {
+        GteProjectionOriginHandle projectedOrigin = PendingCpuOrigin;
+        GteProjectedValue projected = ConsumeCpuRegisterWrite(value);
+        if (!projected.Valid ||
+            !WorldCaptureContext.CaptureEnabled ||
+            !TryResolveProjectionOrigin(in projectedOrigin, out origin))
+        {
+            origin = default;
+        }
+        return projected;
+    }
+
+    internal static GteProjectedValue ConsumeCpuRegisterWrite(
+        uint value,
+        out GteProjectionOriginHandle origin)
+    {
+        GteProjectionOriginHandle projectedOrigin = PendingCpuOrigin;
+        GteProjectedValue projected = ConsumeCpuRegisterWrite(value);
+        origin = projected.Valid && WorldCaptureContext.CaptureEnabled
+            ? projectedOrigin
+            : default;
+        return projected;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining |
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     public static void NotifyRamRead(uint wordAddress, uint value)
     {
         if (!ProjectionTrackingEnabled)
         {
             PendingCpuValue = default;
+            ClearPendingCpuOrigin();
             return;
         }
         wordAddress &= ~3u;
         if (!IsPacketDepthBound(wordAddress))
         {
             PendingCpuValue = default;
+            ClearPendingCpuOrigin();
             return;
         }
-        if (PacketDepth.TryGetValue(wordAddress, out var sample) &&
+        NotifyBoundRamRead(wordAddress, value);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.NoInlining |
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    static void NotifyBoundRamRead(uint wordAddress, uint value)
+    {
+        if (TryGetPacketDepthSample(wordAddress, out var sample) &&
             sample.PackedXy == value &&
             ScreenDepthGeneration - sample.Generation <=
                 PacketDepthMaxAge)
@@ -345,9 +710,20 @@ public static class Gte
                 sample.Z,
                 sample.Generation,
                 GteDepthProvenance.CpuRegisterFlow);
+            ClearPendingCpuOrigin();
+            if (WorldCaptureContext.CaptureEnabled &&
+                TryGetPacketOriginSample(wordAddress, out var origin) &&
+                origin.PackedXy == value &&
+                ScreenDepthGeneration - origin.Generation <=
+                    PacketDepthMaxAge)
+            {
+                GteProjectionOrigin packetOrigin = origin.Origin;
+                PendingCpuOrigin = StoreProjectionOrigin(in packetOrigin);
+            }
             return;
         }
         PendingCpuValue = default;
+        ClearPendingCpuOrigin();
     }
 
     /// <summary>
@@ -356,62 +732,127 @@ public static class Gte
     /// Any older binding is removed first so reused primitive buffers cannot
     /// retain stale depth.
     /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining |
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     public static void NotifyRamWrite(uint wordAddress, uint value)
     {
         if (!ProjectionTrackingEnabled)
         {
             PendingDirectStore = null;
+            ClearPendingDirectOrigin();
             PendingCpuValue = default;
+            ClearPendingCpuOrigin();
             return;
         }
-        wordAddress &= ~3u;
-        if (TracePacketWrites &&
-            Host.InputManager.CurrentPoll >= TracePacketWritesStartPoll &&
+        // The overwhelming majority of guest RAM writes neither overwrite a
+        // bound packet word nor carry a freshly projected SXY value.  Avoid
+        // dictionary and metadata plumbing on that common path while keeping
+        // the exact next-write consumption semantics for real projections.
+        uint alignedAddress = wordAddress & ~3u;
+        if (TracePacketWrites)
+            TraceRamWrite(alignedAddress, value);
+        bool derivedScreenProjection =
+            DerivedScreenValue.Valid &&
+            DerivedScreenOrigin.Valid &&
+            ScreenDepthGeneration - DerivedScreenValue.Generation <=
+                PacketDepthMaxAge;
+        if (
             PendingDirectStore == null &&
             !PendingCpuValue.Valid &&
-            wordAddress is >= 0x00200000u and < 0x00270000u &&
-            (wordAddress & 7u) == 0u)
-        {
-            int x = (short)value;
-            int y = (short)(value >> 16);
-            // GT2 renders into alternating 240-line VRAM pages. Packet Y is
-            // page-local here; the GPU draw offset is applied later.
-            if (x is >= -128 and <= 448 && y is >= 120 and <= 240)
-            {
-                int trace = Interlocked.Increment(ref PacketWriteTraceCount);
-                if (trace <= 512)
-                {
-                    Context.CpuContext? cpu = Runtime.Cpu;
-                    Console.Error.WriteLine(
-                        $"[GTE-PACKET-WRITE] n={trace} " +
-                        $"address=0x{wordAddress:X8} xy={x},{y} " +
-                        $"value=0x{value:X8} generation={ScreenDepthGeneration} " +
-                        $"ra=0x{cpu?.PeekRaw(31) ?? 0u:X8} " +
-                        $"s0=0x{cpu?.PeekRaw(16) ?? 0u:X8} " +
-                        $"s1=0x{cpu?.PeekRaw(17) ?? 0u:X8} " +
-                        $"s2=0x{cpu?.PeekRaw(18) ?? 0u:X8} " +
-                        $"t0=0x{cpu?.PeekRaw(8) ?? 0u:X8} " +
-                        $"t1=0x{cpu?.PeekRaw(9) ?? 0u:X8} " +
-                        $"t2=0x{cpu?.PeekRaw(10) ?? 0u:X8} " +
-                        $"t3=0x{cpu?.PeekRaw(11) ?? 0u:X8}");
-                }
-            }
+            !derivedScreenProjection &&
+            !IsPacketDepthBound(alignedAddress)
+        ) {
+            return;
         }
-        RemovePacketDepth(wordAddress);
+        NotifyTrackedRamWrite(
+            alignedAddress, value, derivedScreenProjection);
+    }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static void TraceRamWrite(uint alignedAddress, uint value)
+    {
+        int poll = Host.InputManager.CurrentPoll;
+        if (poll < TracePacketWritesStartPoll ||
+            poll > TracePacketWritesEndPoll ||
+            alignedAddress < TracePacketWritesMinimumAddress ||
+            alignedAddress >= TracePacketWritesMaximumAddress)
+            return;
+
+        int x = (short)value;
+        int y = (short)(value >> 16);
+        if (x is < -1024 or > 1023 || y is < -512 or > 511)
+            return;
+
+        int trace = Interlocked.Increment(ref PacketWriteTraceCount);
+        if (trace > 4096)
+            return;
+
+        Context.CpuContext? cpu = Runtime.Cpu;
+        Console.Error.WriteLine(
+            $"[GTE-PACKET-WRITE] n={trace} " +
+            $"poll={poll} " +
+            $"address=0x{alignedAddress:X8} xy={x},{y} " +
+            $"value=0x{value:X8} generation={ScreenDepthGeneration} " +
+            $"pendingDirect={PendingDirectStore != null} " +
+            $"pendingCpu={PendingCpuValue.Valid} " +
+            $"ra=0x{cpu?.PeekRaw(31) ?? 0u:X8} " +
+            $"s0=0x{cpu?.PeekRaw(16) ?? 0u:X8} " +
+            $"s1=0x{cpu?.PeekRaw(17) ?? 0u:X8} " +
+            $"s2=0x{cpu?.PeekRaw(18) ?? 0u:X8} " +
+            $"t0=0x{cpu?.PeekRaw(8) ?? 0u:X8} " +
+            $"t1=0x{cpu?.PeekRaw(9) ?? 0u:X8} " +
+            $"t2=0x{cpu?.PeekRaw(10) ?? 0u:X8} " +
+            $"t3=0x{cpu?.PeekRaw(11) ?? 0u:X8}");
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.NoInlining |
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    static void NotifyTrackedRamWrite(
+        uint wordAddress,
+        uint value,
+        bool derivedScreenProjection)
+    {
         if (PendingDirectStore is { } direct)
         {
             PendingDirectStore = null;
             PendingCpuValue = default;
+            ClearPendingCpuOrigin();
             if (direct.PackedXy == value &&
                 direct.Generation == ScreenDepthGeneration)
             {
                 SetPacketDepth(wordAddress, direct);
+                if (WorldCaptureContext.CaptureEnabled)
+                {
+                    if (PendingDirectOrigin.Valid &&
+                        TryResolveProjectionOrigin(
+                            in PendingDirectOrigin,
+                            out GteProjectionOrigin origin))
+                    {
+                        SetPacketOrigin(wordAddress, new PacketOriginSample(
+                            value,
+                            direct.Z,
+                            direct.Generation,
+                            direct.Provenance,
+                            origin));
+                    }
+                    else
+                    {
+                        RemovePacketOrigin(wordAddress);
+                    }
+                }
+                ClearPendingDirectOrigin();
                 return;
             }
+            ClearPendingDirectOrigin();
         }
 
-        GteProjectedValue cpuValue = ConsumeCpuRegisterWrite(value);
+        GteProjectionOriginHandle cpuOrigin = default;
+        GteProjectedValue cpuValue = WorldCaptureContext.CaptureEnabled
+            ? ConsumeCpuRegisterWrite(value, out cpuOrigin)
+            : ConsumeCpuRegisterWrite(value);
         if (cpuValue.Valid &&
             ScreenDepthGeneration - cpuValue.Generation <=
                 PacketDepthMaxAge)
@@ -421,24 +862,250 @@ public static class Gte
                 cpuValue.Z,
                 ScreenDepthGeneration,
                 GteDepthProvenance.CpuRegisterFlow));
+            if (WorldCaptureContext.CaptureEnabled)
+            {
+                if (cpuOrigin.Valid &&
+                    TryResolveProjectionOrigin(
+                        in cpuOrigin,
+                        out GteProjectionOrigin origin))
+                {
+                    SetPacketOrigin(wordAddress, new PacketOriginSample(
+                        value,
+                        cpuValue.Z,
+                        ScreenDepthGeneration,
+                        GteDepthProvenance.CpuRegisterFlow,
+                        origin));
+                }
+                else
+                {
+                    RemovePacketOrigin(wordAddress);
+                }
+            }
             return;
         }
+        if (derivedScreenProjection)
+        {
+            int x = (short)value;
+            int y = (short)(value >> 16);
+            if (x is >= -1024 and <= 1023 && y is >= -512 and <= 511)
+            {
+                SetPacketDepth(wordAddress, new PacketDepthSample(
+                    value,
+                    DerivedScreenValue.Z,
+                    ScreenDepthGeneration,
+                    GteDepthProvenance.CpuRegisterFlow));
+                SetPacketOrigin(wordAddress, new PacketOriginSample(
+                    value,
+                    DerivedScreenValue.Z,
+                    ScreenDepthGeneration,
+                    GteDepthProvenance.CpuRegisterFlow,
+                    DeriveScreenOffsetOrigin(value)));
+                return;
+            }
+        }
+        RemovePacketDepth(wordAddress);
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     static void SetPacketDepth(uint wordAddress, PacketDepthSample sample)
     {
-        PacketDepth[wordAddress] = sample;
-        SetPacketDepthBound(wordAddress, true);
+        PacketDepthSample[] storage;
+        uint[] boundBits;
+        uint word;
+        if (wordAddress < Memory.MemoryMap.DevkitRamSize)
+        {
+            storage = PacketDepthRam;
+            boundBits = PacketDepthRamBits;
+            word = wordAddress >> 2;
+        }
+        else if (wordAddress >= Memory.MemoryMap.ScratchpadBase &&
+            wordAddress <
+                Memory.MemoryMap.ScratchpadBase +
+                Memory.MemoryMap.ScratchpadSize)
+        {
+            storage = PacketDepthScratch;
+            boundBits = PacketDepthScratchBits;
+            word =
+                (wordAddress - Memory.MemoryMap.ScratchpadBase) >> 2;
+        }
+        else
+        {
+            return;
+        }
+
+        uint mask = 1u << (int)(word & 31u);
+        ref uint bits = ref boundBits[word >> 5];
+        if ((bits & mask) == 0)
+            PacketDepthCount++;
+        storage[word] = sample;
+        bits |= mask;
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     static void RemovePacketDepth(uint wordAddress)
     {
         if (!IsPacketDepthBound(wordAddress))
             return;
-        PacketDepth.Remove(wordAddress);
+        if (TryGetPacketDepthStorage(
+                wordAddress, out PacketDepthSample[] storage, out int index))
+            storage[index] = default;
+        if (WorldCaptureContext.CaptureEnabled)
+            RemovePacketOrigin(wordAddress);
         SetPacketDepthBound(wordAddress, false);
+        PacketDepthCount--;
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining |
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    static bool TryGetPacketDepthStorage(
+        uint wordAddress,
+        out PacketDepthSample[] storage,
+        out int index)
+    {
+        if (wordAddress < Memory.MemoryMap.DevkitRamSize)
+        {
+            storage = PacketDepthRam;
+            index = (int)(wordAddress >> 2);
+            return true;
+        }
+        if (wordAddress >= Memory.MemoryMap.ScratchpadBase &&
+            wordAddress <
+                Memory.MemoryMap.ScratchpadBase +
+                Memory.MemoryMap.ScratchpadSize)
+        {
+            storage = PacketDepthScratch;
+            index = (int)((wordAddress - Memory.MemoryMap.ScratchpadBase) >> 2);
+            return true;
+        }
+        storage = PacketDepthRam;
+        index = 0;
+        return false;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining |
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    static bool TryGetPacketOriginSlotStorage(
+        uint wordAddress,
+        out int[] storage,
+        out int index)
+    {
+        if (wordAddress < Memory.MemoryMap.DevkitRamSize)
+        {
+            storage = PacketOriginRamSlots;
+            index = (int)(wordAddress >> 2);
+            return true;
+        }
+        if (wordAddress >= Memory.MemoryMap.ScratchpadBase &&
+            wordAddress <
+                Memory.MemoryMap.ScratchpadBase +
+                Memory.MemoryMap.ScratchpadSize)
+        {
+            storage = PacketOriginScratchSlots;
+            index = (int)((wordAddress - Memory.MemoryMap.ScratchpadBase) >> 2);
+            return true;
+        }
+        storage = PacketOriginRamSlots;
+        index = 0;
+        return false;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    static void SetPacketOrigin(uint wordAddress, PacketOriginSample sample)
+    {
+        if (!TryGetPacketOriginSlotStorage(
+                wordAddress, out int[] storage, out int index))
+            return;
+        int encodedSlot = storage[index];
+        if (encodedSlot != 0)
+        {
+            PacketOriginSamples[encodedSlot - 1] = sample;
+            return;
+        }
+        int slot;
+        if (FreePacketOriginSlots.TryPop(out int reusable))
+        {
+            slot = reusable;
+            PacketOriginSamples[slot] = sample;
+        }
+        else
+        {
+            slot = PacketOriginSamples.Count;
+            PacketOriginSamples.Add(sample);
+        }
+        storage[index] = checked(slot + 1);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    static void RemovePacketOrigin(uint wordAddress)
+    {
+        if (!TryGetPacketOriginSlotStorage(
+                wordAddress, out int[] storage, out int index))
+            return;
+        int encodedSlot = storage[index];
+        if (encodedSlot == 0)
+            return;
+        storage[index] = 0;
+        int slot = encodedSlot - 1;
+        PacketOriginSamples[slot] = default;
+        FreePacketOriginSlots.Push(slot);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining |
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    static bool TryGetPacketOriginSample(
+        uint wordAddress,
+        out PacketOriginSample sample)
+    {
+        if (TryGetPacketOriginSlotStorage(
+                wordAddress, out int[] storage, out int index))
+        {
+            int encodedSlot = storage[index];
+            if (encodedSlot != 0)
+            {
+                sample = PacketOriginSamples[encodedSlot - 1];
+                return true;
+            }
+        }
+        sample = default;
+        return false;
+    }
+
+    static void ClearPacketOrigins()
+    {
+        Array.Clear(PacketOriginRamSlots);
+        Array.Clear(PacketOriginScratchSlots);
+        PacketOriginSamples.Clear();
+        FreePacketOriginSlots.Clear();
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining |
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    static bool TryGetPacketDepthSample(
+        uint wordAddress,
+        out PacketDepthSample sample)
+    {
+        if (IsPacketDepthBound(wordAddress) &&
+            TryGetPacketDepthStorage(
+                wordAddress, out PacketDepthSample[] storage, out int index))
+        {
+            sample = storage[index];
+            return true;
+        }
+        sample = default;
+        return false;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining |
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     static bool IsPacketDepthBound(uint wordAddress)
     {
         if (wordAddress < Memory.MemoryMap.DevkitRamSize)
@@ -460,6 +1127,9 @@ public static class Gte
         return false;
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining |
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     static void SetPacketDepthBound(uint wordAddress, bool bound)
     {
         uint[] bits;
@@ -489,6 +1159,8 @@ public static class Gte
             bits[word >> 5] &= ~mask;
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     public static bool TryGetPacketDepth(
         uint wordAddress, int x, int y, out ushort z, out int age,
         out GteDepthProvenance provenance)
@@ -497,7 +1169,7 @@ public static class Gte
         PacketDepthSample sample = default;
         bool found =
             wordAddress != uint.MaxValue &&
-            PacketDepth.TryGetValue(wordAddress & ~3u, out sample) &&
+            TryGetPacketDepthSample(wordAddress & ~3u, out sample) &&
             sample.PackedXy == packed &&
             ScreenDepthGeneration - sample.Generation <= PacketDepthMaxAge;
         z = found ? sample.Z : (ushort)0;
@@ -505,10 +1177,155 @@ public static class Gte
             ? Math.Max(0, ScreenDepthGeneration - sample.Generation)
             : 0;
         provenance = found ? sample.Provenance : GteDepthProvenance.None;
-        if (found) PacketDepthHits++;
-        else PacketDepthMisses++;
+        if (TraceScreenDepth)
+        {
+            if (found) PacketDepthHits++;
+            else PacketDepthMisses++;
+        }
         return found;
     }
+
+    /// <summary>
+    /// Resolves the depth and world origin carried by one GPU packet word.
+    /// The combined query shares address normalization and coordinate packing
+    /// for the two parallel metadata stores used by live polygon capture.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining |
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    public static bool TryGetPacketProjection(
+        uint wordAddress,
+        int x,
+        int y,
+        out ushort z,
+        out int age,
+        out GteDepthProvenance provenance,
+        out GteProjectionOrigin origin)
+    {
+        uint packed =
+            (uint)((ushort)(short)x | ((uint)(ushort)(short)y << 16));
+        PacketOriginSample originSample = default;
+        bool hasOriginSample = false;
+        int addressRegion = 0;
+        int word = 0;
+        if (wordAddress != uint.MaxValue)
+        {
+            uint alignedAddress = wordAddress & ~3u;
+            if (alignedAddress < Memory.MemoryMap.DevkitRamSize)
+            {
+                addressRegion = 1;
+                word = (int)(alignedAddress >> 2);
+                int encodedOrigin = PacketOriginRamSlots[word];
+                if (encodedOrigin != 0)
+                {
+                    originSample = PacketOriginSamples[encodedOrigin - 1];
+                    hasOriginSample = true;
+                }
+            }
+            else if (alignedAddress >= Memory.MemoryMap.ScratchpadBase &&
+                alignedAddress <
+                    Memory.MemoryMap.ScratchpadBase +
+                    Memory.MemoryMap.ScratchpadSize)
+            {
+                addressRegion = 2;
+                word = (int)((alignedAddress -
+                    Memory.MemoryMap.ScratchpadBase) >> 2);
+                int encodedOrigin = PacketOriginScratchSlots[word];
+                if (encodedOrigin != 0)
+                {
+                    originSample = PacketOriginSamples[encodedOrigin - 1];
+                    hasOriginSample = true;
+                }
+            }
+        }
+        bool foundOrigin =
+            hasOriginSample &&
+            originSample.PackedXy == packed &&
+            ScreenDepthGeneration - originSample.Generation <=
+                PacketDepthMaxAge &&
+            originSample.Origin.Valid;
+
+        // World-capture origins are written together with the exact depth and
+        // provenance for the packet. Prefer that compact slot so the common
+        // path does not also touch the 32 MiB direct-indexed depth store. A
+        // packet without an origin can still use the depth-only fallback for
+        // perspective correction and diagnostics.
+        PacketDepthSample depthSample = default;
+        bool hasDepthSample = false;
+        if (!foundOrigin)
+        {
+            if (addressRegion == 1)
+            {
+                hasDepthSample =
+                    (PacketDepthRamBits[word >> 5] &
+                        (1u << (word & 31))) != 0;
+                if (hasDepthSample)
+                    depthSample = PacketDepthRam[word];
+            }
+            else if (addressRegion == 2)
+            {
+                hasDepthSample =
+                    (PacketDepthScratchBits[word >> 5] &
+                        (1u << (word & 31))) != 0;
+                if (hasDepthSample)
+                    depthSample = PacketDepthScratch[word];
+            }
+        }
+        bool foundDepthSample =
+            hasDepthSample &&
+            depthSample.PackedXy == packed &&
+            ScreenDepthGeneration - depthSample.Generation <=
+                PacketDepthMaxAge;
+        bool foundDepth = foundOrigin || foundDepthSample;
+        z = foundOrigin
+            ? originSample.Z
+            : foundDepthSample
+                ? depthSample.Z
+                : (ushort)0;
+        int generation = foundOrigin
+            ? originSample.Generation
+            : depthSample.Generation;
+        age = foundDepth
+            ? Math.Max(0, ScreenDepthGeneration - generation)
+            : 0;
+        provenance = foundOrigin
+            ? originSample.Provenance
+            : foundDepthSample
+                ? depthSample.Provenance
+                : GteDepthProvenance.None;
+        if (TraceScreenDepth)
+        {
+            if (foundDepth) PacketDepthHits++;
+            else PacketDepthMisses++;
+        }
+
+        origin = foundOrigin ? originSample.Origin : default;
+        return foundDepth;
+    }
+
+    public static bool TryGetPacketOrigin(
+        uint wordAddress,
+        int x,
+        int y,
+        out GteProjectionOrigin origin)
+    {
+        PacketOriginSample sample = default;
+        bool found =
+            wordAddress != uint.MaxValue &&
+            TryGetPacketOriginSample(wordAddress & ~3u, out sample) &&
+            PacketOriginCoordinatesMatch(sample.PackedXy, x, y) &&
+            ScreenDepthGeneration - sample.Generation <= PacketDepthMaxAge &&
+            sample.Origin.Valid;
+        origin = found ? sample.Origin : default;
+        return found;
+    }
+
+    internal static bool PacketOriginCoordinatesMatch(
+        uint storedPackedXy,
+        int x,
+        int y) =>
+        storedPackedXy ==
+            (uint)((ushort)(short)x | ((uint)(ushort)(short)y << 16));
 
     public static void BeginScreenDepthFrame()
     {
@@ -516,21 +1333,22 @@ public static class Gte
             (PacketDepthHits != 0 || PacketDepthMisses != 0))
         {
             Console.Error.WriteLine(
-                $"[GTE] projection-depth bindings={PacketDepth.Count} " +
+                $"[GTE] projection-depth bindings={PacketDepthCount} " +
                 $"packetHits={PacketDepthHits} packetMisses={PacketDepthMisses} " +
                 $"generation={ScreenDepthGeneration}");
         }
         ScreenDepthGeneration++;
         PendingCpuValue = default;
-        if ((ScreenDepthGeneration & 127) == 0 && PacketDepth.Count != 0)
+        ClearPendingCpuOrigin();
+        EndDerivedScreenProjection();
+        if ((ScreenDepthGeneration & 127) == 0 && PacketDepthCount != 0)
         {
-            foreach (uint key in PacketDepth
-                .Where(pair =>
-                    pair.Value.Generation <
-                    ScreenDepthGeneration - PacketDepthMaxAge)
-                .Select(pair => pair.Key)
-                .ToArray())
-                RemovePacketDepth(key);
+            PruneStalePacketDepth(
+                PacketDepthRam, PacketDepthRamBits, baseAddress: 0);
+            PruneStalePacketDepth(
+                PacketDepthScratch,
+                PacketDepthScratchBits,
+                Memory.MemoryMap.ScratchpadBase);
         }
         PacketDepthHits = 0;
         PacketDepthMisses = 0;
@@ -542,11 +1360,50 @@ public static class Gte
             return;
         ProjectionTrackingEnabled = enabled;
         PendingDirectStore = null;
+        ClearPendingDirectOrigin();
         PendingCpuValue = default;
-        PacketDepth.Clear();
+        ClearPendingCpuOrigin();
+        PacketDepthCount = 0;
+        if (WorldCaptureContext.CaptureEnabled)
+            ClearPacketOrigins();
         Array.Clear(PacketDepthRamBits);
         Array.Clear(PacketDepthScratchBits);
         Runtime.Cpu?.ClearProjectionMetadata();
+    }
+
+    static void PruneStalePacketDepth(
+        PacketDepthSample[] samples,
+        uint[] boundBits,
+        uint baseAddress)
+    {
+        int oldestGeneration =
+            ScreenDepthGeneration - PacketDepthMaxAge;
+        for (int bitWordIndex = 0;
+             bitWordIndex < boundBits.Length;
+             bitWordIndex++)
+        {
+            uint pending = boundBits[bitWordIndex];
+            while (pending != 0)
+            {
+                int bit = System.Numerics.BitOperations.TrailingZeroCount(
+                    pending);
+                int sampleIndex = bitWordIndex * 32 + bit;
+                uint mask = 1u << bit;
+                pending &= pending - 1;
+                if (sampleIndex >= samples.Length ||
+                    samples[sampleIndex].Generation >= oldestGeneration)
+                    continue;
+
+                samples[sampleIndex] = default;
+                boundBits[bitWordIndex] &= ~mask;
+                PacketDepthCount--;
+                if (WorldCaptureContext.CaptureEnabled)
+                {
+                    uint address = baseAddress + (uint)(sampleIndex * 4);
+                    RemovePacketOrigin(address);
+                }
+            }
+        }
     }
 
     public static void Execute(uint cmd)
@@ -722,6 +1579,8 @@ public static class Gte
         }
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     public static void Write(int reg, uint val)
     {
         // GT2's track clipper reloads previously projected SXY values through
@@ -729,10 +1588,26 @@ public static class Gte
         // the exact CPU/RAM-carried depth attached to that SXY write; dropping
         // it here made the entire foreground road fall back to affine even
         // though the source packet word still had valid projection metadata.
-        GteProjectedValue projected =
-            ProjectionTrackingEnabled
-                ? ConsumeCpuRegisterWrite(val)
-                : default;
+        GteProjectionOriginHandle projectedOrigin = default;
+        GteProjectedValue projected = default;
+        if (ProjectionTrackingEnabled)
+        {
+            if (reg is >= 12 and <= 15)
+            {
+                projected = WorldCaptureContext.CaptureEnabled
+                    ? ConsumeCpuRegisterWrite(val, out projectedOrigin)
+                    : ConsumeCpuRegisterWrite(val);
+            }
+            else if (PendingCpuValue.Valid ||
+                (WorldCaptureContext.CaptureEnabled && PendingCpuOrigin.Valid))
+            {
+                // A non-SXY GTE write still ends the immediate CPU-register
+                // transfer opportunity. Avoid doing that bookkeeping for the
+                // overwhelmingly common case where nothing is pending.
+                PendingCpuValue = default;
+                ClearPendingCpuOrigin();
+            }
+        }
         switch (reg)
         {
             case 0: V[0] = (short)val; V[1] = (short)(val >> 16); break;
@@ -752,18 +1627,24 @@ public static class Gte
                 SY[0] = (short)(val >> 16);
                 SxyDepth[0] = projected.Z;
                 SxyDepthValid[0] = projected.Valid;
+                if (WorldCaptureContext.CaptureEnabled)
+                    SxyOrigin[0] = projectedOrigin;
                 break;
             case 13:
                 SX[1] = (short)val;
                 SY[1] = (short)(val >> 16);
                 SxyDepth[1] = projected.Z;
                 SxyDepthValid[1] = projected.Valid;
+                if (WorldCaptureContext.CaptureEnabled)
+                    SxyOrigin[1] = projectedOrigin;
                 break;
             case 14:
                 SX[2] = (short)val;
                 SY[2] = (short)(val >> 16);
                 SxyDepth[2] = projected.Z;
                 SxyDepthValid[2] = projected.Valid;
+                if (WorldCaptureContext.CaptureEnabled)
+                    SxyOrigin[2] = projectedOrigin;
                 break;
             case 15:
                 SX[0] = SX[1]; SY[0] = SY[1]; SX[1] = SX[2]; SY[1] = SY[2];
@@ -774,6 +1655,12 @@ public static class Gte
                 SxyDepthValid[1] = SxyDepthValid[2];
                 SxyDepth[2] = projected.Z;
                 SxyDepthValid[2] = projected.Valid;
+                if (WorldCaptureContext.CaptureEnabled)
+                {
+                    SxyOrigin[0] = SxyOrigin[1];
+                    SxyOrigin[1] = SxyOrigin[2];
+                    SxyOrigin[2] = projectedOrigin;
+                }
                 break;
             case 16: SZ[0] = (ushort)val; break;
             case 17: SZ[1] = (ushort)val; break;
@@ -844,6 +1731,8 @@ public static class Gte
 
     public static void WriteControl(int reg, uint val)
     {
+        if ((uint)reg <= 7u)
+            ProjectionTransformHashDirty = true;
         switch (reg)
         {
             case 0: RT[0] = (short)val; RT[1] = (short)(val >> 16); break;
@@ -902,10 +1791,19 @@ public static class Gte
                 : new PacketDepthSample(
                     value, depth, ScreenDepthGeneration,
                     GteDepthProvenance.DirectStore);
+            if (WorldCaptureContext.CaptureEnabled)
+            {
+                PendingDirectOrigin =
+                    PendingDirectStore != null &&
+                    SxyOrigin[screenIndex].Valid
+                    ? SxyOrigin[screenIndex]
+                    : default;
+            }
         }
         else
         {
             PendingDirectStore = null;
+            ClearPendingDirectOrigin();
         }
         return value;
     }

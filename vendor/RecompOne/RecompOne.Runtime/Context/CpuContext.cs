@@ -1,36 +1,92 @@
+using System.Buffers;
 using RecompOne.Runtime;
 
 namespace RecompOne.Runtime.Context;
 
 public sealed class CpuContext
 {
+    internal readonly struct SnapshotState
+    {
+        internal readonly uint[] Gpr;
+        internal readonly GteProjectedValue[] Projected;
+        internal readonly GteProjectionOriginHandle[] ProjectionOrigins;
+        internal readonly uint Hi;
+        internal readonly uint Lo;
+
+        internal SnapshotState(
+            uint[] gpr,
+            GteProjectedValue[] projected,
+            GteProjectionOriginHandle[] projectionOrigins,
+            uint hi,
+            uint lo)
+        {
+            Gpr = gpr;
+            Projected = projected;
+            ProjectionOrigins = projectionOrigins;
+            Hi = hi;
+            Lo = lo;
+        }
+    }
+
     readonly uint[] _gpr = new uint[32];
     readonly GteProjectedValue[] _projected = new GteProjectedValue[32];
+    readonly GteProjectionOriginHandle[] _projectionOrigins =
+        new GteProjectionOriginHandle[32];
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining |
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     uint Get(int index)
     {
         uint value = index == 0 ? 0u : _gpr[index];
         if (Gte.ProjectionTrackingEnabled)
-            Gte.NotifyCpuRegisterRead(
-                value,
-                index == 0 ? default : _projected[index]);
+        {
+            GteProjectedValue projected =
+                index == 0 ? default : _projected[index];
+            if (projected.Valid || Gte.HasPendingCpuProjection)
+            {
+                if (WorldCaptureContext.CaptureEnabled)
+                {
+                    Gte.NotifyCpuRegisterRead(
+                        value,
+                        in projected,
+                        index == 0 ? default : _projectionOrigins[index]);
+                }
+                else
+                {
+                    Gte.NotifyCpuRegisterRead(value, in projected);
+                }
+            }
+        }
         return value;
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining |
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     void Set(int index, uint value)
     {
-        GteProjectedValue projected =
-            Gte.ProjectionTrackingEnabled
-                ? Gte.ConsumeCpuRegisterWrite(value)
-                : default;
+        GteProjectionOriginHandle origin = default;
+        GteProjectedValue projected = default;
+        if (Gte.ProjectionTrackingEnabled && Gte.HasPendingCpuProjection)
+        {
+            projected = WorldCaptureContext.CaptureEnabled
+                ? Gte.ConsumeCpuRegisterWrite(value, out origin)
+                : Gte.ConsumeCpuRegisterWrite(value);
+        }
         if (index == 0)
             return;
         _gpr[index] = value;
         _projected[index] = projected;
+        if (WorldCaptureContext.CaptureEnabled)
+            _projectionOrigins[index] = origin;
     }
 
-    public void ClearProjectionMetadata() =>
+    public void ClearProjectionMetadata()
+    {
         Array.Clear(_projected);
+        Array.Clear(_projectionOrigins);
+    }
 
     // Read-only diagnostics sometimes run inside memory-write callbacks where
     // the normal register getters would themselves alter projection-flow
@@ -85,17 +141,43 @@ public sealed class CpuContext
         set => Set(index, value);
     }
 
-    public (uint[] gpr, uint hi, uint lo, GteProjectedValue[] projected)
-        Snapshot() =>
-        ((uint[])_gpr.Clone(), HI, LO,
-         (GteProjectedValue[])_projected.Clone());
-
-    public void Restore(
-        (uint[] gpr, uint hi, uint lo, GteProjectedValue[] projected) s)
+    internal SnapshotState Snapshot()
     {
-        Array.Copy(s.gpr, _gpr, 32);
-        Array.Copy(s.projected, _projected, 32);
-        HI = s.hi;
-        LO = s.lo;
+        uint[] gpr = ArrayPool<uint>.Shared.Rent(32);
+        GteProjectedValue[] projected =
+            ArrayPool<GteProjectedValue>.Shared.Rent(32);
+        GteProjectionOriginHandle[] projectionOrigins =
+            ArrayPool<GteProjectionOriginHandle>.Shared.Rent(32);
+        _gpr.CopyTo(gpr, 0);
+        _projected.CopyTo(projected, 0);
+        _projectionOrigins.CopyTo(projectionOrigins, 0);
+        return new SnapshotState(
+            gpr,
+            projected,
+            projectionOrigins,
+            HI,
+            LO);
+    }
+
+    internal void Restore(SnapshotState snapshot)
+    {
+        try
+        {
+            Array.Copy(snapshot.Gpr, _gpr, 32);
+            Array.Copy(snapshot.Projected, _projected, 32);
+            Array.Copy(
+                snapshot.ProjectionOrigins,
+                _projectionOrigins,
+                32);
+            HI = snapshot.Hi;
+            LO = snapshot.Lo;
+        }
+        finally
+        {
+            ArrayPool<uint>.Shared.Return(snapshot.Gpr);
+            ArrayPool<GteProjectedValue>.Shared.Return(snapshot.Projected);
+            ArrayPool<GteProjectionOriginHandle>.Shared.Return(
+                snapshot.ProjectionOrigins);
+        }
     }
 }

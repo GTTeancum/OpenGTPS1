@@ -1,0 +1,51 @@
+{
+  "formatVersion": 1,
+  "volume": "GRANTURISMO2",
+  "leadOutLba": 310129,
+  "metadataSectors": {},
+  "files": [
+    {
+      "path": "DISC_META.DAT",
+      "lba": 16,
+      "size": 16384
+    },
+    {
+      "path": "SYSTEM.CNF",
+      "lba": 23,
+      "size": 68
+    },
+    {
+      "path": "SCUS_944.55",
+      "lba": 24,
+      "size": 628736
+    },
+    {
+      "path": "GT2.OVL",
+      "lba": 331,
+      "size": 287088
+    },
+    {
+      "path": "GT2.VOL",
+      "lba": 472,
+      "size": 213596160
+    },
+    {
+      "path": "MUSIC.DAT",
+      "lba": 104767,
+      "size": 85262336
+    },
+    {
+      "path": "STREAM.DAT",
+      "lba": 146399,
+      "size": 335011840
+    }
+  ],
+  "tracks": [
+    {
+      "number": 1,
+      "index0Lba": 0,
+      "startLba": 0,
+      "endLba": 310129
+    }
+  ]
+}

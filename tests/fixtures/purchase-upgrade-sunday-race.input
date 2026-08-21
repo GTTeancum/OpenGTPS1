@@ -85,6 +85,7 @@
 7160+4=CROSS
 
 # Confirm automatic transmission, then probe the loaded race
+7760+4=LEFT
 7800+4=CROSS
 8400+4=SELECT,CAPTURE
 9000+4=SELECT,CAPTURE

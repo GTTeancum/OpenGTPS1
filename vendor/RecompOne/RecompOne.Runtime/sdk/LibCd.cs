@@ -48,6 +48,8 @@ public static class LibCd
     static int _sameReadStartCount;
     static bool _traceCurrentReadStart;
 
+    static uint Gt2Drive => GT2Compat.CdDriveStateAddress;
+
     static uint _cbSync;
     static uint _cbReady;
     static uint _cbData;
@@ -57,6 +59,9 @@ public static class LibCd
     static bool _readActive;
     static bool _xaActive;
     static int _readSSectorPhase;
+    static readonly byte[] _readSSectorBuffer = new byte[2336];
+    static int _readSSectorBufferLba = -1;
+    static int _readSFileEndLba = int.MaxValue;
     static int _xaReportLba = -1;
     static int _xaPendingReportLba = -1;
     static int _xaLastTraceSecond = -1;
@@ -78,6 +83,15 @@ public static class LibCd
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_AUDIO") == "1";
     static readonly bool TraceCd =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_CD") == "1";
+    static readonly bool TracePerformance =
+        Environment.GetEnvironmentVariable("RECOMPONE_TRACE_PERFORMANCE") == "1";
+    static long _performanceTicks;
+    static long _performanceAllocatedBytes;
+    static long _performanceSectorAllocatedBytes;
+    static long _performanceDecodeAllocatedBytes;
+    static long _performanceXaReportAllocatedBytes;
+    static long _performanceXaSnapshotAllocatedBytes;
+    static long _performanceXaCallbackAllocatedBytes;
     static int _sectorTraceCount;
     static int _gt2RawReadyTraceCount;
 
@@ -191,10 +205,46 @@ public static class LibCd
 
     internal static void Tick()
     {
+        if (!TracePerformance)
+        {
+            TickCore();
+            return;
+        }
+
+        long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        TickCore();
+        _performanceAllocatedBytes +=
+            GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        if (++_performanceTicks < 300)
+            return;
+        Console.Error.WriteLine(
+            $"[PERF-CD] alloc={_performanceAllocatedBytes / 1024.0:F0}KiB " +
+            $"sector={_performanceSectorAllocatedBytes / 1024.0:F0}KiB " +
+            $"decode={_performanceDecodeAllocatedBytes / 1024.0:F0}KiB " +
+            $"xaReport={_performanceXaReportAllocatedBytes / 1024.0:F0}KiB " +
+            $"xaSnapshot={_performanceXaSnapshotAllocatedBytes / 1024.0:F0}KiB " +
+            $"xaCallback={_performanceXaCallbackAllocatedBytes / 1024.0:F0}KiB");
+        _performanceTicks = 0;
+        _performanceAllocatedBytes = 0;
+        _performanceSectorAllocatedBytes = 0;
+        _performanceDecodeAllocatedBytes = 0;
+        _performanceXaReportAllocatedBytes = 0;
+        _performanceXaSnapshotAllocatedBytes = 0;
+        _performanceXaCallbackAllocatedBytes = 0;
+    }
+
+    static void TickCore()
+    {
+        long started = TracePerformance ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         DispatchPendingSync();
+        long afterSync = TracePerformance ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         DispatchXaReport();
+        long afterXaReport = TracePerformance ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         DispatchCddaReport();
+        long afterCddaReport = TracePerformance ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         bool xaMode = (_mode & 0x40) != 0;
+        int servicedSectors = 0;
+        bool servicedReadN = false;
 
         if (_readActive && xaMode)
         {
@@ -214,13 +264,36 @@ public static class LibCd
                 _readSSectorPhase %= 60000;
                 for (int i = 0; i < sectors; i++)
                     ServiceReadSOnce();
+                servicedSectors = sectors;
             }
-            return;
+        }
+        else if (_readActive && _pendingSync.Count == 0 &&
+            (_cbReady != 0 || _cbData != 0))
+        {
+            ServiceReadOnce();
+            servicedReadN = true;
         }
 
-        if (!_readActive || _pendingSync.Count != 0 ||
-            (_cbReady == 0 && _cbData == 0)) return;
-        ServiceReadOnce();
+        if (TracePerformance)
+        {
+            long finished = System.Diagnostics.Stopwatch.GetTimestamp();
+            double scale = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            double totalMs = (finished - started) * scale;
+            if (totalMs >= 10.0)
+            {
+                Console.Error.WriteLine(
+                    $"[PERF-CD-LONG] totalMs={totalMs:F3} " +
+                    $"syncMs={(afterSync - started) * scale:F3} " +
+                    $"xaReportMs={(afterXaReport - afterSync) * scale:F3} " +
+                    $"cddaReportMs={(afterCddaReport - afterXaReport) * scale:F3} " +
+                    $"serviceMs={(finished - afterCddaReport) * scale:F3} " +
+                    $"readActive={_readActive} xaMode={xaMode} xaActive={_xaActive} " +
+                    $"readSectors={servicedSectors} readN={servicedReadN} " +
+                    $"pendingSync={_pendingSync.Count} " +
+                    $"callbacks=0x{_cbSync:X8}/0x{_cbReady:X8}/0x{_cbData:X8} " +
+                    $"lba={CurrentLba}");
+            }
+        }
     }
 
     /// <summary>
@@ -260,13 +333,16 @@ public static class LibCd
         bool traceRawReady = TraceCd && _traceCurrentReadStart &&
             (_mode & ModeSize1) != 0 &&
             (rawTrace < 12 || (rawTrace & 0x3FFF) == 0);
+        uint gt2Drive = Gt2Drive;
         bool gt2TransferWasActive =
-            _cbReady == 0x8007CDF4u && m.ReadU8(0x801F0677u) != 0;
+            _cbReady == GT2Compat.CdReadyCallbackAddress &&
+            m.ReadU8(gt2Drive + 0x167u) != 0;
         if (gt2TransferWasActive &&
-            m.ReadU32(0x801F055Cu) == 0x8007DF18u)
+            m.ReadU32(gt2Drive + 0x4Cu) ==
+                GT2Compat.CdFiniteReadHandlerAddress)
         {
-            uint expected = m.ReadU32(0x801F0554u);
-            uint end = m.ReadU32(0x801F0558u);
+            uint expected = m.ReadU32(gt2Drive + 0x44u);
+            uint end = m.ReadU32(gt2Drive + 0x48u);
             uint current = (uint)CurrentLba;
             ushort remainingSectors = m.ReadU16(0x801C9512u);
 
@@ -319,10 +395,10 @@ public static class LibCd
         {
             Console.Error.WriteLine(
                 $"[LibCd] raw-ready before lba={readyLba} drive={CurrentLba} mode=0x{_mode:X2} " +
-                $"handler=0x{m.ReadU32(0x801F055Cu):X8} " +
-                $"current={m.ReadU32(0x801F0570u)} end={m.ReadU32(0x801F0558u)} " +
-                $"dest=0x{m.ReadU32(0x801F0560u):X8} remaining={m.ReadU32(0x801F0564u)} " +
-                $"headerMode={m.ReadU8(0x801F0673u)} stop={m.ReadU8(0x801F067Au)}");
+                $"handler=0x{m.ReadU32(gt2Drive + 0x4Cu):X8} " +
+                $"current={m.ReadU32(gt2Drive + 0x60u)} end={m.ReadU32(gt2Drive + 0x48u)} " +
+                $"dest=0x{m.ReadU32(gt2Drive + 0x50u):X8} remaining={m.ReadU32(gt2Drive + 0x54u)} " +
+                $"headerMode={m.ReadU8(gt2Drive + 0x163u)} stop={m.ReadU8(gt2Drive + 0x16Au)}");
         }
         try
         {
@@ -332,7 +408,8 @@ public static class LibCd
                 c.A1 = resultAddress;
                 Dispatcher.Call(c, m, _cbReady);
             }
-            if (gt2TransferWasActive && m.ReadU8(0x801F0677u) == 0 &&
+            if (gt2TransferWasActive &&
+                m.ReadU8(gt2Drive + 0x167u) == 0 &&
                 QueueReadCompletion())
             {
                 Console.Error.WriteLine(
@@ -342,11 +419,11 @@ public static class LibCd
             {
                 Console.Error.WriteLine(
                     $"[LibCd] raw-ready after lba={readyLba} drive={CurrentLba} " +
-                    $"active={_readActive} current={m.ReadU32(0x801F0570u)} " +
-                    $"end={m.ReadU32(0x801F0558u)} " +
-                    $"dest=0x{m.ReadU32(0x801F0560u):X8} " +
-                    $"remaining={m.ReadU32(0x801F0564u)} " +
-                    $"busy={m.ReadU8(0x801F0676u)} stop={m.ReadU8(0x801F067Au)}");
+                    $"active={_readActive} current={m.ReadU32(gt2Drive + 0x60u)} " +
+                    $"end={m.ReadU32(gt2Drive + 0x48u)} " +
+                    $"dest=0x{m.ReadU32(gt2Drive + 0x50u):X8} " +
+                    $"remaining={m.ReadU32(gt2Drive + 0x54u)} " +
+                    $"busy={m.ReadU8(gt2Drive + 0x166u)} stop={m.ReadU8(gt2Drive + 0x16Au)}");
             }
             if (_cbData != 0)
             {
@@ -454,6 +531,9 @@ public static class LibCd
         if (lba < 0 || !_xaActive || _cbReady == 0 || Runtime.Cpu == null || Runtime.Mem == null)
             return;
 
+        long allocatedBefore = TracePerformance
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : 0;
         _xaReportLba = lba;
         int traceSecond = lba / 75;
         if (TraceAudio && traceSecond != _xaLastTraceSecond)
@@ -474,13 +554,52 @@ public static class LibCd
         _lastResult[7] = 0;
         const uint resultAddress = 0x8000FF08u;
         WriteResult(m, resultAddress);
+        byte[]? previousCallbackData = _callbackSectorData;
+        int previousCallbackLba = _callbackSectorLba;
+        int previousSectorReadOffset = _sectorReadOffset;
+        if (_readSSectorBufferLba == lba)
+        {
+            _callbackSectorData = _readSSectorBuffer;
+            _callbackSectorLba = lba;
+        }
         _sectorReadOffset = 0;
+        long allocatedBeforeSnapshot = TracePerformance
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : 0;
         var snap = c.Snapshot();
+        long allocatedAfterSnapshot = TracePerformance
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : 0;
         _lastIntr = DataReady;
         c.A0 = DataReady;
         c.A1 = resultAddress;
-        Dispatcher.Call(c, m, _cbReady);
+        if (TracePerformance)
+            Dispatcher.BeginAllocationScope();
+        try
+        {
+            Dispatcher.Call(c, m, _cbReady);
+        }
+        finally
+        {
+            _callbackSectorData = previousCallbackData;
+            _callbackSectorLba = previousCallbackLba;
+            _sectorReadOffset = previousSectorReadOffset;
+        }
+        long allocatedAfterCallback = TracePerformance
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : 0;
+        if (TracePerformance)
+            Dispatcher.EndAllocationScope();
         c.Restore(snap);
+        if (TracePerformance)
+        {
+            _performanceXaSnapshotAllocatedBytes +=
+                allocatedAfterSnapshot - allocatedBeforeSnapshot;
+            _performanceXaCallbackAllocatedBytes +=
+                allocatedAfterCallback - allocatedAfterSnapshot;
+            _performanceXaReportAllocatedBytes +=
+                GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        }
     }
 
     static void PumpXa()
@@ -511,21 +630,59 @@ public static class LibCd
             return;
 
         int lba = CurrentLba;
+        if (lba >= _readSFileEndLba)
+        {
+            _status = (byte)(_status & ~StatRead);
+            _lastIntr = Complete;
+            _lastResult[0] = _status;
+            for (int i = 1; i < _lastResult.Length; i++)
+                _lastResult[i] = 0;
+            if (_cbSync != 0)
+            {
+                _pendingSync.Enqueue(
+                    new PendingSync(ReadS, [.. _lastResult], 0));
+            }
+            _readActive = false;
+            _xaActive = false;
+            _readSSectorPhase = 0;
+            OggMusic.SetMusicStreamActive(false);
+            LibCdStream.OnStopStream();
+            if (TraceCd)
+            {
+                Console.Error.WriteLine(
+                    $"[LibCd] ReadS reached file boundary LBA={lba}");
+            }
+            return;
+        }
         bool replaceMusic =
             Runtime.Cd.IsMusicLba(lba) &&
             OggMusic.HasTracks;
         OggMusic.SetMusicStreamActive(replaceMusic);
-        byte[] sector;
+        byte[] sector = _readSSectorBuffer;
+        long allocatedBeforeSector = TracePerformance
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : 0;
         lock (DiscLock)
-            sector = Runtime.Cd.ReadSectorData(lba, 2336);
+            Runtime.Cd.ReadSectorData(lba, sector);
+        _readSSectorBufferLba = lba;
+        if (TracePerformance)
+            _performanceSectorAllocatedBytes +=
+                GC.GetAllocatedBytesForCurrentThread() - allocatedBeforeSector;
 
         if (!replaceMusic &&
             (sector[2] & 0x04) != 0 &&
             AcceptXaSector(sector[0], sector[1]) &&
             XaAudio.BufferedSamples < 8192)
         {
+            long allocatedBeforeDecode = TracePerformance
+                ? GC.GetAllocatedBytesForCurrentThread()
+                : 0;
             XaAudio.DecodeSector(
                 sector, 8, sector[3], lba, sector[0], sector[1]);
+            if (TracePerformance)
+                _performanceDecodeAllocatedBytes +=
+                    GC.GetAllocatedBytesForCurrentThread() -
+                    allocatedBeforeDecode;
         }
 
         AdvancePos(1);
@@ -679,6 +836,7 @@ public static class LibCd
         _pendingSync.Clear();
         _readActive = false;
         _xaActive = false;
+        _readSFileEndLba = int.MaxValue;
         _xaReportLba = -1;
         _xaPendingReportLba = -1;
         _xaLastTraceSecond = -1;
@@ -698,6 +856,7 @@ public static class LibCd
         _gt2RawReadyTraceCount = 0;
         _callbackSectorData = null;
         _callbackSectorLba = -1;
+        _readSSectorBufferLba = -1;
         _lastReadStartLba = -1;
         _sameReadStartCount = 0;
         _traceCurrentReadStart = false;
@@ -786,6 +945,10 @@ public static class LibCd
                 XaAudio.Reset();
                 _xaActive = true;
                 _readSSectorPhase = 0;
+                _readSFileEndLba = TryDescribeLocatedFile(
+                    CurrentLba, out _, out int readSEndLba)
+                    ? readSEndLba
+                    : int.MaxValue;
                 _xaReportLba = CurrentLba;
                 _xaPendingReportLba = -1;
                 _xaLastTraceSecond = -1;
@@ -838,6 +1001,7 @@ public static class LibCd
                 _readActive = false;
                 _xaActive = false;
                 _readSSectorPhase = 0;
+                _readSFileEndLba = int.MaxValue;
                 _xaReportLba = -1;
                 _xaPendingReportLba = -1;
                 _xaLastTraceSecond = -1;
@@ -853,6 +1017,7 @@ public static class LibCd
                 _readActive = false;
                 _xaActive = false;
                 _readSSectorPhase = 0;
+                _readSFileEndLba = int.MaxValue;
                 _xaReportLba = -1;
                 _xaPendingReportLba = -1;
                 _xaLastTraceSecond = -1;
@@ -931,16 +1096,17 @@ public static class LibCd
 
         var c = Runtime.Cpu;
         var snap = c.Snapshot();
-        byte busyBefore = m.ReadU8(0x801F0676u);
+        uint drive = Gt2Drive;
+        byte busyBefore = m.ReadU8(drive + 0x166u);
         c.A0 = Complete;
         c.A1 = resultAddress;
         Dispatcher.Call(c, m, _cbSync);
         if (traceCompletion)
         {
             Console.Error.WriteLine(
-                $"[LibCd] sync callback returned busy={busyBefore}->{m.ReadU8(0x801F0676u)} " +
-                $"cmd=0x{m.ReadU32(0x801F0598u):X8} ptr=0x{m.ReadU32(0x801F058Cu):X8} " +
-                $"next=0x{m.ReadU32(0x801F0590u):X8} pending=0x{m.ReadU32(0x801F0594u):X8}");
+                $"[LibCd] sync callback returned busy={busyBefore}->{m.ReadU8(drive + 0x166u)} " +
+                $"cmd=0x{m.ReadU32(drive + 0x88u):X8} ptr=0x{m.ReadU32(drive + 0x7Cu):X8} " +
+                $"next=0x{m.ReadU32(drive + 0x80u):X8} pending=0x{m.ReadU32(drive + 0x84u):X8}");
             if (pending.Command == ReadN)
                 TraceGt2ReadState(m, "after-sync");
         }
@@ -949,7 +1115,7 @@ public static class LibCd
 
     static void TraceGt2ReadState(IMemory m, string phase)
     {
-        const uint drive = 0x801F0510u;
+        uint drive = Gt2Drive;
         const uint transfer = 0x801C9500u;
         Console.Error.WriteLine(
             $"[LibCd] GT2-read {phase} lba={CurrentLba} mode=0x{_mode:X2} " +

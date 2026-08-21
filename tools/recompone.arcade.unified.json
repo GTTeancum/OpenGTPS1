@@ -1,0 +1,60 @@
+{
+  "formatVersion": 1,
+  "volume": "GRANTURISMO2",
+  "leadOutLba": 444234,
+  "metadataSectors": {},
+  "files": [
+    {
+      "path": "DISC_META.DAT",
+      "source": "arcade/DISC_META.DAT",
+      "lba": 16,
+      "size": 16384
+    },
+    {
+      "path": "SYSTEM.CNF",
+      "source": "arcade/SYSTEM.CNF",
+      "lba": 23,
+      "size": 68
+    },
+    {
+      "path": "SCUS_944.55",
+      "source": "arcade/SCUS_944.55",
+      "lba": 24,
+      "size": 628736
+    },
+    {
+      "path": "GT2.OVL",
+      "source": "arcade/GT2.OVL",
+      "lba": 331,
+      "size": 287088
+    },
+    {
+      "path": "GT2.VOL",
+      "source": "GT2.VOL",
+      "sourceOffset": 488241152,
+      "sourceLength": 213596160,
+      "lba": 473,
+      "size": 213596160
+    },
+    {
+      "path": "MUSIC.DAT",
+      "source": "MUSIC.DAT",
+      "lba": 238872,
+      "size": 85262336
+    },
+    {
+      "path": "STREAM.DAT",
+      "source": "arcade/STREAM.DAT",
+      "lba": 280504,
+      "size": 335011840
+    }
+  ],
+  "tracks": [
+    {
+      "number": 1,
+      "index0Lba": 0,
+      "startLba": 0,
+      "endLba": 444234
+    }
+  ]
+}

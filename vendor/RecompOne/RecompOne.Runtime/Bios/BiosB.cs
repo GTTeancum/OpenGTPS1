@@ -27,6 +27,21 @@ public static class BiosB
     static uint _padBuf2Size;
     static bool _padDirectRunning;
 
+    internal static void ResetGuestState()
+    {
+        Array.Clear(_evCBs);
+        Array.Clear(_tcbs);
+        Array.Clear(_intChain);
+        _cardEvents.Clear();
+        IntrEnvInInterruptAddr = 0;
+        _padBuf = 0;
+        _padBuf1 = 0;
+        _padBuf2 = 0;
+        _padBuf1Size = 0;
+        _padBuf2Size = 0;
+        _padDirectRunning = false;
+    }
+
     public static void DeliverEvent(uint @class, uint spec)
     {
         for (int i = 0; i < MaxEvents; i++)

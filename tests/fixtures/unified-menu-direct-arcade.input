@@ -1,0 +1,7 @@
+# From the unified Simulation-disc title, select Arcade Mode and verify that
+# its native frontend is entered directly, without a second legal/opening run.
+560+1=CAPTURE
+600+8=CROSS,START
+760+1=CAPTURE
+900+1=CAPTURE
+1300+1=CAPTURE

@@ -1,0 +1,13 @@
+# Silent/headless Arcade race proof. Captures two consecutive host frames so
+# the actual and synthesized 60 Hz native-world presentations can be compared.
+780+4=CROSS
+1380+4=CROSS
+1780+4=CROSS
+2180+4=CROSS
+2580+4=CROSS
+3000+4=CROSS
+3600+4=CROSS
+4200+4=CROSS
+4260+4=CROSS
+5300+1=CAPTURE
+5301+1=CAPTURE

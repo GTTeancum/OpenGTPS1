@@ -1,0 +1,40 @@
+# Unified title -> Arcade single-player Road Race -> Easy -> Class C.
+600+8=CROSS,START
+1380+4=CROSS
+1980+4=CROSS
+2380+4=CROSS
+2780+4=CROSS
+3060+4=DOWN
+3300+4=DOWN
+3660+4=CROSS
+
+# Select the appended twelfth Class C EUNOS ROADSTER RS.
+4100+4=RIGHT
+4220+4=RIGHT
+4340+4=RIGHT
+4460+4=RIGHT
+4580+4=RIGHT
+4700+4=RIGHT
+4820+4=RIGHT
+4940+4=RIGHT
+5060+4=RIGHT
+5180+4=RIGHT
+5300+4=RIGHT
+5700+4=CROSS
+6300+4=CROSS
+
+# SSR11 is the fourth always-available Road Race course.
+6500+4=RIGHT
+6620+4=RIGHT
+6740+4=RIGHT
+6900+4=CROSS
+
+# The native racing-line controller drives; this probe never supplies motion,
+# camera, or replay input.
+[race_1]
+0+12000=CROSS
+300+1=CAPTURE
+1000+1=CAPTURE
+3000+1=CAPTURE
+6000+1=CAPTURE
+9000+1=CAPTURE

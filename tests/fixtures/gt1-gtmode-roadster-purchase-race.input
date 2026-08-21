@@ -1,0 +1,97 @@
+# Title -> Gran Turismo Mode
+560+1=CAPTURE
+600+4=DOWN
+640+8=CROSS,START
+760+3=RIGHT
+780+3=RIGHT
+820+4=CROSS
+
+# East City -> Mazda -> used-car listing. The explicit smoke-only patch places
+# the selected import in Mazda's deterministic first row. Production output
+# keeps every import under its real manufacturer and native price sort.
+920+4=CROSS
+1040+3=RIGHT
+1060+4=CROSS
+1100+1=CAPTURE
+1140+4=CROSS
+1180+4=CROSS
+1220+1=CAPTURE
+
+# Buy the imported Roadster and make it the active garage car.
+1260+3=RIGHT
+1280+3=RIGHT
+1300+4=CROSS
+1340+4=CIRCLE
+1420+4=CIRCLE
+1500+4=TRIANGLE
+1580+4=SQUARE
+1620+4=DOWN
+1660+4=CROSS
+1700+1=CAPTURE
+
+# Enter Tune and buy/equip Turbo Kit Stage 1.
+1780+3=RIGHT
+1800+3=RIGHT
+1840+4=CROSS
+1980+3=UP
+2000+3=UP
+2040+4=CROSS
+2200+4=SQUARE
+2240+4=DOWN
+2280+4=CROSS
+2400+4=UP
+2420+4=UP
+2440+4=RIGHT
+2460+4=RIGHT
+2500+4=CROSS
+2640+4=RIGHT
+2660+4=RIGHT
+2700+4=CROSS
+2780+4=CIRCLE
+2860+4=CIRCLE
+3000+4=CIRCLE
+3040+1=CAPTURE
+
+# Return to map, then enter Sunday Cup at Red Rock Valley.
+3340+4=SQUARE
+3420+4=SQUARE
+3500+4=SQUARE
+3700+4=SQUARE
+3900+4=SQUARE
+4080+4=LEFT
+4120+4=CROSS
+4300+4=CROSS
+4500+4=RIGHT
+4520+4=RIGHT
+4560+4=CROSS
+4760+4=CROSS
+5000+4=SQUARE
+5180+4=RIGHT
+5220+4=CROSS
+5400+4=LEFT
+5440+4=CROSS
+5640+4=SQUARE
+5760+4=UP
+5780+4=LEFT
+5820+4=CROSS
+6020+4=DOWN
+6040+4=RIGHT
+6060+4=RIGHT
+6100+4=CROSS
+
+# Single Race -> automatic transmission -> race. Auto-drive uses GT2's
+# original AI racing-line controller and the imported car's normal physics.
+7000+4=DOWN
+7040+4=DOWN
+7080+4=DOWN
+7120+4=DOWN
+7160+4=CROSS
+7760+4=LEFT
+7800+4=CROSS
+10000+1=CAPTURE
+20000+1=CAPTURE
+30000+1=CAPTURE
+
+# Confirm result and leave the original replay controller untouched.
+30500+4=CROSS
+35000+1=CAPTURE

@@ -1,0 +1,38 @@
+# Unified title -> Arcade single-player Road Race -> Easy -> Class A.
+600+8=CROSS,START
+1380+4=CROSS
+1980+4=CROSS
+2380+4=CROSS
+2780+4=CROSS
+3660+4=CROSS
+
+# Select the appended twelfth Class A Supra and its first GT1 palette.
+4100+4=RIGHT
+4220+4=RIGHT
+4340+4=RIGHT
+4460+4=RIGHT
+4580+4=RIGHT
+4700+4=RIGHT
+4820+4=RIGHT
+4940+4=RIGHT
+5060+4=RIGHT
+5180+4=RIGHT
+5300+4=RIGHT
+5740+1=CAPTURE
+5940+4=CROSS
+
+# Automatic transmission -> Road Race course menu -> default Tahiti Road.
+6540+4=CROSS
+7140+4=CROSS
+7200+1=CAPTURE
+7260+4=CROSS
+
+# Exercise the imported GT1 palette and native Supra physical specification.
+[race_1]
+0+9000=CROSS
+300+1=CAPTURE
+1000+1=CAPTURE
+2000+1=CAPTURE
+3000+1=CAPTURE
+6000+1=CAPTURE
+9000+1=CAPTURE

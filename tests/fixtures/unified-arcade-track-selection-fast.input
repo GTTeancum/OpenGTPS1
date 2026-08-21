@@ -1,0 +1,12 @@
+# Fast diagnostic path through the native Arcade front end without captures.
+600+8=CROSS,START
+1380+4=CROSS
+1980+4=CROSS
+2380+4=CROSS
+2780+4=CROSS
+3180+4=CROSS
+3600+4=CROSS
+4200+4=CROSS
+4800+4=CROSS
+4840+1=CAPTURE
+5100+1=CAPTURE

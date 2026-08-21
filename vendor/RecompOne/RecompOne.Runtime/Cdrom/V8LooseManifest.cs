@@ -15,7 +15,21 @@ internal sealed class V8LooseManifest
 
     public static V8LooseManifest Load(string looseRoot)
     {
-        string externalPath = Path.Combine(looseRoot, "recompone.loose.json");
+        string? overridePath =
+            Environment.GetEnvironmentVariable("RECOMPONE_LOOSE_MANIFEST");
+        string externalPath = string.IsNullOrWhiteSpace(overridePath)
+            ? Path.Combine(looseRoot, "recompone.loose.json")
+            : Path.GetFullPath(
+                Path.IsPathRooted(overridePath)
+                    ? overridePath
+                    : Path.Combine(looseRoot, overridePath));
+        string relativeManifest = Path.GetRelativePath(
+            Path.GetFullPath(looseRoot), externalPath);
+        if (relativeManifest == ".." ||
+            relativeManifest.StartsWith(
+                $"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            throw new InvalidDataException(
+                $"Loose manifest must remain inside the install root: {externalPath}");
         if (File.Exists(externalPath))
         {
             using Stream external = File.OpenRead(externalPath);
@@ -63,6 +77,9 @@ internal sealed class V8LooseManifest
 internal sealed class V8LooseFile
 {
     public string Path { get; set; } = "";
+    public string? Source { get; set; }
+    public long SourceOffset { get; set; }
+    public long? SourceLength { get; set; }
     public int Lba { get; set; }
     public uint Size { get; set; }
 }

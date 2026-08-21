@@ -1,0 +1,10 @@
+# Probe the untouched Simulation-disc title menu one step at a time.
+560+1=CAPTURE
+600+3=DOWN,CAPTURE
+620+1=CAPTURE
+640+3=DOWN,CAPTURE
+660+1=CAPTURE
+680+3=DOWN,CAPTURE
+700+1=CAPTURE
+720+3=UP,CAPTURE
+740+1=CAPTURE

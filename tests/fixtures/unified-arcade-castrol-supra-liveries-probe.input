@@ -1,0 +1,35 @@
+# Unified title -> Arcade single-player Road Race -> Easy -> Class A.
+600+8=CROSS,START
+1380+4=CROSS
+1980+4=CROSS
+2380+4=CROSS
+2780+4=CROSS
+3660+4=CROSS
+
+# Advance to the developer-only thirteenth Class A Castrol Supra replacement.
+4100+4=RIGHT
+4220+4=RIGHT
+4340+4=RIGHT
+4460+4=RIGHT
+4580+4=RIGHT
+4700+4=RIGHT
+4820+4=RIGHT
+4940+4=RIGHT
+5060+4=RIGHT
+5180+4=RIGHT
+5300+4=RIGHT
+5420+4=RIGHT
+5860+1=CAPTURE
+
+# Capture all four native palette choices: white/green, white/blue,
+# black/green, and black/blue.
+6060+4=DOWN
+6380+1=CAPTURE
+6580+4=DOWN
+6900+1=CAPTURE
+7100+4=DOWN
+7420+1=CAPTURE
+
+# A fourth step must wrap back to the retail choice.
+7620+4=DOWN
+7940+1=CAPTURE

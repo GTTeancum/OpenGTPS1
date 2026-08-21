@@ -1,0 +1,11 @@
+# Capture the untouched Simulation-disc title flow around the existing
+# deterministic "Title -> GT Mode" sequence.
+560+1=CAPTURE
+640+1=CAPTURE
+680+8=CROSS,START,CAPTURE
+720+1=CAPTURE
+760+3=RIGHT,CAPTURE
+780+3=RIGHT,CAPTURE
+820+4=CROSS,CAPTURE
+860+1=CAPTURE
+920+1=CAPTURE
