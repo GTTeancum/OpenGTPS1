@@ -51,13 +51,18 @@ def main() -> None:
     parser.add_argument("--agree", type=int, default=12)
     parser.add_argument("--row-start", type=int, default=0)
     parser.add_argument("--row-end", type=int, default=HEIGHT)
+    parser.add_argument("--col-start", type=int, default=0)
+    parser.add_argument("--col-end", type=int, default=WIDTH)
     arguments = parser.parse_args()
 
     previous = None
     middle = None
     scores = []
     for index, frame in enumerate(frames(arguments.video)):
-        band = frame[arguments.row_start:arguments.row_end].astype(np.int16)
+        band = frame[
+            arguments.row_start:arguments.row_end,
+            arguments.col_start:arguments.col_end,
+        ].astype(np.int16)
         if previous is not None and middle is not None:
             pop = (
                 (np.abs(middle - previous) > arguments.threshold) &
