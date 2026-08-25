@@ -86,6 +86,34 @@ int main() {
         std::fabs(list.commands[0].face_normal_z - 1.0F) < 0.001F,
         "derive face normal for future lighting");
 
+    // GT2's raw course hook observes H one unit before the projected vehicle
+    // packets in the same authored view. Treat that integer boundary as one
+    // camera instead of splitting the course and cars into unrelated layers;
+    // a larger difference remains a genuine secondary projection.
+    WorldCaptureTriangle projection_variants[3]{
+        triangles[0], triangles[0], triangles[0]};
+    for (auto& point : projection_variants[1].vertices)
+        point.projection_plane = 257;
+    for (auto& point : projection_variants[2].vertices)
+        point.projection_plane = 258;
+    WorldDrawList projection_tolerance{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            projection_variants,
+            3,
+            WorldDrawListOptions{false, false, true},
+            &projection_tolerance) == WorldDrawListResult::success,
+        "build one-unit main-projection tolerance fixture");
+    okay &= expect(
+        projection_tolerance.commands.size() == 2 &&
+        projection_tolerance.secondary_commands == 1 &&
+        projection_tolerance.commands[0].channel ==
+            WorldViewChannel::main_view &&
+        projection_tolerance.commands[1].channel ==
+            WorldViewChannel::main_view,
+        "keep one-unit projection boundary in the shared world view");
+
     // This is the transform-scale boundary from the captured 0:57 track
     // seam.  The two authored copies represent the same endpoint, but the
     // PS1's integer projection rounds their Y coordinates to 345 and 346.
@@ -142,6 +170,36 @@ int main() {
             seam_enhanced.commands[0].vertices[0].screen_y -
             seam_enhanced.commands[1].vertices[0].screen_y) < 0.05F,
         "preserve continuous subpixel boundary");
+
+    // Complete-course residency intentionally submits authored geometry on
+    // both sides of the camera. Signed homogeneous W lets D3D clip an edge at
+    // the real near plane; clamping a rear vertex to W=1 turns it into a
+    // screen-spanning polygon instead.
+    WorldCaptureTriangle near_crossing = triangles[0];
+    near_crossing.vertices[0] = vertex(64, 0, -256, 0, 0);
+    near_crossing.vertices[1] = vertex(64, 0, 256, 100, 0);
+    near_crossing.vertices[2] = vertex(0, 64, 256, 0, 100);
+    WorldDrawList near_crossing_list{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            &near_crossing,
+            1,
+            WorldDrawListOptions{false, false, true},
+            &near_crossing_list) == WorldDrawListResult::success,
+        "build camera-crossing course triangle");
+    okay &= expect(
+        near_crossing_list.commands.size() == 1 &&
+        near_crossing_list.commands[0].vertices[0].clip_w == -256.0F &&
+        near_crossing_list.commands[0].vertices[0].clip_z < 0.0F &&
+        near_crossing_list.commands[0].vertices[1].clip_w == 256.0F &&
+        near_crossing_list.commands[0].vertices[1].clip_z > 0.0F,
+        "retain signed camera depth for homogeneous near clipping");
+    okay &= expect(
+        std::fabs(
+            near_crossing_list.commands[0].vertices[0].clip_x -
+            102.4F) < 0.01F,
+        "project rear vertex linearly in homogeneous camera space");
 
     WorldDrawList live_list{};
     okay &= expect(

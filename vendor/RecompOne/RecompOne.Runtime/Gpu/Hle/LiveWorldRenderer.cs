@@ -1405,6 +1405,7 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         if (flags.SemiTrans) primitiveFlags |= 1U << 1;
         if (flags.RawTexture) primitiveFlags |= 1U << 2;
         if (flags.Gouraud) primitiveFlags |= 1U << 3;
+        if (flags.ResidentCourse) primitiveFlags |= 1U << 4;
         uint environmentFlags = 0;
         if (env.SetMask) environmentFlags |= 1U << 0;
         if (env.CheckMask) environmentFlags |= 1U << 1;

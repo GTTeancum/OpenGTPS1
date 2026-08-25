@@ -935,25 +935,24 @@ deliberately `machine-pass-user-visual-pending`, not complete.
 
 Race vertices carry model/world position and exact GTE view/projection state
 through the native scene path. The backend performs homogeneous geometry
-projection from those values. Texture coordinates retain GT2's authored affine
-interpolation: applying perspective correction globally bends the UV layouts of
-large road and landscape triangles and can sample the wrong authored region.
+projection from those values. Course primitives captured from GT2's authored
+model before guest projection carry the resident-course provenance flag. Their
+model-space UVs always use hardware perspective interpolation, including after
+homogeneous clipping of polygons that cross the camera plane. Applying the
+former affine fallback to those polygons magnified a small asphalt tile across
+the near road; the resident contract removes that corruption at its cause.
 
-The development viewer can still request perspective interpolation for A/B
-captures. It is diagnostic-only until a GT2-aware reconstruction can preserve
-the affine reference coverage without road corruption.
-
-The first GT-aware diagnostic stage now treats projection as a surface
-contract rather than a frame-wide shader switch. A textured triangle remains
-projective only when all three positive captured depths stay within GT2's
-bounded 8:1 range. Triangles sharing an exact geometry-and-UV edge are grouped
-into one UV island, and horizontal opaque track islands are also joined across
-intentional atlas seams by their exact view-space edge. If one member requires
-the affine contract, the connected surface uses it consistently; this prevents
-the renderer from creating a new affine/projective crack inside a road strip.
+Projected packet geometry that has not yet been reconstructed remains a
+development-only exception. Its temporary GT-aware classifier treats
+projection as a surface contract rather than a frame-wide shader switch:
+triangles sharing exact geometry-and-UV edges receive one interpolation mode,
+and horizontal opaque track islands also join across intentional atlas seams.
+Resident pre-projection course geometry bypasses that legacy search entirely;
+the release gate remains removal of every projected-packet fallback.
 Vehicles and other shallow coherent islands retain true homogeneous texture
-interpolation. Shipping remains globally affine while this reconstruction is
-validated on stock tracks.
+interpolation. The fixed modern-renderer setting is perspective-correct; the
+remaining affine packet classifications are temporary development debt, not a
+shipping mode or user-selectable fallback.
 
 `OPENGT_RENDER_UV_DIAGNOSTICS=1` reports individual and island-level
 perspective counts, track/vehicle fallback counts, and the largest connected

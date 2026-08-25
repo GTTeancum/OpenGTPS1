@@ -867,7 +867,8 @@ def main() -> int:
         GranTurismo2PC.func_8002106C(c, m);
 """,
         """        c.A0 = m.ReadU32((c.SP + 0x1020u));
-        RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(c.A0, m);
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(
+            c.A0, m, RecompOne.Runtime.TrackMeshProjectionPath.Primary);
         c.RA = 0x800209E4u;
         GranTurismo2PC.func_8002106C(c, m);
 """,
@@ -881,7 +882,8 @@ def main() -> int:
         GranTurismo2PC.func_800234F8(c, m);
 """,
         """        c.A0 = m.ReadU32((c.SP + 0x1020u));
-        RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(c.A0, m);
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(
+            c.A0, m, RecompOne.Runtime.TrackMeshProjectionPath.Alternate);
         c.RA = 0x800209F8u;
         GranTurismo2PC.func_800234F8(c, m);
 """,

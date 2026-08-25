@@ -67,7 +67,9 @@ bool main_projection(
         if (
             vertex.projection_offset_x != header.projection_offset_x ||
             vertex.projection_offset_y != header.projection_offset_y ||
-            vertex.projection_plane != header.projection_plane
+            std::abs(
+                static_cast<std::int32_t>(vertex.projection_plane) -
+                static_cast<std::int32_t>(header.projection_plane)) > 1
         )
             return false;
     }
@@ -398,9 +400,7 @@ WorldDrawListResult build_world_draw_list(
                         2.0F;
                 const float clip_w = screen_space
                     ? 1.0F
-                    : std::max(
-                        1.0F,
-                        static_cast<float>(source.view_z));
+                    : static_cast<float>(source.view_z);
                 constexpr float near_plane = 16.0F;
                 constexpr float far_plane = 1048576.0F;
                 constexpr float depth_a =
@@ -414,8 +414,43 @@ WorldDrawListResult build_world_draw_list(
                 destination.view_x = static_cast<float>(source.view_x);
                 destination.view_y = static_cast<float>(source.view_y);
                 destination.view_z = static_cast<float>(source.view_z);
-                destination.clip_x = ndc_x * clip_w;
-                destination.clip_y = ndc_y * clip_w;
+                if (!screen_space && options.continuous_projection) {
+                    // Build homogeneous coordinates directly from GT2's
+                    // captured camera-space vertex. This remains linear on
+                    // edges that cross the camera or near plane. Projecting
+                    // first and clamping W positive made behind-camera course
+                    // geometry survive clipping as giant screen-spanning
+                    // polygons.
+                    constexpr float fixed_scale = 1.0F / 65536.0F;
+                    const float projection_center_x =
+                        triangle.draw_offset_x +
+                        source.projection_offset_x * fixed_scale;
+                    const float projection_center_y =
+                        triangle.draw_offset_y +
+                        source.projection_offset_y * fixed_scale;
+                    const float ndc_center_x =
+                        ((projection_center_x - header.display_x) /
+                            static_cast<float>(header.display_width)) *
+                            2.0F - 1.0F;
+                    const float ndc_center_y =
+                        1.0F -
+                        ((projection_center_y - header.display_y) /
+                            static_cast<float>(header.display_height)) *
+                            2.0F;
+                    destination.clip_x =
+                        ndc_center_x * clip_w +
+                        2.0F * source.projection_plane *
+                            static_cast<float>(source.view_x) /
+                            static_cast<float>(header.display_width);
+                    destination.clip_y =
+                        ndc_center_y * clip_w -
+                        2.0F * source.projection_plane *
+                            static_cast<float>(source.view_y) /
+                            static_cast<float>(header.display_height);
+                } else {
+                    destination.clip_x = ndc_x * clip_w;
+                    destination.clip_y = ndc_y * clip_w;
+                }
                 destination.clip_z = screen_space
                     ? 0.5F
                     : depth_a * clip_w + depth_b;

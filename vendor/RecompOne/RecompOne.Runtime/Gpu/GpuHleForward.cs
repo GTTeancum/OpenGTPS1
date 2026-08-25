@@ -164,6 +164,7 @@ public sealed partial class Gpu
             new LiveWorldFrameRecorder(_liveWorldRenderer);
         WorldCaptureContext.LiveRenderingEnabled =
             _liveWorldRenderer.Enabled;
+        RegisterRawTrackReplacement();
     }
 
     static bool HleOn => GpuHle.Active && GpuHle.Backend is { Ready: true };
@@ -227,6 +228,14 @@ public sealed partial class Gpu
         var ha = HV(a);
         var hb = HV(b);
         var hc = HV(c);
+        TraceRawTrackGuestTriangle(
+            in ha,
+            in hb,
+            in hc,
+            in originA,
+            in originB,
+            in originC,
+            in flags);
         if (_projectedCapture.Enabled)
             CaptureHleTri(in ha, in hb, in hc, in flags);
         TraceMixedProjectionTriangle(
@@ -241,6 +250,16 @@ public sealed partial class Gpu
         bool liveWorldCapture = _liveWorldCapture.Enabled;
         bool containsWorldProvenance =
             originA.Valid || originB.Valid || originC.Valid;
+        bool derivedScreenAnchor =
+            (originA.Flags & GteProjectionOriginFlags.ScreenOffsetAnchor) != 0 ||
+            (originB.Flags & GteProjectionOriginFlags.ScreenOffsetAnchor) != 0 ||
+            (originC.Flags & GteProjectionOriginFlags.ScreenOffsetAnchor) != 0;
+        bool rawTrackReplacement =
+            RawTrackReplacementActive &&
+            !derivedScreenAnchor &&
+            (originA.Object.Kind == WorldObjectKind.Track ||
+             originB.Object.Kind == WorldObjectKind.Track ||
+             originC.Object.Kind == WorldObjectKind.Track);
         if (_traceScreenEffectPrimitives &&
             (!string.Equals(
                  _traceScreenEffectTextureFilter,
@@ -282,7 +301,7 @@ public sealed partial class Gpu
                     in originC,
                     in flags);
             }
-            if (liveWorldCapture)
+            if (liveWorldCapture && !rawTrackReplacement)
             {
                 if (originA.Valid || originB.Valid || originC.Valid)
                 {
@@ -316,7 +335,7 @@ public sealed partial class Gpu
         // Return the classification even when the native worker has failed or
         // is stopping so neither the GL-HLE nor software compatibility
         // rasterizer can silently reappear as a world-renderer fallback.
-        return containsWorldProvenance;
+        return containsWorldProvenance || rawTrackReplacement;
     }
 
     void TraceMixedProjectionTriangle(
@@ -707,7 +726,9 @@ public sealed partial class Gpu
 
     internal void ShutdownLiveWorldRenderer()
     {
+        UnregisterRawTrackReplacement();
         WorldCaptureContext.ReportTrackMeshTraceSummary();
+        ReportRawTrackReplacement();
         _liveWorldCapture.Dispose();
         _liveWorldRenderer.Dispose();
         WorldCaptureContext.LiveRenderingEnabled = false;

@@ -242,8 +242,10 @@ int main(int argc, char** argv) {
             "command,source_command,object_kind,object_id,model_pointer,channel,"
             "transform_id,material,primitive_flags,texture_page,clut,ordering_table,"
             "vertex,model_x,model_y,model_z,world_x,world_y,world_z,"
-            "view_x,view_y,view_z,screen_x,screen_y,u,v,r,g,b,"
-            "source_identity\n");
+            "view_x,view_y,view_z,screen_x,screen_y,"
+            "clip_x,clip_y,clip_z,clip_w,projection_offset_x,"
+            "projection_offset_y,projection_plane,u,v,r,g,b,"
+            "source_identity,provenance_flags\n");
         for (std::size_t command_index = 0;
              command_index < draw_list.commands.size();
              ++command_index) {
@@ -256,7 +258,8 @@ int main(int argc, char** argv) {
                     csv,
                     "%zu,%u,%u,%u,%u,%u,%llu,%u,%u,%u,%u,%d,%d,%d,%d,%d,"
                     "%.6f,%.6f,%.6f,%.0f,%.0f,%.0f,%.6f,%.6f,"
-                    "%.6f,%.6f,%u,%u,%u,%u\n",
+                    "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,"
+                    "%.6f,%.6f,%u,%u,%u,%u,%u\n",
                     command_index,
                     command.source_command_index,
                     command.object_kind,
@@ -281,12 +284,20 @@ int main(int argc, char** argv) {
                     vertex.view_z,
                     vertex.screen_x,
                     vertex.screen_y,
+                    vertex.clip_x,
+                    vertex.clip_y,
+                    vertex.clip_z,
+                    vertex.clip_w,
+                    vertex.projection_offset_x,
+                    vertex.projection_offset_y,
+                    vertex.projection_plane,
                     vertex.u,
                     vertex.v,
                     vertex.r,
                     vertex.g,
                     vertex.b,
-                    vertex.source_vertex_identity);
+                    vertex.source_vertex_identity,
+                    static_cast<unsigned>(vertex.provenance_flags));
             }
         }
         std::fclose(csv);

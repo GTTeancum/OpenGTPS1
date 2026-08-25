@@ -285,7 +285,8 @@ def apply_renderer_enhancements() -> None:
         GranTurismo2ArcadePC.func_80020FF8(c, m);
 """,
         """        c.A0 = m.ReadU32((c.SP + 0x1020u));
-        RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(c.A0, m);
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(
+            c.A0, m, RecompOne.Runtime.TrackMeshProjectionPath.Primary);
         c.RA = 0x80020970u;
         GranTurismo2ArcadePC.func_80020FF8(c, m);
 """,
@@ -298,7 +299,8 @@ def apply_renderer_enhancements() -> None:
         GranTurismo2ArcadePC.func_80023484(c, m);
 """,
         """        c.A0 = m.ReadU32((c.SP + 0x1020u));
-        RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(c.A0, m);
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(
+            c.A0, m, RecompOne.Runtime.TrackMeshProjectionPath.Alternate);
         c.RA = 0x80020984u;
         GranTurismo2ArcadePC.func_80023484(c, m);
 """,

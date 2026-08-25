@@ -27,8 +27,8 @@ OpenGTPS1 0.8beta is a public beta, not a finished 1.0 release.
   adjacent BIN/CUE/CCD/IMG/SUB image after preparation.
 - External OGG music, fixed modern graphics settings, structured logging, and
   a deterministic AI-driven test harness are available.
-- The packaged native race/replay renderer preserves GT2's authored affine
-  texture mapping, exact road-seam handling, extended draw distance, maximum
+- The packaged native race/replay renderer uses perspective-correct resident
+  course geometry, exact road-seam handling, extended draw distance, maximum
   vehicle LOD, and geometry-aware 59.94/60 Hz presentation. Provenance-backed 3D never
   reaches a PS1-era compatibility rasterizer. GT2's authored screen-command
   compositor remains in use for menus, videos, HUD layers, Results, and
@@ -36,8 +36,7 @@ OpenGTPS1 0.8beta is a public beta, not a finished 1.0 release.
   not a selectable legacy 3D renderer.
 - Graphics work remains active; visual defects and hardware-specific problems
   may still exist.
-- Resolution and widescreen expansion remain deferred while that renderer
-  matures.
+- True horizontal-plus widescreen is under active renderer validation.
 - Original Xbox support has not landed yet.
 
 [`TO-DO.MD`](TO-DO.MD) is the detailed implementation and validation record.
@@ -242,7 +241,7 @@ menus.
 ## Graphics
 
 OpenGTPS1 has one modern 3D path. It always uses 4x source rendering,
-GT2-authored affine texture mapping, stabilized authored topology, complete
+perspective-correct resident-course texture mapping, stabilized authored topology, complete
 authored draw distance, maximum track/scenery and vehicle LOD, smoothed
 sampling, and no PS1 color dithering. Old `PS1 Quality`, `Custom`, stock-distance/LOD,
 and native-renderer-disable configuration values are migrated to that fixed

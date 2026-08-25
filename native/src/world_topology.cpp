@@ -367,6 +367,16 @@ bool screen_space_command(
             world_primitive_screen_space_flag) != 0;
 }
 
+bool resident_course_command(
+    const WorldDrawList& list,
+    const WorldDrawCommand& command
+) {
+    return
+        command.material_index < list.materials.size() &&
+        (list.materials[command.material_index].primitive_flags &
+            world_primitive_resident_course_flag) != 0;
+}
+
 bool eligible(
     const WorldDrawList& list,
     const WorldDrawCommand& command
@@ -374,7 +384,8 @@ bool eligible(
     if (
         command.object_kind != 1 ||
         command.channel != WorldViewChannel::main_view ||
-        screen_space_command(list, command)
+        screen_space_command(list, command) ||
+        resident_course_command(list, command)
     )
         return false;
     for (const auto& vertex : command.vertices) {
@@ -1027,7 +1038,8 @@ WorldTopologyResult apply_world_topology(
                 ++object_command_counts[command.object_id];
             } else if (
                 command.object_kind == 1 &&
-                command.channel == WorldViewChannel::main_view
+                command.channel == WorldViewChannel::main_view &&
+                !resident_course_command(*draw_list, command)
             ) {
                 ++stats.skipped_without_provenance;
             }

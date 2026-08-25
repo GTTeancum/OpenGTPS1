@@ -624,6 +624,36 @@ int main() {
             overlap_inner.vertices[0].screen_y,
         "do not join a matching raster line from a different model");
 
+    // The resident course comes from GT2's shared pre-projection model
+    // vertices, not disconnected guest SXY packets. Running packet-topology
+    // inference over it is both redundant and destructive to the authored
+    // primitive set.
+    WorldDrawList resident_course{};
+    resident_course.materials.resize(1);
+    resident_course.materials[0].primitive_flags =
+        1U | world_primitive_resident_course_flag;
+    resident_course.commands.push_back(triangle(
+        vertex(0, 0, 0, 0x11000),
+        vertex(10, 0, 0, 0x11014),
+        vertex(0, 10, 0, 0x11028),
+        0x800D0000,
+        60));
+    resident_course.track_commands = 1;
+    const auto resident_before = resident_course.commands[0];
+    WorldTopologyStats resident_stats{};
+    okay &= expect(
+        apply_world_topology(
+            &resident_course,
+            WorldTopologyOptions{true, true, true},
+            &resident_stats) == WorldTopologyResult::success &&
+        resident_stats.input_commands == 1 &&
+        resident_stats.output_commands == 1 &&
+        resident_stats.eligible_track_commands == 0 &&
+        resident_stats.skipped_without_provenance == 0 &&
+        resident_course.commands[0].vertices[0].clip_x ==
+            resident_before.vertices[0].clip_x,
+        "leave authoritative resident-course topology untouched");
+
     if (!okay)
         return 1;
     std::puts("world topology tests passed");

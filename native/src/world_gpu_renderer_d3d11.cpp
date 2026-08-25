@@ -1043,6 +1043,19 @@ bool perspective_uv_eligible(
             (world_primitive_screen_space_flag |
                 world_primitive_temporal_seam_flag)) != 0)
         return false;
+
+    // Resident course primitives come from GT2's authored model before the
+    // guest projects, clips, subdivides, or rejects it. Their UVs therefore
+    // describe the model surface and must follow the hardware perspective
+    // interpolation contract, including when an original polygon straddles
+    // the camera plane. D3D clips that polygon in homogeneous space before
+    // rasterization. Falling back to screen-linear UVs here magnifies a small
+    // asphalt tile across the near part of the road and recreates the affine
+    // swim the modern path exists to remove.
+    if ((material.primitive_flags &
+            world_primitive_resident_course_flag) != 0)
+        return true;
+
     float minimum = (std::numeric_limits<float>::max)();
     float maximum = 0.0F;
     for (const auto& vertex : command.vertices) {
@@ -1204,7 +1217,11 @@ std::vector<std::uint8_t> perspective_uv_island_eligibility(
         PerspectiveUvEdgeKey,
         std::size_t,
         PerspectiveUvEdgeHash> edges;
-    edges.reserve(count * 3);
+    // Resident pre-projection course surfaces already have one unambiguous
+    // perspective contract and never need the legacy packet-island search.
+    // Reserve for only the remaining packet geometry; the conservative count
+    // avoids a large per-frame table allocation on a fully resident course.
+    edges.reserve(count);
     for (std::size_t command_index = 0;
          command_index < count;
          ++command_index) {
@@ -1217,6 +1234,9 @@ std::vector<std::uint8_t> perspective_uv_island_eligibility(
             (material.primitive_flags &
                 (world_primitive_screen_space_flag |
                     world_primitive_temporal_seam_flag)) != 0)
+            continue;
+        if ((material.primitive_flags &
+                world_primitive_resident_course_flag) != 0)
             continue;
         for (int edge_index = 0; edge_index < 3; ++edge_index) {
             const auto& first_vertex = command.vertices[edge_index];
@@ -4397,11 +4417,19 @@ WorldGpuRenderResult render_world_d3d11(
     std::array<std::uint64_t, 3> diagnostic_transparent_draws{};
     std::array<std::uint64_t, 4> diagnostic_blend_batches{};
     std::array<std::size_t, 3> diagnostic_max_batch{};
+    // Draw every 3D command before the explicit screen-space layer. Raw
+    // resident course meshes are decoded while GT2 is still building its
+    // ordering table and can otherwise be appended after HUD packets. The
+    // HUD is a presentation layer, not geometry that should compete with the
+    // course for painter order.
+    for (int render_phase = 0; render_phase < 2; ++render_phase) {
     for (std::size_t command_index = 0;
          command_index < draw_list.commands.size();) {
         for (std::size_t wheel_index = 0;
              wheel_index < smooth_wheels.size();
              ++wheel_index) {
+            if (render_phase != 0)
+                break;
             const auto& wheel = smooth_wheels[wheel_index];
             if (wheel.insertion_command != command_index)
                 continue;
@@ -4478,6 +4506,10 @@ WorldGpuRenderResult render_world_d3d11(
         const bool screen_space =
             (material.primitive_flags &
                 world_primitive_screen_space_flag) != 0;
+        if (screen_space != (render_phase == 1)) {
+            ++command_index;
+            continue;
+        }
         const int blend_mode =
             (material.texture_page >> 5) & 3;
         const bool vehicle_shadow =
@@ -4514,6 +4546,11 @@ WorldGpuRenderResult render_world_d3d11(
                 return WorldGpuRenderResult::render_failed;
             const auto& next_material = draw_list.materials[
                 next_command.material_index];
+            const bool next_screen_space =
+                (next_material.primitive_flags &
+                    world_primitive_screen_space_flag) != 0;
+            if (next_screen_space != (render_phase == 1))
+                break;
             if (!batch_compatible(
                     command,
                     material,
@@ -4604,7 +4641,8 @@ WorldGpuRenderResult render_world_d3d11(
             has_bound_scissor = true;
         }
         const bool uses_modern_depth =
-            command.object_kind == 1U && !screen_space;
+            (command.object_kind == 1U || command.object_kind == 2U) &&
+            !screen_space;
         if (
             options.depth_buffer &&
             uses_modern_depth &&
@@ -4670,10 +4708,10 @@ WorldGpuRenderResult render_world_d3d11(
                 (material.environment_flags & check_mask_flag) != 0;
             const bool set_mask =
                 (material.environment_flags & set_mask_flag) != 0;
-            // Geometry outside track sections retains the PS1 ordering-table
-            // contract. In particular, vehicle wheel layers are authored as
-            // painter-ordered coplanar meshes; depth-testing those layers can
-            // leave an opaque tyre polygon covering the outside wheel face.
+            // Course and vehicles share one modern depth surface. LESS_EQUAL
+            // retains later coplanar vehicle detail while allowing a car
+            // authored before the resident course to protect its nearer
+            // pixels from that later course submission.
             const bool use_depth =
                 options.depth_buffer && uses_modern_depth;
             ID3D11DepthStencilState* depth_state =
@@ -4693,6 +4731,7 @@ WorldGpuRenderResult render_world_d3d11(
                 ++stats->transparent_draw_calls;
         }
         command_index += batch_commands;
+    }
     }
 
     if (diagnose_batches) {

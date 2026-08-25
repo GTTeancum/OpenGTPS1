@@ -70,13 +70,15 @@ public class ViewConfig
 
     public bool PerspectiveCorrectTextures
     {
-        // GT2 authors road, landscape, and vehicle UVs for the PS1's affine
-        // rasterizer. Perspective interpolation bends those atlas mappings
-        // across large triangles and can pull unrelated texels into the road.
-        get => false;
+        // The shipping renderer consumes authored model-space geometry and
+        // uses hardware perspective interpolation. Legacy projected packets
+        // may still be classified conservatively inside the renderer while
+        // their GT-specific UV reconstruction is being completed, but the
+        // global modern-renderer contract itself is never affine-only.
+        get => true;
         set
         {
-            SetBool("PerspectiveCorrectTextures", false);
+            SetBool("PerspectiveCorrectTextures", true);
             Gte.SetProjectionTrackingEnabled(true);
         }
     }
@@ -130,7 +132,7 @@ public class ViewConfig
         HighResolution3D = true;
         TextureSmoothing = true;
         HighResolutionTextures = true;
-        PerspectiveCorrectTextures = false;
+        PerspectiveCorrectTextures = true;
         StabilizeGeometrySeams = true;
         ExtendedDrawDistance = true;
         LevelOfDetail = "Maximum";

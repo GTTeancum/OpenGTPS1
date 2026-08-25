@@ -685,14 +685,18 @@ bool is_soft_shadow(const std::array<std::uint8_t, 4>& pixel) {
 
 std::vector<std::uint8_t> render_uv_island(
     bool perspective,
-    float near_depth
+    float near_depth,
+    bool resident_course = false
 ) {
     using namespace opengt::render;
     WorldDrawList list{};
     list.display_width = 32;
     list.display_height = 32;
     list.materials.push_back(WorldMaterial{
-        1U | 4U,
+        1U | 4U |
+            (resident_course
+                ? world_primitive_resident_course_flag
+                : 0U),
         2U << 7U,
         0,
         0,
@@ -1028,6 +1032,18 @@ int main() {
     okay &= expect(
         !deep_affine.empty() && deep_affine == deep_perspective,
         "keep a deep GT2 UV island on one affine interpolation contract");
+    const auto resident_deep_perspective =
+        render_uv_island(true, 1.0F, true);
+    okay &= expect(
+        !resident_deep_perspective.empty() &&
+            resident_deep_perspective != deep_affine,
+        "perspective-correct a deep resident pre-projection UV island");
+    const auto crossing_affine = render_uv_island(false, -4.0F, true);
+    const auto crossing_perspective = render_uv_island(true, -4.0F, true);
+    okay &= expect(
+        !crossing_affine.empty() &&
+            crossing_affine != crossing_perspective,
+        "perspective-correct a resident course surface after near clipping");
     const auto shallow_affine = render_uv_island(false, 4.0F);
     const auto shallow_perspective = render_uv_island(true, 4.0F);
     okay &= expect(

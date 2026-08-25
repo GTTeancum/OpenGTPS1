@@ -9,6 +9,12 @@ public enum WorldObjectKind : uint
     Vehicle = 2,
 }
 
+public enum TrackMeshProjectionPath : byte
+{
+    Primary = 0,
+    Alternate = 1,
+}
+
 public readonly record struct WorldObjectContext(
     WorldObjectKind Kind,
     uint StableId,
@@ -21,10 +27,16 @@ public readonly record struct WorldObjectContext(
 /// </summary>
 public static class WorldCaptureContext
 {
+    internal delegate void TrackMeshConsumer(
+        uint meshPointer,
+        IMemory memory,
+        TrackMeshProjectionPath projectionPath);
+
     readonly record struct TrackMeshTraceKey(
         uint StableId,
         uint ModelPointer,
-        uint MeshPointer);
+        uint MeshPointer,
+        TrackMeshProjectionPath ProjectionPath);
 
     const int MaxTracedTrackMeshes = 512;
     static readonly int[] TrackPrimitiveRecordSizes =
@@ -52,10 +64,22 @@ public static class WorldCaptureContext
     static long _tracedTrackInvalidIndices;
     static long _tracedTrackInvalidPointers;
     static long _tracedTrackNoncontiguousStreams;
+    static long _tracedTrackMaterialRecords;
+    static long _tracedTrackMaterialCommandMismatches;
+    static long _tracedTrackTexturedPrimitives;
+    static long _tracedTrackTextureTableInvalid;
+    static long _tracedTrackTextureEntryInvalid;
+    static long _tracedTrackTextureAlternateEntryInvalid;
+    static long _tracedTrackTextureClutHighBit;
+    static readonly long[] TrackPrimitiveStreamTotals = new long[8];
+    static readonly long[] TrackPrimitiveCommandTotals = new long[256];
+    static readonly HashSet<uint> TrackTextureTableBases = [];
+    static readonly HashSet<uint> TrackTextureEntries = [];
     static readonly System.Text.StringBuilder TrackMeshObj = new(2_000_000);
     static readonly System.Text.StringBuilder TrackMeshGroundObj = new(1_000_000);
     static int _trackMeshObjVertices;
     static long _trackMeshObjGroundTriangles;
+    static TrackMeshConsumer? _trackMeshConsumer;
 
     public static bool LiveRenderingEnabled { get; set; }
     public static bool CaptureEnabled
@@ -66,6 +90,20 @@ public static class WorldCaptureContext
     }
     public static WorldObjectContext Current =>
         CaptureEnabled ? _current : default;
+
+    internal static void RegisterTrackMeshConsumer(TrackMeshConsumer consumer)
+    {
+        if (_trackMeshConsumer != null && _trackMeshConsumer != consumer)
+            throw new InvalidOperationException(
+                "Only one live GT2 track-mesh consumer may be registered.");
+        _trackMeshConsumer = consumer;
+    }
+
+    internal static void UnregisterTrackMeshConsumer(TrackMeshConsumer consumer)
+    {
+        if (_trackMeshConsumer == consumer)
+            _trackMeshConsumer = null;
+    }
 
     public static void RegisterTrackObject(
         uint submissionPointer,
@@ -96,17 +134,24 @@ public static class WorldCaptureContext
     }
 
     /// <summary>
-    /// Development-only GT2 model-header trace. This records the unprojected
+    /// Development-only GT2 model-header hook. This exposes the unprojected
     /// vertex table and primitive streams before the guest renderer can apply
-    /// its original screen-space rejection rules. It does not alter rendering.
+    /// its original screen-space rejection rules. With no consumer it is
+    /// trace-only; the resident-course renderer registers one explicitly.
     /// </summary>
-    public static void TraceTrackMesh(uint meshPointer, IMemory memory)
+    public static void TraceTrackMesh(
+        uint meshPointer,
+        IMemory memory,
+        TrackMeshProjectionPath projectionPath)
     {
+        _trackMeshConsumer?.Invoke(meshPointer, memory, projectionPath);
+
         WorldObjectContext current = _current;
         TrackMeshTraceKey key = new(
             current.StableId,
             current.ModelPointer,
-            meshPointer);
+            meshPointer,
+            projectionPath);
         if (!TrackMeshTraceEnabled ||
             meshPointer < 0x80000000u ||
             meshPointer > 0x807FFFBBu ||
@@ -125,7 +170,17 @@ public static class WorldCaptureContext
         uint invalidIndices = 0;
         uint invalidPointers = 0;
         uint noncontiguousStreams = 0;
+        uint materialRecords = 0;
+        uint materialCommandMismatches = 0;
+        uint texturedPrimitives = 0;
+        uint textureTableInvalid = 0;
+        uint textureEntryInvalid = 0;
+        uint textureAlternateEntryInvalid = 0;
+        uint textureClutHighBit = 0;
         var streams = new System.Text.StringBuilder(256);
+        uint textureTableBase = memory.ReadU32(0x1F8003A0u);
+        if (textureTableBase != 0)
+            TrackTextureTableBases.Add(textureTableBase);
 
         if (!IsGuestRange(vertexPointer, (ulong)vertexRecords * 8u))
             invalidPointers++;
@@ -181,6 +236,7 @@ public static class WorldCaptureContext
                 meshPointer + 0x04u + checked((uint)index * 4u));
             primitiveCounts[index] = memory.ReadU16(
                 meshPointer + 0x30u + checked((uint)index * 2u));
+            TrackPrimitiveStreamTotals[index] += primitiveCounts[index];
             totalPrimitives += primitiveCounts[index];
             totalTriangles += (uint)primitiveCounts[index] *
                 ((index & 1) == 0 ? 1u : 2u);
@@ -220,26 +276,77 @@ public static class WorldCaptureContext
                             vertex3,
                             vertexRecords);
                     }
+                    uint colorCommand = memory.ReadU32(primitive + 8u);
+                    byte command = (byte)(colorCommand >> 24);
+                    TrackPrimitiveCommandTotals[command]++;
+                    materialRecords++;
+                    byte expectedCommandFamily = (byte)(
+                        0x20 |
+                        ((index & 1) != 0 ? 0x08 : 0x00) |
+                        (index >= 4 ? 0x04 : 0x00) |
+                        ((index & 2) != 0 ? 0x10 : 0x00));
+                    if ((command & 0xFC) != expectedCommandFamily)
+                        materialCommandMismatches++;
+                    if (index >= 4)
+                    {
+                        texturedPrimitives++;
+                        uint descriptor = memory.ReadU32(primitive + 4u);
+                        uint entryOffset = (descriptor >> 4) & 0x0007FFE0u;
+                        if (!IsGuestRange(textureTableBase, 0x20u))
+                        {
+                            textureTableInvalid++;
+                        }
+                        else
+                        {
+                            uint entry = unchecked(textureTableBase + entryOffset);
+                            TrackTextureEntries.Add(entry);
+                            if (!IsGuestRange(entry, 0x10u))
+                            {
+                                textureEntryInvalid++;
+                            }
+                            else
+                            {
+                                ushort clut = (ushort)(memory.ReadU32(entry) >> 16);
+                                if ((clut & 0x8000) != 0)
+                                    textureClutHighBit++;
+                            }
+                            if (!IsGuestRange(unchecked(entry + 0x10u), 0x10u))
+                                textureAlternateEntryInvalid++;
+                        }
+                    }
                     if (writeObj &&
                         vertex0 < vertexRecords &&
                         vertex1 < vertexRecords &&
                         vertex2 < vertexRecords &&
                         ((index & 1) == 0 || vertex3 < vertexRecords))
                     {
-                        AppendObjFace(
-                            TrackMeshObj,
-                            objVertexBase,
-                            vertex0,
-                            vertex1,
-                            vertex2);
-                        if ((index & 1) != 0)
+                        // GT2 submits triangles as 0,2,1. Quads are submitted
+                        // as 2,1,3,0 and the GPU packet path splits them into
+                        // (2,1,3) and (1,3,0). Preserve that authored topology
+                        // instead of assuming sequential 0,1,2,3 adjacency.
+                        if ((index & 1) == 0)
                         {
                             AppendObjFace(
                                 TrackMeshObj,
                                 objVertexBase,
-                                vertex1,
+                                vertex0,
                                 vertex2,
+                                vertex1);
+                        }
+                        else
+                        {
+                            AppendObjFace(
+                                TrackMeshObj,
+                                objVertexBase,
+                                vertex2,
+                                vertex1,
                                 vertex3);
+                            AppendObjFace(
+                                TrackMeshObj,
+                                objVertexBase,
+                                vertex1,
+                                vertex3,
+                                vertex0);
                         }
                         short minimumHeight = Math.Min(
                             modelHeights![vertex0],
@@ -262,22 +369,31 @@ public static class WorldCaptureContext
                         }
                         if (maximumHeight - minimumHeight <= 64)
                         {
-                            AppendObjFace(
-                                TrackMeshGroundObj,
-                                objVertexBase,
-                                vertex0,
-                                vertex1,
-                                vertex2);
-                            _trackMeshObjGroundTriangles++;
-                            if ((index & 1) != 0)
+                            if ((index & 1) == 0)
                             {
                                 AppendObjFace(
                                     TrackMeshGroundObj,
                                     objVertexBase,
-                                    vertex1,
+                                    vertex0,
                                     vertex2,
-                                    vertex3);
+                                    vertex1);
                                 _trackMeshObjGroundTriangles++;
+                            }
+                            else
+                            {
+                                AppendObjFace(
+                                    TrackMeshGroundObj,
+                                    objVertexBase,
+                                    vertex2,
+                                    vertex1,
+                                    vertex3);
+                                AppendObjFace(
+                                    TrackMeshGroundObj,
+                                    objVertexBase,
+                                    vertex1,
+                                    vertex3,
+                                    vertex0);
+                                _trackMeshObjGroundTriangles += 2;
                             }
                         }
                     }
@@ -302,6 +418,15 @@ public static class WorldCaptureContext
         _tracedTrackInvalidIndices += invalidIndices;
         _tracedTrackInvalidPointers += invalidPointers;
         _tracedTrackNoncontiguousStreams += noncontiguousStreams;
+        _tracedTrackMaterialRecords += materialRecords;
+        _tracedTrackMaterialCommandMismatches +=
+            materialCommandMismatches;
+        _tracedTrackTexturedPrimitives += texturedPrimitives;
+        _tracedTrackTextureTableInvalid += textureTableInvalid;
+        _tracedTrackTextureEntryInvalid += textureEntryInvalid;
+        _tracedTrackTextureAlternateEntryInvalid +=
+            textureAlternateEntryInvalid;
+        _tracedTrackTextureClutHighBit += textureClutHighBit;
         RegisterTrackMeshExitTrace();
 
         Console.Error.WriteLine(
@@ -312,7 +437,13 @@ public static class WorldCaptureContext
             $"bounds={minimumX},{minimumY},{minimumZ}.." +
             $"{maximumX},{maximumY},{maximumZ} " +
             $"invalidIndices={invalidIndices} invalidPointers={invalidPointers} " +
-            $"noncontiguous={noncontiguousStreams} streams={streams}");
+            $"noncontiguous={noncontiguousStreams} materials={materialRecords} " +
+            $"commandMismatch={materialCommandMismatches} " +
+            $"textured={texturedPrimitives} " +
+            $"textureTable={textureTableBase:X8} " +
+            $"textureTableInvalid={textureTableInvalid} " +
+            $"textureEntryInvalid={textureEntryInvalid}/" +
+            $"{textureAlternateEntryInvalid} streams={streams}");
     }
 
     static uint CountInvalidTrackIndex(uint index, uint vertexRecords) =>
@@ -391,7 +522,18 @@ public static class WorldCaptureContext
             $"triangles={_tracedTrackTriangles} " +
             $"invalidIndices={_tracedTrackInvalidIndices} " +
             $"invalidPointers={_tracedTrackInvalidPointers} " +
-            $"noncontiguous={_tracedTrackNoncontiguousStreams}");
+            $"noncontiguous={_tracedTrackNoncontiguousStreams} " +
+            $"materials={_tracedTrackMaterialRecords} " +
+            $"commandMismatch={_tracedTrackMaterialCommandMismatches} " +
+            $"textured={_tracedTrackTexturedPrimitives} " +
+            $"textureTables={TrackTextureTableBases.Count} " +
+            $"textureEntries={TrackTextureEntries.Count} " +
+            $"textureTableInvalid={_tracedTrackTextureTableInvalid} " +
+            $"textureEntryInvalid={_tracedTrackTextureEntryInvalid}/" +
+            $"{_tracedTrackTextureAlternateEntryInvalid} " +
+            $"clutHighBit={_tracedTrackTextureClutHighBit} " +
+            $"streams={FormatNonzeroTotals(TrackPrimitiveStreamTotals)} " +
+            $"commands={FormatNonzeroTotals(TrackPrimitiveCommandTotals)}");
         if (!string.IsNullOrWhiteSpace(TrackMeshObjPath))
         {
             try
@@ -420,6 +562,22 @@ public static class WorldCaptureContext
                     $"[GT2-Track-Mesh-OBJ] failed: {exception.Message}");
             }
         }
+    }
+
+    static string FormatNonzeroTotals(long[] totals)
+    {
+        var output = new System.Text.StringBuilder(128);
+        for (int index = 0; index < totals.Length; index++)
+        {
+            if (totals[index] == 0)
+                continue;
+            if (output.Length != 0)
+                output.Append(',');
+            output.Append(index.ToString("X2"))
+                .Append(':')
+                .Append(totals[index]);
+        }
+        return output.ToString();
     }
 
     public static void BeginVehicle(uint carState, uint modelPointer)

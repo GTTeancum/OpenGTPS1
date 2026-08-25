@@ -15,6 +15,10 @@ constexpr std::uint32_t world_primitive_screen_space_flag = 1U << 31;
 // proven authored edge through a synthetic temporal sample. These stitches
 // must not merge otherwise independent GT UV-projection islands.
 constexpr std::uint32_t world_primitive_temporal_seam_flag = 1U << 30;
+// Captured directly from GT2's authored pre-projection course data. Its
+// shared model vertices are already continuous; topology inference intended
+// for guest-projected packets must not rebuild or split it.
+constexpr std::uint32_t world_primitive_resident_course_flag = 1U << 4;
 constexpr std::uint16_t world_vertex_source_identity_flag = 1U << 0;
 constexpr std::uint16_t world_vertex_screen_offset_anchor_flag = 1U << 1;
 

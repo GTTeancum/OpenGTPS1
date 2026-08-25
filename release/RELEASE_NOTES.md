@@ -15,7 +15,7 @@ extracts the required loose files from the user's own matching raw IMG.
 
 - Playable original game flow from boot through purchasing, upgrading, races,
   results, championships, and replays.
-- Native Windows race/replay renderer with GT2-authored affine texture mapping,
+- Native Windows race/replay renderer with perspective-correct resident-course texture mapping,
   exact track-seam handling, extended draw distance, maximum vehicle LOD, and
   configurable dithering.
 - Keyboard and Xbox-compatible controller input.
@@ -28,7 +28,7 @@ extracts the required loose files from the user's own matching raw IMG.
 ## Known beta limitations
 
 - Windows x64 only.
-- Resolution and widescreen expansion are not complete.
+- True horizontal-plus widescreen validation is not complete.
 - Some graphics and hardware-specific compatibility issues may remain.
 - The executable is not code-signed, so Windows SmartScreen may warn.
 
