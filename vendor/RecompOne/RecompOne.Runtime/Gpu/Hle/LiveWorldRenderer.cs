@@ -25,6 +25,8 @@ internal struct LiveNativeOptions
     public uint Flags;
     public uint OutputScale;
     public uint ClearColorRgba8;
+    public uint TargetAspectWidth;
+    public uint TargetAspectHeight;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -101,7 +103,9 @@ internal readonly record struct LiveRenderSettings(
     bool PerspectiveCorrect,
     bool TextureSmoothing,
     bool HighResolutionTextures,
-    int OutputScale);
+    int OutputScale,
+    int TargetAspectWidth,
+    int TargetAspectHeight);
 
 /// <summary>
 /// Bounded producer/consumer bridge to the persistent native D3D11 renderer.
@@ -578,7 +582,7 @@ internal sealed class LiveWorldRenderer : IDisposable
         LiveTextureUpload[] boundTextureUploads = [];
         try
         {
-            if (NativeMethods.ApiVersion() != 6)
+            if (NativeMethods.ApiVersion() != 7)
                 throw new InvalidOperationException(
                     "native renderer API version mismatch");
             handle = NativeMethods.Create();
@@ -695,6 +699,10 @@ internal sealed class LiveWorldRenderer : IDisposable
                         OutputScale =
                             (uint)Math.Clamp(settings.OutputScale, 1, 4),
                         ClearColorRgba8 = 0xFF402820,
+                        TargetAspectWidth = (uint)Math.Max(
+                            1, settings.TargetAspectWidth),
+                        TargetAspectHeight = (uint)Math.Max(
+                            1, settings.TargetAspectHeight),
                     };
                     var firstStats = new LiveNativeStats
                     {
@@ -1243,6 +1251,20 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
     const int MaxDeferredScreenLineTriangles = 256;
     internal const int TriangleReservationRecords = 64;
 
+    static (int Width, int Height) ParseTargetAspect()
+    {
+        string resolution = ConfigManager.View.OutputResolution;
+        int separator = resolution.IndexOfAny(['x', 'X']);
+        if (separator > 0 &&
+            int.TryParse(resolution.AsSpan(0, separator), out int width) &&
+            int.TryParse(resolution.AsSpan(separator + 1), out int height) &&
+            width > 0 && height > 0)
+        {
+            return (Math.Min(width, 8192), Math.Min(height, 8192));
+        }
+        return (16, 9);
+    }
+
     readonly record struct CameraProjectionKey(
         ulong TransformId,
         int OffsetX,
@@ -1642,6 +1664,7 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             _buffer.AsSpan(checked((int)vramOffset), vramBytes));
         _stream.Position = captureLength;
         MainProjection = camera;
+        var targetAspect = ParseTargetAspect();
         var settings = new LiveRenderSettings(
             Depth: true,
             Dithering: ConfigManager.View.Ps1Dithering,
@@ -1652,7 +1675,9 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             HighResolutionTextures:
                 ConfigManager.View.HighResolutionTextures,
             OutputScale:
-                ConfigManager.View.HighResolution3D ? 4 : 1);
+                ConfigManager.View.HighResolution3D ? 4 : 1,
+            TargetAspectWidth: targetAspect.Width,
+            TargetAspectHeight: targetAspect.Height);
         int outputWidth =
             _viewportArea > 0 ? _viewportWidth : display.W;
         int outputHeight =
@@ -1661,8 +1686,13 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         // race viewport. GT2's wider transition and rotating Results-car views
         // contain complete captured screen primitives plus 3D provenance and
         // are rendered natively as long as they fit the bounded output pool.
+        int targetOutputWidth = Math.Max(
+            outputWidth,
+            checked((outputHeight * settings.TargetAspectWidth +
+                settings.TargetAspectHeight - 1) /
+                settings.TargetAspectHeight));
         long requiredOutputBytes =
-            (long)outputWidth * settings.OutputScale *
+            (long)targetOutputWidth * settings.OutputScale *
             outputHeight * settings.OutputScale * 4;
         if (
             outputWidth <= 0 ||

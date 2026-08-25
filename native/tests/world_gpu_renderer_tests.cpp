@@ -144,6 +144,279 @@ bool is_clear(const std::array<std::uint8_t, 4>& pixel) {
     return pixel[0] > 240U && pixel[1] < 16U && pixel[2] < 16U;
 }
 
+bool horizontal_plus_reveals_world_outside_guest_edge() {
+    using namespace opengt::render;
+    WorldDrawList list{};
+    list.display_width = 16;
+    list.display_height = 16;
+    list.materials.push_back(WorldMaterial{});
+    WorldDrawCommand command{};
+    command.vertices[0] = vertex(1.05F, -0.5F, 0, 0, 0);
+    command.vertices[1] = vertex(1.55F, -0.5F, 1, 0, 0);
+    command.vertices[2] = vertex(1.05F, 0.5F, 0, 1, 0);
+    command.material_index = 0;
+    command.clip_x0 = command.clip_y0 = 0;
+    command.clip_x1 = command.clip_y1 = 15;
+    command.object_kind = 1;
+    command.object_id = 1;
+    command.channel = WorldViewChannel::main_view;
+    list.commands.push_back(command);
+    list.track_commands = 1;
+
+    WorldGpuRenderOptions options{
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        1,
+        clear_rgba,
+    };
+    options.target_aspect_width = 16;
+    options.target_aspect_height = 9;
+    const std::uint32_t width = world_gpu_target_display_width(list, options);
+    std::vector<std::uint16_t> vram(1024U * 512U);
+    std::vector<std::uint8_t> output(
+        static_cast<std::size_t>(width) * 16U * 4U);
+    WorldGpuRenderStats stats{};
+    reset_world_d3d11_readback(false);
+    if (render_world_d3d11(
+            list,
+            vram.data(),
+            vram.size(),
+            output.data(),
+            output.size(),
+            options,
+            &stats) != WorldGpuRenderResult::success ||
+        !stats.output_valid)
+        return false;
+
+    // The original 16-pixel view is centred in the 29-pixel Hor+ target and
+    // ends before x=23. This triangle begins beyond the original right plane.
+    for (std::uint32_t y = 0; y < 16; ++y) {
+        for (std::uint32_t x = 23; x < width; ++x) {
+            const std::size_t offset =
+                (static_cast<std::size_t>(y) * width + x) * 4U;
+            if (output[offset] < 240U || output[offset + 1] > 16U ||
+                output[offset + 2] > 16U)
+                return true;
+        }
+    }
+    return false;
+}
+
+bool horizontal_plus_anchors_hud_groups_to_margins() {
+    using namespace opengt::render;
+    constexpr std::int32_t guest_width = 16;
+    constexpr std::int32_t guest_height = 16;
+    WorldDrawList list{};
+    list.display_width = guest_width;
+    list.display_height = guest_height;
+    list.materials.push_back(WorldMaterial{
+        world_primitive_screen_space_flag,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    });
+    const auto screen_vertex = [=] (
+        float x,
+        float y,
+        std::uint8_t red,
+        std::uint8_t green,
+        std::uint8_t blue
+    ) {
+        WorldDrawVertex result{};
+        result.clip_x = x / guest_width * 2.0F - 1.0F;
+        result.clip_y = 1.0F - y / guest_height * 2.0F;
+        result.clip_z = 0.5F;
+        result.clip_w = 1.0F;
+        result.screen_x = x;
+        result.screen_y = y;
+        result.r = red;
+        result.g = green;
+        result.b = blue;
+        return result;
+    };
+    const auto append_rectangle = [&] (
+        float x0,
+        float y0,
+        float x1,
+        float y1,
+        std::uint8_t red,
+        std::uint8_t green,
+        std::uint8_t blue
+    ) {
+        WorldDrawCommand first{};
+        first.vertices[0] = screen_vertex(
+            x0, y0, red, green, blue);
+        first.vertices[1] = screen_vertex(
+            x1, y0, red, green, blue);
+        first.vertices[2] = screen_vertex(
+            x0, y1, red, green, blue);
+        first.material_index = 0;
+        first.clip_x0 = first.clip_y0 = 0;
+        first.clip_x1 = guest_width - 1;
+        first.clip_y1 = guest_height - 1;
+        first.channel = WorldViewChannel::main_view;
+        list.commands.push_back(first);
+        WorldDrawCommand second = first;
+        second.vertices[0] = screen_vertex(
+            x1, y0, red, green, blue);
+        second.vertices[1] = screen_vertex(
+            x1, y1, red, green, blue);
+        second.vertices[2] = screen_vertex(
+            x0, y1, red, green, blue);
+        list.commands.push_back(second);
+    };
+
+    // Each edge group has a narrow member whose own centre falls in the
+    // centre band. Connected-component anchoring must keep that member with
+    // the rest of its HUD group rather than tearing the sprite/font run.
+    append_rectangle(1.0F, 2.0F, 5.0F, 4.0F, 0, 255, 0);
+    append_rectangle(5.0F, 2.0F, 8.0F, 4.0F, 0, 255, 0);
+    append_rectangle(7.0F, 7.0F, 9.0F, 9.0F, 0, 0, 255);
+    append_rectangle(8.0F, 12.0F, 11.0F, 14.0F, 255, 255, 255);
+    append_rectangle(11.0F, 12.0F, 15.0F, 14.0F, 255, 255, 255);
+    list.unclassified_commands = static_cast<std::uint32_t>(
+        list.commands.size());
+
+    WorldGpuRenderOptions options{
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        1,
+        clear_rgba,
+    };
+    options.target_aspect_width = 16;
+    options.target_aspect_height = 9;
+    const std::uint32_t output_width =
+        world_gpu_target_display_width(list, options);
+    std::vector<std::uint16_t> vram(1024U * 512U);
+    std::vector<std::uint8_t> output(
+        static_cast<std::size_t>(output_width) * guest_height * 4U);
+    WorldGpuRenderStats stats{};
+    reset_world_d3d11_readback(false);
+    if (render_world_d3d11(
+            list,
+            vram.data(),
+            vram.size(),
+            output.data(),
+            output.size(),
+            options,
+            &stats) != WorldGpuRenderResult::success ||
+        !stats.output_valid)
+        return false;
+
+    int green_maximum = -1;
+    int blue_minimum = static_cast<int>(output_width);
+    int blue_maximum = -1;
+    int white_minimum = static_cast<int>(output_width);
+    for (std::uint32_t y = 0; y < guest_height; ++y) {
+        for (std::uint32_t x = 0; x < output_width; ++x) {
+            const std::size_t offset =
+                (static_cast<std::size_t>(y) * output_width + x) * 4U;
+            const std::uint8_t red = output[offset];
+            const std::uint8_t green = output[offset + 1];
+            const std::uint8_t blue = output[offset + 2];
+            if (green > 240U && red < 16U && blue < 16U)
+                green_maximum = (std::max)(green_maximum, static_cast<int>(x));
+            if (blue > 240U && red < 16U && green < 16U) {
+                blue_minimum = (std::min)(
+                    blue_minimum, static_cast<int>(x));
+                blue_maximum = (std::max)(
+                    blue_maximum, static_cast<int>(x));
+            }
+            if (red > 240U && green > 240U && blue > 240U)
+                white_minimum = (std::min)(
+                    white_minimum, static_cast<int>(x));
+        }
+    }
+    return
+        output_width == 29U &&
+        green_maximum >= 6 && green_maximum <= 8 &&
+        blue_minimum >= 12 && blue_maximum <= 17 &&
+        white_minimum >= 20;
+}
+
+bool track_depth_survives_ordering_table_boundaries() {
+    using namespace opengt::render;
+    WorldDrawList list{};
+    list.display_width = 16;
+    list.display_height = 16;
+    list.materials.push_back(WorldMaterial{});
+    const auto append = [&list](
+        float depth,
+        std::int32_t ordering_table_index,
+        std::uint8_t red,
+        std::uint8_t green,
+        std::uint8_t blue
+    ) {
+        WorldDrawCommand command{};
+        command.vertices[0] = vertex(-1.0F, -1.0F, 0, 0, 0);
+        command.vertices[1] = vertex(0.0F, 1.0F, 0, 1, 0);
+        command.vertices[2] = vertex(1.0F, -1.0F, 1, 0, 0);
+        for (auto& point : command.vertices) {
+            point.clip_z = depth;
+            point.clip_w = 1.0F;
+            point.r = red;
+            point.g = green;
+            point.b = blue;
+        }
+        command.material_index = 0;
+        command.ordering_table_index = ordering_table_index;
+        command.clip_x0 = command.clip_y0 = 0;
+        command.clip_x1 = command.clip_y1 = 15;
+        command.object_kind = 1;
+        command.object_id = static_cast<std::uint32_t>(
+            ordering_table_index + 1);
+        command.model_pointer = 0x80004000U +
+            static_cast<std::uint32_t>(ordering_table_index) * 4U;
+        command.channel = WorldViewChannel::main_view;
+        list.commands.push_back(command);
+    };
+    // Submit the near green road first and a far blue road in another GT2 OT
+    // bucket second. A coherent modern depth surface must retain the near one.
+    append(0.25F, 0, 0, 128, 0);
+    append(0.75F, 1, 0, 0, 128);
+    list.track_commands = 2;
+
+    std::vector<std::uint16_t> vram(1024U * 512U);
+    std::vector<std::uint8_t> output(16U * 16U * 4U);
+    WorldGpuRenderStats stats{};
+    reset_world_d3d11_readback(false);
+    const auto result = render_world_d3d11(
+        list,
+        vram.data(),
+        vram.size(),
+        output.data(),
+        output.size(),
+        WorldGpuRenderOptions{
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            1,
+            clear_rgba,
+        },
+        &stats);
+    if (result != WorldGpuRenderResult::success || !stats.output_valid)
+        return false;
+    const std::size_t center = (8U * 16U + 8U) * 4U;
+    return output[center] < 16U &&
+        output[center + 1] > 100U &&
+        output[center + 1] > output[center + 2] * 4U;
+}
+
 std::array<std::uint8_t, 4> render_fractional_uv_center() {
     using namespace opengt::render;
     std::vector<std::uint16_t> vram(1024U * 512U);
@@ -670,6 +943,16 @@ int main() {
     using opengt::render::WorldTextureUpload;
     using opengt::render::world_texture_upload_contains_clut;
     bool okay = true;
+    opengt::render::WorldDrawList aspect_list{};
+    aspect_list.display_width = 320;
+    aspect_list.display_height = 240;
+    opengt::render::WorldGpuRenderOptions aspect_options{};
+    aspect_options.target_aspect_width = 16;
+    aspect_options.target_aspect_height = 9;
+    okay &= expect(
+        opengt::render::world_gpu_target_display_width(
+            aspect_list, aspect_options) == 427,
+        "derive a horizontal-plus width while preserving vertical resolution");
     constexpr std::uint64_t paint_key = 0x123456789ABCDEF0ULL;
     constexpr WorldTextureUpload paint_bank{
         paint_key, 448, 480, 64, 4};
@@ -704,6 +987,15 @@ int main() {
     okay &= expect(
         is_green(render_fractional_uv_center()),
         "use PS1 floor semantics for fractional world-texture visibility");
+    okay &= expect(
+        horizontal_plus_reveals_world_outside_guest_edge(),
+        "reveal main-world geometry beyond the original horizontal plane");
+    okay &= expect(
+        horizontal_plus_anchors_hud_groups_to_margins(),
+        "anchor connected HUD groups to widescreen margins without stretching");
+    okay &= expect(
+        track_depth_survives_ordering_table_boundaries(),
+        "keep one track depth surface across GT2 ordering-table buckets");
     okay &= expect(
         reset_isolates_async_readback_generation(),
         "isolate asynchronous pixels and queries across a temporal reset");

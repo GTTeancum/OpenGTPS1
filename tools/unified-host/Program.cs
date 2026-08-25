@@ -4,24 +4,99 @@ using RecompOne.Runtime.Memory;
 string launchDirectory = Environment.CurrentDirectory;
 Environment.CurrentDirectory = AppContext.BaseDirectory;
 
-bool headless = args.Any(arg =>
-    arg.Equals("--headless", StringComparison.OrdinalIgnoreCase));
-bool mute = args.Any(arg =>
-    arg.Equals("--mute", StringComparison.OrdinalIgnoreCase));
-bool validateLiveries = args.Any(arg =>
-    arg.Equals("--validate-liveries", StringComparison.OrdinalIgnoreCase));
-bool startArcade = args.Any(arg =>
-    arg.Equals("--start-arcade", StringComparison.OrdinalIgnoreCase));
+bool headless = false;
+bool mute = false;
+bool validateLiveries = false;
+bool startArcade = false;
+string? directArcadeRace = null;
+bool directArcadeReplay = false;
+var positionalArguments = new List<string>();
+for (int index = 0; index < args.Length; index++)
+{
+    string argument = args[index];
+    if (argument.Equals("--headless", StringComparison.OrdinalIgnoreCase))
+        headless = true;
+    else if (argument.Equals("--mute", StringComparison.OrdinalIgnoreCase))
+        mute = true;
+    else if (argument.Equals(
+                 "--validate-liveries",
+                 StringComparison.OrdinalIgnoreCase))
+        validateLiveries = true;
+    else if (argument.Equals(
+                 "--start-arcade",
+                 StringComparison.OrdinalIgnoreCase))
+        startArcade = true;
+    else if (argument.Equals(
+                 "--arcade-race",
+                 StringComparison.OrdinalIgnoreCase) ||
+             argument.Equals(
+                 "--arcade-replay",
+                 StringComparison.OrdinalIgnoreCase))
+    {
+        if (directArcadeRace != null)
+            return StartupFailure(
+                "Set only one direct Arcade launch mode: " +
+                "--arcade-race or --arcade-replay.",
+                headless);
+        bool replay = argument.Equals(
+            "--arcade-replay",
+            StringComparison.OrdinalIgnoreCase);
+        if (++index >= args.Length)
+            return StartupFailure(
+                $"{argument} requires a course name; " +
+                "the current development target is seattle-circuit.",
+                headless);
+        directArcadeRace = args[index].Trim().ToLowerInvariant();
+        if (directArcadeRace != "seattle-circuit")
+            return StartupFailure(
+                $"Unsupported direct Arcade course: {args[index]}. " +
+                "The current development target is seattle-circuit.",
+                headless);
+        directArcadeReplay = replay;
+        startArcade = true;
+    }
+    else if (argument.StartsWith("--", StringComparison.Ordinal))
+    {
+        return StartupFailure(
+            $"Unknown command-line option: {argument}",
+            headless);
+    }
+    else
+    {
+        positionalArguments.Add(argument);
+    }
+}
+string[] positionalArgs = positionalArguments.ToArray();
 
-string[] positionalArgs = args.Where(arg =>
-    !arg.Equals("--headless", StringComparison.OrdinalIgnoreCase) &&
-    !arg.Equals("--mute", StringComparison.OrdinalIgnoreCase) &&
-    !arg.Equals(
-        "--validate-liveries",
-        StringComparison.OrdinalIgnoreCase) &&
-    !arg.Equals(
-        "--start-arcade",
-        StringComparison.OrdinalIgnoreCase)).ToArray();
+if (directArcadeRace != null)
+{
+    Environment.SetEnvironmentVariable(
+        "RECOMPONE_GT2_DIRECT_ARCADE_RACE",
+        directArcadeRace);
+    Console.WriteLine(
+        $"[Host] direct Arcade " +
+        $"{(directArcadeReplay ? "natural replay" : "race")} requested: " +
+        directArcadeRace);
+}
+if (directArcadeReplay)
+{
+    // Reach GT2's own replay controller without depending on menus, a memory
+    // card, or timing-sensitive absolute input. Keep Arcade's native player
+    // record so the race owns a result and can finish, but route that car
+    // through GT2's original CPU driver dispatch. Stage-relative confirmations
+    // then advance Results; no synthetic finish, replay state, or camera is
+    // used.
+    Environment.SetEnvironmentVariable("RECOMPONE_GT2_AI_AUTODRIVE", "1");
+    Environment.SetEnvironmentVariable(
+        "RECOMPONE_GT2_AI_AUTODRIVE_MAX_ENGAGEMENTS", "2");
+    Environment.SetEnvironmentVariable(
+        "RECOMPONE_GT2_SOAK_QUICK_WIN_AFTER_AI_TICKS", null);
+    Environment.SetEnvironmentVariable("RECOMPONE_DISABLE_LIVE_INPUT", "1");
+    Environment.SetEnvironmentVariable("RECOMPONE_INPUT_FILE", null);
+    Environment.SetEnvironmentVariable(
+        "RECOMPONE_INPUT_SCRIPT",
+        BuildDirectReplayInputScript());
+}
 if (headless)
 {
     Environment.SetEnvironmentVariable("RECOMPONE_WINDOW_VISIBLE", "0");
@@ -148,6 +223,20 @@ static string? ResolveUnifiedGameRoot(
     }
 
     return candidates.FirstOrDefault(HasUnifiedGameData);
+}
+
+static string BuildDirectReplayInputScript()
+{
+    // Results timing is native and can vary with race pace. Sparse Cross
+    // pulses begin late enough to preserve a useful race window and remain
+    // harmless while GT2's AI is still driving. The AI hook signals replay_1
+    // only when GT2 instantiates replay vehicles: the acceptance marker.
+    var lines = new List<string> { "[race_1]" };
+    for (int poll = 9000; poll <= 40000; poll += 1000)
+        lines.Add($"{poll}+4=CROSS");
+    lines.Add("[replay_1]");
+    lines.Add("300+1=CAPTURE");
+    return string.Join(Environment.NewLine, lines);
 }
 
 static bool HasUnifiedGameData(string directory) =>

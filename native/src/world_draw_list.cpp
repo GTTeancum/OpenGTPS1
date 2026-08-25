@@ -332,7 +332,12 @@ WorldDrawListResult build_world_draw_list(
                 !screen_space && triangle.exact_transform_valid;
             command.source_command_index =
                 static_cast<std::uint32_t>(index);
-            command.channel = is_main
+            // displayed_screen_target() already proved that an explicit 2D
+            // primitive belongs to the active display. It cannot satisfy the
+            // 3D-only main_projection() predicate because it deliberately has
+            // no world provenance, so treating it as a secondary camera put
+            // every HUD command on the centred 4:3 fallback path.
+            command.channel = screen_space || is_main
                 ? WorldViewChannel::main_view
                 : WorldViewChannel::secondary_view;
 

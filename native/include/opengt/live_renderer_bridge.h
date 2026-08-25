@@ -29,6 +29,10 @@ typedef struct opengt_live_options {
     uint32_t flags;
     uint32_t output_scale;
     uint32_t clear_color_rgba8;
+    // Horizontal-plus output aspect. A zero component preserves the guest
+    // display width. The vertical resolution and field of view never change.
+    uint32_t target_aspect_width;
+    uint32_t target_aspect_height;
 } opengt_live_options;
 
 typedef struct opengt_live_stats {

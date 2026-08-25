@@ -5,17 +5,25 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <set>
 #include <tuple>
 #include <vector>
 
 int main(int argc, char** argv) {
-    if (argc < 2 || argc > 4) {
+    if (argc < 2 || argc > 5) {
         std::fprintf(
             stderr,
             "usage: opengt_world_capture_inspect <capture.ogtwcap> "
-            "[output.obj] [topology.csv]\n");
+            "[output.obj] [topology.csv] [--include-screen-space]\n");
+        return 2;
+    }
+    const bool include_screen_space =
+        argc == 5 &&
+        std::strcmp(argv[4], "--include-screen-space") == 0;
+    if (argc == 5 && !include_screen_space) {
+        std::fprintf(stderr, "unknown option: %s\n", argv[4]);
         return 2;
     }
     opengt::render::WorldCaptureHeader header{};
@@ -219,9 +227,10 @@ int main(int argc, char** argv) {
         header,
         triangles.data(),
         triangles.size(),
-        opengt::render::WorldDrawListOptions{false, false, false},
+        opengt::render::WorldDrawListOptions{
+            false, include_screen_space, false},
         &draw_list);
-    if (argc == 4 && draw_result ==
+    if (argc >= 4 && draw_result ==
             opengt::render::WorldDrawListResult::success) {
         std::FILE* csv = std::fopen(argv[3], "wb");
         if (csv == nullptr) {

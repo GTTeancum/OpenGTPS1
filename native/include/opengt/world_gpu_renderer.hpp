@@ -42,7 +42,36 @@ struct WorldGpuRenderOptions {
     // waiting for an older staging resource. Completed pairs are drained by
     // try_read_world_d3d11_pair in chronological order.
     bool asynchronous_readback = false;
+    // Horizontal-plus target aspect. Zero preserves the guest display width.
+    // These are deliberately last so existing diagnostic aggregate
+    // initializers retain their meaning.
+    std::uint32_t target_aspect_width = 0;
+    std::uint32_t target_aspect_height = 0;
 };
+
+inline std::uint32_t world_gpu_target_display_width(
+    const WorldDrawList& draw_list,
+    const WorldGpuRenderOptions& options
+) noexcept {
+    if (
+        draw_list.display_width <= 0 ||
+        draw_list.display_height <= 0 ||
+        options.target_aspect_width == 0 ||
+        options.target_aspect_height == 0
+    ) {
+        return draw_list.display_width > 0
+            ? static_cast<std::uint32_t>(draw_list.display_width)
+            : 0U;
+    }
+    const std::uint64_t requested =
+        (static_cast<std::uint64_t>(draw_list.display_height) *
+            options.target_aspect_width +
+            options.target_aspect_height - 1U) /
+        options.target_aspect_height;
+    return requested > static_cast<std::uint32_t>(draw_list.display_width)
+        ? static_cast<std::uint32_t>(requested)
+        : static_cast<std::uint32_t>(draw_list.display_width);
+}
 
 struct WorldGpuRenderStats {
     std::uint32_t commands;

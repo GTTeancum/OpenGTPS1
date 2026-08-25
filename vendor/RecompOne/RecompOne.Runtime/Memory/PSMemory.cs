@@ -104,18 +104,23 @@ public sealed class PSMemory : IMemory
             : null;
     }
 
-    private static void TraceWatchedWrite(uint phys, uint value)
+    private static void TraceWatchedWrite(
+        uint phys,
+        uint value,
+        int size)
     {
         if (_watchedWriteAddress != phys)
             return;
-        if (_watchDmaLinksOnly &&
+        if (_watchDmaLinksOnly && size == 4 &&
             ((value & 0xFF000000u) != 0u || (value & 0x00F00000u) != 0x00700000u))
             return;
 
         int count = System.Threading.Interlocked.Increment(ref _watchedWriteCount);
         if (count <= 64)
             Console.Error.WriteLine(
-                $"[MemoryWatch] #{count} write32 phys=0x{phys:X8} value=0x{value:X8}{Environment.NewLine}{Environment.StackTrace}");
+                $"[MemoryWatch] #{count} write{size * 8} " +
+                $"phys=0x{phys:X8} value=0x{value:X8}" +
+                $"{Environment.NewLine}{Environment.StackTrace}");
     }
 
     public void SetCd(CdController cd) { _cd = cd; _dma.SetCd(cd); }
@@ -313,6 +318,8 @@ public sealed class PSMemory : IMemory
     public void WriteU8(uint address, byte value)
     {
         uint phys = MemoryMap.ToPhysical(address);
+        if (_watchedWriteAddress.HasValue)
+            TraceWatchedWrite(phys, value, 1);
         uint ramOffset = TrackWrite(phys, 1);
         if (phys < MemoryMap.RamWindow)
         {
@@ -328,6 +335,8 @@ public sealed class PSMemory : IMemory
     public void WriteU16(uint address, ushort value)
     {
         uint phys = MemoryMap.ToPhysical(address);
+        if (_watchedWriteAddress.HasValue)
+            TraceWatchedWrite(phys, value, 2);
         uint ramOffset = TrackWrite(phys, 2);
         if (phys < MemoryMap.RamWindow)
         {
@@ -351,7 +360,7 @@ public sealed class PSMemory : IMemory
     {
         uint phys = MemoryMap.ToPhysical(address);
         if (_watchedWriteAddress.HasValue)
-            TraceWatchedWrite(phys, value);
+            TraceWatchedWrite(phys, value, 4);
         uint ramOffset = TrackWrite(phys, 4);
         if (phys < MemoryMap.RamWindow)
         {

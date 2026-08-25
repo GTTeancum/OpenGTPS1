@@ -225,7 +225,8 @@ int main(int argc, char** argv) {
             "[--include-screen-space] "
             "[--perspective-textures] [--affine-textures] "
             "[--no-texture-smoothing] "
-            "[--scale <1-8>] [--clear-color <RRGGBB>] "
+            "[--scale <1-8>] [--aspect <width:height>] "
+            "[--clear-color <RRGGBB>] "
             "[--inspect-pixel <x> <y>] "
             "[--oracle <oracle.png>] [--window]\n");
         return 2;
@@ -240,6 +241,8 @@ int main(int argc, char** argv) {
     bool perspective_correct = false;
     bool texture_smoothing = true;
     std::uint32_t scale = 1;
+    std::uint32_t target_aspect_width = 0;
+    std::uint32_t target_aspect_height = 0;
     std::uint32_t clear_color = 0xFF402820U;
     int inspect_x = -1;
     int inspect_y = -1;
@@ -301,6 +304,31 @@ int main(int argc, char** argv) {
                 return 2;
             }
             scale = static_cast<std::uint32_t>(parsed);
+        }
+        else if (
+            std::strcmp(argv[index], "--aspect") == 0 &&
+            index + 1 < argc
+        ) {
+            const char* value = argv[++index];
+            char* separator = nullptr;
+            const unsigned long width =
+                std::strtoul(value, &separator, 10);
+            if (separator == value || *separator != ':') {
+                std::fprintf(stderr, "--aspect must be width:height\n");
+                return 2;
+            }
+            char* end = nullptr;
+            const unsigned long height =
+                std::strtoul(separator + 1, &end, 10);
+            if (
+                *end != '\0' || width == 0 || height == 0 ||
+                width > 8192UL || height > 8192UL
+            ) {
+                std::fprintf(stderr, "--aspect must be width:height\n");
+                return 2;
+            }
+            target_aspect_width = static_cast<std::uint32_t>(width);
+            target_aspect_height = static_cast<std::uint32_t>(height);
         }
         else if (
             std::strcmp(argv[index], "--oracle") == 0 &&
@@ -706,16 +734,7 @@ int main(int argc, char** argv) {
             }
         }
     }
-    const std::uint32_t output_width =
-        static_cast<std::uint32_t>(header.display_width) * scale;
-    const std::uint32_t output_height =
-        static_cast<std::uint32_t>(header.display_height) * scale;
-    const std::size_t output_size =
-        static_cast<std::size_t>(output_width) *
-        output_height * 4;
-    std::vector<std::uint8_t> gpu(output_size);
-    WorldGpuRenderStats gpu_stats{};
-    const WorldGpuRenderOptions options{
+    WorldGpuRenderOptions options{
         warp,
         depth,
         dither,
@@ -725,6 +744,17 @@ int main(int argc, char** argv) {
         scale,
         clear_color,
     };
+    options.target_aspect_width = target_aspect_width;
+    options.target_aspect_height = target_aspect_height;
+    const std::uint32_t output_width =
+        world_gpu_target_display_width(draw_list, options) * scale;
+    const std::uint32_t output_height =
+        static_cast<std::uint32_t>(header.display_height) * scale;
+    const std::size_t output_size =
+        static_cast<std::size_t>(output_width) *
+        output_height * 4;
+    std::vector<std::uint8_t> gpu(output_size);
+    WorldGpuRenderStats gpu_stats{};
     const auto gpu_result = render_world_d3d11(
         draw_list,
         vram.data(),

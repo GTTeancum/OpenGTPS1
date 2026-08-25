@@ -1037,7 +1037,9 @@ internal static class HostWindow
                 _nativeWorldTex,
                 _nativeWorldWidth,
                 _nativeWorldHeight,
-                4f / 3f);
+                _nativeWorldHeight > 0
+                    ? _nativeWorldWidth / (float)_nativeWorldHeight
+                    : 4f / 3f);
         }
         if (_tracePerformance)
         {

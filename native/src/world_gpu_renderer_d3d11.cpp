@@ -1977,6 +1977,198 @@ struct CachedReplacementResolution {
     ReplacementResolution resolution{};
 };
 
+enum class HudHorizontalAnchor : std::int8_t {
+    left = -1,
+    center = 0,
+    right = 1,
+};
+
+struct HudHorizontalPlacement {
+    HudHorizontalAnchor anchor{HudHorizontalAnchor::center};
+    // Authored distance from the selected guest edge. The renderer scales
+    // this margin with the target width while leaving the HUD artwork itself
+    // at its authored size.
+    float edge_margin{};
+};
+
+struct HudBounds {
+    float minimum_x{};
+    float minimum_y{};
+    float maximum_x{};
+    float maximum_y{};
+    bool eligible{};
+    bool connectable{};
+};
+
+std::vector<HudHorizontalPlacement> build_hud_horizontal_placements(
+    const WorldDrawList& draw_list
+) {
+    std::vector<HudHorizontalPlacement> placements(
+        draw_list.commands.size());
+    std::vector<HudBounds> bounds(draw_list.commands.size());
+    std::vector<std::size_t> parents(draw_list.commands.size());
+    for (std::size_t index = 0; index < parents.size(); ++index)
+        parents[index] = index;
+
+    const auto find_root = [&parents] (std::size_t index) {
+        std::size_t root = index;
+        while (parents[root] != root)
+            root = parents[root];
+        while (parents[index] != index) {
+            const std::size_t next = parents[index];
+            parents[index] = root;
+            index = next;
+        }
+        return root;
+    };
+    const auto join = [&parents, &find_root] (
+        std::size_t left,
+        std::size_t right
+    ) {
+        const std::size_t left_root = find_root(left);
+        const std::size_t right_root = find_root(right);
+        if (left_root != right_root)
+            parents[right_root] = left_root;
+    };
+
+    std::vector<std::size_t> hud_commands;
+    hud_commands.reserve(draw_list.unclassified_commands);
+    for (std::size_t command_index = 0;
+         command_index < draw_list.commands.size();
+         ++command_index) {
+        const auto& command = draw_list.commands[command_index];
+        if (command.material_index >= draw_list.materials.size())
+            continue;
+        const auto& material = draw_list.materials[command.material_index];
+        if (
+            (material.primitive_flags &
+                world_primitive_screen_space_flag) == 0 ||
+            command.channel != WorldViewChannel::main_view
+        )
+            continue;
+        auto& item = bounds[command_index];
+        item.minimum_x = item.maximum_x = command.vertices[0].screen_x;
+        item.minimum_y = item.maximum_y = command.vertices[0].screen_y;
+        for (int vertex_index = 1; vertex_index < 3; ++vertex_index) {
+            const auto& vertex = command.vertices[vertex_index];
+            item.minimum_x = (std::min)(item.minimum_x, vertex.screen_x);
+            item.minimum_y = (std::min)(item.minimum_y, vertex.screen_y);
+            item.maximum_x = (std::max)(item.maximum_x, vertex.screen_x);
+            item.maximum_y = (std::max)(item.maximum_y, vertex.screen_y);
+        }
+        item.eligible = true;
+        item.connectable =
+            item.maximum_x - item.minimum_x <=
+                static_cast<float>(draw_list.display_width) * 0.75F &&
+            item.maximum_y - item.minimum_y <=
+                static_cast<float>(draw_list.display_height) * 0.75F;
+        hud_commands.push_back(command_index);
+    }
+
+    // A PS1 sprite or font run arrives as several independently triangulated
+    // commands.  Anchor the connected run as one HUD element so the two
+    // halves of a quad, or the final glyph in a left-side label, cannot choose
+    // different widescreen margins.  The two-pixel tolerance bridges the
+    // authored spacing between adjacent font glyphs without joining separate
+    // HUD panels.
+    constexpr float connection_gap = 2.0F;
+    for (std::size_t left_index = 0;
+         left_index < hud_commands.size();
+         ++left_index) {
+        const std::size_t left_command = hud_commands[left_index];
+        const auto& left = bounds[left_command];
+        if (!left.connectable)
+            continue;
+        for (std::size_t right_index = left_index + 1;
+             right_index < hud_commands.size();
+             ++right_index) {
+            const std::size_t right_command = hud_commands[right_index];
+            const auto& right = bounds[right_command];
+            if (!right.connectable)
+                continue;
+            const bool separated_x =
+                left.maximum_x + connection_gap < right.minimum_x ||
+                right.maximum_x + connection_gap < left.minimum_x;
+            const bool separated_y =
+                left.maximum_y + connection_gap < right.minimum_y ||
+                right.maximum_y + connection_gap < left.minimum_y;
+            if (!separated_x && !separated_y)
+                join(left_command, right_command);
+        }
+    }
+
+    std::vector<HudBounds> component_bounds(draw_list.commands.size());
+    for (const std::size_t command_index : hud_commands) {
+        const std::size_t root = find_root(command_index);
+        const auto& source = bounds[command_index];
+        auto& component = component_bounds[root];
+        if (!component.eligible) {
+            component = source;
+        } else {
+            component.minimum_x = (std::min)(
+                component.minimum_x, source.minimum_x);
+            component.minimum_y = (std::min)(
+                component.minimum_y, source.minimum_y);
+            component.maximum_x = (std::max)(
+                component.maximum_x, source.maximum_x);
+            component.maximum_y = (std::max)(
+                component.maximum_y, source.maximum_y);
+        }
+    }
+
+    const float display_x = static_cast<float>(draw_list.display_x);
+    const float display_width = static_cast<float>(draw_list.display_width);
+    const float left_limit = display_x + display_width * 0.4F;
+    const float right_limit = display_x + display_width * 0.6F;
+    for (const std::size_t command_index : hud_commands) {
+        const auto& component = component_bounds[find_root(command_index)];
+        const float center_x =
+            (component.minimum_x + component.maximum_x) * 0.5F;
+        auto& placement = placements[command_index];
+        placement.anchor = center_x < left_limit
+            ? HudHorizontalAnchor::left
+            : center_x > right_limit
+            ? HudHorizontalAnchor::right
+            : HudHorizontalAnchor::center;
+        if (placement.anchor == HudHorizontalAnchor::left) {
+            placement.edge_margin = (std::max)(
+                0.0F, component.minimum_x - display_x);
+        } else if (placement.anchor == HudHorizontalAnchor::right) {
+            placement.edge_margin = (std::max)(
+                0.0F,
+                display_x + display_width - component.maximum_x);
+        }
+    }
+    if (!hud_commands.empty()) {
+        static thread_local bool emitted = false;
+        if (!emitted) {
+            emitted = true;
+            std::array<std::size_t, 3> anchor_counts{};
+            std::size_t component_count = 0;
+            for (const std::size_t command_index : hud_commands) {
+                const auto anchor = placements[command_index].anchor;
+                ++anchor_counts[static_cast<std::size_t>(
+                    static_cast<std::int8_t>(anchor) + 1)];
+                if (find_root(command_index) == command_index)
+                    ++component_count;
+            }
+            std::fprintf(
+                stderr,
+                "[Render-HUD] commands=%zu components=%zu "
+                "anchors=%zu/%zu/%zu guest=%dx%d "
+                "policy=relative-edge-groups\n",
+                hud_commands.size(),
+                component_count,
+                anchor_counts[0],
+                anchor_counts[1],
+                anchor_counts[2],
+                draw_list.display_width,
+                draw_list.display_height);
+        }
+    }
+    return placements;
+}
+
 struct FrameInputResources {
     ComPtr<ID3D11Buffer> vertex_buffer;
     UINT vertex_buffer_bytes{};
@@ -3418,12 +3610,47 @@ WorldGpuRenderResult render_world_d3d11(
         output_scale > 8
     )
         return WorldGpuRenderResult::invalid_argument;
+    const std::uint32_t target_display_width =
+        world_gpu_target_display_width(draw_list, options);
+    if (target_display_width == 0 || target_display_width > 8192U)
+        return WorldGpuRenderResult::invalid_argument;
     const std::uint32_t output_width =
-        static_cast<std::uint32_t>(draw_list.display_width) *
-        output_scale;
+        target_display_width * output_scale;
     const std::uint32_t output_height =
         static_cast<std::uint32_t>(draw_list.display_height) *
         output_scale;
+    const float horizontal_projection_scale =
+        static_cast<float>(draw_list.display_width) /
+        static_cast<float>(target_display_width);
+    const std::int32_t horizontal_margin = static_cast<std::int32_t>(
+        (output_width -
+            static_cast<std::uint32_t>(draw_list.display_width) *
+                output_scale) /
+        2U);
+    const std::int32_t horizontal_extra = static_cast<std::int32_t>(
+        output_width -
+        static_cast<std::uint32_t>(draw_list.display_width) * output_scale);
+    const auto hud_output_offset = [
+        horizontal_extra,
+        &draw_list
+    ] (const HudHorizontalPlacement& placement)
+    {
+        const float proportional_margin =
+            draw_list.display_width > 0
+            ? placement.edge_margin * horizontal_extra /
+                static_cast<float>(draw_list.display_width)
+            : 0.0F;
+        switch (placement.anchor) {
+            case HudHorizontalAnchor::left:
+                return proportional_margin;
+            case HudHorizontalAnchor::right:
+                return static_cast<float>(horizontal_extra) -
+                    proportional_margin;
+            case HudHorizontalAnchor::center:
+            default:
+                return static_cast<float>(horizontal_extra) * 0.5F;
+        }
+    };
     const std::size_t required_output =
         static_cast<std::size_t>(output_width) *
         output_height * 4;
@@ -3448,6 +3675,7 @@ WorldGpuRenderResult render_world_d3d11(
     // reconstruction available for focused diagnostics, but render the
     // authored wheel mesh in normal builds.
     std::vector<SmoothWheel> smooth_wheels;
+    std::vector<HudHorizontalPlacement> hud_horizontal_placements;
     if (const char* enabled = std::getenv("OPENGT_RENDER_SMOOTH_WHEELS");
         enabled != nullptr && std::strcmp(enabled, "1") == 0) {
         try {
@@ -3457,6 +3685,8 @@ WorldGpuRenderResult render_world_d3d11(
         }
     }
     try {
+        hud_horizontal_placements =
+            build_hud_horizontal_placements(draw_list);
         emit_vehicle_diagnostics(
             draw_list, smooth_wheels, options.synthetic_midpoint);
         emit_clip_rect_diagnostics(draw_list);
@@ -3800,6 +4030,23 @@ WorldGpuRenderResult render_world_d3d11(
          ++command_index) {
         const auto& command = draw_list.commands[command_index];
         const auto& material = draw_list.materials[command.material_index];
+        const bool screen_space =
+            (material.primitive_flags &
+                world_primitive_screen_space_flag) != 0;
+        const auto& hud_placement =
+            hud_horizontal_placements[command_index];
+        const float hud_native_offset = screen_space
+            ? hud_output_offset(hud_placement) /
+                static_cast<float>(output_scale)
+            : static_cast<float>(horizontal_margin) /
+                static_cast<float>(output_scale);
+        const float centered_native_offset =
+            static_cast<float>(target_display_width -
+                static_cast<std::uint32_t>(draw_list.display_width)) * 0.5F;
+        const float hud_ndc_shift = screen_space
+            ? 2.0F * (hud_native_offset - centered_native_offset) /
+                static_cast<float>(target_display_width)
+            : 0.0F;
         const bool vehicle_shadow =
             soft_vehicle_shadow(command, material);
         for (int index = 0; index < 3; ++index) {
@@ -3821,6 +4068,10 @@ WorldGpuRenderResult render_world_d3d11(
                 },
                 static_cast<std::uint32_t>(command_index),
             };
+            gpu_vertices[command_index * 3 + index].position[0] *=
+                horizontal_projection_scale;
+            gpu_vertices[command_index * 3 + index].position[0] +=
+                source.clip_w * hud_ndc_shift;
         }
     }
     constexpr double two_pi = 6.283185307179586476925286766559;
@@ -3869,9 +4120,11 @@ WorldGpuRenderResult render_world_d3d11(
                 wheel.shell_maximum_x, projected_x);
             wheel.shell_maximum_y = (std::max)(
                 wheel.shell_maximum_y, projected_y);
-            const double ndc_x =
+            const double guest_ndc_x =
                 ((projected_x - draw_list.display_x) /
                     draw_list.display_width) * 2.0 - 1.0;
+            const double ndc_x = guest_ndc_x *
+                draw_list.display_width / target_display_width;
             const double ndc_y =
                 1.0 - ((projected_y - draw_list.display_y) /
                     draw_list.display_height) * 2.0;
@@ -4128,16 +4381,8 @@ WorldGpuRenderResult render_world_d3d11(
             0);
     }
 
-    std::uint32_t depth_object_kind =
-        (std::numeric_limits<std::uint32_t>::max)();
-    std::uint32_t depth_object_id =
-        (std::numeric_limits<std::uint32_t>::max)();
-    std::uint32_t depth_model_pointer =
-        (std::numeric_limits<std::uint32_t>::max)();
     WorldViewChannel depth_channel = WorldViewChannel::main_view;
     bool depth_channel_initialized = false;
-    std::int32_t depth_bucket =
-        (std::numeric_limits<std::int32_t>::min)();
     int bound_pass = -1;
     bool has_bound_scissor = false;
     D3D11_RECT bound_scissor{};
@@ -4170,7 +4415,8 @@ WorldGpuRenderResult render_world_d3d11(
                 std::clamp(
                     static_cast<LONG>(
                         (wheel.clip_x0 - draw_list.display_x) *
-                        static_cast<std::int32_t>(output_scale)),
+                        static_cast<std::int32_t>(output_scale) +
+                        horizontal_margin),
                     0L,
                     static_cast<LONG>(output_width)),
                 std::clamp(
@@ -4182,7 +4428,8 @@ WorldGpuRenderResult render_world_d3d11(
                 std::clamp(
                     static_cast<LONG>(
                         (wheel.clip_x1 - draw_list.display_x + 1) *
-                        static_cast<std::int32_t>(output_scale)),
+                        static_cast<std::int32_t>(output_scale) +
+                        horizontal_margin),
                     0L,
                     static_cast<LONG>(output_width)),
                 std::clamp(
@@ -4253,6 +4500,13 @@ WorldGpuRenderResult render_world_d3d11(
                 });
             if (inserts_wheel)
                 break;
+            if (
+                hud_horizontal_placements[next_index].anchor !=
+                    hud_horizontal_placements[command_index].anchor ||
+                hud_horizontal_placements[next_index].edge_margin !=
+                    hud_horizontal_placements[command_index].edge_margin
+            )
+                break;
             const auto& next_command = draw_list.commands[
                 next_index];
             if (next_command.material_index >=
@@ -4285,25 +4539,42 @@ WorldGpuRenderResult render_world_d3d11(
                     batch_commands);
         }
 
+        const bool full_main_world_scissor =
+            !screen_space &&
+            command.channel == WorldViewChannel::main_view &&
+            command.clip_x0 <= draw_list.display_x &&
+            command.clip_x1 >=
+                draw_list.display_x + draw_list.display_width - 1;
+        const std::int32_t command_horizontal_offset = screen_space
+            ? static_cast<std::int32_t>(std::lround(
+                hud_output_offset(
+                    hud_horizontal_placements[command_index])))
+            : horizontal_margin;
         const D3D11_RECT scissor{
-            std::clamp(
-                static_cast<LONG>(
-                    (command.clip_x0 - draw_list.display_x) *
-                    static_cast<std::int32_t>(output_scale)),
-                0L,
-                static_cast<LONG>(output_width)),
+            full_main_world_scissor
+                ? 0L
+                : std::clamp(
+                    static_cast<LONG>(
+                        (command.clip_x0 - draw_list.display_x) *
+                        static_cast<std::int32_t>(output_scale) +
+                        command_horizontal_offset),
+                    0L,
+                    static_cast<LONG>(output_width)),
             std::clamp(
                 static_cast<LONG>(
                     (command.clip_y0 - draw_list.display_y) *
                     static_cast<std::int32_t>(output_scale)),
                 0L,
                 static_cast<LONG>(output_height)),
-            std::clamp(
-                static_cast<LONG>(
-                    (command.clip_x1 - draw_list.display_x + 1) *
-                    static_cast<std::int32_t>(output_scale)),
-                0L,
-                static_cast<LONG>(output_width)),
+            full_main_world_scissor
+                ? static_cast<LONG>(output_width)
+                : std::clamp(
+                    static_cast<LONG>(
+                        (command.clip_x1 - draw_list.display_x + 1) *
+                        static_cast<std::int32_t>(output_scale) +
+                        command_horizontal_offset),
+                    0L,
+                    static_cast<LONG>(output_width)),
             std::clamp(
                 static_cast<LONG>(
                     (command.clip_y1 - draw_list.display_y + 1) *
@@ -4337,33 +4608,21 @@ WorldGpuRenderResult render_world_d3d11(
         if (
             options.depth_buffer &&
             uses_modern_depth &&
-            (
-                command.object_kind != depth_object_kind ||
-                !depth_channel_initialized ||
-                command.channel != depth_channel ||
-                (command.object_kind == 1U &&
-                    command.ordering_table_index != depth_bucket) ||
-                (command.object_kind != 1U &&
-                    (command.object_id != depth_object_id ||
-                        (command.object_kind != 2U &&
-                            command.model_pointer != depth_model_pointer)))
-            )
+            depth_channel_initialized &&
+            command.channel != depth_channel
         ) {
-            // Track sections in one OT layer are one coherent modern depth
-            // surface. Resetting at every section/model made distant props
-            // alternate ownership as section submission changed. Vehicle
-            // models intentionally retain authored painter order instead:
-            // wheel rims, tyre faces, and body cut-outs contain coplanar PS1
-            // submeshes that a LESS_EQUAL depth surface can incorrectly mask.
+            // A view owns one coherent depth surface for its complete world
+            // pass. GT2 ordering-table buckets are submission-order hints,
+            // not independent depth spaces: clearing between them lets a
+            // later distant road section overwrite nearer geometry. A
+            // secondary camera is a new view and therefore starts clean.
             context->ClearDepthStencilView(
                 base.depth_view.Get(),
                 D3D11_CLEAR_DEPTH,
                 1.0F,
                 0);
-            depth_object_kind = command.object_kind;
-            depth_object_id = command.object_id;
-            depth_model_pointer = command.model_pointer;
-            depth_bucket = command.ordering_table_index;
+        }
+        if (uses_modern_depth) {
             depth_channel = command.channel;
             depth_channel_initialized = true;
         }

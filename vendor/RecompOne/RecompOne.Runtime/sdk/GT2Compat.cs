@@ -57,6 +57,32 @@ public static class GT2Compat
             ? uint.MaxValue
             : 0x0063FFFFu;
 
+    /// <summary>
+    /// GT2 classifies each course object against its authored 4:3 frustum
+    /// before emitting any primitives: 0 is inside, 1 intersects, and 2 is
+    /// outside. The PC renderer owns the wider horizontal frustum, so an
+    /// object rejected only at this boundary must reach primitive capture.
+    /// Treating it as fully inside also avoids the guest's 4:3 polygon clip;
+    /// D3D performs the target-aspect clip after continuous projection.
+    /// </summary>
+    public static uint ExpandTrackFrustumClassification(uint classification)
+    {
+        switch (classification)
+        {
+            case 0u: _trackFrustumInside++; break;
+            case 1u: _trackFrustumIntersecting++; break;
+            case 2u: _trackFrustumOutside++; break;
+        }
+        if (classification == 2u &&
+            ExtendedTrackFeatureEnabled(
+                "RECOMPONE_GT2_EXTENDED_TRACK_FRUSTUM"))
+        {
+            _trackFrustumExpanded++;
+            return 0u;
+        }
+        return classification;
+    }
+
     static readonly bool TraceBoot =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_BOOT") == "1";
     static readonly bool TraceMenu =
@@ -79,6 +105,8 @@ public static class GT2Compat
             : -1;
     static readonly bool TraceTrackRendering =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_TRACK_RENDERING") == "1";
+    static readonly bool TraceTrackFrustum =
+        Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_TRACK_FRUSTUM") == "1";
     static readonly bool TraceVehicleLod =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_VEHICLE_LOD") == "1";
     static readonly bool TraceWheelTransforms =
@@ -91,13 +119,31 @@ public static class GT2Compat
         Environment.GetEnvironmentVariable("RECOMPONE_AUDIT_RENDERER") == "1";
     static readonly bool TraceAiDrivers =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_AI_DRIVERS") == "1";
+    static readonly string? AiMemoryTracePath =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_TRACE_GT2_AI_MEMORY_PATH");
     static readonly bool TraceLiveries =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_LIVERIES") == "1";
+    static readonly string? ArcadeRaceConfigTracePath =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_TRACE_GT2_ARCADE_RACE_CONFIG_PATH");
+    static readonly string? ArcadePreFinalizeConfigTracePath =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_TRACE_GT2_ARCADE_PRE_FINALIZE_CONFIG_PATH");
+    static readonly string? ArcadeRaceStateTracePath =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_TRACE_GT2_ARCADE_RACE_STATE_PATH");
+    static readonly string? ArcadeRaceMemoryTracePath =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_TRACE_GT2_ARCADE_RACE_MEMORY_PATH");
     static readonly bool AiAutoDrive =
         Environment.GetEnvironmentVariable("RECOMPONE_GT2_AI_AUTODRIVE") == "1";
     static readonly bool UnlockArcadeCourses =
         Environment.GetEnvironmentVariable(
             "RECOMPONE_GT2_ARCADE_UNLOCK_ALL_COURSES") == "1";
+    static readonly string? DirectArcadeRace =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_GT2_DIRECT_ARCADE_RACE");
     static readonly int AiAutoDriveMaxEngagements =
         ParseAiAutoDriveMaxEngagements(
             Environment.GetEnvironmentVariable(
@@ -113,6 +159,10 @@ public static class GT2Compat
     static readonly HashSet<string> RaceSchedulerStates = [];
     static int _true60HzSchedulerReports;
     static int _arcadeCourseUnlockReported;
+    static int _arcadeRaceConfigTraceReported;
+    static int _arcadePreFinalizeConfigTraceReported;
+    static int _arcadeRaceStateTraceReported;
+    static int _arcadeRaceMemoryTraceReported;
     static int _true60HzVSyncReports;
     static uint[]? _true60HzStateSnapshot;
     static uint _true60HzStateCar;
@@ -162,6 +212,7 @@ public static class GT2Compat
     static long _trackRenderRequests;
     static int _trackRenderSamples;
     static int _trackVisibilitySamples;
+    static int _trackFrustumSamples;
     static long _trackVisibilityFunctionCalls;
     static long _trackVisibilityRaceCalls;
     static long _trackVisibilityReplayCalls;
@@ -191,6 +242,10 @@ public static class GT2Compat
     static long _visibilityExpandedTransitionRemoves;
     static int _visibilityStockMaximumTransition;
     static int _visibilityExpandedMaximumTransition;
+    static long _trackFrustumInside;
+    static long _trackFrustumIntersecting;
+    static long _trackFrustumOutside;
+    static long _trackFrustumExpanded;
     static readonly HashSet<uint> VisibilityLodInvalidListSamples = [];
     static int _visibilityLodExitTraceRegistered;
     static int _wheelTransformTraceEnabledReported;
@@ -215,7 +270,6 @@ public static class GT2Compat
     static readonly System.Text.StringBuilder WheelTransformTraceCsv = new();
     static bool _wheelTransformTraceExitRegistered;
     const uint ExpandedVisibilityListAddress = 0x807F0000u;
-    const int ExtendedVisibilitySectorRadius = 3;
     static readonly int[] VisibilityEntryGenerations = new int[0x4000];
     static readonly int[] VisibilityEntryPositions = new int[0x4000];
     static readonly ushort[] ExpandedVisibilityEntries = new ushort[0x4000];
@@ -505,8 +559,329 @@ public static class GT2Compat
     /// original overlay loader to enter the native Arcade frontend directly.
     /// Standalone diagnostics retain the stock Arcade-disc opening overlay.
     /// </summary>
-    public static uint InitialArcadeOverlayIndex() =>
-        _unifiedArcadeTransition ? 1u : 5u;
+    public static uint InitialArcadeOverlayIndex(IMemory m)
+    {
+        if (!string.IsNullOrWhiteSpace(DirectArcadeRace))
+        {
+            if (!DirectArcadeRace.Equals(
+                    "seattle-circuit",
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    $"Unsupported direct Arcade race: {DirectArcadeRace}");
+            // Overlay 2 owns the native race-state constructor.  Enter it
+            // directly and let the generated guest hook below bypass only
+            // its interactive menu loop; jumping to overlay 3 would omit the
+            // separate 0x58C-byte race state that overlay 0 consumes.
+            return 2u;
+        }
+        return _unifiedArcadeTransition ? 1u : 5u;
+    }
+
+    /// <summary>
+    /// Once overlay 2's own asynchronous setup has created the merged Arcade
+    /// parameter database, install the deterministic pre-finalization Seattle
+    /// selection record. The generated guest hook then calls the original race
+    /// constructor; no vehicle, race-state, or post-construction data is
+    /// synthesized by the host.
+    /// </summary>
+    public static bool PrepareDirectArcadeRaceConfig(IMemory m)
+    {
+        if (string.IsNullOrWhiteSpace(DirectArcadeRace))
+            return false;
+        if (!DirectArcadeRace.Equals(
+                "seattle-circuit",
+                StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                $"Unsupported direct Arcade race: {DirectArcadeRace}");
+
+        const uint parameterDatabasePointer = 0x80092B64u;
+        uint parameterDatabase = m.ReadU32(parameterDatabasePointer);
+        if (parameterDatabase == 0u)
+            throw new InvalidOperationException(
+                "Direct Seattle frontend resumed before the native Arcade " +
+                "parameter database was ready");
+        if (parameterDatabase != 0x80200000u)
+            throw new InvalidOperationException(
+                "Direct Seattle native parameter database was created at " +
+                $"0x{parameterDatabase:X8}; expected 0x80200000");
+
+        InstallDirectSeattlePreFinalizeConfig(m, 0x801C3010u);
+        return true;
+    }
+
+    /// <summary>
+    /// Overlay 2's frontend update is a guest coroutine: its one-time setup
+    /// callback finishes deep inside the managed call stack and the normal
+    /// continuation is reached only after interactive menu selection. Direct
+    /// launch needs the setup but not the menus, so unwind to the exact saved
+    /// outer stack and resume at the update's authored return continuation.
+    /// </summary>
+    public static void ResumeDirectArcadeRaceAfterSetup(
+        uint loaderObject, CpuContext c, IMemory m)
+    {
+        if (string.IsNullOrWhiteSpace(DirectArcadeRace))
+            return;
+
+        uint parameterDatabase = m.ReadU32(0x80092B64u);
+        if (parameterDatabase != 0x80200000u)
+            throw new InvalidOperationException(
+                "Direct Seattle native frontend setup completed with " +
+                $"parameter database 0x{parameterDatabase:X8}; " +
+                "expected 0x80200000");
+
+        c.SP = loaderObject - 0x10u;
+        c.V0 = 0u;
+        Console.WriteLine(
+            "[GT2-Direct] native Arcade frontend setup complete; " +
+            "resuming its race-selection continuation");
+        throw new NonLocalJump(0x80011780u, returnTrampoline: true);
+    }
+
+    public static uint DirectArcadeRaceSelectionA => 0x79977997u;
+    public static uint DirectArcadeRaceSelectionB => 0x131E131Eu;
+
+    /// <summary>
+    /// Copy overlay 2's verified finalized selection into the fixed handoff
+    /// block consumed by overlay 3. This is the byte-for-byte copy performed by
+    /// SCUS-94455 after its menu-only fade controller completes.
+    /// </summary>
+    public static void PrepareDirectArcadeRaceHandoff(IMemory m)
+    {
+        const uint source = 0x801C3010u;
+        const uint destination = 0x801D5A00u;
+        const int length = 0x2D4;
+        for (int offset = 0; offset < length; offset++)
+            m.WriteU8(
+                destination + (uint)offset,
+                m.ReadU8(source + (uint)offset));
+        m.WriteU8(0x801EF021u, 1);
+        m.WriteU8(0x801EF022u, 1);
+        Console.WriteLine(
+            "[GT2-Direct] skipped menu-only fade; native overlay-3 " +
+            "Seattle handoff prepared");
+    }
+
+    /// <summary>
+    /// Fail closed unless the unmodified Arcade constructor reproduces the
+    /// exact finalized Seattle selection and all non-roster race state. GT2
+    /// selects the five opponents from its live frontend RNG state, so each
+    /// native vehicle record is validated structurally instead of requiring a
+    /// particular menu-timing-dependent lineup.
+    /// </summary>
+    public static void VerifyDirectArcadeRaceConstruction(IMemory m)
+    {
+        VerifyDirectArcadeRaceBytes(
+            m,
+            0x801C3010u,
+            DirectSeattleRaceConfigBase64,
+            0x2D4,
+            "finalized config");
+        if (!string.IsNullOrWhiteSpace(ArcadeRaceStateTracePath))
+            CaptureArcadeRaceState(
+                0x801D52BCu,
+                ArcadeRaceStateTracePath,
+                "direct-post-constructor",
+                m);
+        VerifyDirectArcadeRaceState(m);
+        Console.WriteLine(
+            "[GT2-Direct] native Seattle construction verified; " +
+            "parameter-db=0x80200000 config=0x801C3010 state=0x801D52BC");
+    }
+
+    public static void TraceArcadeRacePreFinalizeConfig(
+        uint selectionA,
+        uint selectionB,
+        uint address,
+        IMemory m)
+    {
+        if (!ArcadeVariant ||
+            string.IsNullOrWhiteSpace(ArcadePreFinalizeConfigTracePath) ||
+            Interlocked.Exchange(
+                ref _arcadePreFinalizeConfigTraceReported, 1) != 0)
+            return;
+
+        CaptureArcadeRaceConfig(
+            address,
+            ArcadePreFinalizeConfigTracePath,
+            "pre-finalize",
+            m);
+        Console.Error.WriteLine(
+            "[GT2-Direct] native race selection inputs " +
+            $"a=0x{selectionA:X8} b=0x{selectionB:X8} " +
+            $"config=0x{address:X8}");
+    }
+
+    // Deterministic input to the authoritative SCUS-94455 native Arcade race
+    // constructor for the default road-race grid on Seattle Circuit. Two
+    // independent menu-driven captures were byte-identical (SHA-256
+    // 47DE747C3F0179D8C8F55910FCE129B186B05701F4AA15686D538CDA39DACAEC),
+    // including the Seattle identity already resolved by the course selector.
+    const string DirectSeattlePreFinalizeConfigBase64 =
+        "AAEEAAIA//8AAAAAWMM1DVjDNQ0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFNlYXR0bGUgQ2lyY3VpdAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAACuYteiAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "oHEMgA==";
+
+    // Deterministic output of the authoritative SCUS-94455 native Arcade
+    // frontend for the default road-race grid on Seattle Circuit. Two Seattle
+    // runs were byte-identical; a Tahiti control differed only in the course
+    // name and identity fields. Overlay 3 consumes this exact 0x2D4-byte
+    // selection record before entering the unmodified race engine.
+    const string DirectSeattleRaceConfigBase64 =
+        "AAEEAAIA//8AAAAAWMM1DVjDNQ0AAAAAAAAAAAABAAAKAAAAAAAKAAoACgAKAAoACgARABEAAAALAAAAAAAAAAAAAAAAAAAA" +
+        "CgAAAAAAAAAAAAAACQAAAHQJUAr0BhQF6APkAuoB//96Df//DAwRFQAAAAAAAAAAjIyAgCQhS0sBAQEBAQEBAQEBAAcAHgAP" +
+        "AQEAAAD/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFNlYXR0bGUgQ2lyY3VpdAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAACuYteiAwAAAAABAAAKAAAAAAAKAAoACgAKAAoACgARABEAAAALAAAAAAAAAAAAAAAAAAAACgAAAAAAAAAAAAAA" +
+        "CQAAAHQJUAr0BhQF6APkAuoB//96Df//DAwRFQAAAAAAAAAAjIyAgCQhS0sBAQEBAQEBAQEBAAcAHgAPAQEAAAD/AAAAAAAA" +
+        "AAAAAAABAAAKAAAAAAAKAAoACgAKAAoACgARABEAAAALAAAAAAAAAAAAAAAAAAAACgAAAAAAAAAAAAAACQAAAHQJUAr0BhQF" +
+        "6APkAuoB//96Df//DAwRFQAAAAAAAAAAjIyAgCQhS0sBAQEBAQEBAQEBAAcAHgAPAQEAAAD/AAAAAAAAAAAAAAAAAAAAAAAA" +
+        "oHEMgA==";
+
+    // Stable reference output of Arcade overlay 2's race-state constructor
+    // for the Seattle fixture (SHA-256
+    // E7F4E82ECE0B0EC1A6726BE732D880C9517C271D6548654BA35EFA1E172FD1F2).
+    // Validation compares every byte except the five 0xD0-byte opponent
+    // records: GT2 selects that roster from its live frontend RNG state, so
+    // those native records are checked structurally below.
+    const string DirectSeattleRaceStateBase64 =
+        "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";
+
+    static void InstallDirectSeattlePreFinalizeConfig(IMemory m, uint address)
+    {
+        const int expectedLength = 0x2D4;
+        byte[] config = Convert.FromBase64String(
+            DirectSeattlePreFinalizeConfigBase64);
+        if (config.Length != expectedLength)
+            throw new InvalidDataException(
+                $"Direct Seattle race config has {config.Length} bytes; " +
+                $"expected {expectedLength}");
+        for (int offset = 0; offset < config.Length; offset++)
+            m.WriteU8(address + (uint)offset, config[offset]);
+        Console.WriteLine(
+            "[GT2-Direct] installed native Seattle pre-finalize config; " +
+            $"address=0x{address:X8} bytes={config.Length} " +
+            "native-constructor=overlay-2");
+    }
+
+    static void VerifyDirectArcadeRaceBytes(
+        IMemory m,
+        uint address,
+        string expectedBase64,
+        int expectedLength,
+        string label)
+    {
+        byte[] expected = Convert.FromBase64String(expectedBase64);
+        if (expected.Length != expectedLength)
+            throw new InvalidDataException(
+                $"Direct Seattle expected {label} has {expected.Length} bytes; " +
+                $"expected {expectedLength}");
+        for (int offset = 0; offset < expected.Length; offset++)
+        {
+            byte actual = m.ReadU8(address + (uint)offset);
+            if (actual != expected[offset])
+                throw new InvalidOperationException(
+                    $"Direct Seattle native {label} differs at +0x{offset:X}: " +
+                    $"actual=0x{actual:X2} expected=0x{expected[offset]:X2}");
+        }
+    }
+
+    static void VerifyDirectArcadeRaceState(IMemory m)
+    {
+        const uint address = 0x801D52BCu;
+        const int expectedLength = 0x58C;
+        const int opponentStart = 0x12C;
+        const int opponentSize = 0xD0;
+        const int opponentCount = 5;
+        const int opponentEnd = opponentStart + opponentSize * opponentCount;
+        const int nameOffset = 0x90;
+        const int nameCapacity = 0x40;
+
+        byte[] expected = Convert.FromBase64String(
+            DirectSeattleRaceStateBase64);
+        if (expected.Length != expectedLength)
+            throw new InvalidDataException(
+                $"Direct Seattle reference race state has {expected.Length} " +
+                $"bytes; expected {expectedLength}");
+
+        var actual = new byte[expectedLength];
+        for (int offset = 0; offset < actual.Length; offset++)
+        {
+            actual[offset] = m.ReadU8(address + (uint)offset);
+            if (offset >= opponentStart && offset < opponentEnd)
+                continue;
+            if (actual[offset] != expected[offset])
+                throw new InvalidOperationException(
+                    "Direct Seattle native non-roster race state differs at " +
+                    $"+0x{offset:X}: actual=0x{actual[offset]:X2} " +
+                    $"expected=0x{expected[offset]:X2}");
+        }
+
+        var opponentNames = new string[opponentCount];
+        for (int index = 0; index < opponentCount; index++)
+        {
+            int recordOffset = opponentStart + index * opponentSize;
+            uint vehicleId = BinaryPrimitives.ReadUInt32LittleEndian(
+                actual.AsSpan(recordOffset, sizeof(uint)));
+            if (vehicleId == 0u || vehicleId == uint.MaxValue ||
+                actual[recordOffset + 9] != 1)
+                throw new InvalidOperationException(
+                    $"Direct Seattle opponent {index} has an invalid native " +
+                    $"vehicle record (id=0x{vehicleId:X8})");
+
+            int length = 0;
+            while (length < nameCapacity &&
+                   actual[recordOffset + nameOffset + length] != 0)
+            {
+                byte value = actual[recordOffset + nameOffset + length];
+                if (value < 0x20 || value >= 0x7F)
+                    throw new InvalidOperationException(
+                        $"Direct Seattle opponent {index} has a non-ASCII " +
+                        $"vehicle name byte 0x{value:X2}");
+                length++;
+            }
+            if (length < 4 || length == nameCapacity)
+                throw new InvalidOperationException(
+                    $"Direct Seattle opponent {index} has an invalid native " +
+                    "vehicle name");
+            opponentNames[index] = System.Text.Encoding.ASCII.GetString(
+                actual, recordOffset + nameOffset, length);
+        }
+
+        string digest = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(actual));
+        Console.WriteLine(
+            "[GT2-Direct] native Seattle race state verified; " +
+            $"sha256={digest} opponents={string.Join(" | ", opponentNames)}");
+    }
 
     /// <summary>
     /// Reproduce the Arcade executable's authored BSS state without invoking
@@ -746,6 +1121,7 @@ public static class GT2Compat
     static int _vehicleLodTraceRegistered;
     static int _forcedVehicleLodReported;
     static long _aiDriverTicks;
+    static int _aiMemoryTraceReported;
     static int _aiAutoDriveReported;
     static int _aiAutoDriveRaceTicks;
     static int _aiAutoDriveQuickWinApplied;
@@ -874,6 +1250,25 @@ public static class GT2Compat
             return;
 
         long tick = Interlocked.Increment(ref _aiDriverTicks);
+        if (!string.IsNullOrWhiteSpace(AiMemoryTracePath) &&
+            Interlocked.Exchange(ref _aiMemoryTraceReported, 1) == 0)
+        {
+            const uint start = 0x80000000u;
+            const int length = 0x200000;
+            byte[] snapshot = new byte[length];
+            for (int offset = 0; offset < snapshot.Length; offset++)
+                snapshot[offset] = m.ReadU8(start + (uint)offset);
+            string fullPath = Path.GetFullPath(AiMemoryTracePath);
+            string? directory = Path.GetDirectoryName(fullPath);
+            if (!string.IsNullOrEmpty(directory))
+                Directory.CreateDirectory(directory);
+            File.WriteAllBytes(fullPath, snapshot);
+            Console.Error.WriteLine(
+                "[GT2-AI] captured first-dispatch memory " +
+                $"address=0x{start:X8} bytes={snapshot.Length} " +
+                $"sha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(snapshot))} " +
+                $"path={fullPath}");
+        }
         if (tick > 12 && tick % 120 != 0)
             return;
 
@@ -889,6 +1284,8 @@ public static class GT2Compat
                 $"speedTarget={m.ReadU16(car + 0x640u)} " +
                 $"speed={m.ReadU32(car + 0x64Cu)} " +
                 $"progress={m.ReadU16(car + 0x6FEu)} " +
+                $"route=0x{m.ReadU32(car + 0x624u):X8} " +
+                $"param10C=0x{m.ReadU32(car + 0x10Cu):X8} " +
                 $"control0={m.ReadU16(car + 0x708u)} " +
                 $"control1={m.ReadU32(car + 0x710u)} " +
                 $"control2={m.ReadU32(car + 0x714u)} " +
@@ -1063,7 +1460,7 @@ public static class GT2Compat
 
     public static void TraceTrackVisibility(CpuContext c, IMemory m)
     {
-        if (!TraceTrackRendering && !AuditRenderer)
+        if (!TraceTrackRendering && !TraceTrackFrustum && !AuditRenderer)
             return;
 
         uint renderState = c.A0;
@@ -1074,6 +1471,21 @@ public static class GT2Compat
         uint visibilityList = sectorEntry == 0
             ? 0
             : m.ReadU32(sectorEntry + 0xA0u);
+
+        if (TraceTrackFrustum && _trackFrustumSamples++ < 16)
+        {
+            Console.Error.WriteLine(
+                $"[GT2-Frustum] poll={Host.InputManager.CurrentPoll} " +
+                $"render=0x{renderState:X8} mode={c.A2} " +
+                $"translation=({unchecked((int)m.ReadU32(renderState + 0x54u))}," +
+                $"{unchecked((int)m.ReadU32(renderState + 0x58u))}," +
+                $"{m.ReadU16(renderState + 0x5Cu)}) " +
+                $"projection=({(short)m.ReadU16(renderState + 0x5Eu)}," +
+                $"{(short)m.ReadU16(renderState + 0x60u)}," +
+                $"{(short)m.ReadU16(renderState + 0x62u)}) " +
+                $"display=({m.ReadU16(renderState + 0x98u)}," +
+                $"{m.ReadU16(renderState + 0x9Au)})");
+        }
 
         lock (TrackVisibilitySectors)
         {
@@ -1125,14 +1537,15 @@ public static class GT2Compat
 
     /// <summary>
     /// Overlay 0 renders the packed visibility list authored for the camera's
-    /// current track sector. Those lists are potential-visibility sets, not
-    /// independent slices of a global object list: combining every sector
-    /// exposes mutually exclusive or occluded road surfaces. Extended draw
-    /// distance therefore keeps the current list first and adds only the
-    /// authored sets for a bounded three-sector horizon in each direction.
-    /// This moves whole-section pop-in beyond long sightlines without exposing
-    /// the rest of a looping track. Maximum LOD clears selector bits after the
-    /// bounded union is deduplicated.
+    /// current track sector. Extended draw distance keeps that list first for
+    /// GT2's authored ordering, then appends the complete deduplicated static
+    /// course set. The complete set is deliberately resident during PC
+    /// development: the course is small, and a sector transition must never
+    /// determine whether distant geometry exists. Maximum LOD clears selector
+    /// bits while deduplicating, so one object index cannot submit competing
+    /// LOD variants from different sector lists. Modern frustum, depth, and
+    /// occlusion policy belongs after reconstruction, not in this residency
+    /// step.
     /// </summary>
     public static uint GetTrackVisibilityList(
         IMemory m, uint trackRoot, uint stockList)
@@ -1290,8 +1703,13 @@ public static class GT2Compat
 
         AddList(stockList, stockCount);
         uint tableStart = trackRoot + 0xCu;
+        // Walk outward from the current sector so nearby authored ordering is
+        // retained, but continue until every course sector has contributed.
+        // Each object index is accepted once by AddList, making this a
+        // resident object catalog rather than a request to draw duplicate LOD
+        // variants.
         for (int distance = 1;
-             distance <= ExtendedVisibilitySectorRadius;
+             distance < sectorCount;
              distance++)
         {
             int forward = (currentSector + distance) % sectorCount;
@@ -1300,6 +1718,12 @@ public static class GT2Compat
             AddSector(forward);
             if (backward != forward)
                 AddSector(backward);
+
+            // Forward/backward rings cover the same sector after half a lap;
+            // all later rings would only revisit sectors AddList already
+            // deduplicated.
+            if (distance * 2 >= sectorCount)
+                break;
         }
         return outputCount;
 
@@ -1703,7 +2127,7 @@ public static class GT2Compat
             $"rawNonzeroSelectors={_trackVisibilityRawNonzeroSelectors}");
         Console.Error.WriteLine(
             $"[GT2-Renderer-Audit] expandedVisibility calls={_visibilityExpandedCalls} " +
-            $"radius={ExtendedVisibilitySectorRadius} " +
+            $"scope=complete-static-course " +
             $"stockEntries={_visibilityExpandedStockEntries} " +
             $"outputEntries={_visibilityExpandedOutputEntries} " +
             $"maximumAdded={_visibilityExpandedMaximumAdded}");
@@ -1718,6 +2142,12 @@ public static class GT2Compat
             $"expandedAdds={_visibilityExpandedTransitionAdds} " +
             $"expandedRemoves={_visibilityExpandedTransitionRemoves} " +
             $"expandedMaximum={_visibilityExpandedMaximumTransition}");
+        Console.Error.WriteLine(
+            $"[GT2-Renderer-Audit] objectFrustum " +
+            $"inside={_trackFrustumInside} " +
+            $"intersecting={_trackFrustumIntersecting} " +
+            $"outside={_trackFrustumOutside} " +
+            $"expanded={_trackFrustumExpanded}");
         lock (VehicleLodSelectorCounts)
         {
             string selectors = string.Join(
@@ -2085,6 +2515,9 @@ public static class GT2Compat
     {
         uint index = c.A0;
         _overlayIndex = index;
+        TraceArcadeRaceConfig(index, m);
+        TraceArcadeRaceState(index, m);
+        TraceArcadeRaceMemory(index, m);
         // Widen the display and drawing areas before the title overlay builds
         // its environments.  The Sony demo panel is authored at 512x480.
         if (_overlayPrefix == "gt2_overlay")
@@ -2117,6 +2550,108 @@ public static class GT2Compat
             $"archiveSize={m.ReadU32(0x801C93E0u)} loadedBase={m.ReadU32(tableBase + 8u):X8} " +
             $"entry=0x{entry:X8} offset=0x{(entry != 0 ? m.ReadU32(entry) : 0):X8} " +
             $"flags=0x{(entry != 0 ? m.ReadU32(entry + 4u) : 0):X8}");
+    }
+
+    static void TraceArcadeRaceConfig(uint overlayIndex, IMemory m)
+    {
+        if (!ArcadeVariant || overlayIndex != 3u ||
+            string.IsNullOrWhiteSpace(ArcadeRaceConfigTracePath) ||
+            Interlocked.Exchange(ref _arcadeRaceConfigTraceReported, 1) != 0)
+            return;
+
+        // Overlay 2 copies the completed frontend selection record here
+        // immediately before requesting overlay 3. Overlay 3 then copies the
+        // same 0x2D4-byte record into the fixed race-engine parameter block.
+        CaptureArcadeRaceConfig(
+            0x801D5A00u,
+            ArcadeRaceConfigTracePath,
+            "post-finalize",
+            m);
+    }
+
+    static void TraceArcadeRaceState(uint overlayIndex, IMemory m)
+    {
+        if (!ArcadeVariant || overlayIndex != 3u ||
+            string.IsNullOrWhiteSpace(ArcadeRaceStateTracePath) ||
+            Interlocked.Exchange(ref _arcadeRaceStateTraceReported, 1) != 0)
+            return;
+
+        CaptureArcadeRaceState(
+            0x801D52BCu,
+            ArcadeRaceStateTracePath,
+            "overlay-3-handoff",
+            m);
+    }
+
+    static void CaptureArcadeRaceState(
+        uint address,
+        string tracePath,
+        string stage,
+        IMemory m)
+    {
+        const int length = 0x58C;
+        var data = new byte[length];
+        for (int offset = 0; offset < data.Length; offset++)
+            data[offset] = m.ReadU8(address + (uint)offset);
+
+        string path = Path.GetFullPath(tracePath);
+        string? directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(directory))
+            Directory.CreateDirectory(directory);
+        File.WriteAllBytes(path, data);
+        string digest = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(data));
+        Console.Error.WriteLine(
+            $"[GT2-Direct] captured Arcade race state stage={stage} " +
+            $"address=0x{address:X8} bytes={length} sha256={digest} path={path}");
+    }
+
+    static void TraceArcadeRaceMemory(uint overlayIndex, IMemory m)
+    {
+        if (!ArcadeVariant || overlayIndex != 3u ||
+            string.IsNullOrWhiteSpace(ArcadeRaceMemoryTracePath) ||
+            Interlocked.Exchange(ref _arcadeRaceMemoryTraceReported, 1) != 0)
+            return;
+
+        const uint address = 0x80000000u;
+        const int length = 0x200000;
+        var data = new byte[length];
+        for (int offset = 0; offset < data.Length; offset++)
+            data[offset] = m.ReadU8(address + (uint)offset);
+
+        string path = Path.GetFullPath(ArcadeRaceMemoryTracePath);
+        string? directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(directory))
+            Directory.CreateDirectory(directory);
+        File.WriteAllBytes(path, data);
+        string digest = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(data));
+        Console.Error.WriteLine(
+            "[GT2-Direct] captured Arcade overlay-3 handoff memory " +
+            $"address=0x{address:X8} bytes={length} sha256={digest} path={path}");
+    }
+
+    static void CaptureArcadeRaceConfig(
+        uint address,
+        string tracePath,
+        string stage,
+        IMemory m)
+    {
+        const int length = 0x2D4;
+        var data = new byte[length];
+        for (int offset = 0; offset < data.Length; offset++)
+            data[offset] = m.ReadU8(address + (uint)offset);
+
+        string path = Path.GetFullPath(tracePath);
+        string? directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(directory))
+            Directory.CreateDirectory(directory);
+        File.WriteAllBytes(path, data);
+        string digest = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(data));
+        Console.Error.WriteLine(
+            $"[GT2-Direct] captured Arcade race config stage={stage} " +
+            $"address=0x{address:X8} bytes={length} sha256={digest} path={path}");
     }
 
     public static void TraceFiniteCdRead(CpuContext c, IMemory m)

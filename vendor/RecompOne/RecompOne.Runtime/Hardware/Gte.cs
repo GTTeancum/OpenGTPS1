@@ -449,6 +449,24 @@ public static class Gte
         int modelX, int modelY, int modelZ,
         int viewX, int viewY, int viewZ)
     {
+        ulong hash = CurrentProjectionTransformId();
+        GteProjectionOrigin origin = new(
+            (short)modelX, (short)modelY, (short)modelZ,
+            viewX, viewY, viewZ,
+            RT[0], RT[1], RT[2],
+            RT[3], RT[4], RT[5],
+            RT[6], RT[7], RT[8],
+            TR[0], TR[1], TR[2],
+            OFX, OFY, H,
+            hash,
+            WorldCaptureContext.Current,
+            0, 0,
+            GteProjectionOriginFlags.None);
+        return StoreProjectionOrigin(in origin);
+    }
+
+    static ulong CurrentProjectionTransformId()
+    {
         ulong hash = ProjectionTransformHash;
         if (ProjectionTransformHashDirty)
         {
@@ -467,19 +485,46 @@ public static class Gte
             ProjectionTransformHash = hash;
             ProjectionTransformHashDirty = false;
         }
-        GteProjectionOrigin origin = new(
-            (short)modelX, (short)modelY, (short)modelZ,
-            viewX, viewY, viewZ,
+        return hash;
+    }
+
+    /// <summary>
+    /// Captures the exact current object-to-view transform for a raw model
+    /// vertex without executing a GTE command or modifying any GTE register.
+    /// The modern track decoder uses this before the guest's projection and
+    /// screen-space rejection stages.
+    /// </summary>
+    public static GteProjectionOrigin SnapshotProjectionOrigin(
+        short modelX,
+        short modelY,
+        short modelZ)
+    {
+        long viewX = ((long)TR[0] << 12) +
+            (long)RT[0] * modelX +
+            (long)RT[1] * modelY +
+            (long)RT[2] * modelZ;
+        long viewY = ((long)TR[1] << 12) +
+            (long)RT[3] * modelX +
+            (long)RT[4] * modelY +
+            (long)RT[5] * modelZ;
+        long viewZ = ((long)TR[2] << 12) +
+            (long)RT[6] * modelX +
+            (long)RT[7] * modelY +
+            (long)RT[8] * modelZ;
+        return new GteProjectionOrigin(
+            modelX, modelY, modelZ,
+            (int)(viewX >> 12),
+            (int)(viewY >> 12),
+            (int)(viewZ >> 12),
             RT[0], RT[1], RT[2],
             RT[3], RT[4], RT[5],
             RT[6], RT[7], RT[8],
             TR[0], TR[1], TR[2],
             OFX, OFY, H,
-            hash,
+            CurrentProjectionTransformId(),
             WorldCaptureContext.Current,
             0, 0,
             GteProjectionOriginFlags.None);
-        return StoreProjectionOrigin(in origin);
     }
 
     public static void BeginDerivedScreenProjection(

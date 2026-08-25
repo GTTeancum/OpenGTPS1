@@ -808,6 +808,21 @@ def main() -> int:
 
     replace_once(
         race,
+        """        c.RA = 0x80020320u;
+        GranTurismo2PC.func_80020EC4(c, m);
+        c.V1 = c.V0 + 0u;
+""",
+        """        c.RA = 0x80020320u;
+        GranTurismo2PC.func_80020EC4(c, m);
+        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.ExpandTrackFrustumClassification(
+            c.V0);
+        c.V1 = c.V0 + 0u;
+""",
+        "modern horizontal track frustum",
+    )
+
+    replace_once(
+        race,
         """        m.WriteU16((c.S1 + 0xEu), (ushort)c.V1);
         c.S5 = m.ReadU32((c.SP + 0x1054u));
 """,
@@ -843,6 +858,34 @@ def main() -> int:
         c.FP = m.ReadU32((c.SP + 0x1078u));
 """,
         "track world-capture object end hook",
+    )
+
+    replace_once(
+        race,
+        """        c.A0 = m.ReadU32((c.SP + 0x1020u));
+        c.RA = 0x800209E4u;
+        GranTurismo2PC.func_8002106C(c, m);
+""",
+        """        c.A0 = m.ReadU32((c.SP + 0x1020u));
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(c.A0, m);
+        c.RA = 0x800209E4u;
+        GranTurismo2PC.func_8002106C(c, m);
+""",
+        "primary track mesh trace hook",
+    )
+
+    replace_once(
+        race,
+        """        c.A0 = m.ReadU32((c.SP + 0x1020u));
+        c.RA = 0x800209F8u;
+        GranTurismo2PC.func_800234F8(c, m);
+""",
+        """        c.A0 = m.ReadU32((c.SP + 0x1020u));
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(c.A0, m);
+        c.RA = 0x800209F8u;
+        GranTurismo2PC.func_800234F8(c, m);
+""",
+        "alternate track mesh trace hook",
     )
 
     apply_auxiliary_billboard_projection(race)

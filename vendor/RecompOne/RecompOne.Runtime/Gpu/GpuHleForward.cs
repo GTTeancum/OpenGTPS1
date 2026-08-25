@@ -707,6 +707,7 @@ public sealed partial class Gpu
 
     internal void ShutdownLiveWorldRenderer()
     {
+        WorldCaptureContext.ReportTrackMeshTraceSummary();
         _liveWorldCapture.Dispose();
         _liveWorldRenderer.Dispose();
         WorldCaptureContext.LiveRenderingEnabled = false;

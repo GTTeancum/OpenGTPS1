@@ -230,6 +230,20 @@ def apply_renderer_enhancements() -> None:
     )
     replace_once(
         OVERLAY0,
+        """        c.RA = 0x800202ACu;
+        GranTurismo2ArcadePC.func_80020E50(c, m);
+        c.V1 = c.V0 + 0u;
+""",
+        """        c.RA = 0x800202ACu;
+        GranTurismo2ArcadePC.func_80020E50(c, m);
+        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.ExpandTrackFrustumClassification(
+            c.V0);
+        c.V1 = c.V0 + 0u;
+""",
+        "Arcade modern horizontal track frustum",
+    )
+    replace_once(
+        OVERLAY0,
         """        m.WriteU16((c.S1 + 0xEu), (ushort)c.V1);
         c.S5 = m.ReadU32((c.SP + 0x1054u));
 """,
@@ -263,6 +277,32 @@ def apply_renderer_enhancements() -> None:
         c.FP = m.ReadU32((c.SP + 0x1078u));
 """,
         "Arcade track world-capture object end",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.A0 = m.ReadU32((c.SP + 0x1020u));
+        c.RA = 0x80020970u;
+        GranTurismo2ArcadePC.func_80020FF8(c, m);
+""",
+        """        c.A0 = m.ReadU32((c.SP + 0x1020u));
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(c.A0, m);
+        c.RA = 0x80020970u;
+        GranTurismo2ArcadePC.func_80020FF8(c, m);
+""",
+        "Arcade primary track mesh trace",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.A0 = m.ReadU32((c.SP + 0x1020u));
+        c.RA = 0x80020984u;
+        GranTurismo2ArcadePC.func_80023484(c, m);
+""",
+        """        c.A0 = m.ReadU32((c.SP + 0x1020u));
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(c.A0, m);
+        c.RA = 0x80020984u;
+        GranTurismo2ArcadePC.func_80023484(c, m);
+""",
+        "Arcade alternate track mesh trace",
     )
     replace_exact_count(
         OVERLAY0,
@@ -430,6 +470,21 @@ def main() -> int:
     include_livery_preview_helper()
 
     replace_once(
+        OVERLAY2,
+        """    public static void func_80010C84(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x178u;
+""",
+        """    public static void func_80010C84(CpuContext c, IMemory m)
+    {
+        RecompOne.Runtime.Sdk.GT2Compat.TraceArcadeRacePreFinalizeConfig(
+            c.A0, c.A1, c.A2, m);
+        c.SP = c.SP - 0x178u;
+""",
+        "Arcade pre-finalize race configuration trace",
+    )
+
+    replace_once(
         OVERLAY0,
         """        c.V1 = m.ReadU8((c.FP + 0x8u));
         c.V0 = 0x800B0000u;
@@ -574,10 +629,58 @@ def main() -> int:
         """        c.A0 = 0x00000005u;
         c.RA = 0x8005D678u;
 """,
-        """        c.A0 = RecompOne.Runtime.Sdk.GT2Compat.InitialArcadeOverlayIndex();
+        """        c.A0 = RecompOne.Runtime.Sdk.GT2Compat.InitialArcadeOverlayIndex(m);
         c.RA = 0x8005D678u;
 """,
         "Unified-menu direct native Arcade frontend entry",
+    )
+    replace_once(
+        OVERLAY2,
+        """    public static void func_80011780(CpuContext c, IMemory m)
+    {
+        c.V1 = c.V0 + 0u;
+""",
+        """    public static void func_80011780(CpuContext c, IMemory m)
+    {
+        if (RecompOne.Runtime.Sdk.GT2Compat.PrepareDirectArcadeRaceConfig(m)) {
+            c.A0 = c.SP + 0x10u;
+            c.RA = 0x80011798u;
+            GranTurismo2ArcadePC.func_80014650(c, m);
+            c.A0 = c.SP + 0x10u;
+            c.A1 = 0x00000002u;
+            c.RA = 0x800117A0u;
+            GranTurismo2ArcadePC.func_80013B94(c, m);
+            c.A0 = RecompOne.Runtime.Sdk.GT2Compat.DirectArcadeRaceSelectionA;
+            c.A1 = RecompOne.Runtime.Sdk.GT2Compat.DirectArcadeRaceSelectionB;
+            c.A2 = 0x801C3010u;
+            c.RA = 0x80011884u;
+            GranTurismo2ArcadePC.func_80010C84(c, m);
+            RecompOne.Runtime.Sdk.GT2Compat.VerifyDirectArcadeRaceConstruction(m);
+            RecompOne.Runtime.Sdk.GT2Compat.PrepareDirectArcadeRaceHandoff(m);
+            c.A0 = 0x00000003u;
+            c.RA = 0x8001192Cu;
+            GranTurismo2ArcadePC.func_8005D9AC(c, m);
+            throw new InvalidOperationException(
+                "Direct Seattle overlay-3 handoff unexpectedly returned");
+        }
+        c.V1 = c.V0 + 0u;
+""",
+        "Direct Seattle native Arcade async completion and race construction",
+    )
+    replace_once(
+        OVERLAY2,
+        """        m.WriteU32((c.T0 + 0x1C8u), c.V1);
+        c.V0 = m.ReadU32((c.V0 + 0x1D0u));
+        c.V0 = m.ReadU32(c.V0);
+        if (c.V0 == 0u) {
+""",
+        """        m.WriteU32((c.T0 + 0x1C8u), c.V1);
+        c.V0 = m.ReadU32((c.V0 + 0x1D0u));
+        c.V0 = m.ReadU32(c.V0);
+        RecompOne.Runtime.Sdk.GT2Compat.ResumeDirectArcadeRaceAfterSetup(c.T0, c, m);
+        if (c.V0 == 0u) {
+""",
+        "Direct Seattle native Arcade frontend completion unwind",
     )
     replace_once(
         MAIN,

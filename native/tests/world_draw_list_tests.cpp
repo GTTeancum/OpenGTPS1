@@ -187,6 +187,9 @@ int main() {
         (screen_list.materials[0].primitive_flags &
             world_primitive_screen_space_flag) != 0,
         "tag screen material for sprite texel sampling");
+    okay &= expect(
+        screen_list.commands[0].channel == WorldViewChannel::main_view,
+        "classify displayed HUD primitive as part of the main view");
 
     // SSR11 street-light regression: the authored billboard is above the
     // camera, but one Y coordinate crosses the PS1 signed screen boundary

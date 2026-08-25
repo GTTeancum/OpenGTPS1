@@ -18,7 +18,8 @@
 
 namespace {
 
-constexpr std::uint32_t api_version = 6;
+constexpr std::uint32_t api_version = 7;
+static_assert(sizeof(opengt_live_stats) == 112);
 static_assert(sizeof(opengt_live_interpolation_stats) == 128);
 using Clock = std::chrono::steady_clock;
 
@@ -245,7 +246,7 @@ std::uint32_t build_frame(
 opengt::render::WorldGpuRenderOptions gpu_options(
     const opengt_live_options& options
 ) {
-    return opengt::render::WorldGpuRenderOptions{
+    auto result = opengt::render::WorldGpuRenderOptions{
         (options.flags & OPENGT_LIVE_WARP) != 0,
         (options.flags & OPENGT_LIVE_DEPTH) != 0,
         (options.flags & OPENGT_LIVE_DITHER) != 0,
@@ -255,6 +256,9 @@ opengt::render::WorldGpuRenderOptions gpu_options(
         options.output_scale,
         options.clear_color_rgba8,
     };
+    result.target_aspect_width = options.target_aspect_width;
+    result.target_aspect_height = options.target_aspect_height;
+    return result;
 }
 
 void fill_stats(
@@ -263,7 +267,7 @@ void fill_stats(
     const opengt::render::WorldGpuRenderStats& render,
     std::uint64_t render_microseconds,
     std::uint64_t pipeline_microseconds,
-    std::uint32_t output_scale,
+    const opengt::render::WorldGpuRenderOptions& options,
     opengt_live_stats* stats
 ) {
     stats->result = 0;
@@ -284,9 +288,11 @@ void fill_stats(
     stats->topology_ownership_reorders =
         built.topology.ownership_reorders;
     stats->output_width =
-        static_cast<std::uint32_t>(draw_list.display_width) * output_scale;
+        opengt::render::world_gpu_target_display_width(draw_list, options) *
+        options.output_scale;
     stats->output_height =
-        static_cast<std::uint32_t>(draw_list.display_height) * output_scale;
+        static_cast<std::uint32_t>(draw_list.display_height) *
+        options.output_scale;
     stats->render_microseconds = render_microseconds;
     stats->frame_index = built.header.frame_index;
     stats->input_poll = built.header.input_poll;
@@ -339,7 +345,7 @@ std::uint32_t render_frame(
         render,
         microseconds(gpu_finished - gpu_started),
         microseconds(gpu_finished - built.pipeline_started),
-        options.output_scale,
+        render_options,
         stats);
     return 0;
 }
@@ -360,7 +366,7 @@ void fill_deferred_reset_stats(
         render,
         0,
         microseconds(Clock::now() - pair_started),
-        options.output_scale,
+        gpu_options(options),
         stats);
 }
 

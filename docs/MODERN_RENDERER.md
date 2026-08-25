@@ -18,6 +18,102 @@ fidelity target; renderer-era limitations do not.
 
 This is a renderer replacement, not a screen-space patch layer.
 
+## Authoritative reconstruction mandate (2026-08-25)
+
+The authoritative game build is the exact installed NTSC-U disc pair already
+used by this repository:
+
+- Simulation Disc revision 2, `SCUS-94488`, executable `SCUS_944.88`,
+  SHA-256 `4DD40D01A3E83967E2D4301106890EB314D72027802BEE077BBBC246F152E331`;
+- Arcade Mode Disc, `SCUS-94455`, executable `SCUS_944.55`, SHA-256
+  `67782AE7520105B39BD1716D910332240D0F11171DABFD04518F8AA04E1CA519`.
+
+Renderer reconstruction is constrained as follows:
+
+- Seattle Circuit is the sole root-cause development course until its race and
+  every replay/attract camera are correct. Both manual driving and replay views
+  are required validation scenarios. Fixes must remain general renderer
+  invariants; no Seattle-specific rendering exceptions are permitted.
+- A direct command-line Seattle Arcade race entry must replace menu navigation
+  in the development loop. Only the in-race HUD is part of this vertical slice.
+- Real-PS1 behavior is a development oracle for game state, transforms,
+  visibility, materials, and timing. Affine texture warping and other
+  rasterizer-era limitations are not fidelity targets.
+- Emulator use is permitted only when necessary and requires explicit approval
+  at the beginning of each major work turn. That approval covers the described
+  oracle experiments and their repeated deterministic runs for that work turn,
+  but does not carry into a later turn. Development-only guest hooks or patches
+  may export pre-projection vertices, GTE state, and object identity.
+- Oracle, compatibility-rasterizer, trace, emulator, and fallback paths must be
+  absent from release packages and unavailable to users. The released game has
+  one renderer: the modern renderer.
+- The modern result must use corrected, non-affine world projection; stable
+  object placement and motion; artifact-free edge clipping; and modern depth
+  handling while preserving deliberately identified transparency/effect order.
+- GT2 has no fog, and the modern renderer must not add any. Maximum draw
+  distance must extend beyond the original game's visibility limit far enough
+  that road and scenery pop-in cannot be seen during ordinary play. During PC
+  development, the complete static Seattle course may remain resident and its
+  original distance-based world culling may be removed. Only demonstrably safe
+  frustum, backface, explicit game-state, or later invisible occlusion culling
+  may remain.
+- Widescreen is part of the reconstruction requirement and is not deferred.
+  It must be true horizontal-plus widescreen: preserve the intended vertical
+  view while revealing additional track to the left and right, without image
+  stretching, vertical cropping, or a screen-space hack. Visibility, clipping,
+  projection, and draw-distance fixes must work across supported aspect ratios
+  rather than being fitted to 4:3 output.
+- Widescreen HUD artwork retains its authored size. Connected glyph and sprite
+  groups remain centered or anchor to their corresponding left/right edge;
+  edge groups preserve the same proportional margin they had at 4:3 instead of
+  remaining inside a centered 4:3 island.
+- PC is the only active renderer target. Original Xbox/NXDK work is deferred
+  until the PC renderer is accepted as complete and must not constrain the
+  current architecture or implementation work.
+- Modernized pixels need not match the PS1 framebuffer. Correctness means that
+  objects appear when and where intended, remain stable, do not clip at screen
+  edges, and produce no geometry, projection, ordering, or road artifacts.
+
+The development host exposes two no-menu Seattle entry points:
+
+```powershell
+GranTurismo2PC.exe --arcade-race seattle-circuit
+GranTurismo2PC.exe --arcade-replay seattle-circuit
+```
+
+The race switch runs Arcade overlay 2's native asynchronous parameter-database
+setup, installs the byte-exact Seattle selection input captured before native
+finalization, and invokes the original race constructor. It verifies the
+resulting configuration and race-state invariants, copies the constructor's
+own finalized selection through the stock overlay-3 handoff, and resumes the
+original loader. It does not copy a downstream vehicle or race-state fixture.
+The skipped controller belongs only to the unconstructed menu fade scene.
+
+The replay switch begins identically and retains Arcade's native role-`3`
+player record because that record owns race completion and Results. Once the
+race engine has constructed the player car, the harness selects GT2's original
+per-car CPU driver (`mode 2`) instead of its pad driver (`mode 0`); vehicle,
+route, physics, lap, result, replay, and camera state remain native. Stage-
+relative input confirms Results until GT2 instantiates its own replay vehicles
+and cameras. The harness does not install a fabricated finish, replay state,
+vehicle record, or camera. No scripted steering, throttle, or braking is
+supplied. The only replay-launch input is a late Results confirmation after the
+native CPU-driven race has finished.
+
+The development-only raw course decoder can be enabled with
+`RECOMPONE_TRACE_GT2_TRACK_MESH=1`. It observes each mesh immediately before
+GT2's renderer projects or rejects a primitive, validates all model pointers
+and vertex indices, and reports the eight authored primitive streams
+(`F3/F4/G3/G4/FT3/FT4/GT3/GT4`). Setting
+`RECOMPONE_GT2_TRACK_MESH_OBJ_PATH` also exports the complete transformed
+course and a `.ground.obj` subset of locally planar road/terrain faces. These
+diagnostics are not renderer fallbacks and are excluded from release
+configuration. The Seattle direct replay currently validates 126 objects,
+16,604 vertex records, 8,219 source primitives, and 15,053 expanded triangles
+with zero invalid indices, invalid pointers, or noncontiguous streams. This is
+the pre-projection source for the resident native course mesh; it does not use
+screen-edge padding or infer missing geometry from the framebuffer.
+
 ## Boundaries
 
 The runtime is divided into four layers:
