@@ -1,11 +1,30 @@
 param(
     [string]$DeployPath = 'OpenGTPS1',
     [string]$DataPath = 'work\gt2-unified',
-    [string]$CardPath = 'work\arcade-audit-save\carda.sav'
+    [string]$CardPath = 'work\arcade-audit-save\carda.sav',
+    [switch]$PreflightOnly
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$logRoot = Join-Path $repo 'work\arcade-renderer-audit'
+New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
+$launcherLog = Join-Path $logRoot 'launcher-latest.log'
+$lineBreak = [Environment]::NewLine
+[IO.File]::WriteAllText(
+    $launcherLog,
+    "started=$([DateTime]::Now.ToString('o')) " +
+    "powershell=$($PSVersionTable.PSVersion) script=$PSCommandPath" +
+    $lineBreak)
+trap {
+    $failure = ($_ | Out-String).Trim()
+    [IO.File]::AppendAllText(
+        $launcherLog,
+        "failed=$([DateTime]::Now.ToString('o')) error=$failure" +
+        $lineBreak)
+    [Console]::Error.WriteLine($failure)
+    exit 1
+}
 
 function Resolve-RepoPath([string]$Path, [switch]$AllowMissing) {
     $candidate = if ([IO.Path]::IsPathRooted($Path)) {
@@ -29,8 +48,6 @@ if (-not (Test-Path -LiteralPath $card -PathType Leaf)) {
     & $creator -OutputCard $card -DeployPath $deploy -DataPath $data
 }
 
-$logRoot = Join-Path $repo 'work\arcade-renderer-audit'
-New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $stdoutPath = Join-Path $logRoot "arcade-audit-$stamp.stdout.log"
 $stderrPath = Join-Path $logRoot "arcade-audit-$stamp.stderr.log"
@@ -46,6 +63,17 @@ foreach ($required in @(
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Arcade renderer-audit file is missing: $required"
     }
+}
+
+if ($PreflightOnly) {
+    [IO.File]::AppendAllText(
+        $launcherLog,
+        "preflight=pass deploy=$deploy data=$data card=$card" +
+        $lineBreak)
+    Write-Output (
+        "arcade_renderer_audit_preflight=pass " +
+        "course=trial-mountain class=C deploy=$deploy data=$data card=$card")
+    exit 0
 }
 
 # Use the dedicated unlocked card and the native no-menu Trial Mountain
@@ -100,6 +128,20 @@ try {
         -RedirectStandardOutput $stdoutPath `
         -RedirectStandardError $stderrPath `
         -PassThru
+
+    Start-Sleep -Milliseconds 1000
+    $process.Refresh()
+    if ($process.HasExited) {
+        throw (
+            "GranTurismo2PC exited during startup with code " +
+            "$($process.ExitCode). stderr=$stderrPath stdout=$stdoutPath")
+    }
+
+    [IO.File]::AppendAllText(
+        $launcherLog,
+        "launched=$([DateTime]::Now.ToString('o')) pid=$($process.Id) " +
+        "stdout=$stdoutPath stderr=$stderrPath" +
+        $lineBreak)
 
     Write-Output (
         "arcade_renderer_audit=launched pid=$($process.Id) " +

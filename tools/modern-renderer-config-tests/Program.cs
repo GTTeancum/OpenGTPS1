@@ -471,6 +471,8 @@ string ssr5VehicleBoundaryHarness = ReadRepoFile(
     @"tools\run_ssr5_vehicle_boundary_trace.ps1");
 string arcadeRendererAuditHarness = ReadRepoFile(
     @"tools\run_arcade_renderer_audit.ps1");
+string arcadeRendererAuditLauncher = ReadRepoFile(
+    @"tools\run_arcade_renderer_audit.cmd");
 const string selfContainedDeploy =
     @"tools\unified-host\bin\Release\net10.0\win-x64\publish";
 Require(
@@ -1080,6 +1082,18 @@ Require(
         StringComparison.Ordinal) &&
     arcadeRendererAuditHarness.Contains(
         "RECOMPONE_GT2_ARCADE_UNLOCK_ALL_COURSES = $null",
+        StringComparison.Ordinal) &&
+    arcadeRendererAuditHarness.Contains(
+        "launcher-latest.log",
+        StringComparison.Ordinal) &&
+    arcadeRendererAuditHarness.Contains(
+        "if ($process.HasExited)",
+        StringComparison.Ordinal) &&
+    arcadeRendererAuditLauncher.Contains(
+        "-ExecutionPolicy Bypass -File",
+        StringComparison.Ordinal) &&
+    arcadeRendererAuditLauncher.Contains(
+        "pause",
         StringComparison.Ordinal),
     "Arcade renderer audit no longer launches direct Trial Mountain with live input and captures disabled");
 bool true60GuestFixed = (bool)gt2CompatType.GetField(
