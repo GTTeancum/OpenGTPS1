@@ -2,7 +2,8 @@ param(
     [string]$DeployPath = 'OpenGTPS1',
     [string]$DataPath = 'work\gt2-unified',
     [string]$CardPath = 'work\arcade-audit-save\carda.sav',
-    [switch]$PreflightOnly
+    [switch]$PreflightOnly,
+    [switch]$HeadlessTest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,10 +88,10 @@ $environment = [ordered]@{
     RECOMPONE_INPUT_SCRIPT = $null
     RECOMPONE_INPUT_END_POLL = $null
     RECOMPONE_LIVE_INPUT_START_POLL = $null
-    RECOMPONE_DISABLE_LIVE_INPUT = $null
-    RECOMPONE_EXIT_AFTER_INPUT_POLL = $null
-    RECOMPONE_UNTHROTTLED = $null
-    RECOMPONE_WINDOW_VISIBLE = '1'
+    RECOMPONE_DISABLE_LIVE_INPUT = $(if ($HeadlessTest) { '1' } else { $null })
+    RECOMPONE_EXIT_AFTER_INPUT_POLL = $(if ($HeadlessTest) { '700' } else { $null })
+    RECOMPONE_UNTHROTTLED = $(if ($HeadlessTest) { '1' } else { $null })
+    RECOMPONE_WINDOW_VISIBLE = $(if ($HeadlessTest) { '0' } else { '1' })
     RECOMPONE_DISABLE_DISPLAY_CAPTURE = '1'
     RECOMPONE_CAPTURE_AUTOMATIC_STAGE = '0'
     RECOMPONE_PRESENTATION_CAPTURE = $null
@@ -121,20 +122,60 @@ try {
             [EnvironmentVariableTarget]::Process)
     }
 
-    $process = Start-Process `
-        -FilePath $exe `
-        -WorkingDirectory $deploy `
-        -ArgumentList @('--arcade-race', 'trial-mountain', $data) `
-        -RedirectStandardOutput $stdoutPath `
-        -RedirectStandardError $stderrPath `
-        -PassThru
+    $arguments = if ($HeadlessTest) {
+        @('--headless', '--arcade-race', 'trial-mountain', $data)
+    } else {
+        @('--arcade-race', 'trial-mountain', $data)
+    }
+    $startParameters = @{
+        FilePath = $exe
+        WorkingDirectory = $deploy
+        ArgumentList = $arguments
+        RedirectStandardOutput = $stdoutPath
+        RedirectStandardError = $stderrPath
+        PassThru = $true
+    }
+    if ($HeadlessTest) {
+        $startParameters.WindowStyle = 'Hidden'
+        # Windows PowerShell 5.1 only retains ExitCode when Start-Process owns
+        # the wait. Calling Process.WaitForExit() leaves ExitCode unset when
+        # stdout and stderr are redirected.
+        $startParameters.Wait = $true
+    }
+    $process = Start-Process @startParameters
 
-    Start-Sleep -Milliseconds 1000
-    $process.Refresh()
-    if ($process.HasExited) {
-        throw (
-            "GranTurismo2PC exited during startup with code " +
-            "$($process.ExitCode). stderr=$stderrPath stdout=$stdoutPath")
+    if ($HeadlessTest) {
+        if ($process.ExitCode -ne 0) {
+            throw (
+                "Headless Trial Mountain launcher test exited with code " +
+                "$($process.ExitCode). stderr=$stderrPath stdout=$stdoutPath")
+        }
+        $combinedLog =
+            (Get-Content -LiteralPath $stdoutPath -Raw) + $lineBreak +
+            (Get-Content -LiteralPath $stderrPath -Raw)
+        foreach ($requiredMarker in @(
+            '[Host] direct Arcade race requested: trial-mountain',
+            '[GT2-Direct] native Trial Mountain Circuit construction verified',
+            'player=Citroen Xsara 1.8i 16V',
+            '[Dispatcher] loaded overlay: gt2_arcade_overlay_0',
+            '[Runtime] shutdown complete; exit=0'
+        )) {
+            if (-not $combinedLog.Contains($requiredMarker)) {
+                throw "Headless launcher proof is missing: $requiredMarker"
+            }
+        }
+        if ($combinedLog -match
+            '(?im)\b(fatal|unhandled exception|construction differs|unmapped guest)\b') {
+            throw 'Headless launcher proof contains a fatal runtime marker'
+        }
+    } else {
+        Start-Sleep -Milliseconds 1000
+        $process.Refresh()
+        if ($process.HasExited) {
+            throw (
+                "GranTurismo2PC exited during startup with code " +
+                "$($process.ExitCode). stderr=$stderrPath stdout=$stdoutPath")
+        }
     }
 
     [IO.File]::AppendAllText(
@@ -143,11 +184,18 @@ try {
         "stdout=$stdoutPath stderr=$stderrPath" +
         $lineBreak)
 
-    Write-Output (
-        "arcade_renderer_audit=launched pid=$($process.Id) " +
-        "course=trial-mountain class=C player=xsara card=$card " +
-        "all_courses=true live_input=true runtime_unlock=false " +
-        "captures=disabled stderr=$stderrPath stdout=$stdoutPath")
+    if ($HeadlessTest) {
+        Write-Output (
+            "arcade_renderer_audit_headless_test=pass " +
+            "course=trial-mountain class=C player=xsara " +
+            "race_overlay=loaded exit=0 stderr=$stderrPath stdout=$stdoutPath")
+    } else {
+        Write-Output (
+            "arcade_renderer_audit=launched pid=$($process.Id) " +
+            "course=trial-mountain class=C player=xsara card=$card " +
+            "all_courses=true live_input=true runtime_unlock=false " +
+            "captures=disabled stderr=$stderrPath stdout=$stdoutPath")
+    }
 } finally {
     foreach ($entry in $previous.GetEnumerator()) {
         [Environment]::SetEnvironmentVariable(

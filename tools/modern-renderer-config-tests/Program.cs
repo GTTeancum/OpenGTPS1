@@ -1075,7 +1075,7 @@ Require(
         "@('--arcade-race', 'trial-mountain', $data)",
         StringComparison.Ordinal) &&
     arcadeRendererAuditHarness.Contains(
-        "RECOMPONE_DISABLE_LIVE_INPUT = $null",
+        "RECOMPONE_DISABLE_LIVE_INPUT = $(if ($HeadlessTest) { '1' } else { $null })",
         StringComparison.Ordinal) &&
     arcadeRendererAuditHarness.Contains(
         "RECOMPONE_DISABLE_DISPLAY_CAPTURE = '1'",
@@ -1088,6 +1088,21 @@ Require(
         StringComparison.Ordinal) &&
     arcadeRendererAuditHarness.Contains(
         "if ($process.HasExited)",
+        StringComparison.Ordinal) &&
+    arcadeRendererAuditHarness.Contains(
+        "[switch]$HeadlessTest",
+        StringComparison.Ordinal) &&
+    arcadeRendererAuditHarness.Contains(
+        "native Trial Mountain Circuit construction verified",
+        StringComparison.Ordinal) &&
+    arcadeRendererAuditHarness.Contains(
+        "arcade_renderer_audit_headless_test=pass",
+        StringComparison.Ordinal) &&
+    arcadeRendererAuditHarness.Contains(
+        "$startParameters.Wait = $true",
+        StringComparison.Ordinal) &&
+    !arcadeRendererAuditHarness.Contains(
+        "$process.WaitForExit(",
         StringComparison.Ordinal) &&
     arcadeRendererAuditLauncher.Contains(
         "-ExecutionPolicy Bypass -File",
