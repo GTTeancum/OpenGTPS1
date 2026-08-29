@@ -103,7 +103,7 @@ static void VerifyCpuProjectionFastPath()
     }
 }
 
-static void VerifyArcadeFrontendContracts()
+static PSMemory VerifyArcadeFrontendContracts()
 {
     var memory = new PSMemory();
     const uint stock = 0x80050730u;
@@ -141,9 +141,10 @@ static void VerifyArcadeFrontendContracts()
     Require(
         switched,
         "Arcade title handoff did not preserve twelve authored sound updates");
+    return memory;
 }
 
-VerifyArcadeFrontendContracts();
+PSMemory testMemory = VerifyArcadeFrontendContracts();
 
 VerifyCpuProjectionFastPath();
 
@@ -302,6 +303,60 @@ static void VerifyBackgroundOwnership()
 }
 
 VerifyBackgroundOwnership();
+
+static void VerifyTrue60ReplaySegmentReset(PSMemory memory)
+{
+    const uint configuration = 0x80010000u;
+    const uint carArray = 0x80020000u;
+    const uint velocityX = carArray + 0x688u;
+    memory.WriteU8(configuration + 0x8u, 2);
+
+    RecompOne.Runtime.Sdk.GT2Compat.ConfigureTrue60HzRaceTimeStep(
+        configuration, memory);
+    RecompOne.Runtime.Sdk.GT2Compat.BeginTrue60HzLinearVelocityStep(
+        carArray, 1, memory);
+    memory.WriteU32(velocityX, 1);
+    RecompOne.Runtime.Sdk.GT2Compat.EndTrue60HzLinearVelocityStep(
+        carArray, 1, memory);
+    Require(
+        memory.ReadU32(velocityX) == 0,
+        "first 60 Hz half-step did not retain its exact division carry");
+
+    RecompOne.Runtime.Sdk.GT2Compat.BeginTrue60HzLinearVelocityStep(
+        carArray, 1, memory);
+    memory.WriteU32(velocityX, 1);
+    RecompOne.Runtime.Sdk.GT2Compat.EndTrue60HzLinearVelocityStep(
+        carArray, 1, memory);
+    Require(
+        memory.ReadU32(velocityX) == 1,
+        "paired 60 Hz half-steps did not conserve the authored delta");
+
+    memory.WriteU32(velocityX, 0);
+    RecompOne.Runtime.Sdk.GT2Compat.BeginTrue60HzLinearVelocityStep(
+        carArray, 1, memory);
+    memory.WriteU32(velocityX, 1);
+    RecompOne.Runtime.Sdk.GT2Compat.EndTrue60HzLinearVelocityStep(
+        carArray, 1, memory);
+    Require(
+        memory.ReadU32(velocityX) == 0,
+        "test did not establish a pending race-end division carry");
+
+    // A replay commonly reuses the identical configuration and car-array
+    // addresses. Its first half-step must nevertheless begin with clean host
+    // state rather than consuming the final carry from the live race.
+    RecompOne.Runtime.Sdk.GT2Compat.ConfigureTrue60HzRaceTimeStep(
+        configuration, memory);
+    RecompOne.Runtime.Sdk.GT2Compat.BeginTrue60HzLinearVelocityStep(
+        carArray, 1, memory);
+    memory.WriteU32(velocityX, 1);
+    RecompOne.Runtime.Sdk.GT2Compat.EndTrue60HzLinearVelocityStep(
+        carArray, 1, memory);
+    Require(
+        memory.ReadU32(velocityX) == 0,
+        "replay inherited the live race's 60 Hz division carry");
+}
+
+VerifyTrue60ReplaySegmentReset(testMemory);
 
 string unifiedHostProject = ReadRepoFile(
     @"tools\unified-host\GranTurismo2PC.csproj");
@@ -595,6 +650,33 @@ Require(
     gt2CompatSource.Contains(
         "static readonly bool True60HzEnabled = true;",
         StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "segment={segment} physicsCarry=reset",
+        StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "public static void ObserveReplayControllerFrame(",
+        StringComparison.Ordinal) &&
+    Occurrences(
+        simulationEnhancements,
+        "ObserveReplayControllerFrame(") == 2 &&
+    Occurrences(
+        arcadeEnhancements,
+        "ObserveReplayControllerFrame(") == 2 &&
+    Occurrences(
+        ReadRepoFile(@"generated\recompiled\gt2_overlay_0.cs"),
+        "ObserveReplayControllerFrame(") == 2 &&
+    Occurrences(
+        ReadRepoFile(
+            @"generated\arcade-recompiled\gt2_arcade_overlay_0.cs"),
+        "ObserveReplayControllerFrame(") == 2 &&
+    unifiedHostProgram.Contains(
+        "--verify-replay-codec", StringComparison.Ordinal) &&
+    unifiedHostProgram.Contains(
+        "func_800166CC", StringComparison.Ordinal) &&
+    unifiedHostProgram.Contains(
+        "func_80016658", StringComparison.Ordinal) &&
+    unifiedHostProgram.Contains(
+        "source=original-guest-codec", StringComparison.Ordinal) &&
     !gt2CompatSource.Contains(
         "RECOMPONE_GT2_TRUE_60HZ",
         StringComparison.Ordinal) &&

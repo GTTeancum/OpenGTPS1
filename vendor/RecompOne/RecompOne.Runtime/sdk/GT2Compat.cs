@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Threading;
 using RecompOne.Runtime.Context;
 using RecompOne.Runtime.Memory;
@@ -325,6 +326,60 @@ public static class GT2Compat
         new int[16 * True60HzLinearVelocityOffsets.Length];
     static uint _true60HzVelocityCarArray;
     static uint _true60HzVelocityCarCount;
+    static int _true60HzRaceSegment;
+
+    readonly record struct ReplayPhysicalState(
+        int X,
+        int Y,
+        int Z,
+        int VelocityX,
+        int VelocityY,
+        int VelocityZ,
+        int LongitudinalSpeed,
+        ushort Progress,
+        ushort Heading)
+    {
+        public ulong Hash
+        {
+            get
+            {
+                ulong hash = Fnv64Offset;
+                hash = HashValue(hash, unchecked((uint)X));
+                hash = HashValue(hash, unchecked((uint)Y));
+                hash = HashValue(hash, unchecked((uint)Z));
+                hash = HashValue(hash, unchecked((uint)VelocityX));
+                hash = HashValue(hash, unchecked((uint)VelocityY));
+                hash = HashValue(hash, unchecked((uint)VelocityZ));
+                hash = HashValue(
+                    hash, unchecked((uint)LongitudinalSpeed));
+                hash = HashValue(hash, Progress);
+                return HashValue(hash, Heading);
+            }
+        }
+    }
+
+    static readonly List<ulong> ReplayOracleRecordedControls = [];
+    static readonly List<ReplayPhysicalState?> ReplayOracleRecordedStates = [];
+    static uint _replayOracleRecordBuffer;
+    static uint _replayOracleRecordFrameCount;
+    static uint _replayOraclePlaybackBuffer;
+    static int _replayOraclePlaybackFrames;
+    static int _replayOracleControlComparisons;
+    static int _replayOracleControlMismatches;
+    static int _replayOracleStateComparisons;
+    static int _replayOracleStateMismatches;
+    static int _replayOracleLastStateFrame = -1;
+    static bool _replayOraclePlaybackActive;
+    static bool _replayOracleMode;
+    static int _replayOracleControlFrame = -1;
+    static ulong _replayOracleRecordedControlHash = Fnv64Offset;
+    static ulong _replayOracleExpectedControlHash = Fnv64Offset;
+    static ulong _replayOraclePlaybackControlHash = Fnv64Offset;
+    static ulong _replayOracleRecordedStateHash = Fnv64Offset;
+    static ulong _replayOraclePlaybackStateHash = Fnv64Offset;
+    static long _replayOraclePlaybackStartTimestamp;
+    const ulong Fnv64Offset = 14695981039346656037ul;
+    const ulong Fnv64Prime = 1099511628211ul;
 
     /// <summary>
     /// Select the expanded GT1-aware table only when the loaded Arcade
@@ -3110,11 +3165,241 @@ public static class GT2Compat
                 $"GT2 true-60 expected race time step 1 or 2 at " +
                 $"0x{timeStepAddress:X8}, found {authoredTimeStep}");
 
+        // The half-step force solver retains one-bit signed division carry so
+        // two consecutive 60 Hz fields sum exactly to GT2's authored 30 Hz
+        // delta. Race and replay rebuild their car arrays at the same guest
+        // addresses, so address/count identity cannot identify a new physical
+        // simulation. Reset at the authored race/replay setup boundary or a
+        // replay inherits the final rounding phase of the just-finished race.
+        Array.Clear(True60HzLinearVelocityBefore);
+        Array.Clear(True60HzLinearVelocityRemainders);
+        _true60HzVelocityCarArray = 0u;
+        _true60HzVelocityCarCount = 0u;
+        _replayOracleControlFrame = -1;
+        _replayOracleLastStateFrame = -1;
+        int segment = Interlocked.Increment(ref _true60HzRaceSegment);
+
         m.WriteU8(timeStepAddress, 1);
         if (Interlocked.Increment(ref _true60HzSchedulerReports) <= 4)
             Console.Error.WriteLine(
                 $"[GT2-True60] race time step {authoredTimeStep} -> 1 " +
-                $"configuration=0x{raceConfiguration:X8}");
+                $"configuration=0x{raceConfiguration:X8} " +
+                $"segment={segment} physicsCarry=reset");
+    }
+
+    /// <summary>
+    /// Observe GT2's exact five-byte controller sample immediately after the
+    /// original replay encoder or decoder. The host does not replace either
+    /// codec. It retains the just-recorded samples long enough to prove that
+    /// an automatic replay decodes the identical sequence and reports a
+    /// bounded mismatch with no image capture or interactive instrumentation.
+    /// </summary>
+    public static void ObserveReplayControllerFrame(
+        bool playback,
+        uint replayBuffer,
+        uint sample,
+        IMemory m)
+    {
+        if (!IsGuestRam(replayBuffer) || !IsGuestRam(sample))
+            return;
+
+        ulong packed = PackReplayControllerSample(sample, m);
+        if (!playback)
+        {
+            uint frameCount = m.ReadU32(replayBuffer);
+            if (_replayOracleRecordBuffer != replayBuffer ||
+                frameCount < _replayOracleRecordFrameCount)
+            {
+                BeginReplayOracleRecording(replayBuffer);
+            }
+            if (frameCount == _replayOracleRecordFrameCount)
+                return;
+            if (frameCount != _replayOracleRecordFrameCount + 1u)
+            {
+                Console.Error.WriteLine(
+                    $"[GT2-Replay-Oracle] recording frame discontinuity " +
+                    $"previous={_replayOracleRecordFrameCount} " +
+                    $"current={frameCount}");
+                BeginReplayOracleRecording(replayBuffer);
+            }
+
+            ReplayOracleRecordedControls.Add(packed);
+            _replayOracleRecordFrameCount = frameCount;
+            _replayOracleRecordedControlHash =
+                HashValue(_replayOracleRecordedControlHash, packed);
+            _replayOracleMode = false;
+            _replayOracleControlFrame =
+                ReplayOracleRecordedControls.Count - 1;
+            return;
+        }
+
+        if (!_replayOraclePlaybackActive &&
+            _replayOraclePlaybackBuffer == replayBuffer &&
+            m.ReadU16(replayBuffer + 0xCu) != 0)
+            return;
+        if (!_replayOraclePlaybackActive ||
+            _replayOraclePlaybackBuffer != replayBuffer)
+        {
+            BeginReplayOraclePlayback(replayBuffer, m);
+        }
+
+        // The decoder marks +0x0C when it consumes its terminal sentinel. That
+        // call does not emit a sample; summarize the completed replay once.
+        if (m.ReadU16(replayBuffer + 0xCu) != 0)
+        {
+            CompleteReplayOraclePlayback(m.ReadU32(replayBuffer));
+            return;
+        }
+
+        int frame = _replayOraclePlaybackFrames++;
+        _replayOraclePlaybackControlHash =
+            HashValue(_replayOraclePlaybackControlHash, packed);
+        _replayOracleMode = true;
+        _replayOracleControlFrame = frame;
+        if (frame < ReplayOracleRecordedControls.Count)
+        {
+            _replayOracleControlComparisons++;
+            ulong expected = ReplayOracleRecordedControls[frame];
+            if (packed != expected)
+            {
+                _replayOracleControlMismatches++;
+                if (_replayOracleControlMismatches == 1)
+                    Console.Error.WriteLine(
+                        $"[GT2-Replay-Oracle] CONTROL MISMATCH frame={frame} " +
+                        $"recorded={FormatReplayControllerSample(expected)} " +
+                        $"decoded={FormatReplayControllerSample(packed)} " +
+                        $"readOffset={m.ReadU16(replayBuffer + 0xEu)} " +
+                        $"runRemaining={m.ReadU32(replayBuffer + 0x8u)}");
+            }
+        }
+
+        if (frame > 0 && frame % 600 == 0)
+        {
+            double seconds = Stopwatch.GetElapsedTime(
+                _replayOraclePlaybackStartTimestamp).TotalSeconds;
+            double hz = seconds > 0.0 ? frame / seconds : 0.0;
+            Console.Error.WriteLine(
+                $"[GT2-Replay-Oracle] playback frame={frame} " +
+                $"total={m.ReadU32(replayBuffer)} wall={seconds:F2}s " +
+                $"effective={hz:F2}Hz controlMismatches=" +
+                _replayOracleControlMismatches);
+        }
+    }
+
+    static void BeginReplayOracleRecording(uint replayBuffer)
+    {
+        ReplayOracleRecordedControls.Clear();
+        ReplayOracleRecordedStates.Clear();
+        _replayOracleRecordBuffer = replayBuffer;
+        _replayOracleRecordFrameCount = 0u;
+        _replayOracleRecordedControlHash = Fnv64Offset;
+        _replayOracleRecordedStateHash = Fnv64Offset;
+        _replayOracleLastStateFrame = -1;
+        _replayOracleControlFrame = -1;
+        _replayOracleMode = false;
+        _replayOraclePlaybackActive = false;
+        Console.Error.WriteLine(
+            $"[GT2-Replay-Oracle] recording started " +
+            $"buffer=0x{replayBuffer:X8}");
+    }
+
+    static void BeginReplayOraclePlayback(uint replayBuffer, IMemory m)
+    {
+        _replayOraclePlaybackBuffer = replayBuffer;
+        _replayOraclePlaybackFrames = 0;
+        _replayOracleControlComparisons = 0;
+        _replayOracleControlMismatches = 0;
+        _replayOracleStateComparisons = 0;
+        _replayOracleStateMismatches = 0;
+        _replayOracleLastStateFrame = -1;
+        _replayOraclePlaybackControlHash = Fnv64Offset;
+        _replayOracleExpectedControlHash = Fnv64Offset;
+        int playableFrames = Math.Max(
+            0, ReplayOracleRecordedControls.Count - 1);
+        for (int frame = 0; frame < playableFrames; frame++)
+            _replayOracleExpectedControlHash = HashValue(
+                _replayOracleExpectedControlHash,
+                ReplayOracleRecordedControls[frame]);
+        _replayOraclePlaybackStateHash = Fnv64Offset;
+        _replayOracleControlFrame = -1;
+        _replayOracleMode = true;
+        _replayOraclePlaybackActive = true;
+        _replayOraclePlaybackStartTimestamp = Stopwatch.GetTimestamp();
+        Console.Error.WriteLine(
+            $"[GT2-Replay-Oracle] playback started " +
+            $"buffer=0x{replayBuffer:X8} encodedFrames=" +
+            $"{m.ReadU32(replayBuffer)} recordedFrames=" +
+            $"{ReplayOracleRecordedControls.Count} " +
+            $"playableFrames={playableFrames} expectedControlHash=" +
+            $"{_replayOracleExpectedControlHash:X16}");
+    }
+
+    static void CompleteReplayOraclePlayback(uint encodedFrames)
+    {
+        if (!_replayOraclePlaybackActive)
+            return;
+        _replayOraclePlaybackActive = false;
+        double seconds = Stopwatch.GetElapsedTime(
+            _replayOraclePlaybackStartTimestamp).TotalSeconds;
+        double hz = seconds > 0.0
+            ? _replayOraclePlaybackFrames / seconds
+            : 0.0;
+        int expectedControlFrames = Math.Max(
+            0, ReplayOracleRecordedControls.Count - 1);
+        int expectedStateFrames = ReplayOracleRecordedStates
+            .Take(expectedControlFrames)
+            .Count(state => state.HasValue);
+        bool controlsExact =
+            ReplayOracleRecordedControls.Count > 0 &&
+            _replayOracleControlMismatches == 0 &&
+            _replayOracleControlComparisons ==
+                expectedControlFrames &&
+            _replayOraclePlaybackFrames ==
+                expectedControlFrames;
+        bool statesExact =
+            ReplayOracleRecordedStates.Count > 0 &&
+            _replayOracleStateMismatches == 0 &&
+            _replayOracleStateComparisons ==
+                expectedStateFrames;
+        Console.Error.WriteLine(
+            $"[GT2-Replay-Oracle] completed encodedFrames={encodedFrames} " +
+            $"decodedFrames={_replayOraclePlaybackFrames} " +
+            $"recordedFrames={ReplayOracleRecordedControls.Count} " +
+            $"playableFrames={expectedControlFrames} " +
+            $"controls={(_replayOracleControlComparisons == 0 ? "unpaired" : controlsExact ? "exact" : "FAILED")} " +
+            $"controlComparisons={_replayOracleControlComparisons} " +
+            $"controlMismatches={_replayOracleControlMismatches} " +
+            $"expectedControlHash={_replayOracleExpectedControlHash:X16} " +
+            $"playbackControlHash={_replayOraclePlaybackControlHash:X16} " +
+            $"physics={(_replayOracleStateComparisons == 0 ? "unpaired" : statesExact ? "exact" : "FAILED")} " +
+            $"stateComparisons={_replayOracleStateComparisons} " +
+            $"stateMismatches={_replayOracleStateMismatches} " +
+            $"recordedStateHash={_replayOracleRecordedStateHash:X16} " +
+            $"playbackStateHash={_replayOraclePlaybackStateHash:X16} " +
+            $"wall={seconds:F2}s effective={hz:F2}Hz");
+    }
+
+    static ulong PackReplayControllerSample(uint sample, IMemory m)
+    {
+        ulong packed = 0;
+        for (int index = 0; index < 5; index++)
+            packed |= (ulong)m.ReadU8(sample + (uint)index) << (index * 8);
+        return packed;
+    }
+
+    static string FormatReplayControllerSample(ulong packed) =>
+        $"[{(byte)packed:X2},{(byte)(packed >> 8):X2}," +
+        $"{(byte)(packed >> 16):X2},{(byte)(packed >> 24):X2}," +
+        $"{(byte)(packed >> 32):X2}]";
+
+    static ulong HashValue(ulong hash, ulong value)
+    {
+        for (int index = 0; index < sizeof(ulong); index++)
+        {
+            hash ^= (byte)(value >> (index * 8));
+            hash *= Fnv64Prime;
+        }
+        return hash;
     }
 
     /// <summary>
@@ -3155,6 +3440,7 @@ public static class GT2Compat
         CaptureTrue60HzVehicleFields(
             carArray, carCount, True60HzLinearVelocityOffsets,
             True60HzLinearVelocityBefore, m);
+        ObserveReplayPhysicalState(carArray, m);
         _true60HzVelocityCarArray = carArray;
         _true60HzVelocityCarCount = carCount;
     }
@@ -3171,6 +3457,60 @@ public static class GT2Compat
             carArray, carCount, True60HzLinearVelocityOffsets,
             True60HzLinearVelocityBefore,
             True60HzLinearVelocityRemainders, m);
+    }
+
+    static void ObserveReplayPhysicalState(uint carArray, IMemory m)
+    {
+        int frame = _replayOracleControlFrame;
+        if (frame < 0 || frame == _replayOracleLastStateFrame)
+            return;
+        _replayOracleLastStateFrame = frame;
+
+        uint car = carArray + 0x2Cu;
+        ReplayPhysicalState state = new(
+            unchecked((int)m.ReadU32(car + 0x830u)),
+            unchecked((int)m.ReadU32(car + 0x834u)),
+            unchecked((int)m.ReadU32(car + 0x838u)),
+            unchecked((int)m.ReadU32(car + 0x65Cu)),
+            unchecked((int)m.ReadU32(car + 0x660u)),
+            unchecked((int)m.ReadU32(car + 0x664u)),
+            unchecked((int)m.ReadU32(car + 0x64Cu)),
+            m.ReadU16(car + 0x6FEu),
+            m.ReadU16(car + 0x5Au));
+
+        if (!_replayOracleMode)
+        {
+            while (ReplayOracleRecordedStates.Count <= frame)
+                ReplayOracleRecordedStates.Add(null);
+            ReplayOracleRecordedStates[frame] = state;
+            _replayOracleRecordedStateHash =
+                HashValue(_replayOracleRecordedStateHash, state.Hash);
+            return;
+        }
+
+        _replayOraclePlaybackStateHash =
+            HashValue(_replayOraclePlaybackStateHash, state.Hash);
+        if (frame >= ReplayOracleRecordedStates.Count ||
+            !ReplayOracleRecordedStates[frame].HasValue)
+            return;
+        ReplayPhysicalState expected =
+            ReplayOracleRecordedStates[frame]!.Value;
+        _replayOracleStateComparisons++;
+        if (state == expected)
+            return;
+
+        _replayOracleStateMismatches++;
+        if (_replayOracleStateMismatches == 1)
+            Console.Error.WriteLine(
+                $"[GT2-Replay-Oracle] PHYSICS MISMATCH frame={frame} " +
+                $"recorded=pos({expected.X},{expected.Y},{expected.Z})/" +
+                $"vel({expected.VelocityX},{expected.VelocityY}," +
+                $"{expected.VelocityZ})/speed={expected.LongitudinalSpeed}/" +
+                $"progress={expected.Progress}/heading={expected.Heading} " +
+                $"replay=pos({state.X},{state.Y},{state.Z})/" +
+                $"vel({state.VelocityX},{state.VelocityY}," +
+                $"{state.VelocityZ})/speed={state.LongitudinalSpeed}/" +
+                $"progress={state.Progress}/heading={state.Heading}");
     }
 
     static void CaptureTrue60HzVehicleFields(

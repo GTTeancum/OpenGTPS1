@@ -1085,6 +1085,33 @@ def main() -> int:
         "Arcade race NTSC time step",
     )
 
+    replace_in_function_once(
+        OVERLAY0,
+        "func_80013C90",
+        """        GranTurismo2ArcadePC.func_80016658(c, m);
+        MemoryAccess.WriteU16(m, c.S7, (ushort)c.S0);
+""",
+        """        GranTurismo2ArcadePC.func_80016658(c, m);
+        RecompOne.Runtime.Sdk.GT2Compat.ObserveReplayControllerFrame(
+            false, MemoryAccess.ReadU32(m, (c.FP + 0x1Cu)), c.S6, m);
+        MemoryAccess.WriteU16(m, c.S7, (ushort)c.S0);
+""",
+        "Arcade replay recorder oracle",
+    )
+    replace_in_function_once(
+        OVERLAY0,
+        "func_80013C90",
+        """        GranTurismo2ArcadePC.func_800163B4(c, m);
+        c.S0 = MemoryAccess.ReadU8(m, (c.SP + 0x10u));
+""",
+        """        GranTurismo2ArcadePC.func_800163B4(c, m);
+        RecompOne.Runtime.Sdk.GT2Compat.ObserveReplayControllerFrame(
+            true, MemoryAccess.ReadU32(m, (c.FP + 0x1Cu)), c.S6, m);
+        c.S0 = MemoryAccess.ReadU8(m, (c.SP + 0x10u));
+""",
+        "Arcade replay decoder oracle",
+    )
+
     replace_once(
         OVERLAY0,
         """        c.A1 = (uint)((int)c.A1 >> 8);

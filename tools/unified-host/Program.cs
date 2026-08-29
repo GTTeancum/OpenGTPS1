@@ -7,6 +7,7 @@ Environment.CurrentDirectory = AppContext.BaseDirectory;
 bool headless = false;
 bool mute = false;
 bool validateLiveries = false;
+bool verifyReplayCodec = false;
 bool startArcade = false;
 string? directArcadeRace = null;
 bool directArcadeReplay = false;
@@ -22,6 +23,10 @@ for (int index = 0; index < args.Length; index++)
                  "--validate-liveries",
                  StringComparison.OrdinalIgnoreCase))
         validateLiveries = true;
+    else if (argument.Equals(
+                 "--verify-replay-codec",
+                 StringComparison.OrdinalIgnoreCase))
+        verifyReplayCodec = true;
     else if (argument.Equals(
                  "--start-arcade",
                  StringComparison.OrdinalIgnoreCase))
@@ -114,6 +119,12 @@ if (headless)
 else if (mute)
 {
     Environment.SetEnvironmentVariable("RECOMPONE_MUTE", "1");
+}
+
+if (verifyReplayCodec)
+{
+    VerifyReplayCodecs();
+    return 0;
 }
 
 ConfigManager.Load();
@@ -450,6 +461,115 @@ static void ValidateLiveryResolver()
     Console.WriteLine(
         "[Host] livery resolver validation passed: " +
         "Castrol Supra palettes=4, duplicate IDs=108/113");
+}
+
+static void VerifyReplayCodecs()
+{
+    var memory = new PSMemory();
+    VerifyReplayCodec(
+        "Simulation",
+        Recompiled.Simulation.GranTurismo2PC.func_800163B8,
+        Recompiled.Simulation.GranTurismo2PC.func_800166CC,
+        Recompiled.Simulation.GranTurismo2PC.func_800167D0,
+        Recompiled.Simulation.GranTurismo2PC.func_80016428,
+        0x80010000u,
+        memory);
+    VerifyReplayCodec(
+        "Arcade",
+        Recompiled.Arcade.GranTurismo2ArcadePC.func_80016344,
+        Recompiled.Arcade.GranTurismo2ArcadePC.func_80016658,
+        Recompiled.Arcade.GranTurismo2ArcadePC.func_8001675C,
+        Recompiled.Arcade.GranTurismo2ArcadePC.func_800163B4,
+        0x80014000u,
+        memory);
+    Console.WriteLine(
+        "[GT2-Replay-Codec] pass variants=Simulation,Arcade " +
+        "source=original-guest-codec");
+}
+
+static void VerifyReplayCodec(
+    string variant,
+    Action<RecompOne.Runtime.Context.CpuContext, IMemory> initialize,
+    Action<RecompOne.Runtime.Context.CpuContext, IMemory> record,
+    Action<RecompOne.Runtime.Context.CpuContext, IMemory> finalize,
+    Action<RecompOne.Runtime.Context.CpuContext, IMemory> decode,
+    uint buffer,
+    PSMemory memory)
+{
+    const ushort capacity = 0x1800;
+    uint input = buffer + 0x2000u;
+    uint output = input + 0x20u;
+    byte[][] samples =
+    [
+        [0x00, 0x00, 0x00, 0x00, 0x00],
+        [0x00, 0x00, 0x00, 0x00, 0x00],
+        [0x09, 0x12, 0x34, 0x05, 0x0A],
+        [0x09, 0x12, 0x34, 0x05, 0x0A],
+        [0x09, 0x12, 0x35, 0x05, 0x0A],
+        [0x01, 0x7F, 0x35, 0x0F, 0x01],
+        [0x01, 0x7F, 0x35, 0x0F, 0x01],
+        [0x00, 0x80, 0x00, 0x00, 0x00],
+    ];
+
+    var context = new RecompOne.Runtime.Context.CpuContext
+    {
+        SP = 0x801FF000u,
+        A0 = buffer,
+        A1 = 0u,
+        A2 = capacity,
+    };
+    initialize(context, memory);
+    foreach (byte[] sample in samples)
+    {
+        for (int index = 0; index < sample.Length; index++)
+            memory.WriteU8(input + (uint)index, sample[index]);
+        context.A0 = buffer;
+        context.A1 = input;
+        record(context, memory);
+    }
+    context.A0 = buffer;
+    context.A1 = 0u;
+    finalize(context, memory);
+    if (memory.ReadU32(buffer) != samples.Length ||
+        memory.ReadU16(buffer + 0xCu) == 0)
+        throw new InvalidDataException(
+            $"{variant} replay encoder did not finalize the synthetic stream");
+
+    context.A0 = buffer;
+    context.A1 = 1u;
+    context.A2 = capacity;
+    initialize(context, memory);
+    var decoded = new List<byte[]>();
+    for (int guard = 0; guard <= samples.Length; guard++)
+    {
+        context.A0 = buffer;
+        context.A1 = output;
+        decode(context, memory);
+        if (memory.ReadU16(buffer + 0xCu) != 0)
+            break;
+        var sample = new byte[5];
+        for (int index = 0; index < sample.Length; index++)
+            sample[index] = memory.ReadU8(output + (uint)index);
+        decoded.Add(sample);
+    }
+
+    byte[][] expectedSamples = samples[..^1];
+    if (decoded.Count != expectedSamples.Length ||
+        !decoded.Zip(expectedSamples).All(
+            pair => pair.First.SequenceEqual(pair.Second)))
+    {
+        string expected = string.Join(
+            ' ', samples.Select(Convert.ToHexString));
+        string actual = string.Join(
+            ' ', decoded.Select(Convert.ToHexString));
+        throw new InvalidDataException(
+            $"{variant} replay codec round trip failed: " +
+            $"expected={expected} actual={actual} " +
+            $"encodedFrames={memory.ReadU32(buffer)}");
+    }
+    Console.WriteLine(
+        $"[GT2-Replay-Codec] variant={variant} frames={decoded.Count} " +
+        $"compressedBytes={memory.ReadU16(buffer + 0x10u)} roundTrip=exact");
 }
 
 internal static class StartupDialog

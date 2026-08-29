@@ -562,6 +562,28 @@ rounding from changing long-term speed or distance. The mode therefore
 preserves the original real-time game rate while producing a newly simulated
 state at approximately 59.94 Hz.
 
+Each authored race/replay setup now also resets the host's signed half-step
+carry unconditionally. GT2 commonly rebuilds the replay car array at the same
+guest address and with the same car count as the live race; those identifiers
+therefore cannot distinguish two physical simulations. Allowing the final
+race field's carry to survive that boundary changes the replay's initial fixed-
+point state and can grow into a different trajectory.
+
+Automatic replays are a runtime oracle rather than visual-only evidence. The
+original guest encoder and decoder remain authoritative. A bounded host
+observer records their exact five-byte control samples, compares every playable
+decoded sample, and compares player position, velocity, speed, progress, and
+heading at the matching solver field. The structured log reports the first
+control or physics mismatch, exact stream hashes, final comparison counts, and
+effective wall-clock replay frequency. It emits one progress line per 600
+replay updates, so a slow replay can be diagnosed without screenshots or input
+tracing. GT2 intentionally uses the final encoded sample as its terminal
+sentinel; an N-sample recording therefore has N-1 playable comparisons.
+
+The non-interactive `--verify-replay-codec` check calls both original generated
+guest codecs directly with control changes, runs, and packed nibble values. Both
+Simulation and Arcade variants must round-trip every playable sample exactly.
+
 This is the only packaged and development runtime mode. The former
 `RECOMPONE_GT2_TRUE_60HZ` downgrade is absent; retired midpoint reproduction is
 compiled only into explicit native development-oracle targets.

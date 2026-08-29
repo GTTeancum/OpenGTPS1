@@ -31,6 +31,9 @@ extracts the required loose files from the user's own matching raw IMG.
 - Data-first Seattle Circuit qualification with a bounded no-pop sector
   horizon, authored mutually exclusive course selection, explicit background/
   world depth layers, and structured renderer diagnostics in development builds.
+- Deterministic automatic replays reset 60 Hz physics carry at every race/
+  replay boundary and verify the original recorded controller stream and
+  resulting vehicle trajectory through bounded structured log oracles.
 
 ## Known beta limitations
 
