@@ -23,7 +23,9 @@ internal static unsafe class Audio
     static volatile bool _running;
     static float _masterVolume = 1.0f;
     static long _mixedFrames;
-    static bool _firstAudibleBufferReported;
+    static volatile bool _firstAudibleBufferReported;
+    internal static bool HasProducedAudibleOutput =>
+        _firstAudibleBufferReported;
     static readonly bool _traceAudio =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_AUDIO") == "1";
     static long _traceSamples;

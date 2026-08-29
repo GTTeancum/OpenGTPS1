@@ -81,6 +81,10 @@ disc-visible `GT2.VOL` at LBA 473. The Arcade executable, overlays, raw
   native service initializer, and enters the post-bootstrap function at
   `0x8005D650`; that function requests overlay 1, which is the same native
   destination requested by `START GAME` on the stock US Arcade disc.
+- Arcade selection does not tear down the Simulation guest on the same update
+  that queues the original confirmation sample. The selected title remains
+  resident for twelve native title updates, allowing sound effect 3 to reach
+  the SPU mixer before the executable handoff begins.
 - `0x80018574` and `0x800186D0` are explicit Simulation overlay-1 function
   roots. They are original callback entries required by the retail Option path
   but were not discovered by the previous linear sweep.
@@ -91,6 +95,14 @@ disc-visible `GT2.VOL` at LBA 473. The Arcade executable, overlays, raw
   states. While that frontend is idle, its own counter at `0x800B0F20` is kept
   below the retail 901-update attract threshold so it cannot force the default
   Seattle demo; normal menu input and explicitly requested races are unchanged.
+- Arcade overlay 2 resolves each course list against the data actually loaded.
+  A release install made from the two supported GT2 discs uses the five stock
+  tables; a converted GT1-content overlay uses its five expanded tables. The
+  previous unconditional expanded-table redirect read beyond the stock
+  overlay into zero-filled RAM, producing a blank `1.` course, `0 ft`, and no
+  usable course navigation. The memory-level regression now covers both data
+  layouts, and an invalid layout fails closed instead of drawing a corrupt
+  menu.
 - One `GranTurismo2PC` host assembly contains both original programs and all
   twelve overlays. There are no public mode-selection switches or substitute
   host menus.

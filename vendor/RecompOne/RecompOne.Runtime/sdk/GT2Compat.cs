@@ -307,6 +307,7 @@ public static class GT2Compat
     static readonly HashSet<string> RaceSchedulerStates = [];
     static int _true60HzSchedulerReports;
     static int _arcadeCourseUnlockReported;
+    static int _arcadeCourseStockFallbackReported;
     static int _arcadeRaceConfigTraceReported;
     static int _arcadePreFinalizeConfigTraceReported;
     static int _arcadeRaceStateTraceReported;
@@ -326,23 +327,17 @@ public static class GT2Compat
     static uint _true60HzVelocityCarCount;
 
     /// <summary>
-    /// Expose every stock Arcade course to an isolated diagnostic session.
-    /// The guest table is private to the current process; normal progression
-    /// and the player's memory card are not changed.
+    /// Select the expanded GT1-aware table only when the loaded Arcade
+    /// overlay actually contains it. Release installs reconstructed from the
+    /// two GT2 discs carry the stock overlay, so unconditionally redirecting
+    /// them past the end of that image produces a zero-filled one-course list.
     /// </summary>
-    public static void UnlockArcadeCourseTable(uint table, IMemory m)
+    public static uint ResolveArcadeCourseTable(
+        uint stockTable, uint expandedTable, IMemory m)
     {
-        if (!UnlockArcadeCourses || !IsGuestRam(table))
-            return;
-
         const int recordBytes = 32;
-        const uint unlockOffset = 20u;
-        // Development data made before the expanded GT1-course tables were
-        // emitted leaves those destinations zeroed.  A diagnostic unlock must
-        // still expose every stock GT2 course, so seed an empty expanded table
-        // from the corresponding retail table before changing availability.
-        // This is process-local and never touches the memory card.
-        (uint stockTable, int stockCount, int expandedCount) = table switch
+        (uint expectedStock, int stockCount, int expandedCount) =
+            expandedTable switch
         {
             0x800533C0u => (0x80050730u, 21, 22),
             0x800536A0u => (0x800509F0u, 21, 22),
@@ -351,6 +346,11 @@ public static class GT2Compat
             0x80053FC0u => (0x800513F0u, 21, 22),
             _ => (0u, 0, 0),
         };
+        if (!IsGuestRam(stockTable) || !IsGuestRam(expandedTable) ||
+            stockTable != expectedStock || stockCount == 0)
+            throw new InvalidOperationException(
+                "Unknown Arcade course-table pair: " +
+                $"stock=0x{stockTable:X8} expanded=0x{expandedTable:X8}");
 
         bool RecordIsEmpty(uint address)
         {
@@ -362,38 +362,48 @@ public static class GT2Compat
             return true;
         }
 
-        bool seededStockTable = false;
-        if (stockTable != 0u &&
-            RecordIsEmpty(table) &&
-            !RecordIsEmpty(stockTable))
+        bool RecordLooksValid(uint address)
         {
-            for (int copied = 0; copied < stockCount; copied++)
-            {
-                uint source = stockTable + (uint)(copied * recordBytes);
-                uint destination = table + (uint)(copied * recordBytes);
-                for (int offset = 0; offset < recordBytes; offset++)
-                    m.WriteU8(
-                        destination + (uint)offset,
-                        m.ReadU8(source + (uint)offset));
-            }
-            seededStockTable = true;
-            Console.Error.WriteLine(
-                "[GT2] seeded empty expanded Arcade course table from " +
-                $"stock data; destination=0x{table:X8} " +
-                $"source=0x{stockTable:X8} entries={stockCount}");
+            return IsGuestRam(m.ReadU32(address)) &&
+                IsGuestRam(m.ReadU32(address + 4u)) &&
+                IsGuestRam(m.ReadU32(address + 8u));
         }
-        int count = stockTable == 0u
-            ? 0
-            : seededStockTable ? stockCount : expandedCount;
-        for (int index = 0; index < count; index++)
+
+        bool TableLooksValid(uint address, int count) =>
+            RecordLooksValid(address) &&
+            RecordIsEmpty(address + (uint)(count * recordBytes));
+
+        bool expandedValid = TableLooksValid(expandedTable, expandedCount);
+        bool stockValid = TableLooksValid(stockTable, stockCount);
+        if (!expandedValid && !stockValid)
+            throw new InvalidDataException(
+                "Loaded Arcade overlay contains neither a valid stock nor " +
+                "expanded course table");
+
+        uint selected = expandedValid ? expandedTable : stockTable;
+        int selectedCount = expandedValid ? expandedCount : stockCount;
+        if (!expandedValid &&
+            Interlocked.Exchange(ref _arcadeCourseStockFallbackReported, 1) == 0)
         {
-            uint record = table + (uint)(index * recordBytes);
+            Console.Error.WriteLine(
+                "[GT2] stock Arcade course tables selected; expanded " +
+                "GT1 overlay data is absent from this GT2-disc install");
+        }
+
+        if (!UnlockArcadeCourses)
+            return selected;
+
+        const uint unlockOffset = 20u;
+        for (int index = 0; index < selectedCount; index++)
+        {
+            uint record = selected + (uint)(index * recordBytes);
             m.WriteU32(record + unlockOffset, 0xFFFFu);
         }
         if (Interlocked.Exchange(ref _arcadeCourseUnlockReported, 1) == 0)
             Console.Error.WriteLine(
                 $"[GT2] diagnostic Arcade course unlock active; " +
-                $"firstTable=0x{table:X8} entries={count}");
+                $"firstTable=0x{selected:X8} entries={selectedCount}");
+        return selected;
     }
     static readonly HashSet<uint> TrackObjects = [];
     static readonly HashSet<uint> TrackViewIndices = [];
@@ -516,6 +526,7 @@ public static class GT2Compat
     static bool _unifiedTitleInstalled;
     static bool _unifiedArcadeTransition;
     static bool _unifiedArcadeFrontendPending;
+    static int _unifiedArcadeSelectionDelay;
     static readonly object LiveryTableLock = new();
     static Dictionary<ulong, LiverySelection>? _liveriesByPalette;
     static Dictionary<ulong, LiverySelection>? _liveriesByColorId;
@@ -1378,6 +1389,18 @@ public static class GT2Compat
     /// </summary>
     public static void InstallUnifiedTitleMenu(IMemory m)
     {
+        if (_unifiedArcadeSelectionDelay > 0 &&
+            --_unifiedArcadeSelectionDelay == 0)
+        {
+            _unifiedTitleMenuActive = false;
+            _unifiedArcadeFrontendPending = true;
+            Console.WriteLine(
+                "[GT2] title selection: Arcade Mode; " +
+                "authored confirmation window completed; " +
+                "spuOutputBeforeHandoff=" +
+                RecompOne.Runtime.Host.Audio.HasProducedAudibleOutput);
+            throw new GT2VariantSwitch("arcade");
+        }
         _unifiedTitleMenuActive = true;
         EnableExactTitleDisplay();
         // Two sentinels plus the four complete Sony-authored demo entries:
@@ -1517,14 +1540,24 @@ public static class GT2Compat
     public static void CommitUnifiedTitleSelection(
         IMemory m, uint index, uint titleState)
     {
-        _unifiedTitleMenuActive = false;
         if (index == 1u)
         {
-            _unifiedArcadeFrontendPending = true;
-            Console.WriteLine("[GT2] title selection: Arcade Mode");
-            throw new GT2VariantSwitch("arcade");
+            // The native selector has just invoked sound effect 3. Keep the
+            // Simulation guest alive long enough to mix that authored sample
+            // before replacing its RAM image with the Arcade executable.
+            // An immediate exception here made every Arcade confirmation
+            // silent even though the original sound call was intact.
+            if (_unifiedArcadeSelectionDelay == 0)
+            {
+                _unifiedArcadeSelectionDelay = 12;
+                Console.WriteLine(
+                    "[GT2] Arcade Mode confirmation queued; " +
+                    "handoff delayed for 12 title updates");
+            }
+            return;
         }
 
+        _unifiedTitleMenuActive = false;
         int value = UnifiedTitleSelectionValue(index);
         if (value < 0)
             return;

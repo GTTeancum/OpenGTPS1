@@ -42,6 +42,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="output card image (defaults to updating the input image)",
     )
+    parser.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="verify the completed Arcade save without changing either card",
+    )
     return parser.parse_args()
 
 
@@ -138,6 +143,8 @@ def main() -> int:
     destination = (args.output or args.card).resolve()
     if not source.is_file():
         raise FileNotFoundError(source)
+    if args.validate_only and args.output is not None:
+        raise ValueError("--validate-only cannot be combined with --output")
     if source != destination:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, destination)
@@ -149,6 +156,17 @@ def main() -> int:
         )
     game_id, chain = gt2_save_chain(card)
     save = read_logical_save(card, chain)
+    if args.validate_only:
+        checksum = validate_save(save)
+        print(
+            f"arcade_audit_card={source} game_id={game_id.decode('ascii')} "
+            f"blocks={','.join(str(block) for block in chain)} "
+            f"arcade_difficult={ARCADE_COURSE_COUNT}/{ARCADE_COURSE_COUNT} "
+            f"licenses_gold={len(LICENSE_OFFSETS) * LICENSE_TEST_COUNT}/60 "
+            f"ending=unlocked credits={MONEY} crc32=0x{checksum:08X} "
+            "changed=false"
+        )
+        return 0
     patch_save(save)
     checksum = validate_save(save)
     write_logical_save(card, chain, save)

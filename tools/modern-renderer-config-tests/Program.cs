@@ -1,6 +1,7 @@
 using RecompOne.Runtime;
 using RecompOne.Runtime.Config;
 using RecompOne.Runtime.Context;
+using RecompOne.Runtime.Memory;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
@@ -101,6 +102,48 @@ static void VerifyCpuProjectionFastPath()
         WorldCaptureContext.LiveRenderingEnabled = false;
     }
 }
+
+static void VerifyArcadeFrontendContracts()
+{
+    var memory = new PSMemory();
+    const uint stock = 0x80050730u;
+    const uint expanded = 0x800533C0u;
+    memory.WriteU32(stock, 0x80050048u);
+    memory.WriteU32(stock + 4u, 0x80050424u);
+    memory.WriteU32(stock + 8u, 0x80050670u);
+    Require(
+        RecompOne.Runtime.Sdk.GT2Compat.ResolveArcadeCourseTable(
+            stock, expanded, memory) == stock,
+        "stock GT2 overlay did not reject the absent expanded course table");
+
+    memory.WriteU32(expanded, 0x80050048u);
+    memory.WriteU32(expanded + 4u, 0x80050424u);
+    memory.WriteU32(expanded + 8u, 0x80050670u);
+    Require(
+        RecompOne.Runtime.Sdk.GT2Compat.ResolveArcadeCourseTable(
+            stock, expanded, memory) == expanded,
+        "converted Arcade overlay did not retain its expanded course table");
+
+    RecompOne.Runtime.Sdk.GT2Compat.InstallUnifiedTitleMenu(memory);
+    RecompOne.Runtime.Sdk.GT2Compat.CommitUnifiedTitleSelection(
+        memory, 1u, 0x80010000u);
+    for (int update = 0; update < 11; update++)
+        RecompOne.Runtime.Sdk.GT2Compat.InstallUnifiedTitleMenu(memory);
+    bool switched = false;
+    try
+    {
+        RecompOne.Runtime.Sdk.GT2Compat.InstallUnifiedTitleMenu(memory);
+    }
+    catch (RecompOne.Runtime.Sdk.GT2VariantSwitch requested)
+    {
+        switched = requested.Variant == "arcade";
+    }
+    Require(
+        switched,
+        "Arcade title handoff did not preserve twelve authored sound updates");
+}
+
+VerifyArcadeFrontendContracts();
 
 VerifyCpuProjectionFastPath();
 
@@ -463,6 +506,8 @@ string simulationEnhancements = ReadRepoFile(
     @"tools\apply_gt2_enhancements.py");
 string arcadeEnhancements = ReadRepoFile(
     @"tools\apply_gt2_arcade_enhancements.py");
+string generatedArcadeFrontend = ReadRepoFile(
+    @"generated\arcade-recompiled\gt2_arcade_overlay_2.cs");
 string unifiedModeHarness = ReadRepoFile(
     @"tools\test_unified_modes.ps1");
 string hostWindowSource = ReadRepoFile(
@@ -481,6 +526,15 @@ string arcadeRendererAuditHarness = ReadRepoFile(
     @"tools\run_arcade_renderer_audit.ps1");
 string arcadeRendererAuditLauncher = ReadRepoFile(
     @"tools\run_arcade_renderer_audit.cmd");
+Require(
+    arcadeEnhancements.Contains(
+        "ResolveArcadeCourseTable(", StringComparison.Ordinal) &&
+    Occurrences(
+        generatedArcadeFrontend,
+        "GT2Compat.ResolveArcadeCourseTable(") == 10 &&
+    !generatedArcadeFrontend.Contains(
+        "GT2Compat.UnlockArcadeCourseTable(", StringComparison.Ordinal),
+    "Arcade frontend can still read absent expanded course tables in a stock release");
 const string selfContainedDeploy =
     @"tools\unified-host\bin\Release\net10.0\win-x64\publish";
 Require(

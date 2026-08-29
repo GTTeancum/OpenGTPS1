@@ -25,6 +25,9 @@ extracts the required loose files from the user's own matching raw IMG.
 - Keyboard and Xbox-compatible controller input.
 - Memory-card persistence, sound effects, XA audio, external OGG music, mods,
   graphics presets, and structured logs.
+- Direct Arcade entry skips the Arcade-disc title while retaining its authored
+  confirmation sound, and course selection supports both stock GT2-disc data
+  and expanded GT1-content overlays without blank or immovable course lists.
 - Data-first Seattle Circuit qualification with a bounded no-pop sector
   horizon, authored mutually exclusive course selection, explicit background/
   world depth layers, and structured renderer diagnostics in development builds.
