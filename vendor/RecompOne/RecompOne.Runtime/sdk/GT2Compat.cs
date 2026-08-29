@@ -18,6 +18,76 @@ public static class GT2Compat
     readonly record struct LiverySelection(
         uint BodyId, byte BodyPaletteIndex, byte ColorId);
 
+    /// <summary>
+    /// Activates GT2's current view projection before its vehicle pass. The
+    /// vehicle path can emit or classify geometry before its selected model
+    /// calls func_8007B688, so inheriting projection state from the preceding
+    /// auxiliary/main pass assigns those cars to the wrong view. The view
+    /// record stores OFX, OFY, and H at +0x5C, +0x60, and +0x64.
+    /// </summary>
+    public static void ActivateVehicleProjectionFromView(
+        uint viewRecord, IMemory memory)
+    {
+        if (!IsGuestRam(viewRecord))
+            throw new InvalidOperationException(
+                $"GT2 view record is outside guest RAM: 0x{viewRecord:X8}");
+        RecompOne.Runtime.Gte.WriteControl(
+            24, memory.ReadU32(viewRecord + 0x5Cu));
+        RecompOne.Runtime.Gte.WriteControl(
+            25, memory.ReadU32(viewRecord + 0x60u));
+        RecompOne.Runtime.Gte.WriteControl(
+            26, memory.ReadU16(viewRecord + 0x64u));
+    }
+
+    /// <summary>
+    /// Exact aligned MIPS word-copy bridge for bounded, proven hot loops. The
+    /// PSMemory path retains every RAM observer; other IMemory implementations
+    /// preserve behavior through ordinary word accesses.
+    /// </summary>
+    public static void CopyAlignedGuestWords(
+        CpuContext context,
+        IMemory memory,
+        uint source,
+        uint destination,
+        uint byteCount)
+    {
+        if (byteCount == 0u ||
+            ((source | destination | byteCount) & 0xFu) != 0u)
+            throw new ArgumentException(
+                "Guest quad-word copy must be nonempty and 16-byte aligned.");
+        if (memory is PSMemory psMemory &&
+            psMemory.TryCopyAlignedRamWords(
+                source,
+                destination,
+                byteCount,
+                out uint finalWord0,
+                out uint finalWord1,
+                out uint finalWord2,
+                out uint finalWord3))
+        {
+            context.T0 = finalWord0;
+            context.T1 = finalWord1;
+            context.T2 = finalWord2;
+            context.T3 = finalWord3;
+            context.V0 = source + byteCount;
+            context.V1 = destination + byteCount;
+            return;
+        }
+        for (uint offset = 0; offset < byteCount; offset += 16u)
+        {
+            context.T0 = memory.ReadU32(source + offset);
+            context.T1 = memory.ReadU32(source + offset + 4u);
+            context.T2 = memory.ReadU32(source + offset + 8u);
+            context.T3 = memory.ReadU32(source + offset + 12u);
+            memory.WriteU32(destination + offset, context.T0);
+            memory.WriteU32(destination + offset + 4u, context.T1);
+            memory.WriteU32(destination + offset + 8u, context.T2);
+            memory.WriteU32(destination + offset + 12u, context.T3);
+        }
+        context.V0 = source + byteCount;
+        context.V1 = destination + byteCount;
+    }
+
     private sealed class NonLocalJump(
         uint target, bool returnTrampoline = false) : Exception
     {
@@ -30,16 +100,35 @@ public static class GT2Compat
         Config.ConfigManager.View.LevelOfDetail.Equals(
             "Maximum", StringComparison.OrdinalIgnoreCase);
 
-    // Internal regression-isolation switches default to enabled. Setting one
-    // to 0 separates the radial and replay distance gates during capture
-    // without changing the user-facing Extended Draw Distance option.
-    static bool ExtendedTrackFeatureEnabled(string overrideName) =>
-        Config.ConfigManager.View.ExtendedDrawDistance &&
-        Environment.GetEnvironmentVariable(overrideName) != "0";
+    // Internal regression-isolation switches default to enabled. Environment
+    // variables cannot change after process startup, so read each override
+    // once. ExpandTrackFrustumClassification runs for every resident course
+    // object and querying the Windows process environment there accounted for
+    // several percent of the emulation thread's Seattle frame time.
+    static readonly bool ExtendedReplayTrackDrawOverride =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_GT2_EXTENDED_REPLAY_TRACK_DRAW") != "0";
+    static readonly bool ExtendedTrackRadialLimitOverride =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_GT2_EXTENDED_TRACK_RADIAL_LIMIT") != "0";
+    static readonly bool ExtendedTrackFrustumOverride =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_GT2_EXTENDED_TRACK_FRUSTUM") != "0";
+    static readonly bool ExtendedVehicleFrustumOverride =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_GT2_EXTENDED_VEHICLE_FRUSTUM") != "0";
+#if !OPENGT_RELEASE_PACKAGE
+    // Development oracle only. This isolates the bounded resident horizon
+    // from projection/depth changes at an identical deterministic race poll.
+    // Public builds always retain the bounded PC course horizon.
+    static readonly bool ResidentCourseCatalogEnabled =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_GT2_RESIDENT_COURSE_CATALOG") != "0";
+#endif
 
     public static bool ExtendedReplayTrackDrawDistanceEnabled =>
-        ExtendedTrackFeatureEnabled(
-            "RECOMPONE_GT2_EXTENDED_REPLAY_TRACK_DRAW");
+        Config.ConfigManager.View.ExtendedDrawDistance &&
+        ExtendedReplayTrackDrawOverride;
 
     /// <summary>
     /// Overlay 0 applies a second, camera-relative radial cutoff after walking
@@ -52,19 +141,25 @@ public static class GT2Compat
     /// and the game's ordinary polygon clipping still run unchanged.
     /// </summary>
     public static uint GetTrackDrawDistanceLimit() =>
-        ExtendedTrackFeatureEnabled(
-            "RECOMPONE_GT2_EXTENDED_TRACK_RADIAL_LIMIT")
+        Config.ConfigManager.View.ExtendedDrawDistance &&
+        ExtendedTrackRadialLimitOverride
             ? uint.MaxValue
             : 0x0063FFFFu;
 
     /// <summary>
-    /// GT2 classifies each course object against its authored 4:3 frustum
+    /// GT2 classifies each course object against its authored 4:3 viewport
     /// before emitting any primitives: 0 is inside, 1 intersects, and 2 is
-    /// outside. The PC renderer owns the wider horizontal frustum, so an
-    /// object rejected only at this boundary must reach primitive capture.
-    /// Treating it as fully inside also avoids the guest's 4:3 polygon clip;
-    /// D3D performs the target-aspect clip after continuous projection.
+    /// outside. GT2's intersecting route has a distinct authored packet order;
+    /// it is not interchangeable with the inside route. Expanded objects use
+    /// that intersecting route so the resident renderer receives the correct
+    /// topology and UV association, reconstructs continuous vertices, and
+    /// delegates clipping to D3D at the actual target aspect.
     /// </summary>
+    public static uint ApplyModernTrackFrustumClassification(
+        uint classification,
+        bool enabled) =>
+        enabled && classification == 2u ? 1u : classification;
+
     public static uint ExpandTrackFrustumClassification(uint classification)
     {
         switch (classification)
@@ -73,14 +168,15 @@ public static class GT2Compat
             case 1u: _trackFrustumIntersecting++; break;
             case 2u: _trackFrustumOutside++; break;
         }
-        if (classification == 2u &&
-            ExtendedTrackFeatureEnabled(
-                "RECOMPONE_GT2_EXTENDED_TRACK_FRUSTUM"))
+        uint expanded = ApplyModernTrackFrustumClassification(
+            classification,
+            Config.ConfigManager.View.ExtendedDrawDistance &&
+                ExtendedTrackFrustumOverride);
+        if (expanded != classification)
         {
             _trackFrustumExpanded++;
-            return 0u;
         }
-        return classification;
+        return expanded;
     }
 
     static readonly bool TraceBoot =
@@ -89,10 +185,9 @@ public static class GT2Compat
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_MENU") == "1";
     static readonly bool TraceRaceScheduler =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_SCHEDULER") == "1";
-    // Genuine per-VBlank simulation is the shipping GT2 architecture.  A
-    // value of 0 exists only to reproduce retired midpoint-era diagnostics.
-    static readonly bool True60HzEnabled =
-        Environment.GetEnvironmentVariable("RECOMPONE_GT2_TRUE_60HZ") != "0";
+    // Genuine per-VBlank simulation is the sole GT2 architecture. Retired
+    // 30 Hz and synthetic-midpoint modes cannot be re-enabled at runtime.
+    static readonly bool True60HzEnabled = true;
     static readonly bool TraceTrue60HzCadence =
         Environment.GetEnvironmentVariable(
             "RECOMPONE_TRACE_GT2_TRUE60_CADENCE") == "1";
@@ -107,11 +202,64 @@ public static class GT2Compat
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_TRACK_RENDERING") == "1";
     static readonly bool TraceTrackFrustum =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_TRACK_FRUSTUM") == "1";
+    static readonly int TraceTrackVisibilityStartPoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_GT2_VISIBILITY_START_POLL"),
+            out int traceTrackVisibilityStartPoll)
+            ? traceTrackVisibilityStartPoll
+            : -1;
+    static readonly int TraceTrackVisibilityEndPoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_GT2_VISIBILITY_END_POLL"),
+            out int traceTrackVisibilityEndPoll)
+            ? traceTrackVisibilityEndPoll
+            : -1;
     static readonly bool TraceVehicleLod =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_VEHICLE_LOD") == "1";
+    static readonly int TraceDepthNormalizationPoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_GT2_DEPTH_NORMALIZATION_POLL"),
+            out int traceDepthNormalizationPoll)
+                ? traceDepthNormalizationPoll
+                : -1;
+    static readonly int TraceProjectionPhasePoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_GT2_PROJECTION_PHASE_POLL"),
+            out int traceProjectionPhasePoll)
+                ? traceProjectionPhasePoll
+                : -1;
     static readonly bool TraceWheelTransforms =
         Environment.GetEnvironmentVariable(
             "RECOMPONE_TRACE_GT2_WHEEL_TRANSFORMS") == "1";
+    static readonly bool TraceVehicleVisibility =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_TRACE_GT2_VEHICLE_VISIBILITY") == "1";
+    static readonly int TraceVehicleVisibilityStartPoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_GT2_VEHICLE_VISIBILITY_START_POLL"),
+            out int traceVehicleVisibilityStartPoll)
+                ? traceVehicleVisibilityStartPoll
+                : -1;
+    static readonly int TraceVehicleVisibilityEndPoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_GT2_VEHICLE_VISIBILITY_END_POLL"),
+            out int traceVehicleVisibilityEndPoll)
+                ? traceVehicleVisibilityEndPoll
+                : int.MaxValue;
+    static readonly int TraceVehicleVisibilityLimit =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_GT2_VEHICLE_VISIBILITY_LIMIT"),
+            out int traceVehicleVisibilityLimit) &&
+            traceVehicleVisibilityLimit > 0
+                ? traceVehicleVisibilityLimit
+                : TraceVehicleVisibilityStartPoll < 0 ? 128 : 4096;
     static readonly string? WheelTransformTracePath =
         Environment.GetEnvironmentVariable(
             "RECOMPONE_GT2_WHEEL_TRANSFORM_TRACE_PATH");
@@ -189,12 +337,57 @@ public static class GT2Compat
 
         const int recordBytes = 32;
         const uint unlockOffset = 20u;
-        int count = 0;
-        for (; count < 64; count++)
+        // Development data made before the expanded GT1-course tables were
+        // emitted leaves those destinations zeroed.  A diagnostic unlock must
+        // still expose every stock GT2 course, so seed an empty expanded table
+        // from the corresponding retail table before changing availability.
+        // This is process-local and never touches the memory card.
+        (uint stockTable, int stockCount, int expandedCount) = table switch
         {
-            uint record = table + (uint)(count * recordBytes);
-            if (m.ReadU32(record) == 0u)
-                break;
+            0x800533C0u => (0x80050730u, 21, 22),
+            0x800536A0u => (0x800509F0u, 21, 22),
+            0x80053980u => (0x80050CB0u, 23, 24),
+            0x80053CA0u => (0x80050FB0u, 23, 24),
+            0x80053FC0u => (0x800513F0u, 21, 22),
+            _ => (0u, 0, 0),
+        };
+
+        bool RecordIsEmpty(uint address)
+        {
+            for (int offset = 0; offset < recordBytes; offset++)
+            {
+                if (m.ReadU8(address + (uint)offset) != 0)
+                    return false;
+            }
+            return true;
+        }
+
+        bool seededStockTable = false;
+        if (stockTable != 0u &&
+            RecordIsEmpty(table) &&
+            !RecordIsEmpty(stockTable))
+        {
+            for (int copied = 0; copied < stockCount; copied++)
+            {
+                uint source = stockTable + (uint)(copied * recordBytes);
+                uint destination = table + (uint)(copied * recordBytes);
+                for (int offset = 0; offset < recordBytes; offset++)
+                    m.WriteU8(
+                        destination + (uint)offset,
+                        m.ReadU8(source + (uint)offset));
+            }
+            seededStockTable = true;
+            Console.Error.WriteLine(
+                "[GT2] seeded empty expanded Arcade course table from " +
+                $"stock data; destination=0x{table:X8} " +
+                $"source=0x{stockTable:X8} entries={stockCount}");
+        }
+        int count = stockTable == 0u
+            ? 0
+            : seededStockTable ? stockCount : expandedCount;
+        for (int index = 0; index < count; index++)
+        {
+            uint record = table + (uint)(index * recordBytes);
             m.WriteU32(record + unlockOffset, 0xFFFFu);
         }
         if (Interlocked.Exchange(ref _arcadeCourseUnlockReported, 1) == 0)
@@ -250,7 +443,38 @@ public static class GT2Compat
     static int _visibilityLodExitTraceRegistered;
     static int _wheelTransformTraceEnabledReported;
     static int _wheelTransformTraceInvalidIndexReported;
+    static int _wheelGateTraceSamples;
     static int _wheelDispatchTraceSamples;
+    static int _wheelRendererEntryTraceSamples;
+    static uint _vehicleRenderIdentity;
+    static long _vehicleRenderIdentityBegins;
+    static long _vehicleRenderIdentityEnds;
+    static long _vehicleRenderScopedCaptures;
+    static long _vehicleRenderFallbackCaptures;
+    static readonly HashSet<uint> VehicleRenderIdentities = [];
+    static long _wheelGateRequests;
+    static long _wheelGateGuestDistanceEligible;
+    static long _wheelGateComputedDistanceEligible;
+    static long _wheelGateModeEligible;
+    static long _wheelGateMismatches;
+    static long _wheelDispatchRequests;
+    static long _wheelDispatchNearDetail;
+    static long _wheelDispatchMiddleDetail;
+    static long _wheelDispatchFarDetail;
+    static long _wheelRendererEntries;
+    static long _wheelRendererNearDetail;
+    static long _wheelRendererMiddleDetail;
+    static long _wheelRendererFarDetail;
+    static long _vehicleFrustumRequests;
+    static long _vehicleFrustumHorizontalOutside;
+    static long _vehicleFrustumHorizontalIntersecting;
+    static long _vehicleFrustumHorizontalOutsideOnly;
+    static long _vehicleFrustumHorizontalIntersectingOnly;
+    static long _vehicleFrustumHorizontalBoth;
+    static long _vehicleFrustumOtherOutside;
+    static long _vehicleFrustumOtherIntersecting;
+    static long _vehicleFrustumExpanded;
+    static int _vehicleFrustumTraceSamples;
     static readonly Dictionary<uint, long> VehicleLodSelectorCounts = [];
     static readonly HashSet<uint> VehicleLodModelSets = [];
     static readonly HashSet<uint> VehicleLodModelPointers = [];
@@ -269,7 +493,10 @@ public static class GT2Compat
         WheelTransformTraceStates = [];
     static readonly System.Text.StringBuilder WheelTransformTraceCsv = new();
     static bool _wheelTransformTraceExitRegistered;
+    static bool _wheelTransformTraceFlushed;
+    static long _wheelTransformTraceRecords;
     const uint ExpandedVisibilityListAddress = 0x807F0000u;
+    const int ExtendedVisibilitySectorRadius = 4;
     static readonly int[] VisibilityEntryGenerations = new int[0x4000];
     static readonly int[] VisibilityEntryPositions = new int[0x4000];
     static readonly ushort[] ExpandedVisibilityEntries = new ushort[0x4000];
@@ -553,6 +780,20 @@ public static class GT2Compat
     public static void SetUnifiedArcadeTransition(bool enabled) =>
         _unifiedArcadeTransition = enabled;
 
+    static bool DirectSpecialStageRoute5 =>
+        DirectArcadeRace?.Equals(
+            "special-stage-route-5",
+            StringComparison.OrdinalIgnoreCase) == true;
+
+    static bool IsSupportedDirectArcadeRace() =>
+        DirectArcadeRace?.Equals(
+            "seattle-circuit",
+            StringComparison.OrdinalIgnoreCase) == true ||
+        DirectSpecialStageRoute5;
+
+    static string DirectArcadeRaceLabel =>
+        DirectSpecialStageRoute5 ? "Special Stage Route 5" : "Seattle Circuit";
+
     /// <summary>
     /// A unified-menu handoff has already shown the Simulation-disc legal and
     /// opening presentation.  Preserve Arcade's normal bootstrap, but ask its
@@ -563,9 +804,7 @@ public static class GT2Compat
     {
         if (!string.IsNullOrWhiteSpace(DirectArcadeRace))
         {
-            if (!DirectArcadeRace.Equals(
-                    "seattle-circuit",
-                    StringComparison.OrdinalIgnoreCase))
+            if (!IsSupportedDirectArcadeRace())
                 throw new InvalidOperationException(
                     $"Unsupported direct Arcade race: {DirectArcadeRace}");
             // Overlay 2 owns the native race-state constructor.  Enter it
@@ -588,9 +827,7 @@ public static class GT2Compat
     {
         if (string.IsNullOrWhiteSpace(DirectArcadeRace))
             return false;
-        if (!DirectArcadeRace.Equals(
-                "seattle-circuit",
-                StringComparison.OrdinalIgnoreCase))
+        if (!IsSupportedDirectArcadeRace())
             throw new InvalidOperationException(
                 $"Unsupported direct Arcade race: {DirectArcadeRace}");
 
@@ -598,14 +835,16 @@ public static class GT2Compat
         uint parameterDatabase = m.ReadU32(parameterDatabasePointer);
         if (parameterDatabase == 0u)
             throw new InvalidOperationException(
-                "Direct Seattle frontend resumed before the native Arcade " +
+                $"Direct {DirectArcadeRaceLabel} frontend resumed before " +
+                "the native Arcade " +
                 "parameter database was ready");
         if (parameterDatabase != 0x80200000u)
             throw new InvalidOperationException(
-                "Direct Seattle native parameter database was created at " +
+                $"Direct {DirectArcadeRaceLabel} native parameter database " +
+                "was created at " +
                 $"0x{parameterDatabase:X8}; expected 0x80200000");
 
-        InstallDirectSeattlePreFinalizeConfig(m, 0x801C3010u);
+        InstallDirectArcadePreFinalizeConfig(m, 0x801C3010u);
         return true;
     }
 
@@ -625,7 +864,8 @@ public static class GT2Compat
         uint parameterDatabase = m.ReadU32(0x80092B64u);
         if (parameterDatabase != 0x80200000u)
             throw new InvalidOperationException(
-                "Direct Seattle native frontend setup completed with " +
+                $"Direct {DirectArcadeRaceLabel} native frontend setup " +
+                "completed with " +
                 $"parameter database 0x{parameterDatabase:X8}; " +
                 "expected 0x80200000");
 
@@ -637,8 +877,10 @@ public static class GT2Compat
         throw new NonLocalJump(0x80011780u, returnTrampoline: true);
     }
 
-    public static uint DirectArcadeRaceSelectionA => 0x79977997u;
-    public static uint DirectArcadeRaceSelectionB => 0x131E131Eu;
+    public static uint DirectArcadeRaceSelectionA =>
+        DirectSpecialStageRoute5 ? 0xB957B957u : 0x79977997u;
+    public static uint DirectArcadeRaceSelectionB =>
+        DirectSpecialStageRoute5 ? 0x4EDA4EDAu : 0x131E131Eu;
 
     /// <summary>
     /// Copy overlay 2's verified finalized selection into the fixed handoff
@@ -658,7 +900,7 @@ public static class GT2Compat
         m.WriteU8(0x801EF022u, 1);
         Console.WriteLine(
             "[GT2-Direct] skipped menu-only fade; native overlay-3 " +
-            "Seattle handoff prepared");
+            $"{DirectArcadeRaceLabel} handoff prepared");
     }
 
     /// <summary>
@@ -670,21 +912,34 @@ public static class GT2Compat
     /// </summary>
     public static void VerifyDirectArcadeRaceConstruction(IMemory m)
     {
-        VerifyDirectArcadeRaceBytes(
-            m,
-            0x801C3010u,
-            DirectSeattleRaceConfigBase64,
-            0x2D4,
-            "finalized config");
+        if (!string.IsNullOrWhiteSpace(ArcadeRaceConfigTracePath))
+            CaptureArcadeRaceConfig(
+                0x801C3010u,
+                ArcadeRaceConfigTracePath,
+                "direct-post-constructor",
+                m);
         if (!string.IsNullOrWhiteSpace(ArcadeRaceStateTracePath))
             CaptureArcadeRaceState(
                 0x801D52BCu,
                 ArcadeRaceStateTracePath,
                 "direct-post-constructor",
                 m);
-        VerifyDirectArcadeRaceState(m);
+        VerifyDirectArcadeRaceBytes(
+            m,
+            0x801C3010u,
+            DirectSpecialStageRoute5
+                ? DirectSpecialStageRoute5RaceConfigBase64
+                : DirectSeattleRaceConfigBase64,
+            0x2D4,
+            "finalized config");
+        VerifyDirectArcadeRaceState(
+            m,
+            DirectSpecialStageRoute5
+                ? DirectSpecialStageRoute5RaceStateBase64
+                : DirectSeattleRaceStateBase64);
         Console.WriteLine(
-            "[GT2-Direct] native Seattle construction verified; " +
+            $"[GT2-Direct] native {DirectArcadeRaceLabel} construction " +
+            "verified; " +
             "parameter-db=0x80200000 config=0x801C3010 state=0x801D52BC");
     }
 
@@ -775,19 +1030,72 @@ public static class GT2Compat
         "ZSAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//8DAQAA/////wAAAQAAAA==";
 
-    static void InstallDirectSeattlePreFinalizeConfig(IMemory m, uint address)
+    // Special Stage Route 5's menu-driven course identity combined with the
+    // byte-identical Class C selector/player fields from two independent
+    // native frontend captures. The original overlay-2 constructor turns this
+    // input into the lower-class player and opponent grid verified below.
+    const string DirectSpecialStageRoute5PreFinalizeConfigBase64 =
+        "AAMEAAIA//8AAAAAWCI2EFgiNhAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFNwZWNpYWwgU3RhZ2UgUm91dGUgNQAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABTj6eoEQAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAoHEMgA==";
+
+    const string DirectSpecialStageRoute5RaceConfigBase64 =
+        "AAMEAAIA//8AAAAAWCI2EFgiNhAAAAAAAAAAAAABAAAPAAAAAAAPAA8ADwAPAA8ADwAZABkAAAASAAAAAAAAAAAAAAAAAAAADwAA" +
+        "AAAAAAAAAAAABQAAAFkNBQ2jBwYFngPdAv/////YD///DAwMFQAAAAAAAAAAoKCAgBcUWloBAQEBAQEBAQEBAAAAAAAAAQEAAAD/" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFNwZWNpYWwgU3RhZ2UgUm91dGUgNQAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABTj6eoEQAAAAAB" +
+        "AAAPAAAAAAAPAA8ADwAPAA8ADwAZABkAAAASAAAAAAAAAAAAAAAAAAAADwAAAAAAAAAAAAAABQAAAFkNBQ2jBwYFngPdAv/////Y" +
+        "D///DAwMFQAAAAAAAAAAoKCAgBcUWloBAQEBAQEBAQEBAAAAAAAAAQEAAAD/AAAAAAAAAAAAAAABAAAPAAAAAAAPAA8ADwAPAA8A" +
+        "DwAZABkAAAASAAAAAAAAAAAAAAAAAAAADwAAAAAAAAAAAAAABQAAAFkNBQ2jBwYFngPdAv/////YD///DAwMFQAAAAAAAAAAoKCA" +
+        "gBcUWloBAQEBAQEBAQEBAAAAAAAAAQEAAAD/AAAAAAAAAAAAAAAAAAAAAAAAoHEMgA==";
+
+    const string DirectSpecialStageRoute5RaceStateBase64 =
+        "AAACAQACAAECAAQFAAEAAkEwQwAAAAAAAAAAAAAAAABTcGVjaWFsIFN0YWdlIFJvdXRlIDUAAAAAAAAAAAAAAFOPp6gwAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAABgBYIjYQMQAAAAABAAAPAAAAAAAPAA8ADwAPAA8ADwAZABkAAAASAAAAAAAAAAAAAAAAAAAADwAAAAAA" +
+        "AAAAAAAABQAAAFkNBQ2jBwYFngPdAv/////YD///DAwMFQAAAAAAAAAAoKCAgBcUWloBAQEBAQEBAQEBAAAAAAAAAQHlUAD/AAAA" +
+        "AAAAAAAAAAEFAwBDaXRyb2VuIFhzYXJhIDEuOGkgMTZWAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "WLIMImIAAAAAAQAAPwAAAAAAPwA/AD8APwA/AD8AZABkAAAATgAAAAAAAAAAAAAAAAAAAD8AAAAAAAAAAAAAAAkAZAD/DeoO5QhI" +
+        "BkUERQP/////YRL/FAwMDBMAAAAAAAAAAIeHgIAVE1paAQEBAQEBAQEBAQMAEgAIAAEBRAAA/wEAAAAAAAAAAAABBAEAU3V6dWtp" +
+        "IEFsdG8gV29ya3MgUlMvWiAnOTgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFhzDRswAAAAAAEAAC8AAAAA" +
+        "AC8ALwAvAC8ALwAvAEsASwAAADoAAAAAAAAAAAAAAAAAAAAvAAAAAAAAAAAAAAAJAGQARgxYDZsH4gSUA+4C/////6kV/xQMDAoQ" +
+        "AAAAAAAAAACMjICAFBxaTgEBAQEBAQEBAQEAAAAAAAABAclUAP8BAAAAAAAAAAAAAQMBAERhaWhhdHN1IE1vdmUgQWVyby1DICc5" +
+        "OAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABYVIARdAAAAAABAAAeAAAAAAAeAB4AHgAeAB4AHgAwADAA" +
+        "AAAjAAAAAAAAAAAAAAAAAAAAHgAAAAAAAAAAAAAACQBkAPQL5AyUBx4FBgRIA/////+GEP//DAwMEwAAAAAAAAAAlpaAgBcUWloB" +
+        "AQEBAQEBAQEBMgAeAAAAAQHmUAD/AQAAAAAAAAAAAAECAQBWb2xrc3dhZ2VuIEdvbGYgR1RJAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHNxDHAAAAAAAQAABgAAAAAABgAGAAYABgAGAAYACwALAAAABwAAAAAAAAAAAAAAAAAA" +
+        "AAYAAAAAAAAAAAAAAAkAZABSDj8OiQiRBegD////////igz//wwMDBAAAAAAAAAAAGlpgIAgG1JaAQEBAQEBAQEBAQAAAAAAAAEB" +
+        "eVAA/wEAAAAAAAAAAAABAQEAUm92ZXIgTWluaSBDb29wZXIgMS4zaQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAFhzcQxnAAAAAAEAAAYAAAAAAAYABgAGAAYABgAGAAsACwAAAAcAAAAAAAAAAAAAAAAAAAAGAAAAAAAAAAAAAAAJAGQA" +
+        "Ug4/DokIkQXoA////////4oM//8MDAwQAAAAAAAAAABpaYCAIBtSWgEBAQEBAQEBAQEAAAAAAAABAXlQAP8BAAAAAAAAAAAAAQAB" +
+        "AFJvdmVyIE1pbmkgQ29vcGVyIDEuM2kAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//8RAQAA/////wAAAQAAAA==";
+
+    static void InstallDirectArcadePreFinalizeConfig(IMemory m, uint address)
     {
         const int expectedLength = 0x2D4;
         byte[] config = Convert.FromBase64String(
-            DirectSeattlePreFinalizeConfigBase64);
+            DirectSpecialStageRoute5
+                ? DirectSpecialStageRoute5PreFinalizeConfigBase64
+                : DirectSeattlePreFinalizeConfigBase64);
         if (config.Length != expectedLength)
             throw new InvalidDataException(
-                $"Direct Seattle race config has {config.Length} bytes; " +
+                $"Direct {DirectArcadeRaceLabel} race config has " +
+                $"{config.Length} bytes; " +
                 $"expected {expectedLength}");
         for (int offset = 0; offset < config.Length; offset++)
             m.WriteU8(address + (uint)offset, config[offset]);
         Console.WriteLine(
-            "[GT2-Direct] installed native Seattle pre-finalize config; " +
+            $"[GT2-Direct] installed native {DirectArcadeRaceLabel} " +
+            "pre-finalize config; " +
             $"address=0x{address:X8} bytes={config.Length} " +
             "native-constructor=overlay-2");
     }
@@ -802,22 +1110,27 @@ public static class GT2Compat
         byte[] expected = Convert.FromBase64String(expectedBase64);
         if (expected.Length != expectedLength)
             throw new InvalidDataException(
-                $"Direct Seattle expected {label} has {expected.Length} bytes; " +
+                $"Direct {DirectArcadeRaceLabel} expected {label} has " +
+                $"{expected.Length} bytes; " +
                 $"expected {expectedLength}");
         for (int offset = 0; offset < expected.Length; offset++)
         {
             byte actual = m.ReadU8(address + (uint)offset);
             if (actual != expected[offset])
                 throw new InvalidOperationException(
-                    $"Direct Seattle native {label} differs at +0x{offset:X}: " +
+                    $"Direct {DirectArcadeRaceLabel} native {label} differs " +
+                    $"at +0x{offset:X}: " +
                     $"actual=0x{actual:X2} expected=0x{expected[offset]:X2}");
         }
     }
 
-    static void VerifyDirectArcadeRaceState(IMemory m)
+    static void VerifyDirectArcadeRaceState(
+        IMemory m,
+        string expectedBase64)
     {
         const uint address = 0x801D52BCu;
         const int expectedLength = 0x58C;
+        const int playerStart = 0x5C;
         const int opponentStart = 0x12C;
         const int opponentSize = 0xD0;
         const int opponentCount = 5;
@@ -825,11 +1138,11 @@ public static class GT2Compat
         const int nameOffset = 0x90;
         const int nameCapacity = 0x40;
 
-        byte[] expected = Convert.FromBase64String(
-            DirectSeattleRaceStateBase64);
+        byte[] expected = Convert.FromBase64String(expectedBase64);
         if (expected.Length != expectedLength)
             throw new InvalidDataException(
-                $"Direct Seattle reference race state has {expected.Length} " +
+                $"Direct {DirectArcadeRaceLabel} reference race state has " +
+                $"{expected.Length} " +
                 $"bytes; expected {expectedLength}");
 
         var actual = new byte[expectedLength];
@@ -840,11 +1153,36 @@ public static class GT2Compat
                 continue;
             if (actual[offset] != expected[offset])
                 throw new InvalidOperationException(
-                    "Direct Seattle native non-roster race state differs at " +
+                    $"Direct {DirectArcadeRaceLabel} native non-roster race " +
+                    "state differs at " +
                     $"+0x{offset:X}: actual=0x{actual[offset]:X2} " +
                     $"expected=0x{expected[offset]:X2}");
         }
 
+        string ReadVehicleName(int recordOffset, string label)
+        {
+            int length = 0;
+            while (length < nameCapacity &&
+                   actual[recordOffset + nameOffset + length] != 0)
+            {
+                byte value = actual[recordOffset + nameOffset + length];
+                if (value < 0x20 || value >= 0x7F)
+                    throw new InvalidOperationException(
+                        $"Direct {DirectArcadeRaceLabel} {label} has a " +
+                        $"non-ASCII vehicle name byte 0x{value:X2}");
+                length++;
+            }
+            if (length < 4 || length == nameCapacity)
+                throw new InvalidOperationException(
+                    $"Direct {DirectArcadeRaceLabel} {label} has an " +
+                    "invalid native vehicle name");
+            return System.Text.Encoding.ASCII.GetString(
+                actual,
+                recordOffset + nameOffset,
+                length);
+        }
+
+        string playerName = ReadVehicleName(playerStart, "player");
         var opponentNames = new string[opponentCount];
         for (int index = 0; index < opponentCount; index++)
         {
@@ -854,33 +1192,22 @@ public static class GT2Compat
             if (vehicleId == 0u || vehicleId == uint.MaxValue ||
                 actual[recordOffset + 9] != 1)
                 throw new InvalidOperationException(
-                    $"Direct Seattle opponent {index} has an invalid native " +
+                    $"Direct {DirectArcadeRaceLabel} opponent {index} has " +
+                    "an invalid native " +
                     $"vehicle record (id=0x{vehicleId:X8})");
 
-            int length = 0;
-            while (length < nameCapacity &&
-                   actual[recordOffset + nameOffset + length] != 0)
-            {
-                byte value = actual[recordOffset + nameOffset + length];
-                if (value < 0x20 || value >= 0x7F)
-                    throw new InvalidOperationException(
-                        $"Direct Seattle opponent {index} has a non-ASCII " +
-                        $"vehicle name byte 0x{value:X2}");
-                length++;
-            }
-            if (length < 4 || length == nameCapacity)
-                throw new InvalidOperationException(
-                    $"Direct Seattle opponent {index} has an invalid native " +
-                    "vehicle name");
-            opponentNames[index] = System.Text.Encoding.ASCII.GetString(
-                actual, recordOffset + nameOffset, length);
+            opponentNames[index] = ReadVehicleName(
+                recordOffset,
+                $"opponent {index}");
         }
 
         string digest = Convert.ToHexString(
             System.Security.Cryptography.SHA256.HashData(actual));
         Console.WriteLine(
-            "[GT2-Direct] native Seattle race state verified; " +
-            $"sha256={digest} opponents={string.Join(" | ", opponentNames)}");
+            $"[GT2-Direct] native {DirectArcadeRaceLabel} race state " +
+            "verified; " +
+            $"sha256={digest} player={playerName} " +
+            $"opponents={string.Join(" | ", opponentNames)}");
     }
 
     /// <summary>
@@ -1179,6 +1506,45 @@ public static class GT2Compat
         return selector;
     }
 
+    /// <summary>
+    /// Brackets the common model renderer with GT2's owning race-car record.
+    /// The renderer itself receives a camera/projection scratch pointer that
+    /// every car reuses; treating that scratch address as object identity
+    /// merges independent cars in native grouping and UV continuity.
+    /// </summary>
+    public static void BeginVehicleRenderIdentity(uint vehicleRecord)
+    {
+        if (!IsGuestRam(vehicleRecord))
+            throw new InvalidOperationException(
+                $"GT2 vehicle owner is outside guest RAM: 0x{vehicleRecord:X8}");
+        if (_vehicleRenderIdentity != 0u)
+            throw new InvalidOperationException(
+                $"Nested GT2 vehicle owners: active=0x{_vehicleRenderIdentity:X8} " +
+                $"new=0x{vehicleRecord:X8}");
+        _vehicleRenderIdentity = vehicleRecord;
+        if (AuditRenderer || TraceVehicleVisibility || TraceWheelTransforms)
+        {
+            _vehicleRenderIdentityBegins++;
+            lock (VehicleRenderIdentities)
+                VehicleRenderIdentities.Add(vehicleRecord);
+        }
+    }
+
+    public static void EndVehicleRenderIdentity()
+    {
+        if (_vehicleRenderIdentity == 0u)
+            throw new InvalidOperationException(
+                "GT2 vehicle-owner scope ended without a matching begin");
+        _vehicleRenderIdentity = 0u;
+        if (AuditRenderer || TraceVehicleVisibility || TraceWheelTransforms)
+            _vehicleRenderIdentityEnds++;
+    }
+
+    static uint ResolveVehicleRenderIdentity(uint renderScratch) =>
+        _vehicleRenderIdentity != 0u
+            ? _vehicleRenderIdentity
+            : renderScratch;
+
     public static void TraceVehicleLodSelection(
         uint carState, uint renderRequest, IMemory m)
     {
@@ -1196,7 +1562,15 @@ public static class GT2Compat
             modelPointer =
                 m.ReadU32(modelSet + 0x870u + modelIndex * 8u);
         }
-        WorldCaptureContext.BeginVehicle(carState, modelPointer);
+        uint vehicleIdentity = ResolveVehicleRenderIdentity(carState);
+        if (AuditRenderer || TraceVehicleVisibility || TraceWheelTransforms)
+        {
+            if (_vehicleRenderIdentity != 0u)
+                _vehicleRenderScopedCaptures++;
+            else
+                _vehicleRenderFallbackCaptures++;
+        }
+        WorldCaptureContext.BeginVehicle(vehicleIdentity, modelPointer);
 
         if (!TraceVehicleLod && !AuditRenderer)
             return;
@@ -1233,6 +1607,174 @@ public static class GT2Compat
                 };
             }
         }
+    }
+
+    /// <summary>
+    /// Reads GT2's two depth-normalization results immediately after the
+    /// selected vehicle model has configured the shared rendering scratchpad.
+    /// The low word is the exponent used by vehicle OT insertion; the high word
+    /// is the complementary normalization adjustment. Keeping this hook after
+    /// the guest helper makes the trace an observation of authored state, not a
+    /// host reconstruction of it.
+    /// </summary>
+    public static void CaptureVehicleDepthNormalization(
+        uint modelPointer, IMemory m)
+    {
+        ushort commonShift = m.ReadU16(0x1F800098u);
+        ushort normalizationAdjustment = m.ReadU16(0x1F80009Au);
+        WorldCaptureContext.SetCurrentDepthScaleExponent(commonShift);
+        int poll = Host.InputManager.CurrentPoll;
+        if (poll != TraceDepthNormalizationPoll)
+            return;
+        WorldObjectContext context = WorldCaptureContext.Current;
+        Console.Error.WriteLine(
+            $"[GT2-Vehicle-Depth-State] poll={poll} " +
+            $"vehicle=0x{context.StableId:X8} " +
+            $"model=0x{(modelPointer != 0 ? modelPointer : context.ModelPointer):X8} " +
+            $"commonShift={commonShift} " +
+            $"normalizationAdjustment={normalizationAdjustment}");
+    }
+
+    /// <summary>
+    /// Billboard packets are emitted by the guest after the resident mesh
+    /// capture hook, and some track objects contain only that billboard path.
+    /// Attach the same authored ordering-table normalization used by the
+    /// corresponding raw-track decoder before any billboard packet is
+    /// recorded. Primary and auxiliary formats use GT2's two equivalent
+    /// normalization formulas.
+    /// </summary>
+    public static void CaptureTrackBillboardDepthNormalization(
+        bool auxiliaryFormat,
+        IMemory m)
+    {
+        ushort commonShift = m.ReadU16(0x1F800098u);
+        ushort normalizationAdjustment = m.ReadU16(0x1F80009Au);
+        int depthScaleExponent = auxiliaryFormat
+            ? commonShift
+            : 10 - normalizationAdjustment;
+        WorldCaptureContext.SetCurrentDepthScaleExponent(depthScaleExponent);
+    }
+
+    /// <summary>
+    /// Diagnostic-only trace of the exact view record and live GTE projection
+    /// state at GT2's scene-pass boundaries. In the view record passed to the
+    /// model renderers, OFX/OFY/H occupy +0x5C/+0x60/+0x64; render helpers copy
+    /// the record starting at +8 into scratch, where the same values become
+    /// +0x54/+0x58/+0x5C before func_8007B688 activates them.
+    /// </summary>
+    public static void TraceProjectionPhase(
+        string phase, uint viewRecord, IMemory memory)
+    {
+        int poll = Host.InputManager.CurrentPoll;
+        if (poll != TraceProjectionPhasePoll)
+            return;
+        if (!IsGuestRam(viewRecord))
+        {
+            Console.Error.WriteLine(
+                $"[GT2-Projection-Phase] poll={poll} phase={phase} " +
+                $"view=0x{viewRecord:X8} invalid=1");
+            return;
+        }
+        ulong hash = 14695981039346656037UL;
+        for (uint offset = 0x8u; offset < 0x70u; offset += 4u)
+        {
+            hash ^= memory.ReadU32(viewRecord + offset);
+            hash *= 1099511628211UL;
+        }
+        Console.Error.WriteLine(
+            $"[GT2-Projection-Phase] poll={poll} phase={phase} " +
+            $"view=0x{viewRecord:X8} viewHash=0x{hash:X16} " +
+            $"viewOfx=0x{memory.ReadU32(viewRecord + 0x5Cu):X8} " +
+            $"viewOfy=0x{memory.ReadU32(viewRecord + 0x60u):X8} " +
+            $"viewH={memory.ReadU16(viewRecord + 0x64u)} " +
+            $"gteOfx=0x{RecompOne.Runtime.Gte.ReadControl(24):X8} " +
+            $"gteOfy=0x{RecompOne.Runtime.Gte.ReadControl(25):X8} " +
+            $"gteH={RecompOne.Runtime.Gte.ReadControl(26)}");
+    }
+
+    /// <summary>
+    /// Removes GT2's authored 4:3 viewport rejection from the eight-corner
+    /// bounding-box result. The authoritative clip routine (Arcade 0x8007B550,
+    /// Simulation 0x8007B640) assigns bits 1/2 to screen X and bits 3/4 to
+    /// screen Y in both halves of the result: the low half is the intersection
+    /// used for whole-object rejection and the high half selects the guest
+    /// polygon clipper. High bit 5 is also a clipper selector: it is set when
+    /// any bounding corner saturates the GTE even if the model remains
+    /// recoverable from captured model/view coordinates. Leaving it set routes
+    /// a close vehicle through GT2's 4:3 polygon clipper after the X/Y bits are
+    /// removed, which makes the car appear to be eaten away at the old side
+    /// plane. D3D owns target-viewport and homogeneous clipping for continuous
+    /// geometry, so clear all six high-half polygon-clip selectors. Retain low
+    /// bit 0 (near/depth) and low bit 5 (unrecoverable whole-object projection
+    /// failure); those low-half bits still control whole-object rejection and
+    /// never dispatch the polygon clipper.
+    /// </summary>
+    public static uint ApplyModernVehicleViewportMask(uint mask, bool enabled)
+    {
+        const uint authoredViewportBits = 0x003F001Eu;
+        return enabled ? mask & ~authoredViewportBits : mask;
+    }
+
+    /// <summary>
+    /// True when the modern renderer, rather than GT2's 4:3 packet clipper,
+    /// owns vehicle viewport clipping. This policy also applies to the
+    /// standalone vehicle renderers used by alternate race and replay paths;
+    /// those paths invoke the guest polygon clipper unconditionally and do
+    /// not consume the high-half mask selectors used by the primary renderer.
+    /// </summary>
+    public static bool ModernVehicleViewportClippingEnabled =>
+        Config.ConfigManager.View.ExtendedDrawDistance &&
+        ExtendedVehicleFrustumOverride;
+
+    public static uint ApplyModernVehicleViewportMask(uint mask) =>
+        ApplyModernVehicleViewportMask(
+            mask,
+            ModernVehicleViewportClippingEnabled);
+
+    public static uint ExpandVehicleFrustumMask(uint mask, uint carState)
+    {
+        const uint lowOtherBits = 0x00000019u;
+        const uint highOtherBits = 0x00390000u;
+
+        _vehicleFrustumRequests++;
+        bool horizontalOutside = (mask & 0x00000006u) != 0;
+        bool horizontalIntersecting = (mask & 0x00060000u) != 0;
+        if (horizontalOutside)
+            _vehicleFrustumHorizontalOutside++;
+        if (horizontalIntersecting)
+            _vehicleFrustumHorizontalIntersecting++;
+        if (horizontalOutside && horizontalIntersecting)
+            _vehicleFrustumHorizontalBoth++;
+        else if (horizontalOutside)
+            _vehicleFrustumHorizontalOutsideOnly++;
+        else if (horizontalIntersecting)
+            _vehicleFrustumHorizontalIntersectingOnly++;
+        if ((mask & lowOtherBits) != 0)
+            _vehicleFrustumOtherOutside++;
+        if ((mask & highOtherBits) != 0)
+            _vehicleFrustumOtherIntersecting++;
+
+        bool enabled = ModernVehicleViewportClippingEnabled;
+        uint expanded = ApplyModernVehicleViewportMask(mask, enabled);
+        if (expanded != mask)
+            _vehicleFrustumExpanded++;
+
+        int poll = Host.InputManager.CurrentPoll;
+        bool tracePoll =
+            TraceVehicleVisibilityStartPoll < 0 ||
+            (poll >= TraceVehicleVisibilityStartPoll &&
+             poll <= TraceVehicleVisibilityEndPoll);
+        if (TraceVehicleVisibility && tracePoll &&
+            Interlocked.Increment(ref _vehicleFrustumTraceSamples) <=
+                TraceVehicleVisibilityLimit)
+            Console.Error.WriteLine(
+                $"[GT2-VEHICLE-FRUSTUM] poll={poll} " +
+                $"car=0x{carState:X8} " +
+                $"stock=0x{mask:X8} modern=0x{expanded:X8} " +
+                $"horizontalOutside={(mask & 0x6u) != 0} " +
+                $"horizontalIntersecting={(mask & 0x00060000u) != 0} " +
+                $"enabled={enabled}");
+        return expanded;
     }
 
     /// <summary>
@@ -1537,19 +2079,24 @@ public static class GT2Compat
 
     /// <summary>
     /// Overlay 0 renders the packed visibility list authored for the camera's
-    /// current track sector. Extended draw distance keeps that list first for
-    /// GT2's authored ordering, then appends the complete deduplicated static
-    /// course set. The complete set is deliberately resident during PC
-    /// development: the course is small, and a sector transition must never
-    /// determine whether distant geometry exists. Maximum LOD clears selector
-    /// bits while deduplicating, so one object index cannot submit competing
-    /// LOD variants from different sector lists. Modern frustum, depth, and
-    /// occlusion policy belongs after reconstruction, not in this residency
-    /// step.
+    /// current track sector. Those lists are potential-visibility sets, not
+    /// independent slices of a global object catalog: combining every sector
+    /// exposes mutually exclusive, occluded, and visual-proxy road surfaces.
+    /// Extended draw distance keeps the current authored ordering first and
+    /// adds only a bounded four-sector horizon in both directions. This
+    /// preloads upcoming geometry beyond Seattle's long sightlines without
+    /// drawing the far side of the loop. Maximum LOD clears selector bits
+    /// while deduplicating, so one object index cannot submit competing LOD
+    /// variants from the selected sector lists. Modern frustum and depth
+    /// policy apply after this authored coarse selection.
     /// </summary>
     public static uint GetTrackVisibilityList(
         IMemory m, uint trackRoot, uint stockList)
     {
+#if !OPENGT_RELEASE_PACKAGE
+        if (!ResidentCourseCatalogEnabled)
+            return stockList;
+#endif
         bool extended =
             Config.ConfigManager.View.ExtendedDrawDistance;
         bool maximumLod =
@@ -1563,18 +2110,38 @@ public static class GT2Compat
 
         if (!IsGuestRam(stockList))
         {
+#if OPENGT_RELEASE_PACKAGE
+            throw new InvalidDataException(
+                "The required resident course visibility list is outside " +
+                $"guest RAM: root=0x{trackRoot:X8} list=0x{stockList:X8}. " +
+                "The release build has no stock-sector fallback.");
+#else
             TraceTrackVisibilityLod(m, stockList, maximumLod);
             return stockList;
+#endif
         }
         int stockCount = Math.Min((int)m.ReadU16(stockList), 0x4000);
         int visibleCount;
-        if (extended && TryLocateVisibilitySector(
-                m,
-                trackRoot,
-                stockList,
-                out int sectorCount,
-                out int currentSector))
+        if (extended)
         {
+            if (!TryLocateVisibilitySector(
+                    m,
+                    trackRoot,
+                    stockList,
+                    out int sectorCount,
+                    out int currentSector))
+            {
+#if OPENGT_RELEASE_PACKAGE
+                throw new InvalidDataException(
+                    "The required resident course horizon could not locate " +
+                    $"the stock sector: root=0x{trackRoot:X8} " +
+                    $"list=0x{stockList:X8}. The release build has no " +
+                    "stock-sector fallback.");
+#else
+                TraceTrackVisibilityLod(m, stockList, maximumLod);
+                return stockList;
+#endif
+            }
             visibleCount = BuildExtendedVisibilityList(
                 m,
                 trackRoot,
@@ -1583,6 +2150,28 @@ public static class GT2Compat
                 sectorCount,
                 currentSector,
                 maximumLod);
+            int tracePoll = Host.InputManager.CurrentPoll;
+            if (TraceTrackVisibilityStartPoll >= 0 &&
+                tracePoll >= TraceTrackVisibilityStartPoll &&
+                tracePoll <= Math.Max(
+                    TraceTrackVisibilityStartPoll,
+                    TraceTrackVisibilityEndPoll))
+            {
+                string flareObjects = string.Join(
+                    ',',
+                    ExpandedVisibilityEntries
+                        .AsSpan(0, visibleCount)
+                        .ToArray()
+                        .Where(entry =>
+                            (entry & 0x3FFF) is >= 40 and <= 74)
+                        .Select(entry => $"{entry:X4}"));
+                Console.Error.WriteLine(
+                    $"[GT2-Visibility-Exact] poll={tracePoll} " +
+                    $"root=0x{trackRoot:X8} stock=0x{stockList:X8} " +
+                    $"sector={currentSector}/{sectorCount} " +
+                    $"stockCount={stockCount} expandedCount={visibleCount} " +
+                    $"objects40to74=[{flareObjects}]");
+            }
             _visibilityExpandedCalls++;
             _visibilityExpandedStockEntries += stockCount;
             _visibilityExpandedOutputEntries += visibleCount;
@@ -1704,12 +2293,11 @@ public static class GT2Compat
         AddList(stockList, stockCount);
         uint tableStart = trackRoot + 0xCu;
         // Walk outward from the current sector so nearby authored ordering is
-        // retained, but continue until every course sector has contributed.
-        // Each object index is accepted once by AddList, making this a
-        // resident object catalog rather than a request to draw duplicate LOD
-        // variants.
+        // retained. Do not union the full looping course: distant sector lists
+        // contain mutually exclusive and occluded visual surfaces which are
+        // invalid from the current camera region.
         for (int distance = 1;
-             distance < sectorCount;
+             distance <= ExtendedVisibilitySectorRadius;
              distance++)
         {
             int forward = (currentSector + distance) % sectorCount;
@@ -1718,12 +2306,6 @@ public static class GT2Compat
             AddSector(forward);
             if (backward != forward)
                 AddSector(backward);
-
-            // Forward/backward rings cover the same sector after half a lap;
-            // all later rings would only revisit sectors AddList already
-            // deduplicated.
-            if (distance * 2 >= sectorCount)
-                break;
         }
         return outputCount;
 
@@ -1867,6 +2449,7 @@ public static class GT2Compat
         short x = (short)m.ReadU16(wheelRecord);
         short y = (short)m.ReadU16(wheelRecord + 0x2u);
         short z = (short)m.ReadU16(wheelRecord + 0x4u);
+        carState = ResolveVehicleRenderIdentity(carState);
         ulong key = ((ulong)carState << 2) | wheelIndex;
 
         lock (WheelTransformTraceLock)
@@ -1878,38 +2461,7 @@ public static class GT2Compat
                     "car_state,wheel,sample,x,y,z,angle_8,angle_a,angle_c," +
                     "delta_8,delta_a,delta_c");
                 AppDomain.CurrentDomain.ProcessExit += (_, _) =>
-                {
-                    lock (WheelTransformTraceLock)
-                    {
-                        if (!string.IsNullOrWhiteSpace(
-                                WheelTransformTracePath))
-                        {
-                            string path = Path.GetFullPath(
-                                WheelTransformTracePath);
-                            Directory.CreateDirectory(
-                                Path.GetDirectoryName(path)!);
-                            File.WriteAllText(
-                                path, WheelTransformTraceCsv.ToString());
-                        }
-                        foreach (var pair in WheelTransformTraceStates)
-                        {
-                            uint tracedCar = (uint)(pair.Key >> 2);
-                            uint tracedWheel = (uint)(pair.Key & 3u);
-                            WheelTransformTraceState state = pair.Value;
-                            string Axis(int index) =>
-                                state.Changes[index] == 0
-                                    ? "static"
-                                    : $"changes={state.Changes[index]} " +
-                                      $"shortest=[{state.MinimumShortestDelta[index]}," +
-                                      $"{state.MaximumShortestDelta[index]}]";
-                            Console.Error.WriteLine(
-                                $"[GT2-WHEEL] car=0x{tracedCar:X8} " +
-                                $"wheel={tracedWheel} samples={state.Samples} " +
-                                $"angle8({Axis(0)}) angleA({Axis(1)}) " +
-                                $"angleC({Axis(2)})");
-                        }
-                    }
-                };
+                    FlushWheelTransformTrace();
             }
 
             if (!WheelTransformTraceStates.TryGetValue(
@@ -1942,31 +2494,136 @@ public static class GT2Compat
                 $"0x{carState:X8},{wheelIndex},{state.Samples}," +
                 $"{x},{y},{z},{angles[0]},{angles[1]},{angles[2]}," +
                 $"{deltas[0]},{deltas[1]},{deltas[2]}\n");
+            _wheelTransformTraceRecords++;
             Array.Copy(angles, state.Previous, angles.Length);
         }
     }
 
+    static void FlushWheelTransformTrace()
+    {
+        lock (WheelTransformTraceLock)
+        {
+            if (!_wheelTransformTraceExitRegistered ||
+                _wheelTransformTraceFlushed)
+                return;
+            _wheelTransformTraceFlushed = true;
+
+            if (!string.IsNullOrWhiteSpace(WheelTransformTracePath))
+            {
+                string path = Path.GetFullPath(WheelTransformTracePath);
+                string? directory = Path.GetDirectoryName(path);
+                if (!string.IsNullOrWhiteSpace(directory))
+                    Directory.CreateDirectory(directory);
+                File.WriteAllText(path, WheelTransformTraceCsv.ToString());
+                Console.Error.WriteLine(
+                    $"[GT2-WHEEL] wrote transform trace path={path} " +
+                    $"records={_wheelTransformTraceRecords}");
+            }
+            foreach (var pair in WheelTransformTraceStates)
+            {
+                uint tracedCar = (uint)(pair.Key >> 2);
+                uint tracedWheel = (uint)(pair.Key & 3u);
+                WheelTransformTraceState state = pair.Value;
+                string Axis(int index) =>
+                    state.Changes[index] == 0
+                        ? "static"
+                        : $"changes={state.Changes[index]} " +
+                          $"shortest=[{state.MinimumShortestDelta[index]}," +
+                          $"{state.MaximumShortestDelta[index]}]";
+                Console.Error.WriteLine(
+                    $"[GT2-WHEEL] car=0x{tracedCar:X8} " +
+                    $"wheel={tracedWheel} samples={state.Samples} " +
+                    $"angle8({Axis(0)}) angleA({Axis(1)}) " +
+                    $"angleC({Axis(2)})");
+            }
+        }
+    }
+
     /// <summary>
-    /// Records the inputs to GT2's conditional four-wheel dispatch gate. The
-    /// guest only calls the standalone wheel renderer when distance and render
-    /// mode pass this gate; otherwise the visible wheel geometry comes from a
-    /// different vehicle-model submission path.
+    /// Records GT2's distance result immediately after either vehicle-body
+    /// renderer returns, before the guest applies its render-mode gate. The
+    /// guest result is recorded separately from the equivalent host predicate
+    /// so this diagnostic cannot infer a branch that the guest did not take.
+    /// </summary>
+    public static void TraceVehicleWheelGate(
+        uint carState,
+        uint distance,
+        uint renderMode,
+        uint guestDistanceResult)
+    {
+        bool guestDistanceEligible = guestDistanceResult != 0u;
+        bool computedDistanceEligible = distance < 0x2400u;
+        bool modeEligible = (int)renderMode < 3;
+        _wheelGateRequests++;
+        if (guestDistanceEligible)
+            _wheelGateGuestDistanceEligible++;
+        if (computedDistanceEligible)
+            _wheelGateComputedDistanceEligible++;
+        if (modeEligible)
+            _wheelGateModeEligible++;
+        if (guestDistanceEligible != computedDistanceEligible)
+            _wheelGateMismatches++;
+
+        if ((!TraceWheelTransforms && !TraceVehicleVisibility) ||
+            Interlocked.Increment(ref _wheelGateTraceSamples) > 128)
+            return;
+        Console.Error.WriteLine(
+            $"[GT2-WHEEL-GATE] car=0x{ResolveVehicleRenderIdentity(carState):X8} " +
+            $"distance=0x{distance:X} mode={renderMode} " +
+            $"guestDistanceEligible={guestDistanceEligible} " +
+            $"computedDistanceEligible={computedDistanceEligible} " +
+            $"modeEligible={modeEligible}");
+    }
+
+    /// <summary>
+    /// Records the path after GT2 has passed both wheel gates and selected a
+    /// detail tier, immediately before the first of four wheel-renderer calls.
+    /// One dispatch request therefore represents exactly four expected entry
+    /// calls unless the generated call sequence itself is interrupted.
     /// </summary>
     public static void TraceVehicleWheelDispatch(
-        uint carState, uint distance, uint renderMode)
+        uint carState, uint distance, uint renderMode, uint detail)
     {
-        if (!TraceWheelTransforms ||
-            Interlocked.Increment(ref _wheelDispatchTraceSamples) > 64)
+        _wheelDispatchRequests++;
+        if (distance < 0x240u)
+            _wheelDispatchNearDetail++;
+        else if (distance < 0x900u)
+            _wheelDispatchMiddleDetail++;
+        else
+            _wheelDispatchFarDetail++;
+
+        if ((!TraceWheelTransforms && !TraceVehicleVisibility) ||
+            Interlocked.Increment(ref _wheelDispatchTraceSamples) > 128)
             return;
-        bool distanceEligible = distance < 0x2400u;
-        bool modeEligible = (int)renderMode < 3;
-        bool detailedDistanceEligible = distance < 0x900u;
         Console.Error.WriteLine(
-            $"[GT2-WHEEL-GATE] car=0x{carState:X8} " +
+            $"[GT2-WHEEL-DISPATCH] car=0x{ResolveVehicleRenderIdentity(carState):X8} " +
             $"distance=0x{distance:X} mode={renderMode} " +
-            $"distanceEligible={distanceEligible} " +
-            $"modeEligible={modeEligible} " +
-            $"detailEligible={detailedDistanceEligible}");
+            $"detail={detail}");
+    }
+
+    /// <summary>
+    /// Records entry into GT2's standalone wheel renderer before its packet-
+    /// capacity rejection or transform setup. This is deliberately separate
+    /// from transform sampling, whose optional CSV path must not be used as a
+    /// proxy for control-flow evidence.
+    /// </summary>
+    public static void TraceVehicleWheelRendererEntry(
+        uint carState, uint wheelRecord, uint wheelIndex, uint detail)
+    {
+        _wheelRendererEntries++;
+        if (detail == 0u)
+            _wheelRendererNearDetail++;
+        else if (detail == 1u)
+            _wheelRendererMiddleDetail++;
+        else
+            _wheelRendererFarDetail++;
+
+        if ((!TraceWheelTransforms && !TraceVehicleVisibility) ||
+            Interlocked.Increment(ref _wheelRendererEntryTraceSamples) > 128)
+            return;
+        Console.Error.WriteLine(
+            $"[GT2-WHEEL-ENTRY] car=0x{ResolveVehicleRenderIdentity(carState):X8} " +
+            $"record=0x{wheelRecord:X8} wheel={wheelIndex} detail={detail}");
     }
 
     static void AuditVisibilityTransition(
@@ -2107,6 +2764,10 @@ public static class GT2Compat
     /// </summary>
     public static void DumpRendererAudit()
     {
+        // Bounded Windows runs terminate with the native TerminateProcess API
+        // after deterministic shutdown, so ProcessExit callbacks cannot be
+        // the primary persistence path for development traces.
+        FlushWheelTransformTrace();
         if (!AuditRenderer)
             return;
         Console.Error.WriteLine(
@@ -2127,7 +2788,8 @@ public static class GT2Compat
             $"rawNonzeroSelectors={_trackVisibilityRawNonzeroSelectors}");
         Console.Error.WriteLine(
             $"[GT2-Renderer-Audit] expandedVisibility calls={_visibilityExpandedCalls} " +
-            $"scope=complete-static-course " +
+            $"scope=bounded-sector-horizon " +
+            $"radius={ExtendedVisibilitySectorRadius} " +
             $"stockEntries={_visibilityExpandedStockEntries} " +
             $"outputEntries={_visibilityExpandedOutputEntries} " +
             $"maximumAdded={_visibilityExpandedMaximumAdded}");
@@ -2155,11 +2817,54 @@ public static class GT2Compat
                 VehicleLodSelectorCounts
                     .OrderBy(pair => pair.Key)
                     .Select(pair => $"{pair.Key}:{pair.Value}"));
-            Console.Error.WriteLine(
-                $"[GT2-Renderer-Audit] vehicles requests={_vehicleLodRequests} " +
+        Console.Error.WriteLine(
+            $"[GT2-Renderer-Audit] vehicles requests={_vehicleLodRequests} " +
                 $"selectors=[{selectors}] modelSets={VehicleLodModelSets.Count} " +
                 $"selectedModelPointers={VehicleLodModelPointers.Count}");
         }
+        lock (VehicleRenderIdentities)
+        {
+            Console.Error.WriteLine(
+                $"[GT2-Renderer-Audit] vehicleIdentity " +
+                $"begins={_vehicleRenderIdentityBegins} " +
+                $"ends={_vehicleRenderIdentityEnds} " +
+                $"active=0x{_vehicleRenderIdentity:X8} " +
+                $"distinct={VehicleRenderIdentities.Count} " +
+                $"scopedCaptures={_vehicleRenderScopedCaptures} " +
+                $"fallbackCaptures={_vehicleRenderFallbackCaptures}");
+        }
+        Console.Error.WriteLine(
+            $"[GT2-Renderer-Audit] vehicleFrustum " +
+            $"requests={_vehicleFrustumRequests} " +
+            $"horizontalOutside={_vehicleFrustumHorizontalOutside} " +
+            $"horizontalIntersecting={_vehicleFrustumHorizontalIntersecting} " +
+            $"horizontalRelation=" +
+            $"{_vehicleFrustumHorizontalOutsideOnly}/" +
+            $"{_vehicleFrustumHorizontalIntersectingOnly}/" +
+            $"{_vehicleFrustumHorizontalBoth} " +
+            $"otherOutside={_vehicleFrustumOtherOutside} " +
+            $"otherIntersecting={_vehicleFrustumOtherIntersecting} " +
+            $"expanded={_vehicleFrustumExpanded}");
+        Console.Error.WriteLine(
+            $"[GT2-Renderer-Audit] wheelGate " +
+            $"requests={_wheelGateRequests} " +
+            $"guestDistanceEligible={_wheelGateGuestDistanceEligible} " +
+            $"computedDistanceEligible={_wheelGateComputedDistanceEligible} " +
+            $"modeEligible={_wheelGateModeEligible} " +
+            $"mismatches={_wheelGateMismatches}");
+        Console.Error.WriteLine(
+            $"[GT2-Renderer-Audit] wheelDispatch " +
+            $"requests={_wheelDispatchRequests} " +
+            $"expectedEntries={_wheelDispatchRequests * 4} " +
+            $"near={_wheelDispatchNearDetail} " +
+            $"middle={_wheelDispatchMiddleDetail} " +
+            $"far={_wheelDispatchFarDetail}");
+        Console.Error.WriteLine(
+            $"[GT2-Renderer-Audit] wheelRenderer " +
+            $"entries={_wheelRendererEntries} " +
+            $"near={_wheelRendererNearDetail} " +
+            $"middle={_wheelRendererMiddleDetail} " +
+            $"far={_wheelRendererFarDetail}");
     }
 
     static bool IsGuestRam(uint address) =>

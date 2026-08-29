@@ -335,13 +335,23 @@ public static class Runtime
             if (intervalMs >= 40.0)
             {
                 double tickScale = 1000.0 / Stopwatch.Frequency;
+                double guestMs =
+                    (started - _performancePreviousEnd) * tickScale;
+                double hostMs = (afterHost - started) * tickScale;
+                double waitMs = (afterWait - afterHost) * tickScale;
+                RuntimeDiagnosticsEventSource.Log.LongFrame(
+                    InputManager.CurrentPoll,
+                    intervalMs,
+                    guestMs,
+                    hostMs,
+                    waitMs);
                 Console.Error.WriteLine(
                     $"[PERF-LONG-FRAME] poll={InputManager.CurrentPoll} " +
                     $"intervalMs={intervalMs:F3} " +
                     $"priorTailMs={(_performancePreviousEnd - _performancePreviousAfterWait) * tickScale:F3} " +
-                    $"guestMs={(started - _performancePreviousEnd) * tickScale:F3} " +
-                    $"hostMs={(afterHost - started) * tickScale:F3} " +
-                    $"waitMs={(afterWait - afterHost) * tickScale:F3}");
+                    $"guestMs={guestMs:F3} " +
+                    $"hostMs={hostMs:F3} " +
+                    $"waitMs={waitMs:F3}");
             }
         }
         _performancePreviousEnd = afterIrq;

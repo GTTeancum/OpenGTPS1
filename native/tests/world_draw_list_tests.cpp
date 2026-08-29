@@ -40,6 +40,8 @@ opengt::render::WorldCaptureVertex vertex(
 int main() {
     using namespace opengt::render;
     WorldCaptureHeader header{};
+    header.frame_index = 123;
+    header.input_poll = 456;
     header.display_width = 320;
     header.display_height = 240;
     header.camera_transform_id = 1;
@@ -56,14 +58,45 @@ int main() {
     triangles[0].vertices[1] = vertex(100, 0, 256, 100, 0);
     triangles[0].vertices[2] = vertex(0, 100, 256, 0, 100);
     triangles[1] = triangles[0];
-    for (auto& point : triangles[1].vertices)
+    for (auto& point : triangles[1].vertices) {
         point.projection_plane = 120;
+        point.projection_offset_x = 128 << 16;
+    }
 
     const Ps1ProjectedPoint center =
         project_ps1_vertex(triangles[0].vertices[0], 0, 0);
     bool okay = expect(
         center.x == 160 && center.y == 120 && center.depth == 256,
         "exact center projection");
+    const WorldCaptureVertex fractional_source =
+        vertex(1, -2, 3, 0, 0);
+    const ContinuousProjectedPoint fractional =
+        project_continuous_vertex(fractional_source, 7, 240);
+    okay &= expect(
+        std::fabs(fractional.x - (167.0F + 256.0F / 3.0F)) <
+                0.0001F &&
+            std::fabs(fractional.y - (360.0F - 512.0F / 3.0F)) <
+                0.0001F,
+        "continuous projection preserves offsets and fractional position");
+
+    // The GTE exposes integer view coordinates, but GT2's exact matrix keeps
+    // twelve fractional bits. A half-unit X translation must survive into the
+    // modern projection instead of snapping this vertex back to the centre.
+    WorldCaptureVertex fixed_transform_source =
+        vertex(0, 0, 100, 0, 0);
+    fixed_transform_source.model_x = 1;
+    fixed_transform_source.transform_id = 7;
+    fixed_transform_source.transform_rotation[0] = 2048;
+    fixed_transform_source.transform_rotation[4] = 4096;
+    fixed_transform_source.transform_rotation[8] = 4096;
+    fixed_transform_source.transform_translation[2] = 100;
+    fixed_transform_source.exact_transform_valid = true;
+    const ContinuousProjectedPoint fixed_transform_projection =
+        project_continuous_vertex(fixed_transform_source, 0, 0);
+    okay &= expect(
+        std::fabs(fixed_transform_projection.x - 161.28F) < 0.0001F &&
+            std::fabs(fixed_transform_projection.y - 120.0F) < 0.0001F,
+        "continuous projection preserves fixed-point transform fractions");
 
     WorldDrawList list{};
     okay &= expect(
@@ -75,6 +108,9 @@ int main() {
             &list) == WorldDrawListResult::success,
         "build main draw list");
     okay &= expect(list.commands.size() == 1, "filter secondary view");
+    okay &= expect(
+        list.frame_index == 123 && list.input_poll == 456,
+        "retain capture identity for renderer diagnostics");
     okay &= expect(list.secondary_commands == 1, "count secondary view");
     okay &= expect(list.materials.size() == 1, "deduplicate material");
     okay &= expect(list.track_commands == 1, "count track commands");
@@ -86,10 +122,136 @@ int main() {
         std::fabs(list.commands[0].face_normal_z - 1.0F) < 0.001F,
         "derive face normal for future lighting");
 
-    // GT2's raw course hook observes H one unit before the projected vehicle
-    // packets in the same authored view. Treat that integer boundary as one
-    // camera instead of splitting the course and cars into unrelated layers;
-    // a larger difference remains a genuine secondary projection.
+    WorldCaptureTriangle fixed_transform_triangle = triangles[0];
+    fixed_transform_triangle.transform_id = 7;
+    fixed_transform_triangle.transform_rotation[0] = 2048;
+    fixed_transform_triangle.transform_rotation[4] = 4096;
+    fixed_transform_triangle.transform_rotation[8] = 4096;
+    fixed_transform_triangle.transform_translation[2] = 100;
+    fixed_transform_triangle.exact_transform_valid = true;
+    for (int index = 0; index < 3; ++index) {
+        auto& point = fixed_transform_triangle.vertices[index];
+        point = fixed_transform_source;
+        point.model_x = static_cast<std::int16_t>(1 + index);
+        point.model_y = static_cast<std::int16_t>(index == 2 ? 1 : 0);
+        point.view_x = point.model_x / 2;
+        point.view_y = point.model_y;
+    }
+    WorldDrawList fixed_transform_list{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            &fixed_transform_triangle,
+            1,
+            WorldDrawListOptions{false, false, true},
+            &fixed_transform_list) == WorldDrawListResult::success &&
+            fixed_transform_list.commands.size() == 1,
+        "build exact fixed-point transform fixture");
+    okay &= expect(
+        std::fabs(
+            fixed_transform_list.commands[0].vertices[0].view_x - 0.5F) <
+                0.0001F &&
+            std::fabs(
+                fixed_transform_list.commands[0].vertices[0].screen_x -
+                161.28F) < 0.0001F &&
+            std::fabs(
+                fixed_transform_list.commands[0].vertices[0].clip_w -
+                100.0F) < 0.0001F &&
+            std::fabs(
+                fixed_transform_list.commands[0].vertices[0].clip_z -
+                16.0F) < 0.0001F,
+        "draw list uses fixed-point view reconstruction and reversed depth");
+
+    // GT2 independently normalizes camera translation for each submitted
+    // object before the GTE sees it. Raw SZ/view-Z therefore cannot be
+    // compared across objects. This fixture deliberately reverses the raw-Z
+    // ordering: the first object has raw Z=100 but exponent 1 (common Z=200),
+    // while the second has raw Z=150 and exponent 0 (common Z=150).
+    WorldCaptureTriangle normalized_depth[2]{triangles[0], triangles[0]};
+    normalized_depth[0].depth_scale_exponent = 1;
+    normalized_depth[0].depth_scale_valid = true;
+    normalized_depth[0].vertices[0] = vertex(0, 0, 100, 0, 0);
+    normalized_depth[0].vertices[1] = vertex(40, 0, 100, 40, 0);
+    normalized_depth[0].vertices[2] = vertex(0, 40, 100, 0, 40);
+    normalized_depth[1].depth_scale_exponent = 0;
+    normalized_depth[1].depth_scale_valid = true;
+    normalized_depth[1].vertices[0] = vertex(0, 0, 150, 0, 0);
+    normalized_depth[1].vertices[1] = vertex(60, 0, 150, 60, 0);
+    normalized_depth[1].vertices[2] = vertex(0, 60, 150, 0, 60);
+    WorldDrawList normalized_depth_list{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            normalized_depth,
+            2,
+            WorldDrawListOptions{false, false, true, true},
+            &normalized_depth_list) == WorldDrawListResult::success &&
+            normalized_depth_list.commands.size() == 2,
+        "build required GT2-normalized depth fixture");
+    if (normalized_depth_list.commands.size() == 2) {
+        const auto& farther = normalized_depth_list.commands[0].vertices[1];
+        const auto& nearer = normalized_depth_list.commands[1].vertices[1];
+        okay &= expect(
+            farther.view_z == 100.0F && nearer.view_z == 150.0F &&
+                farther.clip_w == 200.0F && nearer.clip_w == 150.0F &&
+                farther.clip_z / farther.clip_w <
+                    nearer.clip_z / nearer.clip_w,
+            "compare independently normalized objects in common GT2 depth");
+        okay &= expect(
+            std::fabs(
+                farther.clip_x / farther.clip_w -
+                nearer.clip_x / nearer.clip_w) < 0.0001F &&
+                std::fabs(
+                    farther.clip_y / farther.clip_w -
+                    nearer.clip_y / nearer.clip_w) < 0.0001F,
+            "depth normalization leaves perspective projection unchanged");
+    }
+    normalized_depth[0].depth_scale_valid = false;
+    WorldDrawList missing_depth_scale_list{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            normalized_depth,
+            1,
+            WorldDrawListOptions{false, false, true, true},
+            &missing_depth_scale_list) ==
+            WorldDrawListResult::invalid_depth_scale,
+        "reject live world geometry without GT2 depth normalization");
+
+    WorldCaptureTriangle background_triangle = triangles[0];
+    background_triangle.object_kind = 3;
+    WorldDrawList background_list{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            &background_triangle,
+            1,
+            WorldDrawListOptions{false, false, true, true},
+            &background_list) == WorldDrawListResult::success &&
+        background_list.commands.size() == 1 &&
+        background_list.background_commands == 1 &&
+        background_list.unclassified_commands == 0 &&
+        background_list.unclassified_world_commands == 0,
+        "retain explicit authored background ownership");
+
+    WorldCaptureTriangle unknown_world_triangle = triangles[0];
+    unknown_world_triangle.object_kind = 0;
+    WorldDrawList unknown_world_list{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            &unknown_world_triangle,
+            1,
+            WorldDrawListOptions{false, false, true},
+            &unknown_world_list) == WorldDrawListResult::success &&
+        unknown_world_list.commands.size() == 1 &&
+        unknown_world_list.unclassified_commands == 1 &&
+        unknown_world_list.unclassified_world_commands == 1,
+        "distinguish ownerless world geometry from explicit screen packets");
+
+    // A per-submission focal-length change does not create a separate camera
+    // or depth space. The primitive retains its own H during projection while
+    // sharing coherent view-space depth with the rest of the target.
     WorldCaptureTriangle projection_variants[3]{
         triangles[0], triangles[0], triangles[0]};
     for (auto& point : projection_variants[1].vertices)
@@ -104,15 +266,76 @@ int main() {
             3,
             WorldDrawListOptions{false, false, true},
             &projection_tolerance) == WorldDrawListResult::success,
-        "build one-unit main-projection tolerance fixture");
+        "build same-target focal-length fixture");
     okay &= expect(
-        projection_tolerance.commands.size() == 2 &&
-        projection_tolerance.secondary_commands == 1 &&
+        projection_tolerance.commands.size() == 3 &&
+        projection_tolerance.secondary_commands == 0 &&
         projection_tolerance.commands[0].channel ==
             WorldViewChannel::main_view &&
         projection_tolerance.commands[1].channel ==
+            WorldViewChannel::main_view &&
+        projection_tolerance.commands[2].channel ==
             WorldViewChannel::main_view,
-        "keep one-unit projection boundary in the shared world view");
+        "keep all focal lengths in one target's shared world view");
+
+    // Seattle's resident-course hook and vehicle packets can differ by two H
+    // units normally and by hundreds while the replay camera zoom is being
+    // updated. Both cases use the same projection centre and target, so both
+    // must keep the same depth surface.
+    WorldCaptureHeader seattle_projection_header = header;
+    seattle_projection_header.projection_plane = 913;
+    WorldCaptureTriangle seattle_projection_variants[3]{
+        triangles[0], triangles[0], triangles[0]};
+    for (auto& point : seattle_projection_variants[0].vertices)
+        point.projection_plane = 913;
+    for (auto& point : seattle_projection_variants[1].vertices)
+        point.projection_plane = 915;
+    for (auto& point : seattle_projection_variants[2].vertices)
+        point.projection_plane = 160;
+    WorldDrawList seattle_projection_tolerance{};
+    okay &= expect(
+        build_world_draw_list(
+            seattle_projection_header,
+            seattle_projection_variants,
+            3,
+            WorldDrawListOptions{false, false, true},
+            &seattle_projection_tolerance) == WorldDrawListResult::success &&
+        seattle_projection_tolerance.commands.size() == 3 &&
+        seattle_projection_tolerance.secondary_commands == 0,
+        "share depth across Seattle's complete focal-length update");
+
+    // A complete auxiliary GT2 scene pass can share the main pass's drawing
+    // target, projection centre, and H. Explicit authored pass ownership must
+    // still keep its vehicles and course geometry out of the main view.
+    WorldCaptureTriangle explicit_pass_variants[2]{
+        triangles[0], triangles[0]};
+    explicit_pass_variants[1].primitive_flags |=
+        world_primitive_secondary_view_flag;
+    WorldDrawList explicit_pass_main_only{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            explicit_pass_variants,
+            2,
+            WorldDrawListOptions{false, false, true},
+            &explicit_pass_main_only) == WorldDrawListResult::success &&
+        explicit_pass_main_only.commands.size() == 1 &&
+        explicit_pass_main_only.secondary_commands == 1 &&
+        explicit_pass_main_only.commands[0].channel ==
+            WorldViewChannel::main_view,
+        "exclude explicitly tagged auxiliary pass from main view");
+    WorldDrawList explicit_pass_all_views{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            explicit_pass_variants,
+            2,
+            WorldDrawListOptions{true, false, true},
+            &explicit_pass_all_views) == WorldDrawListResult::success &&
+        explicit_pass_all_views.commands.size() == 2 &&
+        explicit_pass_all_views.commands[1].channel ==
+            WorldViewChannel::secondary_view,
+        "retain explicitly tagged auxiliary pass for diagnostics");
 
     // This is the transform-scale boundary from the captured 0:57 track
     // seam.  The two authored copies represent the same endpoint, but the
@@ -191,10 +414,13 @@ int main() {
     okay &= expect(
         near_crossing_list.commands.size() == 1 &&
         near_crossing_list.commands[0].vertices[0].clip_w == -256.0F &&
-        near_crossing_list.commands[0].vertices[0].clip_z < 0.0F &&
+        near_crossing_list.commands[0].vertices[0].clip_z == 16.0F &&
         near_crossing_list.commands[0].vertices[1].clip_w == 256.0F &&
-        near_crossing_list.commands[0].vertices[1].clip_z > 0.0F,
-        "retain signed camera depth for homogeneous near clipping");
+        near_crossing_list.commands[0].vertices[1].clip_z == 16.0F &&
+        near_crossing_list.commands[0].vertices[1].clip_z /
+                near_crossing_list.commands[0].vertices[1].clip_w ==
+            0.0625F,
+        "retain signed W and reversed infinite homogeneous near clipping");
     okay &= expect(
         std::fabs(
             near_crossing_list.commands[0].vertices[0].clip_x -
@@ -246,8 +472,10 @@ int main() {
             world_primitive_screen_space_flag) != 0,
         "tag screen material for sprite texel sampling");
     okay &= expect(
-        screen_list.commands[0].channel == WorldViewChannel::main_view,
-        "classify displayed HUD primitive as part of the main view");
+        screen_list.commands[0].channel == WorldViewChannel::main_view &&
+        screen_list.unclassified_commands == 1 &&
+        screen_list.unclassified_world_commands == 0,
+        "classify displayed HUD without counting it as ownerless world geometry");
 
     // SSR11 street-light regression: the authored billboard is above the
     // camera, but one Y coordinate crosses the PS1 signed screen boundary

@@ -1,5 +1,6 @@
 param(
-    [string]$InstallPath = 'OpenGTPS1'
+    [string]$InstallPath = 'work\publish-seattle',
+    [string]$DataPath = 'work\gt2-unified'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,15 +14,17 @@ function Resolve-RepoPath([string]$Path) {
 }
 
 $install = Resolve-RepoPath $InstallPath
+$data = Resolve-RepoPath $DataPath
 $exe = Join-Path $install 'GranTurismo2PC.exe'
 $sessionRoot = Join-Path $repo 'work\quick-race'
 New-Item -ItemType Directory -Path $sessionRoot -Force | Out-Null
 
 foreach ($required in @(
     $exe,
-    (Join-Path $install 'GT2.VOL'),
-    (Join-Path $install 'MUSIC.DAT'),
-    (Join-Path $install 'manifests\arcade.json')
+    (Join-Path $data 'GT2.VOL'),
+    (Join-Path $data 'MUSIC.DAT'),
+    (Join-Path $data 'manifests\simulation.json'),
+    (Join-Path $data 'manifests\arcade.json')
 )) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Quick-race file is missing: $required"
@@ -70,7 +73,7 @@ try {
     $process = Start-Process `
         -FilePath $exe `
         -WorkingDirectory $install `
-        -ArgumentList @($install, '--arcade-race', 'seattle-circuit') `
+        -ArgumentList @('--arcade-race', 'seattle-circuit', $data) `
         -PassThru
     Write-Host "Gran Turismo 2 PC launched (PID $($process.Id))."
 } finally {

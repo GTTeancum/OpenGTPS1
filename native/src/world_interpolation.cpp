@@ -864,10 +864,7 @@ std::vector<std::size_t> match_groups(
             const double dy =
                 source.centroid_y - candidate.centroid_y;
             std::size_t unshared_vertices = 0;
-            if (
-                source.identity.category.object_kind == 0 &&
-                source.identity.category.model_pointer == 0
-            ) {
+            if (source.identity.category.object_kind == 3) {
                 std::size_t shared_vertices = 0;
                 for (const auto& vertex : source.vertices) {
                     if (candidate.vertices.find(vertex.first) !=
@@ -881,10 +878,10 @@ std::vector<std::size_t> match_groups(
             }
             // Command cardinality distinguishes a car body from its wheels
             // and shadow. Centroid distance then distinguishes the four
-            // instances of the same wheel model. Unclassified exact meshes
-            // share one otherwise-generic owner category; their authored
-            // model vertices distinguish the sky dome from unrelated world
-            // effects before centroid proximity is considered.
+            // instances of the same wheel model. Background instances share
+            // one authored model identity; their exact model vertices keep
+            // partially clipped backdrop groups paired before centroid
+            // proximity is considered.
             const double cost =
                 static_cast<double>(unshared_vertices) * 1000000000.0 +
                 command_delta * 1000000.0 +
@@ -1735,10 +1732,6 @@ void project_interpolated_vertex(
 ) noexcept {
     constexpr float fixed_scale = 1.0F / 65536.0F;
     constexpr float near_plane = 16.0F;
-    constexpr float far_plane = 1048576.0F;
-    constexpr float depth_a = far_plane / (far_plane - near_plane);
-    constexpr float depth_b =
-        -near_plane * far_plane / (far_plane - near_plane);
     destination->screen_x =
         destination->draw_offset_x +
         destination->projection_offset_x * fixed_scale +
@@ -1750,7 +1743,7 @@ void project_interpolated_vertex(
         destination->projection_plane * destination->view_y /
             destination->view_z;
     destination->clip_w = std::max(1.0F, destination->view_z);
-    destination->clip_z = depth_a * destination->clip_w + depth_b;
+    destination->clip_z = near_plane;
     const float ndc_x =
         ((destination->screen_x - list.display_x) /
             static_cast<float>(list.display_width)) * 2.0F - 1.0F;
@@ -4531,12 +4524,10 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
                 rigid_transform.valid &&
                 rigid_transform.exact &&
                 command.object_kind == 1;
-            const bool use_exact_unclassified_transform =
+            const bool use_exact_background_transform =
                 rigid_transform.valid &&
                 rigid_transform.exact &&
-                command.object_kind == 0 &&
-                command.object_id == 0 &&
-                command.model_pointer == 0 &&
+                command.object_kind == 3 &&
                 command.exact_transform_valid;
             const WorldDrawVertex* current_vertices[3]{};
             bool complete = true;
@@ -4562,7 +4553,7 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
             if (
                 use_vehicle_rigid_transform ||
                 use_exact_track_transform ||
-                (use_exact_unclassified_transform && complete)
+                (use_exact_background_transform && complete)
             ) {
                 if (!rigid_transform.exact)
                     command.exact_transform_valid = false;
@@ -4685,10 +4676,10 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
                     held_interval = parsed;
             }
             if ((held_sample++ % held_interval) == 0) {
-                std::array<std::uint32_t, 3> held_counts{};
-                std::array<std::uint32_t, 3> total_counts{};
-                std::array<double, 3> held_area{};
-                std::array<double, 3> total_area{};
+                std::array<std::uint32_t, 4> held_counts{};
+                std::array<std::uint32_t, 4> total_counts{};
+                std::array<double, 4> held_area{};
+                std::array<double, 4> total_area{};
                 const std::size_t comparable_commands = std::min(
                     midpoint.commands.size(), previous.commands.size());
                 for (std::size_t command_index = 0;
@@ -4697,7 +4688,7 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
                     const auto& moved = midpoint.commands[command_index];
                     const auto& source = previous.commands[command_index];
                     const std::size_t kind =
-                        moved.object_kind <= 2U ? moved.object_kind : 0U;
+                        moved.object_kind <= 3U ? moved.object_kind : 0U;
                     double minimum_x = moved.vertices[0].screen_x;
                     double minimum_y = moved.vertices[0].screen_y;
                     double maximum_x = minimum_x;
@@ -4740,9 +4731,10 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
                 }
                 std::fprintf(
                     stderr,
-                    "[Interpolation-Held] screen=%u/%u track=%u/%u "
-                    "vehicle=%u/%u trackAreaShare=%.1f%% "
-                    "vehicleAreaShare=%.1f%% screenAreaShare=%.1f%% "
+                    "[Interpolation-Held] other=%u/%u track=%u/%u "
+                    "vehicle=%u/%u background=%u/%u "
+                    "trackAreaShare=%.1f%% vehicleAreaShare=%.1f%% "
+                    "backgroundAreaShare=%.1f%% otherAreaShare=%.1f%% "
                     "heldUnmatched=%u heldVisibility=%u heldUnsafe=%u "
                     "heldIncoherentVehicle=%u heldAtomicVehicle=%u collidingKeys=%zu/%zu\n",
                     held_counts[0],
@@ -4751,8 +4743,11 @@ WorldInterpolationResult interpolate_world_draw_lists_cached(
                     total_counts[1],
                     held_counts[2],
                     total_counts[2],
+                    held_counts[3],
+                    total_counts[3],
                     share(held_area[1], total_area[1]),
                     share(held_area[2], total_area[2]),
+                    share(held_area[3], total_area[3]),
                     share(held_area[0], total_area[0]),
                     stats.held_unmatched_commands,
                     stats.held_track_visibility_commands,

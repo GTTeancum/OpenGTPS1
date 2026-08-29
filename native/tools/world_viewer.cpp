@@ -405,10 +405,24 @@ int main(int argc, char** argv) {
     if (inspect_x >= 0 && inspect_y >= 0) {
         // Inspector coordinates are expressed in the written output image,
         // while captured primitives retain their absolute VRAM display origin.
+        // Horizontal-plus centres world geometry in the wider output, so undo
+        // that margin before mapping the requested output pixel back to the
+        // captured native display. The old mapping silently inspected a point
+        // farther right whenever --aspect was active.
+        WorldGpuRenderOptions inspection_options{};
+        inspection_options.target_aspect_width = target_aspect_width;
+        inspection_options.target_aspect_height = target_aspect_height;
+        const std::uint32_t inspection_target_width =
+            world_gpu_target_display_width(draw_list, inspection_options);
+        const float inspection_horizontal_margin =
+            static_cast<float>(inspection_target_width -
+                static_cast<std::uint32_t>(draw_list.display_width)) *
+            static_cast<float>(scale) * 0.5F;
         // D3D rasterization evaluates coverage and interpolants at the output
         // pixel centre, not at its upper-left boundary.
         const float x = header.display_x +
-            (static_cast<float>(inspect_x) + 0.5F) / scale;
+            (static_cast<float>(inspect_x) + 0.5F -
+                inspection_horizontal_margin) / scale;
         const float y = header.display_y +
             (static_cast<float>(inspect_y) + 0.5F) / scale;
         const auto edge = [](const WorldDrawVertex& a,
@@ -612,6 +626,48 @@ int main(int argc, char** argv) {
                     command.vertices[2].clip_y,
                     command.vertices[2].clip_z,
                     command.vertices[2].clip_w);
+
+                const auto& a = command.vertices[0];
+                const auto& b = command.vertices[1];
+                const auto& c = command.vertices[2];
+                const float denominator =
+                    (b.screen_y - c.screen_y) *
+                        (a.screen_x - c.screen_x) +
+                    (c.screen_x - b.screen_x) *
+                        (a.screen_y - c.screen_y);
+                if (std::abs(denominator) > 0.000001F) {
+                    const float lambda_a =
+                        ((b.screen_y - c.screen_y) *
+                            (x - c.screen_x) +
+                        (c.screen_x - b.screen_x) *
+                            (y - c.screen_y)) / denominator;
+                    const float lambda_b =
+                        ((c.screen_y - a.screen_y) *
+                            (x - c.screen_x) +
+                        (a.screen_x - c.screen_x) *
+                            (y - c.screen_y)) / denominator;
+                    const float lambda_c = 1.0F - lambda_a - lambda_b;
+                    const float reciprocal_w =
+                        lambda_a / a.clip_w +
+                        lambda_b / b.clip_w +
+                        lambda_c / c.clip_w;
+                    const float view_z = reciprocal_w > 0.0F
+                        ? 1.0F / reciprocal_w
+                        : 0.0F;
+                    const float ndc_depth =
+                        lambda_a * a.clip_z / a.clip_w +
+                        lambda_b * b.clip_z / b.clip_w +
+                        lambda_c * c.clip_z / c.clip_w;
+                    std::printf(
+                        "    depth lambda=(%.6f,%.6f,%.6f) "
+                        "reciprocalW=%.9f viewZ=%.3f ndc=%.9f\n",
+                        lambda_a,
+                        lambda_b,
+                        lambda_c,
+                        reciprocal_w,
+                        view_z,
+                        ndc_depth);
+                }
             }
             if (inside && (material.primitive_flags & 1U) != 0) {
                 const auto& a = command.vertices[0];
@@ -863,7 +919,8 @@ int main(int argc, char** argv) {
     std::printf(
         "version=%u frame=%llu poll=%d adapter=%s resolution=%ux%u "
         "scale=%u depth=%s textures=%s "
-        "dither=%s commands=%u track=%u vehicles=%u unclassified=%u "
+        "dither=%s commands=%u track=%u vehicles=%u background=%u "
+        "unclassified=%u unclassifiedWorld=%u "
         "materials=%zu secondaryExcluded=%u "
         "topology=%s topologyInput=%u topologyOutput=%u "
         "topologyEligible=%u topologyMissingProvenance=%u "
@@ -899,7 +956,9 @@ int main(int argc, char** argv) {
         gpu_stats.commands,
         draw_list.track_commands,
         draw_list.vehicle_commands,
+        draw_list.background_commands,
         draw_list.unclassified_commands,
+        draw_list.unclassified_world_commands,
         draw_list.materials.size(),
         draw_list.secondary_commands,
         topology ? "on" : "off",

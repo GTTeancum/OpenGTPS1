@@ -355,7 +355,7 @@ if ($profileSamples -ne 240 -or
     $submitP50 -gt $submitP95 -or $submitP95 -gt $submitP99 -or
     $topologyP50 -le 0 -or
     $topologyP50 -gt $topologyP95 -or $topologyP95 -gt $topologyP99 -or
-    # The fixed output ring absorbs short pair-production bursts. Keep a hard
+    # The fixed output ring absorbs short authored-frame production bursts. Keep a hard
     # 40 ms p99 ceiling while the stricter 59.5-60.5 Hz presentation audit
     # above proves that those bursts do not slow or duplicate host output.
     $pipelineP99 -gt 40.0) {
@@ -366,7 +366,7 @@ $shutdownMatches = [regex]::Matches(
     $stderr,
     '\[Native-World\] shutdown submitted=(\d+) rendered=(\d+) ' +
     'actual=(\d+) synthetic=(\d+) repeated=(\d+) ' +
-    'syntheticAttempts=(\d+) syntheticNoOutput=(\d+) ' +
+    'syntheticPath=absent authoredNoOutput=(\d+) ' +
     'consumed=(\d+) dropped=(\d+) droppedPending=(\d+) ' +
     'droppedOutputPool=(\d+) droppedPublished=(\d+) ' +
     'outputWaits=(\d+) outputWaitTimeouts=(\d+) ' +
@@ -374,19 +374,35 @@ $shutdownMatches = [regex]::Matches(
 if ($shutdownMatches.Count -lt 1) {
     throw 'Native output-wait shutdown telemetry was not recorded'
 }
+$classificationMatches = [regex]::Matches(
+    $stderr,
+    '\[Native-World-Classification\] frames=(\d+) ' +
+    'classifiedWorldCommands=(\d+) unclassifiedWorldCommands=(\d+) ' +
+    'framesWithUnclassifiedWorld=(\d+) maximumUnclassifiedWorld=(\d+)')
+if ($classificationMatches.Count -lt 1) {
+    throw 'Whole-run world/effect classification telemetry was not recorded'
+}
+$classification = $classificationMatches[$classificationMatches.Count - 1]
+if ([long]$classification.Groups[1].Value -lt 1 -or
+    [long]$classification.Groups[2].Value -lt 1 -or
+    [long]$classification.Groups[3].Value -ne 0 -or
+    [long]$classification.Groups[4].Value -ne 0 -or
+    [long]$classification.Groups[5].Value -ne 0) {
+    throw "Ownerless 3D geometry reached the modern renderer: $($classification.Value)"
+}
 $shutdown = $shutdownMatches[$shutdownMatches.Count - 1]
 $shutdownRepeatedOutputs = [long]$shutdown.Groups[5].Value
-$droppedTotal = [long]$shutdown.Groups[9].Value
-$droppedPending = [long]$shutdown.Groups[10].Value
-$droppedOutputPool = [long]$shutdown.Groups[11].Value
-$droppedPublished = [long]$shutdown.Groups[12].Value
-$outputWaits = [long]$shutdown.Groups[13].Value
-$outputWaitTimeouts = [long]$shutdown.Groups[14].Value
+$droppedTotal = [long]$shutdown.Groups[8].Value
+$droppedPending = [long]$shutdown.Groups[9].Value
+$droppedOutputPool = [long]$shutdown.Groups[10].Value
+$droppedPublished = [long]$shutdown.Groups[11].Value
+$outputWaits = [long]$shutdown.Groups[12].Value
+$outputWaitTimeouts = [long]$shutdown.Groups[13].Value
 $outputWaitAverageMs = [double]::Parse(
-    $shutdown.Groups[15].Value,
+    $shutdown.Groups[14].Value,
     [Globalization.CultureInfo]::InvariantCulture)
 $outputWaitMaximumMs = [double]::Parse(
-    $shutdown.Groups[16].Value,
+    $shutdown.Groups[15].Value,
     [Globalization.CultureInfo]::InvariantCulture)
 $invalidWaitTelemetry = if ($outputWaits -eq 0) {
     $outputWaitTimeouts -ne 0 -or

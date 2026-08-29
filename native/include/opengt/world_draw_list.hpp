@@ -13,12 +13,34 @@ namespace opengt::render {
 constexpr std::uint32_t world_primitive_screen_space_flag = 1U << 31;
 // Internal-only material tag for narrow triangles emitted to preserve a
 // proven authored edge through a synthetic temporal sample. These stitches
-// must not merge otherwise independent GT UV-projection islands.
+// must not merge otherwise independent authored topology groups; they still
+// use the fixed perspective-correct 3D projection contract.
 constexpr std::uint32_t world_primitive_temporal_seam_flag = 1U << 30;
+// GT2 resolves coplanar course artwork by authored submission order because
+// the PS1 GPU has no depth buffer. The resident-course decoder assigns this
+// bounded layer to positive-area detail surfaces which are materially smaller
+// than their support (lane markings, arrows, grid boxes, and similar road
+// artwork). GT2 authors one class exactly coplanar and other classes one or two
+// model units from road support. Comparable or larger surfaces retain physical
+// depth because they are alternate road/LOD geometry, not decals. The modern
+// renderer composites this typed artwork over an exact visible-support mask;
+// it is not a texture/material heuristic and does not move screen geometry.
+constexpr std::uint32_t world_primitive_track_overlay_layer_shift = 24;
+constexpr std::uint32_t world_primitive_track_overlay_layer_mask =
+    0x1FU << world_primitive_track_overlay_layer_shift;
+// The resident-course classifier records the exact earlier primitive which
+// authored road artwork overlays. The renderer tags only visible pixels from
+// those supports, allowing the overlay to win that typed relationship without
+// bypassing walls, vehicles, or other nearer geometry.
+constexpr std::uint32_t world_primitive_track_overlay_support_flag = 1U << 6;
 // Captured directly from GT2's authored pre-projection course data. Its
 // shared model vertices are already continuous; topology inference intended
 // for guest-projected packets must not rebuild or split it.
 constexpr std::uint32_t world_primitive_resident_course_flag = 1U << 4;
+// Managed capture tags geometry emitted by GT2's complete auxiliary camera
+// submission. This is explicit authored pass ownership; it must not be folded
+// into the main view merely because both passes share a render target or lens.
+constexpr std::uint32_t world_primitive_secondary_view_flag = 1U << 5;
 constexpr std::uint16_t world_vertex_source_identity_flag = 1U << 0;
 constexpr std::uint16_t world_vertex_screen_offset_anchor_flag = 1U << 1;
 
@@ -31,6 +53,11 @@ struct Ps1ProjectedPoint {
     std::int32_t x;
     std::int32_t y;
     std::uint16_t depth;
+};
+
+struct ContinuousProjectedPoint {
+    float x;
+    float y;
 };
 
 struct WorldMaterial {
@@ -117,6 +144,8 @@ struct WorldDrawList {
     std::int32_t display_y;
     std::int32_t display_width;
     std::int32_t display_height;
+    std::uint64_t frame_index;
+    std::int32_t input_poll;
     std::uint64_t camera_transform_id;
     bool continuous_projection;
     std::vector<WorldMaterial> materials;
@@ -132,23 +161,41 @@ struct WorldDrawList {
     std::uint32_t secondary_commands;
     std::uint32_t track_commands;
     std::uint32_t vehicle_commands;
+    std::uint32_t background_commands;
+    // object_kind 0 includes both explicit 2D screen packets and world
+    // packets whose authored owner has not been reconstructed. Keep the
+    // historical aggregate above/below for HUD sizing, but count the latter
+    // separately so a complete live run can prove that no 3D packet remained
+    // outside the modern layer contract.
     std::uint32_t unclassified_commands;
+    std::uint32_t unclassified_world_commands;
 };
 
 struct WorldDrawListOptions {
     bool include_secondary_views;
     bool include_screen_space;
     bool continuous_projection;
+    // The shipping live path must never compare raw GT2 camera Z values from
+    // independently normalized objects. Development readers may leave this
+    // false so historical capture files remain inspectable.
+    bool require_world_depth_scale{};
 };
 
 enum class WorldDrawListResult {
     success,
     invalid_argument,
     invalid_camera,
+    invalid_depth_scale,
     allocation_failed,
 };
 
 Ps1ProjectedPoint project_ps1_vertex(
+    const WorldCaptureVertex& vertex,
+    std::int16_t draw_offset_x,
+    std::int16_t draw_offset_y
+) noexcept;
+
+ContinuousProjectedPoint project_continuous_vertex(
     const WorldCaptureVertex& vertex,
     std::int16_t draw_offset_x,
     std::int16_t draw_offset_y

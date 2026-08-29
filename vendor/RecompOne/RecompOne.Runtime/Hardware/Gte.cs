@@ -27,6 +27,7 @@ public enum GteProjectionOriginFlags : ushort
 public readonly record struct GteProjectionOrigin(
     short ModelX, short ModelY, short ModelZ,
     int ViewX, int ViewY, int ViewZ,
+    long ViewXFixed, long ViewYFixed, long ViewZFixed,
     short R00, short R01, short R02,
     short R10, short R11, short R12,
     short R20, short R21, short R22,
@@ -110,6 +111,26 @@ public static class Gte
             "RECOMPONE_TRACE_DERIVED_SCREEN_PROJECTION") == "1";
     static int DerivedScreenBeginTraceCount;
     static int DerivedScreenOffsetTraceCount;
+#if !OPENGT_RELEASE_PACKAGE
+    static readonly bool TraceUnknownWorldStacks =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_TRACE_UNKNOWN_WORLD_STACK") == "1";
+    static readonly int TraceUnknownWorldStackStartPoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_UNKNOWN_WORLD_STACK_START_POLL"),
+            out int traceUnknownWorldStackStartPoll)
+            ? traceUnknownWorldStackStartPoll
+            : 0;
+    static readonly int TraceUnknownWorldStackLimit =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_UNKNOWN_WORLD_STACK_LIMIT"),
+            out int traceUnknownWorldStackLimit)
+            ? Math.Max(1, traceUnknownWorldStackLimit)
+            : 12;
+    static int TraceUnknownWorldStackCount;
+#endif
     // Packet addresses already provide a collision-free key. Keep depth
     // samples in direct word-indexed storage instead of hashing every packet
     // read, write, and invalidation on the guest thread. The validity bitsets
@@ -259,6 +280,25 @@ public static class Gte
     static int DQB;
     static short ZSF3, ZSF4;
     static uint FLAG;
+    static uint LastOperation;
+    static readonly bool TraceVehicleProjectionLimits =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_TRACE_GT2_VEHICLE_GTE_FLAGS") == "1";
+    static int VehicleFlagPolicyReported;
+    static int VehicleFlagPoll = -1;
+    static uint VehicleFlagObject;
+    static uint VehicleFlagModel;
+    static int VehicleFlagReads;
+    static int VehicleFlagRawFatal;
+    static int VehicleFlagScreenSaturated;
+    static int VehicleFlagDepthSaturated;
+    static int VehicleFlagDivideOverflow;
+    static int VehicleFlagProjectionArithmetic;
+    static int VehicleFlagNonProjectionFatal;
+    static int VehicleFlagRecovered;
+    static int VehicleFlagPreservedFatal;
+    static int VehicleFlagNclipCorrected;
+    static bool VehicleProjectionClipLimited;
 
     static readonly byte[] Unr = BuildUnr();
 
@@ -274,6 +314,170 @@ public static class Gte
     }
 
     static void Flag(int bit) => FLAG |= 1u << bit;
+
+    /// <summary>
+    /// GT2 rejects a complete vehicle face whenever the GTE summary bit is
+    /// set. Screen X/Y saturation, projection-depth saturation, and divide
+    /// overflow are all clipping conditions for RTPS/RTPT. The modern renderer
+    /// reconstructs the unsaturated vertex from its exact model/view
+    /// provenance and clips it in homogeneous space, so rejecting the face in
+    /// the guest makes close cars disappear in large slabs. RTPS/RTPT MAC and
+    /// IR overflow flags are part of the same legacy projection failure: the
+    /// exact pre-saturation coordinates remain valid. Defer the complete GTE
+    /// projection summary only for vehicle RTPS/RTPT operations; preserve all
+    /// non-projection GTE failures.
+    /// </summary>
+    static uint FilterModernVehicleProjectionLimits(uint value)
+    {
+        if (!WorldCaptureContext.CaptureEnabled ||
+            WorldCaptureContext.Current.Kind != WorldObjectKind.Vehicle)
+            return value;
+
+        bool projection = LastOperation is 0x01u or 0x30u;
+        uint filtered = FilterVehicleProjectionSummary(
+            value,
+            projection);
+
+        TraceModernVehicleProjectionLimits(value, filtered, projection);
+        return filtered;
+    }
+
+    static uint FilterVehicleProjectionSummary(
+        uint value,
+        bool projection)
+    {
+        if (!projection)
+            return value;
+        const uint projectionSummaryCauses = 0x7F87E000u;
+        return value & ~(0x80000000u | projectionSummaryCauses);
+    }
+
+    static bool TryExactVehicleNclip(out int result)
+    {
+        result = 0;
+        if (!VehicleProjectionClipLimited ||
+            !WorldCaptureContext.CaptureEnabled ||
+            WorldCaptureContext.Current.Kind != WorldObjectKind.Vehicle)
+            return false;
+
+        VehicleProjectionClipLimited = false;
+        if (!TryResolveProjectionOrigin(SxyOrigin[0], out var a) ||
+            !TryResolveProjectionOrigin(SxyOrigin[1], out var b) ||
+            !TryResolveProjectionOrigin(SxyOrigin[2], out var c) ||
+            a.Object.Kind != WorldObjectKind.Vehicle ||
+            b.Object.Kind != WorldObjectKind.Vehicle ||
+            c.Object.Kind != WorldObjectKind.Vehicle ||
+            a.Object.StableId != b.Object.StableId ||
+            a.Object.StableId != c.Object.StableId ||
+            a.TransformId != b.TransformId ||
+            a.TransformId != c.TransformId ||
+            a.ViewZFixed == 0 || b.ViewZFixed == 0 || c.ViewZFixed == 0)
+            return false;
+
+        static double Project(long axis, long depth, ushort plane) =>
+            plane * (double)axis / depth;
+        double ax = Project(a.ViewXFixed, a.ViewZFixed, a.ProjectionPlane);
+        double ay = Project(a.ViewYFixed, a.ViewZFixed, a.ProjectionPlane);
+        double bx = Project(b.ViewXFixed, b.ViewZFixed, b.ProjectionPlane);
+        double by = Project(b.ViewYFixed, b.ViewZFixed, b.ProjectionPlane);
+        double cx = Project(c.ViewXFixed, c.ViewZFixed, c.ProjectionPlane);
+        double cy = Project(c.ViewYFixed, c.ViewZFixed, c.ProjectionPlane);
+        double determinant =
+            ax * (by - cy) + bx * (cy - ay) + cx * (ay - by);
+        if (!double.IsFinite(determinant))
+            return false;
+
+        long rounded = checked((long)Math.Round(
+            Math.Clamp(
+                determinant,
+                (double)int.MinValue,
+                (double)int.MaxValue),
+            MidpointRounding.AwayFromZero));
+        if (rounded == 0 && determinant != 0.0)
+            rounded = determinant < 0.0 ? -1 : 1;
+        result = (int)rounded;
+        VehicleFlagNclipCorrected++;
+        return true;
+    }
+
+    static void TraceModernVehicleProjectionLimits(
+        uint raw,
+        uint filtered,
+        bool projection)
+    {
+        if (Interlocked.Exchange(ref VehicleFlagPolicyReported, 1) == 0)
+        {
+            Console.Error.WriteLine(
+                "[GT2-Vehicle-GTE-Policy] " +
+                "projectionSummary=defer-to-native " +
+                "source=exact-view-provenance " +
+                "preservedErrors=non-projection");
+        }
+        if (!TraceVehicleProjectionLimits)
+            return;
+
+        WorldObjectContext context = WorldCaptureContext.Current;
+        int poll = Host.InputManager.CurrentPoll;
+        if (VehicleFlagReads != 0 &&
+            (poll != VehicleFlagPoll ||
+             context.StableId != VehicleFlagObject ||
+             context.ModelPointer != VehicleFlagModel))
+        {
+            FlushVehicleProjectionLimitTrace();
+        }
+        VehicleFlagPoll = poll;
+        VehicleFlagObject = context.StableId;
+        VehicleFlagModel = context.ModelPointer;
+        VehicleFlagReads++;
+        if ((raw & 0x80000000u) != 0)
+            VehicleFlagRawFatal++;
+        if ((raw & 0x00006000u) != 0)
+            VehicleFlagScreenSaturated++;
+        if (projection && (raw & 0x00040000u) != 0)
+            VehicleFlagDepthSaturated++;
+        if (projection && (raw & 0x00020000u) != 0)
+            VehicleFlagDivideOverflow++;
+        if (projection && (raw & 0x7F818000u) != 0)
+            VehicleFlagProjectionArithmetic++;
+        if (!projection && (raw & 0x80000000u) != 0)
+            VehicleFlagNonProjectionFatal++;
+        if ((raw & 0x80000000u) != 0 &&
+            (filtered & 0x80000000u) == 0)
+            VehicleFlagRecovered++;
+        if ((filtered & 0x80000000u) != 0)
+            VehicleFlagPreservedFatal++;
+    }
+
+    static void FlushVehicleProjectionLimitTrace()
+    {
+        if (VehicleFlagScreenSaturated != 0 ||
+            VehicleFlagRawFatal != 0 ||
+            VehicleFlagPreservedFatal != 0)
+        {
+            Console.Error.WriteLine(
+                $"[GT2-VEHICLE-GTE-FLAG] poll={VehicleFlagPoll} " +
+                $"object={VehicleFlagObject} model={VehicleFlagModel:X8} " +
+                $"reads={VehicleFlagReads} rawFatal={VehicleFlagRawFatal} " +
+                $"screenSaturated={VehicleFlagScreenSaturated} " +
+                $"recovered={VehicleFlagRecovered} " +
+                $"preservedFatal={VehicleFlagPreservedFatal} " +
+                $"nclipCorrected={VehicleFlagNclipCorrected} " +
+                $"depthSaturated={VehicleFlagDepthSaturated} " +
+                $"divideOverflow={VehicleFlagDivideOverflow} " +
+                $"projectionArithmetic={VehicleFlagProjectionArithmetic} " +
+                $"nonProjectionFatal={VehicleFlagNonProjectionFatal}");
+        }
+        VehicleFlagReads = 0;
+        VehicleFlagRawFatal = 0;
+        VehicleFlagScreenSaturated = 0;
+        VehicleFlagDepthSaturated = 0;
+        VehicleFlagDivideOverflow = 0;
+        VehicleFlagProjectionArithmetic = 0;
+        VehicleFlagNonProjectionFatal = 0;
+        VehicleFlagRecovered = 0;
+        VehicleFlagPreservedFatal = 0;
+        VehicleFlagNclipCorrected = 0;
+    }
 
     static int SatIR(int n, int v, bool lm)
     {
@@ -450,20 +654,71 @@ public static class Gte
         int viewX, int viewY, int viewZ)
     {
         ulong hash = CurrentProjectionTransformId();
+        WorldObjectContext context = WorldCaptureContext.Current;
+#if !OPENGT_RELEASE_PACKAGE
+        if (
+            TraceUnknownWorldStacks &&
+            context.Kind == WorldObjectKind.Unknown &&
+            Host.InputManager.CurrentPoll >= TraceUnknownWorldStackStartPoll
+        ) {
+            TraceUnknownWorldProjectionStack(
+                modelX, modelY, modelZ,
+                viewX, viewY, viewZ,
+                hash);
+        }
+#endif
+        long viewXFixed = ((long)TR[0] << 12) +
+            (long)RT[0] * modelX +
+            (long)RT[1] * modelY +
+            (long)RT[2] * modelZ;
+        long viewYFixed = ((long)TR[1] << 12) +
+            (long)RT[3] * modelX +
+            (long)RT[4] * modelY +
+            (long)RT[5] * modelZ;
+        long viewZFixed = ((long)TR[2] << 12) +
+            (long)RT[6] * modelX +
+            (long)RT[7] * modelY +
+            (long)RT[8] * modelZ;
         GteProjectionOrigin origin = new(
             (short)modelX, (short)modelY, (short)modelZ,
             viewX, viewY, viewZ,
+            viewXFixed, viewYFixed, viewZFixed,
             RT[0], RT[1], RT[2],
             RT[3], RT[4], RT[5],
             RT[6], RT[7], RT[8],
             TR[0], TR[1], TR[2],
             OFX, OFY, H,
             hash,
-            WorldCaptureContext.Current,
+            context,
             0, 0,
             GteProjectionOriginFlags.None);
         return StoreProjectionOrigin(in origin);
     }
+
+#if !OPENGT_RELEASE_PACKAGE
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static void TraceUnknownWorldProjectionStack(
+        int modelX,
+        int modelY,
+        int modelZ,
+        int viewX,
+        int viewY,
+        int viewZ,
+        ulong transformId)
+    {
+        int trace = Interlocked.Increment(ref TraceUnknownWorldStackCount);
+        if (trace > TraceUnknownWorldStackLimit)
+            return;
+        Console.Error.WriteLine(
+            $"[GTE-Unknown-Stack] n={trace} " +
+            $"poll={Host.InputManager.CurrentPoll} " +
+            $"model={modelX},{modelY},{modelZ} " +
+            $"view={viewX},{viewY},{viewZ} " +
+            $"transform=0x{transformId:X16}{Environment.NewLine}" +
+            Environment.StackTrace);
+    }
+#endif
 
     static ulong CurrentProjectionTransformId()
     {
@@ -516,6 +771,7 @@ public static class Gte
             (int)(viewX >> 12),
             (int)(viewY >> 12),
             (int)(viewZ >> 12),
+            viewX, viewY, viewZ,
             RT[0], RT[1], RT[2],
             RT[3], RT[4], RT[5],
             RT[6], RT[7], RT[8],
@@ -1454,13 +1710,15 @@ public static class Gte
     public static void Execute(uint cmd)
     {
         FLAG = 0;
+        uint operation = cmd & 0x3Fu;
+        LastOperation = operation;
         int sf = (cmd & (1u << 19)) != 0 ? 12 : 0;
         bool lm = (cmd & (1u << 10)) != 0;
         int mx = (int)((cmd >> 17) & 3);
         int vn = (int)((cmd >> 15) & 3);
         int cv = (int)((cmd >> 13) & 3);
 
-        switch (cmd & 0x3F)
+        switch (operation)
         {
             case 0x01: Rtp(V[0], V[1], V[2], sf, lm, true); break;
             case 0x30:
@@ -1469,7 +1727,8 @@ public static class Gte
                 Rtp(V[6], V[7], V[8], sf, lm, true);
                 break;
             case 0x06:
-                MAC0 = (int)CheckMac0((long)SX[0] * (SY[1] - SY[2]) + (long)SX[1] * (SY[2] - SY[0]) + (long)SX[2] * (SY[0] - SY[1]));
+                if (!TryExactVehicleNclip(out MAC0))
+                    MAC0 = (int)CheckMac0((long)SX[0] * (SY[1] - SY[2]) + (long)SX[1] * (SY[2] - SY[0]) + (long)SX[2] * (SY[0] - SY[1]));
                 break;
             case 0x2D:
                 MAC0 = (int)CheckMac0((long)ZSF3 * (SZ[1] + SZ[2] + SZ[3]));
@@ -1533,6 +1792,17 @@ public static class Gte
         }
 
         if ((FLAG & 0x7F87E000u) != 0) FLAG |= 0x80000000u;
+        if (operation is 0x01u or 0x30u)
+        {
+            VehicleProjectionClipLimited =
+                WorldCaptureContext.CaptureEnabled &&
+                WorldCaptureContext.Current.Kind == WorldObjectKind.Vehicle &&
+                (FLAG & 0x7F87E000u) != 0;
+        }
+        else if (operation != 0x06u)
+        {
+            VehicleProjectionClipLimited = false;
+        }
     }
 
     static void Ncs(int vec, int sf, bool lm)
@@ -1769,7 +2039,7 @@ public static class Gte
             case 28: return (uint)DQB;
             case 29: return (uint)ZSF3;
             case 30: return (uint)ZSF4;
-            case 31: return FLAG;
+            case 31: return FilterModernVehicleProjectionLimits(FLAG);
             default: return 0;
         }
     }

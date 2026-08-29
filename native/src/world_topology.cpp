@@ -3216,14 +3216,27 @@ WorldTopologyResult apply_world_topology(
             static_cast<std::uint32_t>(draw_list->commands.size());
         draw_list->track_commands = 0;
         draw_list->vehicle_commands = 0;
+        draw_list->background_commands = 0;
         draw_list->unclassified_commands = 0;
+        draw_list->unclassified_world_commands = 0;
         for (const auto& command : draw_list->commands) {
             if (command.object_kind == 1)
                 ++draw_list->track_commands;
             else if (command.object_kind == 2)
                 ++draw_list->vehicle_commands;
-            else
+            else if (command.object_kind == 3)
+                ++draw_list->background_commands;
+            else {
                 ++draw_list->unclassified_commands;
+                if (
+                    command.material_index < draw_list->materials.size() &&
+                    (draw_list->materials[command.material_index]
+                         .primitive_flags &
+                        world_primitive_screen_space_flag) == 0
+                ) {
+                    ++draw_list->unclassified_world_commands;
+                }
+            }
         }
         if (std::getenv("OPENGT_TOPOLOGY_PHASE_DIAGNOSTICS") != nullptr) {
             const auto milliseconds = [] (TopologyClock::duration duration) {

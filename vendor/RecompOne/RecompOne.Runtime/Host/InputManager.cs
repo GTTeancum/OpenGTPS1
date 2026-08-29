@@ -42,6 +42,12 @@ internal static unsafe class InputManager
     static bool _forcePad2Connected;
     static bool _traceInput;
     static string? _captureScriptedStage;
+    static bool _automaticStageCapture;
+    static string? _captureInputStage;
+    static int _captureInputStagePoll;
+    static string? _exitInputStage;
+    static int _exitInputStagePoll;
+    static int _stageExitPoll = -1;
     static bool _suppressRumble;
     static readonly int _inputEndPoll =
         int.TryParse(Environment.GetEnvironmentVariable("RECOMPONE_INPUT_END_POLL"), out int inputEndPoll)
@@ -69,6 +75,31 @@ internal static unsafe class InputManager
         _captureScriptedStage = string.IsNullOrWhiteSpace(captureScriptedStage)
             ? null
             : NormalizeStage(captureScriptedStage);
+        _automaticStageCapture =
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_CAPTURE_AUTOMATIC_STAGE") != "0";
+        string? captureInputStage =
+            Environment.GetEnvironmentVariable("RECOMPONE_CAPTURE_INPUT_STAGE");
+        _captureInputStage = string.IsNullOrWhiteSpace(captureInputStage)
+            ? null
+            : NormalizeStage(captureInputStage);
+        _captureInputStagePoll = int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_CAPTURE_INPUT_STAGE_POLL"),
+            out int captureInputStagePoll)
+                ? Math.Max(0, captureInputStagePoll)
+                : 0;
+        string? exitInputStage = Environment.GetEnvironmentVariable(
+            "RECOMPONE_TEST_EXIT_INPUT_STAGE");
+        _exitInputStage = string.IsNullOrWhiteSpace(exitInputStage)
+            ? null
+            : NormalizeStage(exitInputStage);
+        _exitInputStagePoll = int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_TEST_EXIT_INPUT_STAGE_POLL"),
+            out int exitInputStagePoll)
+                ? Math.Max(0, exitInputStagePoll)
+                : 0;
         _suppressRumble =
             Environment.GetEnvironmentVariable("RECOMPONE_SUPPRESS_RUMBLE") == "1";
         ParseScriptedInput();
@@ -149,6 +180,7 @@ internal static unsafe class InputManager
         _stagePoll = 0;
         _stageCapturePoll = -1;
         _stageCaptureLabel = null;
+        _stageExitPoll = -1;
 
         string? script = Environment.GetEnvironmentVariable("RECOMPONE_INPUT_SCRIPT");
         string? scriptFile = Environment.GetEnvironmentVariable("RECOMPONE_INPUT_FILE");
@@ -246,17 +278,37 @@ internal static unsafe class InputManager
 
     internal static void SignalScriptStage(string stage, int captureDelayPolls = 0)
     {
-        if (_scriptedInput.Count == 0) return;
+        // GT2 owns these phase transitions.  A bounded diagnostic may consume
+        // one even when it deliberately has no scripted controller input (for
+        // example, a direct race driven entirely by GT2's CPU).  Do not make
+        // the real stage signal depend on a fake button pulse.  Automatic
+        // captures remain a scripted-input convenience; explicit diagnostic
+        // capture and exit requests work independently.
+        bool hasScriptedInput = _scriptedInput.Count != 0;
         stage = NormalizeStage(stage);
         if (_scriptStage == stage) return;
 
         _scriptStage = stage;
         _stagePoll = 0;
-        _stageCapturePoll = captureDelayPolls;
-        _stageCaptureLabel = stage;
-        if (captureDelayPolls == 0)
+        bool explicitDiagnosticCapture = string.Equals(
+            stage, _captureInputStage, StringComparison.OrdinalIgnoreCase);
+        _stageCapturePoll = explicitDiagnosticCapture
+            ? _captureInputStagePoll
+            : hasScriptedInput && _automaticStageCapture
+                ? captureDelayPolls
+                : -1;
+        _stageCaptureLabel = explicitDiagnosticCapture
+            ? $"{stage}_{_captureInputStagePoll:0000}"
+            : _stageCapturePoll >= 0
+                ? stage
+                : null;
+        _stageExitPoll = string.Equals(
+            stage, _exitInputStage, StringComparison.OrdinalIgnoreCase)
+                ? _exitInputStagePoll
+                : -1;
+        if (_stageCapturePoll == 0 && _stageCaptureLabel != null)
         {
-            HostWindow.RequestDisplayCapture(stage);
+            HostWindow.RequestDisplayCapture(_stageCaptureLabel);
             _stageCapturePoll = -1;
             _stageCaptureLabel = null;
         }
@@ -276,6 +328,14 @@ internal static unsafe class InputManager
                 $"[Input] requested stage '{_stageCaptureLabel}' capture at poll {stagePoll}");
             _stageCapturePoll = -1;
             _stageCaptureLabel = null;
+        }
+        if (_stageExitPoll == stagePoll)
+        {
+            Console.Error.WriteLine(
+                $"[Input] stage '{_scriptStage}' diagnostic exit at poll " +
+                $"{stagePoll} (absolute {poll})");
+            _stageExitPoll = -1;
+            Runtime.RequestShutdown();
         }
         foreach (var pulse in _scriptedInput)
         {
@@ -381,6 +441,7 @@ internal static unsafe class InputManager
 
     internal static int CurrentPoll => _inputPoll;
     internal static string? CurrentScriptStage => _scriptStage;
+    internal static int CurrentScriptStagePoll => _stagePoll;
 
     static string ControllerName(GameController* controller)
     {

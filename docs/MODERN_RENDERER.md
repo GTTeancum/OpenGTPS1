@@ -52,9 +52,11 @@ Renderer reconstruction is constrained as follows:
   handling while preserving deliberately identified transparency/effect order.
 - GT2 has no fog, and the modern renderer must not add any. Maximum draw
   distance must extend beyond the original game's visibility limit far enough
-  that road and scenery pop-in cannot be seen during ordinary play. During PC
-  development, the complete static Seattle course may remain resident and its
-  original distance-based world culling may be removed. Only demonstrably safe
+  that road and scenery pop-in cannot be seen during ordinary play. The PC
+  renderer keeps a bounded three-sector horizon resident in both directions
+  and removes the original radial distance cutoff. It must still preserve
+  GT2's authored coarse selection of mutually exclusive sector and auxiliary
+  meshes; a full looping-course union is invalid. Only demonstrably safe
   frustum, backface, explicit game-state, or later invisible occlusion culling
   may remain.
 - Widescreen is part of the reconstruction requirement and is not deferred.
@@ -89,6 +91,14 @@ own finalized selection through the stock overlay-3 handoff, and resumes the
 original loader. It does not copy a downstream vehicle or race-state fixture.
 The skipped controller belongs only to the unconstructed menu fade scene.
 
+The unified install relocates Arcade's source-disc `GT2.VOL` from LBA 472 to the
+shared unified volume location at LBA 473. The Arcade loose manifest and
+relocated ISO metadata must agree on the unified value; install preparation now
+rejects either template before copying data when they do not. The release smoke
+test independently checks the installed manifest. This prevents a one-sector
+displacement from booting plausible data and then failing later at an unrelated
+unmapped guest address.
+
 The replay switch begins identically and retains Arcade's native role-`3`
 player record because that record owns race completion and Results. Once the
 race engine has constructed the player car, the harness selects GT2's original
@@ -100,19 +110,109 @@ vehicle record, or camera. No scripted steering, throttle, or braking is
 supplied. The only replay-launch input is a late Results confirmation after the
 native CPU-driven race has finished.
 
-The development-only raw course decoder can be enabled with
-`RECOMPONE_TRACE_GT2_TRACK_MESH=1`. It observes each mesh immediately before
-GT2's renderer projects or rejects a primitive, validates all model pointers
-and vertex indices, and reports the eight authored primitive streams
-(`F3/F4/G3/G4/FT3/FT4/GT3/GT4`). Setting
-`RECOMPONE_GT2_TRACK_MESH_OBJ_PATH` also exports the complete transformed
-course and a `.ground.obj` subset of locally planar road/terrain faces. These
-diagnostics are not renderer fallbacks and are excluded from release
-configuration. The Seattle direct replay currently validates 126 objects,
-16,604 vertex records, 8,219 source primitives, and 15,053 expanded triangles
-with zero invalid indices, invalid pointers, or noncontiguous streams. This is
-the pre-projection source for the resident native course mesh; it does not use
-screen-edge padding or infer missing geometry from the framebuffer.
+`tools/test_seattle_direct_replay.ps1` is the end-to-end acceptance gate for
+that path. It does not enable the soak quick-win transition or provide driving
+input. It stops on the specifically labelled `replay_1_0300` presentation so
+the automatic `race_1` proof cannot accidentally shorten the test. The
+2026-08-26 run entered the race at input poll 341, entered GT2's native replay
+at poll 16,346, and captured a fresh non-synthetic, non-repeated replay frame
+at poll 16,640. Both CPU-driver engagements were observed and the memory card
+was restored byte-exactly afterward.
+
+The shipping raw course decoder observes every resident mesh immediately before
+GT2 would project or reject a primitive. It validates all model pointers and
+vertex indices and consumes the eight authored primitive streams
+(`F3/F4/G3/G4/FT3/FT4/GT3/GT4`). Seattle's complete deduplicated catalog is
+not a valid visibility set: sector lists include mutually exclusive, occluded,
+and visual-proxy surfaces. The shipping selector retains the current authored
+order plus three sectors in each direction, while the auxiliary path preserves
+GT2's authored mask. A 4,501-frame CPU-driven Seattle run therefore varied
+correctly from 61 to 94 objects and 2,038 to 3,218 source primitives per frame.
+It crossed 57 sector boundaries; all 56 stock additions were already resident
+and all 60 stock removals remained resident. The run decoded 12,561,878 source
+primitives with zero failures, duplicate calls, or guest-track fallbacks, and
+rendered 4,479 authored outputs with zero synthetic, repeated, or dropped
+outputs. This pre-projection source does not use screen-edge padding or infer
+missing geometry from the framebuffer.
+A subsequent installed-release race/replay smoke covered 16,659 frames and the
+wider route varied from 61 to 97 objects and 2,038 to 3,389 source primitives,
+again with zero decode failures or guest-track fallbacks.
+Development controls such as `RECOMPONE_TRACE_GT2_TRACK_MESH=1` and
+`RECOMPONE_GT2_TRACK_MESH_OBJ_PATH` add tracing or OBJ export only; release
+policy removes them before runtime initialization.
+
+Face visibility is likewise reconstructed before PS1 screen projection. A
+triangle uses the continuous view-space sign corresponding to its authored
+winding. GT2 makes one coarse NCLIP decision for each GPU quad and submits both
+halves when either test passes. The modern triangle list does not copy that
+packet limitation: it evaluates the two authored halves independently, so a
+tiny warped half crossing edge-on cannot make its much larger back-facing
+partner appear for one frame. Homogeneous clipping, rather than culling, owns
+triangles that cross the near plane.
+
+The two GT2 course functions use different GTE FIFO orders. The primary path
+tests its packet halves and admits `first > 0 OR second < 0`. Disassembly and a
+development-only hook in Arcade `0x80023484` established that the alternate
+path tests source orders `(0,1,2)` and `(2,0,3)` and admits `first < 0 OR second
+> 0`. The previous alternate rule compared the difference between the two
+areas. That was not GT2's branch: two large same-facing areas could trade
+numeric rank under camera motion and toggle the whole quad. The exact guest
+branch remains an oracle; shipping uses the corresponding independent
+per-triangle windings.
+
+A historical 1,089-frame CPU-driven Seattle face audit compared 21,865,705
+consecutive triangle decisions under the now-rejected full-course union.
+Primitive identity had zero duplicate keys. Of 235
+isolated face-state changes, 68 overlapped the 16:9 target while remaining
+fully in front of the near plane, and none reached one native pixel of
+projected area in any of its three frames. Near-plane passages are excluded
+from that metric and audited by the native homogeneous-clip diagnostics. This
+makes macroscopic course-face flicker a logged failure without adding temporal
+hysteresis to rendering.
+
+The PS1 GTE projection remains a development oracle, not a shipping visibility
+rule. Diagnostic builds can join each generated renderer branch to the exact
+source primitive, object, transform, packed face bits, and both NCLIP values.
+A 79-frame direct Seattle correlation joined all 529,097 decisions with zero
+missing primitives. The local GTE projection model agreed with 526,344 exact
+GT2 branch results; 2,247 were model-only and 506 exact-only. Of 300,808 faces
+kept only by continuous geometry, both GT2 and the modeled PS1 projection
+rejected 298,921, and 297,928 had quantized to zero screen-space area. Of 2,093
+faces kept only by GT2, 1,779 were matching PS1 projection-induced winding
+flips. Copying either behavior would restore distant disappearance and
+flicker. The modern renderer therefore uses continuous view-space facing and
+homogeneous clipping; clamped integer NCLIP is logged only to explain oracle
+divergence. Exact face-oracle calls are conditionally removed from release
+guest code with `OPENGT_RELEASE_PACKAGE`.
+
+Continuous facing retains the GTE matrix's full 12-bit fractional transform;
+it does not first truncate each transformed vertex to integer view units.
+That truncation was independently rounding the corners of nearly edge-on
+course primitives and could reverse a modern facing decision on adjacent 60 Hz
+frames. A bounded CPU-driven replay trace isolated the failure to Seattle
+object `0x800B558C`, model `0x8011D410`: the integer-derived rule alternated
+through polls 25,734--25,741, while the preserved fixed-point rule remained
+coherently rejected through 25,741 and changed once at the authored camera cut
+at 25,742. The face-only regression then covered 31,529 world frames with zero
+facing degeneracies (previously 4,848), zero track or background decode
+failures, zero guest fallbacks, and no synthetic, repeated, or missing authored
+outputs. That run used the subsequently rejected full-course selector; its
+facing evidence remains valid, but its residency counts are not an acceptance
+target. A sub-view-unit winding test protects the fractional-coordinate path
+without depending on that Seattle object.
+
+The native projection boundary follows the same rule. Capture version 6
+already carries each vertex's authored model coordinate and exact GT2 `RT/TR`
+transform, but the former "continuous" path still divided the GTE's truncated
+integer `IR/SZ` result. Native draw-list construction now reconstructs
+camera-space X/Y/Z from `model * RT / 4096 + TR` before perspective division,
+homogeneous clipping, and depth generation. Screen-anchored effects and the
+PS1 projection oracle remain on their explicit integer/screen paths. The same
+historical 31,529-frame CPU race/replay repeated with fractional track, vehicle,
+and background depths, zero non-finite findings in 243 bounded diagnostic
+records, zero secondary-view leakage, and zero renderer fallbacks or authored-
+output gaps. A half-view-unit native test proves that projection and clip W no
+longer snap to integer camera space.
 
 ## Boundaries
 
@@ -269,6 +369,43 @@ road, and vehicle layer conventions to overwrite GT2's intentional
 inter-model ordering. Secondary mirror geometry is retained in the capture for
 a later compositor pass but is not mixed into the main-world buffer.
 
+Resident course meshes preserve GT2's authored road-marking ownership on top
+of that physical depth buffer. Positive-area opaque overlaps form deterministic
+overlay layers only when the smaller surface occupies at most one quarter of
+the supporting primitive. Source order is deliberately irrelevant. Seattle
+uses both conventions: textured road artwork is commonly authored after its
+support, while the nine untextured white rectangles after the first hairpin are
+authored before four much larger asphalt primitives in the same resident mesh.
+One authored class is exactly coplanar. RE traces identify a second family as
+detail quads raised one or two integer model units over road support; normalized
+plane distance can be smaller on a sloped surface, so the classifier verifies
+parallel planes and bounds the separation to two model units rather than
+matching one world axis. Seattle's decoded data has a clean geometric boundary:
+authored detail relationships end below 20 percent while alternate road/LOD
+relationships begin above 28 percent.
+The renderer treats the resulting detail stack as a road-artwork category, not
+as a texture/color ID or a per-track exception. After opaque world depth is
+complete, a dedicated pass draws every classified white line, yellow line,
+arrow, lane marking, and grid box with four view units of post-raster depth
+priority. That bound covers the complete measured support/detail separation,
+including the two-unit tunnel class, while an actually nearer wall, vehicle, or
+tunnel structure still wins ordinary reversed-depth testing. Applying priority
+through `SV_Depth` leaves homogeneous clipping, screen position, raster
+coverage, and perspective-correct interpolants untouched, so close artwork
+cannot be clipped away by the priority rule. This rejects a measured
+false-positive road slab at 177--182 percent of its supports and full-road
+replacements above 1,700 percent while retaining the smaller lane, arrow, and
+grid artwork.
+
+The first-hairpin acceptance capture identifies the affected course model as
+`0x800E4D80`. Its overlay audit changes from zero to nine untextured overlays,
+and an isolated diagnostic pass shows the complete dash as one coherent surface.
+The unfiltered moving capture was then inspected sequentially for every frame
+from 510 through 810: the rectangles enter, grow, translate, and leave the view
+without a frame in which asphalt replaces any visible portion. A full 3,600-
+frame lap additionally retains the same category pass for the later yellow road
+lines; the rule contains no Seattle object, model, material, or color identity.
+
 Hardware D3D11 is the normal path. `--warp` uses Microsoft's software adapter
 for deterministic validation. The validator renders twice, requires identical
 GPU and compatibility-oracle hashes, bounds each PNG below 2 MiB, and removes
@@ -417,9 +554,9 @@ rounding from changing long-term speed or distance. The mode therefore
 preserves the original real-time game rate while producing a newly simulated
 state at approximately 59.94 Hz.
 
-This is the packaged default; no environment variable is required. Setting
-`RECOMPONE_GT2_TRUE_60HZ=0` is retained solely for reproducing retired
-midpoint-era diagnostics.
+This is the only packaged and development runtime mode. The former
+`RECOMPONE_GT2_TRUE_60HZ` downgrade is absent; retired midpoint reproduction is
+compiled only into explicit native development-oracle targets.
 
 Live presentation is authored-only in this mode. Native capture API v6 submits
 one independently authored image per update through an asynchronous D3D11
@@ -781,7 +918,7 @@ ownership and pacing authority.
 
 The August 15, 2026 validation uses the ReadyToRun host in
 `artifacts/modern-renderer-r2r-v82/publish`. It retains the complete modern
-quality contract: 4x source geometry, GT2-authored affine and smoothed
+quality contract: 4x source geometry, perspective-correct and smoothed
 textures, topology repair, full authored visibility distance, Maximum
 track/scenery and vehicle LOD, and no compatibility-world fallback.
 
@@ -942,27 +1079,169 @@ homogeneous clipping of polygons that cross the camera plane. Applying the
 former affine fallback to those polygons magnified a small asphalt tile across
 the near road; the resident contract removes that corruption at its cause.
 
-Projected packet geometry that has not yet been reconstructed remains a
-development-only exception. Its temporary GT-aware classifier treats
-projection as a surface contract rather than a frame-wide shader switch:
-triangles sharing exact geometry-and-UV edges receive one interpolation mode,
-and horizontal opaque track islands also join across intentional atlas seams.
-Resident pre-projection course geometry bypasses that legacy search entirely;
-the release gate remains removal of every projected-packet fallback.
-Vehicles and other shallow coherent islands retain true homogeneous texture
-interpolation. The fixed modern-renderer setting is perspective-correct; the
-remaining affine packet classifications are temporary development debt, not a
-shipping mode or user-selectable fallback.
+All textured 3D packet geometry uses the same hardware perspective contract.
+Resident course surfaces carry authored pre-projection positions and UVs;
+vehicles and other reconstructed packets carry exact model/view/clip state.
+The renderer does not use depth-ratio, near-plane, temporal-seam, or per-island
+affine escape hatches. Explicit screen-space sprites and HUD remain
+screen-linear because they are two-dimensional artwork, not world-projection
+fallbacks. The serialized perspective setting is migration-only and cannot
+disable the fixed modern contract.
 
 `OPENGT_RENDER_UV_DIAGNOSTICS=1` reports individual and island-level
-perspective counts, track/vehicle fallback counts, and the largest connected
-island. The upstream packet correlation trace is independently gated by
+perspective counts and requires world fallback counts to remain zero. The
+upstream packet correlation trace is independently gated by
 `RECOMPONE_TRACE_MIXED_PROJECTION_TRIANGLES=1`; start/end-poll and record-limit
 variants use `RECOMPONE_TRACE_MIXED_PROJECTION_START_POLL`,
 `RECOMPONE_TRACE_MIXED_PROJECTION_END_POLL`, and
 `RECOMPONE_TRACE_MIXED_PROJECTION_LIMIT`. That trace includes packet address,
 depth age/provenance, object/model identity, model and view coordinates,
 transform ID, and projection state for every mixed-basis triangle.
+
+The first complete shipping Seattle frame emits the same UV contract once
+without enabling diagnostics. `worldFallback`, `trackFallback`,
+`vehicleFallback`, and `otherFallback` must all be zero and the projection is
+labelled `fixed-modern`. This makes an affine world regression observable in a
+normal clean-room package run.
+
+## World depth and effect layers
+
+The native backend classifies each command into one of five explicit layers:
+authored background, resident course, vehicle, unclassified 3D, and screen.
+Resident course and vehicle geometry share one coherent modern depth surface
+across ordering-table buckets; a bucket change does not clear depth. World
+vertices use an infinite reversed projection (`clipZ=16`, `clipW=viewZ`) into
+`D32_FLOAT_S8X24_UINT`, clear depth `0`, and compare `GREATER_EQUAL`. This
+retains homogeneous clipping at the 16-unit near plane, removes the arbitrary
+far plane, and preserves stencil for GT2's mask-bit behavior. The background
+paints color without reserving world depth because
+Seattle's camera-centred backdrop overlaps distant course view Z. HUD, video,
+and presentation packets are a final screen layer. Any remaining ownerless 3D
+packet stays visibly `unclassified`; it is never silently treated as sky or an
+effect. A one-time shipping `Render-Batches` summary reports command, batch,
+draw, transparency, and blend-mode counts for all five layers and records
+`depth=track+vehicle`. A one-time `Render-Depth` line independently records the
+projection, near plane, resource format, comparison, clear value, and stencil
+width active in the shipping path.
+
+A bounded CPU-driven Seattle replay capture at input poll 1420 reproduced the
+reported turn-one road band with 15,492 triangles, including 12,315 course
+triangles and 7,141 opaque course commands. Rasterizing those exact triangles
+found 108 distinct opaque-road overlaps that conventional D24 mapped to equal
+depth values in screen bounds `x=0..215, y=127..150`. One measured pair was
+only `0.013244297` view units apart at roughly `Z=5465.5`. Infinite reversed
+D32 reduced the same capture to two equality collisions, both from nearly
+coincident authored surfaces. The native GPU regression uses that measured
+road pair in reverse submission order; the nearer surface must remain visible,
+which fails with the former D24 precision and passes with D32.
+
+Background ownership comes from exact GT2 control flow rather than a screen-
+shape or material heuristic. Arcade `func_800298E8` passes its fixed backdrop
+model to `func_80018CA8`; Simulation `func_8002993C` passes its corresponding
+model to `func_80018D1C`. Generated hooks bracket only those calls and attach
+`WorldObjectKind.Background` to their GTE projections. Before that correction,
+a 609-frame direct Seattle replay found the entire ownerless 3D stream on one
+exact zero-translation transform, with 2..184 commands per frame and model
+bounds forming the camera-centred backdrop ring. Development-only stack
+attribution independently resolved the same Arcade call chain. The stack probe
+and its environment controls are compiled out of release packages.
+
+The corrected direct Seattle CPU replay produced 602 classified world frames.
+Every one of the 563 frames in which GT2 submitted its backdrop contained
+exactly one background group (`2..184` commands); no frame contained an
+unclassified 3D command. That historical classification run used the later-
+rejected full-course selection, but still established background ownership:
+it reported zero secondary views, non-finite projections, decode failures,
+guest course fallbacks, synthetic outputs, repeated outputs, or dropped native
+outputs. Shutdown was clean after 600 actual rendered outputs; the two authored
+no-output submissions were startup/pipeline state and were not synthesized.
+
+That classification is now a whole-run invariant rather than a sampled log.
+The draw-list core distinguishes explicit screen artwork from ownerless 3D
+even though both use object kind zero in the capture format. The live bridge
+accumulates every authored frame and emits `Native-World-Classification` at
+shutdown; Seattle acceptance requires zero unclassified world commands, zero
+frames containing one, and a zero per-frame maximum. HUD and other explicit
+2D packets do not contribute to that failure count.
+
+The guest backdrop packet list is still clipped to its authored 4:3 viewport,
+so ownership alone cannot fill a true Hor+ target. The modern path now decodes
+the fixed backdrop model immediately after GT2 installs its exact GTE transform
+and before the guest's projection/cull loop. It validates the 353-vertex model
+and all eight primitive streams, then submits all 257 authored primitives (514
+triangles) to homogeneous target-aspect clipping. A 1,099-frame direct Seattle
+CPU replay decoded the same 353/257/514 contract on every frame with zero
+duplicates, failures, or guest fallback. At poll 1,420 both 214-pixel side
+margins contained authored backdrop and zero clear-color pixels, while the
+native 4:3 sky remained byte-identical. The replacement costs two opaque
+background batches and does not reserve world depth.
+
+The authoritative Seattle backdrop is an open cylinder, not a closed sky
+dome. Its upper boundary is one authored 16-edge ring at model Y=3266; every
+edge has the same untextured RGB 119/126/164 material. A high replay-camera
+pitch can therefore look through that ring and expose the clear colour. Exact
+capture geometry proves the visible aperture follows those source edges,
+including their projected corners, at both 4:3 and 16:9. This is preserved as
+authored geometry rather than hidden with a generated cap or clear-colour
+substitution.
+
+Seattle's distinct static-mesh effect table is empty: an audit of 367 meshes,
+34,731 vertices, 16,666 source primitives, and 30,989 expanded triangles found
+zero effect records and zero effect colors, with all pointer/index validations
+clean. The renderer therefore does not invent a Seattle effect decoder from an
+absent stream. Other gameplay effects remain ordinary captured packets until
+their own authored provenance is demonstrated.
+
+Projection-channel identity is based on the drawing target and projection
+centre, not GTE focal length `H`. `H` remains per primitive for perspective
+projection, but it does not change the meaning of view-space Z. Seattle's
+native replay zoom demonstrated why this matters: the resident course receives
+the new `H` before vehicles and sky, producing adjacent authored values from
+909 down to 160. The old one-native-pixel tolerance classified 61 of 609
+authored frames as separate depth channels even though every command retained
+the same full-screen target and projection centre. The corrected run reports
+zero secondary frames in the same 609-frame A/B. The extended corrected run
+reports 0/1,459 secondary frames, zero incomplete/rejected course or vehicle
+commands, 1,459/1,459 completed course-capture frames, and zero dropped native
+outputs.
+`OPENGT_RENDER_CLIP_DIAGNOSTICS=1` now includes frame/poll identity plus exact
+transform and projection/draw-state ranges for each channel, so a future real
+secondary view remains distinguishable from an intra-frame lens update. Its
+`_START_POLL`, `_END_POLL`, and `_INTERVAL` suffixes permit an exhaustive trace
+of a replay window without logging the direct-load setup and CPU-driven race.
+`OPENGT_RENDER_PRIMITIVE_DIAGNOSTICS=1` reports camera/near-plane crossings,
+target-frustum intersections, oversized spans, and non-finite commands. Its
+`_START_POLL` and `_END_POLL` variants bound the trace to the suspect replay
+window; `_INTERVAL=1` and `_VERBOSE=1` then provide per-frame and per-command
+provenance without flooding the startup sequence.
+`OPENGT_RENDER_VEHICLE_DIAGNOSTICS=1` accepts the same `_START_POLL`,
+`_END_POLL`, and `_INTERVAL` suffixes. It reports each car's body, part, and
+wheel transform groups only inside the requested replay window.
+`OPENGT_RENDER_SCENE_DIAGNOSTICS=1` also accepts those three suffixes. This
+keeps per-frame resident-course, projection-channel, clip-plane, and Hor+
+margin evidence bounded to the same replay interval.
+`OPENGT_RENDER_SCENE_TRANSITION_DIAGNOSTICS=1` adds only object-level additions,
+removals, and resident-course command-count changes to the ordinary scene
+summary. It is the focused continuity trace for intermittent prop loss; unlike
+the broader scene-verbose switch, it does not emit every Hor+ margin group.
+The authored-face trace can likewise be restricted to one model pointer with
+`RECOMPONE_TRACE_GT2_RAW_TRACK_FACE_MODEL` (decimal or `0x` hexadecimal) while
+retaining its existing poll range, interval, and record-limit controls.
+`RECOMPONE_AUDIT_GT2_RAW_TRACK_TEMPORAL_FACING=1` compares stable source-
+triangle identities across consecutive frames and reports face-state changes,
+isolated ABA toggles, target overlap, and projected area. Triangles crossing
+the near plane are deliberately excluded because the homogeneous-clip
+diagnostics own those passages; this audit treats any fully in-front isolated
+toggle reaching one native pixel as a macroscopic culling failure.
+`RECOMPONE_AUDIT_GT2_RAW_TRACK_TEMPORAL_COVERAGE=1` clips every fully in-front
+stable source triangle, including authored billboard signs and posts, against
+the configured Hor+ target. It reports one-poll ABA coverage losses or spikes
+of at least one native pixel while leaving near-plane passages to the
+homogeneous-clip diagnostics.
+
+No fog state, fog shader, or distance-fade path exists in the native renderer.
+Distance visibility comes only from the resident course catalog plus continuous
+modern frustum, backface, and homogeneous clipping decisions.
 
 ## Road and model seams
 
@@ -1095,6 +1374,51 @@ Sampling the nearest texel with `floor(uv + 0.5)` removes the dotted black line
 without padding or UV nudges. In the fixed 4x replay crop, dark pixels on the
 known line fell from 22 to zero.
 
+## Superseded Seattle PC package evidence
+
+The release package at
+`artifacts/release-modern-renderer-ring4-20260826-2040` is the current clean
+PC packaging baseline, not a renderer qualification build. Its ZIP SHA-256 is
+`B920A27CB1E39E02765334E05302F3C94D85AAE9D640C0EA3E6DB83CC15C9AC9`.
+The public archive contains nine files and no loose DLL; the managed runtime,
+native D3D11 renderer, window/input libraries, and required runtime components
+are embedded in the single `GranTurismo2PC.exe`.
+
+`artifacts/release-modern-renderer-ring4-validation-20260826-2048` records a
+clean extraction and setup from the authoritative SCUS-94488 revision-2 and
+SCUS-94455 images. The installed release entered the direct CPU-driven Seattle
+race at absolute input poll 341 and GT2's natural replay at poll 16,346. The
+run continued through poll 17,000, then shut down cleanly. It used the rejected
+243-object full-course union. That union co-rendered mutually exclusive road
+and auxiliary meshes, so this package is retained only as packaging/timing
+evidence and must not be shipped or used for visual acceptance.
+
+The same run submitted 16,644 authored images and completed 16,641 before the
+bounded diagnostic shutdown. It reported 16,641 actual images, zero synthetic
+images, zero repeated images, and zero dropped pending, pool, or published
+outputs. The three unfinished tail submissions are explicitly reported as
+`authoredNoOutput=3`; they are shutdown work, not relabelled or substituted
+frames.
+
+The lossless completion ownership is deliberate. Native capture permits one
+active readback plus two pending readbacks. Managed output therefore owns four
+buffers: three completion/publication slots and one host-owned buffer. The
+published queue has three entries, while steady presentation still prebuffers
+only two completed images. This matches the bounded producer window without
+restoring the former high-latency prebuffer. The preceding three-buffer/two-
+publication package exposed two real publication drops after a roughly 150 ms
+host stall; it is retained only as the rejected A/B and is not a release
+candidate.
+
+The one-frame visual proof at
+`work/seattle-ring4-screenshot-20260826-2040.png` is a 2560x1080 presentation
+from GT2's CPU-driven Seattle race at stage poll 600. The modern world is true
+Hor+ at 2276x960 before final presentation, and HUD groups retain their
+relative left/right edge margins. Its independent 589-frame capture run also
+used the rejected full-course union. The image remains evidence for Hor+ and
+HUD anchoring only; it is not evidence for course visibility or final visual
+qualification.
+
 ## Historical pair-aligned readback and pacing
 
 This section describes the retired midpoint pipeline. Current True60 uses the
@@ -1107,13 +1431,12 @@ allowed one 30 Hz authored interval for completion, but loaded-machine GPU tails
 reached 39-49 ms and left 20-27 ms of synchronous readback on the producer.
 Command preparation and submission remained roughly 0.2-2 ms.
 
-The shipping ring now retains two complete midpoint/actual pairs in four
-staging textures. Both the pixel ring and bridge metadata FIFO derive from
-`world_gpu_readback_pair_delay`, preventing a midpoint from ever being paired
-with another authored endpoint. The extra pair is pipeline latency, not a
-repeated frame: every steady five-second window still contains exactly 150
-authored endpoints and 150 unique geometric midpoints. Reset warmup remains
-explicitly labelled as repeated and is excluded from unique-rate telemetry.
+That retired implementation retained two midpoint/actual pairs in four staging
+textures. Current shipping code instead queues individual authored images with
+matching metadata in a sixteen-image asynchronous ring. The first authored
+submission alone completes its GPU copy synchronously so the managed ownership
+barrier cannot deadlock into its 100 ms timeout; later submissions remain
+asynchronous and are never relabelled as repeats or synthetic frames.
 
 A second late-Arcade investigation found broad 45-62 ms guest descheduling,
 with no runaway function, GC pause, or allocation storm and only about four
@@ -1141,20 +1464,79 @@ authoritative 59.94 Hz measurement.
 
 Draw distance and LOD are scene-selection policies, not shader tricks.
 
-- The retained development oracle submits GT2's original visibility result and
-  selected vehicle LOD for comparison only.
-- The shipping modern renderer retains GT2's authored current-sector
-  potential-visibility set, extends its later distance gates, and selects the
-  highest vehicle LOD.
+- The retained development oracle can submit GT2's original current-sector
+  visibility result and selected vehicle LOD for explicitly approved
+  comparisons only.
+- The shipping modern renderer starts with the current sector's authored order,
+  adds a bounded three-sector horizon in both directions, deduplicates by
+  14-bit object index, and clears competing LOD selector bits. GT2's auxiliary
+  visibility mask is preserved because it selects mutually exclusive camera-
+  region alternatives; model zero supplies maximum detail for admitted objects.
+- Stock race and replay radial distance gates are permanently removed and the
+  highest course/vehicle material detail is fixed. Public settings and process
+  environment cannot restore stock distance or LOD behavior.
+- Invalid stock pointers or failure to locate the authoritative sector are
+  fatal in a release build. They cannot silently fall back to current-sector
+  packets and reintroduce pop-in.
 
-Overlay 0 applies a second camera-relative radial cutoff after consuming that
-visibility set. Extended Draw Distance disables only this redundant stock
-cutoff; frustum, near-plane, and ordinary polygon clipping remain active. This
-prevents distant authored objects from crossing the radial threshold and
-popping into view. GT2's sector lists must not be unioned: they are
-potential-visibility sets containing mutually exclusive or occluded surfaces,
-and the former union exposed a false diagonal road slab at replay time 0:55.
-Replay's separate stock distance gate is extended by the same option.
+Vehicles have a separate GT2 bounding-box gate before their body and four
+wheel renderers. Reverse engineering the authoritative Arcade function at
+`0x8007B550` and Simulation function at `0x8007B640` established that bits 1
+and 2 are the left/right half-spaces in both the low common-plane mask (whole
+object rejection) and high union mask (guest clipper selection). The modern
+path clears only those four horizontal bits. Near, top/bottom, and GTE-fault
+bits remain intact, and D3D applies the target-aspect frustum to continuous
+view-space vertices. In a matched 1,000-poll Seattle replay, this restored 265
+of 3,775 vehicle submissions that the 4:3 gate had removed; the remaining 735
+near/vertical rejections were unchanged. All restored submissions used GT2's
+highest wheel-detail path, and both sides of the A/B exited cleanly.
+
+Vehicle ownership is taken from GT2's race-car array, not from the common
+model renderer's first argument. The authoritative race loop at `0x8001545C`
+advances one 0xB40-byte record per car and passes that record to
+`0x800140A4`. The latter constructs a temporary request and invokes the common
+renderer with a camera/projection scratch address; every car reuses that
+scratch address. The generated hooks therefore bracket only the common call
+with the owning race-car record, and capture interns that record as the stable
+vehicle identity. A bounded Seattle replay recorded 654 begins, 654 ends, six
+distinct owners, 654 scoped captures, and zero fallback captures. Its exact
+wheel CSV contains six car identities and 24 car/wheel keys instead of the
+former single false owner. Native grouping independently reports object IDs
+0 through 5 across 36 body/part/wheel transform groups. This identity is used
+by live draw ordering, wheel grouping, and perspective-UV edge continuity; it
+is not diagnostic-only metadata.
+
+A clean direct replay bounded vehicle diagnostics to polls 1400 through 1440.
+At poll 1420 the frame contained 23 exact transform groups and 2,417 vehicle
+commands. The center car's body, shadow, and four wheels were separately
+identified; all vertices were finite, in front of the near plane, and covered
+by visible scissors. A second car crossed the left edge continuously with all
+305 body commands still submitted. The coarse center-car appearance in that
+clean build was therefore not missing geometry or a failed transform: the
+runtime independently reported that no external 4x DDS pack was installed and
+was filtering GT2's original low-resolution car bitmap. Vehicle diagnostics
+label authored shadows and report textured/semitransparent command counts so a
+texture-quality issue cannot be misclassified as detached geometry again.
+
+The bounded horizon is a residency source, not a union of already projected
+triangles. Each selected object is decoded once from its authored model and
+receives continuous modern backface, homogeneous near-plane, target-aspect
+frustum, and depth processing after reconstruction. This avoids sector pop-in
+without co-rendering the looping course's mutually exclusive road/proxy meshes.
+
+Course billboard stream 8 has two distinct authored coordinate layouts and is
+decoded as such. Arcade `func_8002009C` stores primary billboard center X/Y,
+base Z, and Z height; its temporary GTE matrix rotates width through X/Y.
+Auxiliary `func_8001F784` stores Y height and rotates width through X/Z with
+the second temporary matrix axis negated. Applying the auxiliary layout to the
+primary records turned a 622-unit Z height into a roughly 2,500-unit view-X
+span and produced a carriageway-wide horizon slab. The split decoder now emits
+the exact packet vertex order for each layout. A 1,099-frame direct Seattle
+correlation matched every guest-generated stream-8 triangle with permutation
+zero across both projection paths, with zero decode failures and zero runtime
+fallback. The poll-1,420 regression changed only 554 billboard commands; the
+former slab pixel is once again the authored road surface. A fixed numeric
+policy test independently locks both axis/sign contracts.
 
 The original Xbox backend must stream this data within a fixed budget instead
 of assuming desktop memory. Scene content will be partitioned into immutable

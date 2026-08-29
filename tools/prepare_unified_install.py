@@ -238,6 +238,11 @@ def write_volume_manifest(
             f"{mode.title()} unified manifest has no unique GT2.VOL entry"
         )
     entry = matches[0]
+    if entry.get("lba") != UNIFIED_VOLUME_LBA:
+        raise ValueError(
+            f"{mode.title()} GT2.VOL manifest LBA is {entry.get('lba')}; "
+            f"unified disc metadata requires {UNIFIED_VOLUME_LBA}"
+        )
     entry["sourceOffset"] = source_offset
     entry["sourceLength"] = volume_size
     entry["size"] = volume_size

@@ -43,14 +43,16 @@ for (int index = 0; index < args.Length; index++)
             StringComparison.OrdinalIgnoreCase);
         if (++index >= args.Length)
             return StartupFailure(
-                $"{argument} requires a course name; " +
-                "the current development target is seattle-circuit.",
+                $"{argument} requires a course name; supported courses are " +
+                "seattle-circuit and special-stage-route-5.",
                 headless);
         directArcadeRace = args[index].Trim().ToLowerInvariant();
-        if (directArcadeRace != "seattle-circuit")
+        if (directArcadeRace is not
+                ("seattle-circuit" or "special-stage-route-5"))
             return StartupFailure(
                 $"Unsupported direct Arcade course: {args[index]}. " +
-                "The current development target is seattle-circuit.",
+                "Supported courses are seattle-circuit and " +
+                "special-stage-route-5.",
                 headless);
         directArcadeReplay = replay;
         startArcade = true;
@@ -92,6 +94,11 @@ if (directArcadeReplay)
     Environment.SetEnvironmentVariable(
         "RECOMPONE_GT2_SOAK_QUICK_WIN_AFTER_AI_TICKS", null);
     Environment.SetEnvironmentVariable("RECOMPONE_DISABLE_LIVE_INPUT", "1");
+    // Direct replay is a user-facing launch path, not an image-producing QA
+    // fixture. Development gates opt into one labelled stage capture through
+    // InputManager's bounded diagnostic controls.
+    Environment.SetEnvironmentVariable(
+        "RECOMPONE_CAPTURE_AUTOMATIC_STAGE", "0");
     Environment.SetEnvironmentVariable("RECOMPONE_INPUT_FILE", null);
     Environment.SetEnvironmentVariable(
         "RECOMPONE_INPUT_SCRIPT",
@@ -118,7 +125,7 @@ if (looseRoot is null)
 {
     return StartupFailure(
         "Gran Turismo 2 game data was not found. Run " +
-        "Setup-From-Simulation-Disc.ps1 in a release package, or pass the " +
+        "Setup-From-GT2-Discs.ps1 in a release package, or pass the " +
         "prepared unified game-data directory on the command line.",
         headless);
 }
@@ -175,6 +182,8 @@ try
     PreloadBundledNative("glfw3.dll");
     PreloadBundledNative("cimgui.dll");
     PreloadBundledNative("SDL2.dll");
+    if (directArcadeRace != null)
+        PrepareDirectSeattleRenderer();
     var memory = new PSMemory();
     UnifiedEntry.Run(
         memory,
@@ -235,7 +244,6 @@ static string BuildDirectReplayInputScript()
     for (int poll = 9000; poll <= 40000; poll += 1000)
         lines.Add($"{poll}+4=CROSS");
     lines.Add("[replay_1]");
-    lines.Add("300+1=CAPTURE");
     return string.Join(Environment.NewLine, lines);
 }
 
@@ -329,6 +337,74 @@ static void PreloadBundledNative(string fileName)
         Console.WriteLine($"[Host] preloaded bundled native library: {fileName}");
         return;
     }
+}
+
+static void PrepareDirectSeattleRenderer()
+{
+    string[] guestMethodNames = LoadSeattleArcadeMethodProfile(
+            "OpenGTPS1.SeattleArcadeHotMethods.txt")
+        .Concat(LoadSeattleArcadeMethodProfile(
+            "OpenGTPS1.SeattleArcadePreloadMethods.txt"))
+        .Distinct(StringComparer.Ordinal)
+        .ToArray();
+    string[] memoryMethodNames =
+    [
+        "ReadU8",
+        "ReadU16",
+        "ReadU32",
+        "WriteU8",
+        "WriteU16",
+        "WriteU32",
+        "ReadWordLeft",
+        "ReadWordRight",
+        "WriteWordLeft",
+        "WriteWordRight",
+    ];
+    var timer = System.Diagnostics.Stopwatch.StartNew();
+    int prepared = PrepareMethods(
+        typeof(Recompiled.Arcade.GranTurismo2ArcadePC),
+        guestMethodNames);
+    prepared += PrepareMethods(
+        typeof(RecompOne.Runtime.Memory.MemoryAccess),
+        memoryMethodNames);
+    prepared += PrepareMethods(
+        typeof(RecompOne.Runtime.Memory.PSMemory),
+        memoryMethodNames);
+    timer.Stop();
+    Console.WriteLine(
+        $"[Host] prepared Seattle runtime hot paths: " +
+        $"methods={prepared} elapsedMs={timer.Elapsed.TotalMilliseconds:F3}");
+}
+
+static int PrepareMethods(Type type, IReadOnlyList<string> methodNames)
+{
+    foreach (string methodName in methodNames)
+    {
+        var method = type.GetMethod(
+            methodName,
+            System.Reflection.BindingFlags.Public |
+            System.Reflection.BindingFlags.Static) ??
+            type.GetMethod(
+                methodName,
+                System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.Instance) ??
+            throw new MissingMethodException(type.FullName, methodName);
+        System.Runtime.CompilerServices.RuntimeHelpers.PrepareMethod(
+            method.MethodHandle);
+    }
+    return methodNames.Count;
+}
+
+static string[] LoadSeattleArcadeMethodProfile(string resourceName)
+{
+    var assembly = typeof(Recompiled.Arcade.GranTurismo2ArcadePC).Assembly;
+    using Stream stream = assembly.GetManifestResourceStream(resourceName) ??
+        throw new InvalidOperationException(
+            $"Embedded Seattle optimization profile is missing: {resourceName}");
+    using var reader = new StreamReader(stream);
+    return reader.ReadToEnd()
+        .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries |
+            StringSplitOptions.TrimEntries);
 }
 
 static void ValidateLiveryResolver()

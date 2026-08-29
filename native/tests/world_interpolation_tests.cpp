@@ -487,19 +487,19 @@ int main() {
     auto exact_sky_previous = exact_previous;
     auto exact_sky_current = exact_current;
     for (auto& sky_command : exact_sky_previous.commands) {
-        sky_command.object_kind = 0;
-        sky_command.object_id = 0;
-        sky_command.model_pointer = 0;
+        sky_command.object_kind = 3;
+        sky_command.object_id = 0x800AE324U;
+        sky_command.model_pointer = 0x800AE324U;
     }
     for (auto& sky_command : exact_sky_current.commands) {
-        sky_command.object_kind = 0;
-        sky_command.object_id = 0;
-        sky_command.model_pointer = 0;
+        sky_command.object_kind = 3;
+        sky_command.object_id = 0x800AE324U;
+        sky_command.model_pointer = 0x800AE324U;
     }
     exact_sky_previous.vehicle_commands = 0;
-    exact_sky_previous.unclassified_commands = 2;
+    exact_sky_previous.background_commands = 2;
     exact_sky_current.vehicle_commands = 0;
-    exact_sky_current.unclassified_commands = 2;
+    exact_sky_current.background_commands = 2;
     auto sky_decoys = exact_sky_previous.commands;
     for (auto& sky_decoy : sky_decoys) {
         sky_decoy.transform_id = 0x3333;
@@ -510,7 +510,7 @@ int main() {
         exact_sky_current.commands.end(),
         sky_decoys.begin(),
         sky_decoys.end());
-    exact_sky_current.unclassified_commands = 4;
+    exact_sky_current.background_commands = 4;
     okay &= expect(
         interpolate_world_draw_lists(
             exact_sky_previous,
@@ -523,7 +523,7 @@ int main() {
         std::fabs(midpoint.commands[0].vertices[0].view_x - 10.0F) < 0.2F &&
         std::fabs(midpoint.commands[0].vertices[0].view_y + 146.4214F) <
             0.2F,
-        "advance an unclassified sky mesh with one exact rigid midpoint");
+        "advance the authored background with one exact rigid midpoint");
 
     // Repeated scenery can submit identical model coordinates through
     // separate transforms. Near a visibility boundary, the correct temporal
@@ -1498,7 +1498,7 @@ int main() {
     // materials while separate transform groups advance their continuous
     // midpoint projections by a fraction of a pixel. Preserve the original
     // triangles and cover only that proven temporal strip with an internal
-    // affine seam primitive.
+    // synthetic seam primitive.
     auto temporal_seam_previous = list();
     auto temporal_seam_current = list();
     temporal_seam_previous.materials.resize(2);
@@ -1586,7 +1586,7 @@ int main() {
         (midpoint.materials[
              midpoint.commands[3].material_index].primitive_flags &
             world_primitive_temporal_seam_flag) != 0,
-        "tag temporal seams so the modern renderer keeps affine fallback");
+        "tag temporal seams so synthetic stitches stay topology-isolated");
 
     auto field_previous = rotating_previous;
     field_previous.display_y = 240;

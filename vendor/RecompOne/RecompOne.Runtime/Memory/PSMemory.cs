@@ -10,6 +10,20 @@ public sealed class PSMemory : IMemory
     private static readonly uint? _watchedWriteAddress = ParseWatchedWriteAddress();
     private static readonly bool _watchDmaLinksOnly =
         Environment.GetEnvironmentVariable("RECOMPONE_WATCH_WRITE_DMA_LINK") == "1";
+    private static readonly int _watchedWriteStartPoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_WATCH_WRITE_START_POLL"),
+            out int watchedWriteStartPoll)
+            ? Math.Max(0, watchedWriteStartPoll)
+            : 0;
+    private static readonly int _watchedWriteEndPoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_WATCH_WRITE_END_POLL"),
+            out int watchedWriteEndPoll)
+            ? Math.Max(0, watchedWriteEndPoll)
+            : int.MaxValue;
     private static int _watchedWriteCount;
 
     private readonly byte[] _ram = new byte[Runtime.Mode == RunMode.Devkit ? MemoryMap.DevkitRamSize : MemoryMap.RetailRamSize];
@@ -111,6 +125,9 @@ public sealed class PSMemory : IMemory
     {
         if (_watchedWriteAddress != phys)
             return;
+        int poll = Host.InputManager.CurrentPoll;
+        if (poll < _watchedWriteStartPoll || poll > _watchedWriteEndPoll)
+            return;
         if (_watchDmaLinksOnly && size == 4 &&
             ((value & 0xFF000000u) != 0u || (value & 0x00F00000u) != 0x00700000u))
             return;
@@ -119,7 +136,7 @@ public sealed class PSMemory : IMemory
         if (count <= 64)
             Console.Error.WriteLine(
                 $"[MemoryWatch] #{count} write{size * 8} " +
-                $"phys=0x{phys:X8} value=0x{value:X8}" +
+                $"poll={poll} phys=0x{phys:X8} value=0x{value:X8}" +
                 $"{Environment.NewLine}{Environment.StackTrace}");
     }
 
@@ -243,6 +260,8 @@ public sealed class PSMemory : IMemory
         Gte.NotifyRamWrite(projectedAddress, value);
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     public byte ReadU8(uint address)
     {
         uint phys = MemoryMap.ToPhysical(address);
@@ -253,6 +272,8 @@ public sealed class PSMemory : IMemory
         return Resolve(address, 1)[0];
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     public ushort ReadU16(uint address)
     {
         uint phys = MemoryMap.ToPhysical(address);
@@ -315,6 +336,8 @@ public sealed class PSMemory : IMemory
         return ReadLittleEndianU32(_ram, i);
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     public void WriteU8(uint address, byte value)
     {
         uint phys = MemoryMap.ToPhysical(address);
@@ -332,6 +355,8 @@ public sealed class PSMemory : IMemory
         NotifyProjectedRamWords(phys, 1);
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     public void WriteU16(uint address, ushort value)
     {
         uint phys = MemoryMap.ToPhysical(address);
@@ -394,6 +419,8 @@ public sealed class PSMemory : IMemory
         NotifyProjectedRamWords(phys, 4);
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     public uint ReadWordLeft(uint current, uint address)
     {
         int shift = (int)((address & 3) * 8);
@@ -401,6 +428,8 @@ public sealed class PSMemory : IMemory
         return (current & (0x00FFFFFFu >> shift)) | (word << (24 - shift));
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     public uint ReadWordRight(uint current, uint address)
     {
         int shift = (int)((address & 3) * 8);
@@ -408,6 +437,8 @@ public sealed class PSMemory : IMemory
         return (current & (0xFFFFFF00u << (24 - shift))) | (word >> shift);
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     public void WriteWordLeft(uint address, uint value)
     {
         uint aligned = address & ~3u;
@@ -416,12 +447,97 @@ public sealed class PSMemory : IMemory
         WriteU32(aligned, (mem & (0xFFFFFF00u << shift)) | (value >> (24 - shift)));
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     public void WriteWordRight(uint address, uint value)
     {
         uint aligned = address & ~3u;
         int shift = (int)((address & 3) * 8);
         uint mem = ReadU32(aligned);
         WriteU32(aligned, (mem & (0x00FFFFFFu >> (24 - shift))) | (value << shift));
+    }
+
+    /// <summary>
+    /// Executes a forward, aligned guest-RAM word copy without crossing the
+    /// IMemory interface twice per word. Read/write audit hooks, recompiled-
+    /// code invalidation, GTE projected-origin tracking, and watched writes
+    /// remain identical to individual ReadU32/WriteU32 operations.
+    /// </summary>
+    internal bool TryCopyAlignedRamWords(
+        uint source,
+        uint destination,
+        uint byteCount,
+        out uint finalWord0,
+        out uint finalWord1,
+        out uint finalWord2,
+        out uint finalWord3)
+    {
+        finalWord0 = 0u;
+        finalWord1 = 0u;
+        finalWord2 = 0u;
+        finalWord3 = 0u;
+        if (byteCount == 0u ||
+            ((source | destination | byteCount) & 0xFu) != 0u)
+            return false;
+
+        uint sourcePhysical = MemoryMap.ToPhysical(source);
+        uint destinationPhysical = MemoryMap.ToPhysical(destination);
+        if (sourcePhysical >= MemoryMap.RamWindow ||
+            destinationPhysical >= MemoryMap.RamWindow)
+        {
+            return false;
+        }
+
+        uint sourceOffset = sourcePhysical & _ramMask;
+        uint destinationOffset = destinationPhysical & _ramMask;
+        if ((ulong)sourceOffset + byteCount > (ulong)_ram.Length ||
+            (ulong)destinationOffset + byteCount > (ulong)_ram.Length)
+        {
+            return false;
+        }
+
+        // Keep the generated MIPS loop's exact observer order: four reads,
+        // then the matching four writes. That ordering is observable by the
+        // GTE packet-origin tracker, and forward groups are observable for
+        // overlapping ranges. Span.CopyTo would provide neither guarantee.
+        for (uint offset = 0; offset < byteCount; offset += 16u)
+        {
+            finalWord0 = ReadTrackedRamWord(sourceOffset + offset);
+            finalWord1 = ReadTrackedRamWord(sourceOffset + offset + 4u);
+            finalWord2 = ReadTrackedRamWord(sourceOffset + offset + 8u);
+            finalWord3 = ReadTrackedRamWord(sourceOffset + offset + 12u);
+            WriteTrackedRamWord(
+                destinationPhysical + offset, finalWord0);
+            WriteTrackedRamWord(
+                destinationPhysical + offset + 4u, finalWord1);
+            WriteTrackedRamWord(
+                destinationPhysical + offset + 8u, finalWord2);
+            WriteTrackedRamWord(
+                destinationPhysical + offset + 12u, finalWord3);
+        }
+        return true;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    uint ReadTrackedRamWord(uint offset)
+    {
+        if (RamLogger.TrackReads)
+            Runtime.RamLog.RecordRead(offset, 4);
+        uint value = ReadLittleEndianU32(_ram, checked((int)offset));
+        Gte.NotifyRamRead(offset, value);
+        return value;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    void WriteTrackedRamWord(uint physical, uint value)
+    {
+        if (_watchedWriteAddress.HasValue)
+            TraceWatchedWrite(physical, value, 4);
+        uint offset = TrackWrite(physical, 4);
+        WriteLittleEndianU32(_ram, checked((int)offset), value);
+        Gte.NotifyRamWrite(offset, value);
     }
 
     public void LoadBytes(uint address, byte[] data)

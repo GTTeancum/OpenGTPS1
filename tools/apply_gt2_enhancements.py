@@ -3,6 +3,8 @@
 
 from pathlib import Path
 
+from rewrite_recompiled_memory_access import rewrite_tree
+
 
 REPO = Path(__file__).resolve().parents[1]
 GENERATED = REPO / "generated" / "recompiled"
@@ -34,6 +36,36 @@ def replace_exact_count(
             f"{path}, found {matches}"
         )
     path.write_text(source.replace(old, new), encoding="utf-8")
+
+
+def replace_in_function_once(
+    path: Path,
+    function_name: str,
+    old: str,
+    new: str,
+    description: str,
+) -> None:
+    source = path.read_text(encoding="utf-8")
+    marker = (
+        f"    public static void {function_name}(CpuContext c, IMemory m)\n"
+    )
+    if source.count(marker) != 1:
+        raise RuntimeError(
+            f"{description}: expected one {function_name} definition in "
+            f"{path}, found {source.count(marker)}"
+        )
+    start = source.index(marker)
+    end = source.find("\n    public static void ", start + len(marker))
+    if end < 0:
+        end = len(source)
+    body = source[start:end]
+    if body.count(old) != 1:
+        raise RuntimeError(
+            f"{description}: expected one source match in {function_name}, "
+            f"found {body.count(old)}"
+        )
+    body = body.replace(old, new, 1)
+    path.write_text(source[:start] + body + source[end:], encoding="utf-8")
 
 
 def apply_auxiliary_billboard_projection(race: Path) -> None:
@@ -278,6 +310,33 @@ def main() -> int:
     include_bundled_native_renderer()
     preload_bundled_window_dependencies(program)
     use_windows_gui_subsystem()
+
+    replace_in_function_once(
+        race,
+        "func_8002993C",
+        "        GranTurismo2PC.func_80018D1C(c, m);\n",
+        """        RecompOne.Runtime.WorldCaptureContext.BeginBackgroundObject(c.A2);
+        GranTurismo2PC.func_80018D1C(c, m);
+        RecompOne.Runtime.WorldCaptureContext.EndObject();
+""",
+        "Simulation authored background ownership",
+    )
+    replace_in_function_once(
+        race,
+        "func_80018D1C",
+        """        m.WriteU32((c.S3 + 0x64u), c.S0);
+        c.V0 = m.ReadU32((c.S2 + 0xCu));
+""",
+        """        m.WriteU32((c.S3 + 0x64u), c.S0);
+        RecompOne.Runtime.WorldCaptureContext.TraceBackgroundMesh(c.S2, m);
+        if (!RecompOne.Runtime.WorldCaptureContext.
+                ShouldRunGuestBackgroundProjection()) {
+            goto L8001962C;
+        }
+        c.V0 = m.ReadU32((c.S2 + 0xCu));
+""",
+        "Simulation resident authored background mesh",
+    )
 
     replace_once(
         race,
@@ -680,6 +739,25 @@ def main() -> int:
     )
 
     main = GENERATED / "main.cs"
+    replace_in_function_once(
+        race,
+        "func_800140A4",
+        """        c.A0 = c.S4 + 0u;
+        c.A1 = c.SP + 0x10u;
+        c.A2 = c.S5 + 0u;
+        c.RA = 0x800145D0u;
+        GranTurismo2PC.func_80067444(c, m);
+""",
+        """        c.A0 = c.S4 + 0u;
+        c.A1 = c.SP + 0x10u;
+        c.A2 = c.S5 + 0u;
+        RecompOne.Runtime.Sdk.GT2Compat.BeginVehicleRenderIdentity(c.S0);
+        c.RA = 0x800145D0u;
+        GranTurismo2PC.func_80067444(c, m);
+        RecompOne.Runtime.Sdk.GT2Compat.EndVehicleRenderIdentity();
+""",
+        "Simulation race vehicle stable ownership",
+    )
     replace_once(
         main,
         """        c.S4 = m.ReadU32((c.S2 + 0xCu));
@@ -695,6 +773,133 @@ def main() -> int:
         "vehicle LOD tracing hook",
     )
 
+    replace_in_function_once(
+        main,
+        "func_80067444",
+        """        c.RA = 0x800675E4u;
+        GranTurismo2PC.func_8007B8A0(c, m);
+        c.A0 = c.S1 + 0u;
+""",
+        """        c.RA = 0x800675E4u;
+        GranTurismo2PC.func_8007B8A0(c, m);
+        RecompOne.Runtime.Sdk.GT2Compat.CaptureVehicleDepthNormalization(
+            c.S0, m);
+        c.A0 = c.S1 + 0u;
+""",
+        "vehicle authored depth-normalization tracing",
+    )
+
+    replace_in_function_once(
+        main,
+        "func_800670F0",
+        """        c.RA = 0x80067290u;
+        GranTurismo2PC.func_8007B8A0(c, m);
+        c.V0 = m.ReadU8((c.S1 + 0x398u));
+""",
+        """        c.RA = 0x80067290u;
+        GranTurismo2PC.func_8007B8A0(c, m);
+        RecompOne.Runtime.Sdk.GT2Compat.CaptureVehicleDepthNormalization(
+            0u, m);
+        c.V0 = m.ReadU8((c.S1 + 0x398u));
+""",
+        "vehicle wheel depth-normalization capture",
+    )
+
+    replace_in_function_once(
+        main,
+        "func_80068004",
+        """        c.RA = 0x80068084u;
+        GranTurismo2PC.func_8007B8A0(c, m);
+        c.A0 = c.S0 + 0u;
+""",
+        """        c.RA = 0x80068084u;
+        GranTurismo2PC.func_8007B8A0(c, m);
+        RecompOne.Runtime.Sdk.GT2Compat.CaptureVehicleDepthNormalization(
+            c.S0, m);
+        c.A0 = c.S0 + 0u;
+""",
+        "standalone vehicle-part depth-normalization capture",
+    )
+
+    replace_in_function_once(
+        main,
+        "func_80067444",
+        """        c.A1 = c.V0 + 0u;
+        c.V0 = c.A1 & 0x001Fu;
+""",
+        """        c.A1 = c.V0 + 0u;
+        c.A1 = RecompOne.Runtime.Sdk.GT2Compat.ExpandVehicleFrustumMask(
+            c.A1, c.S6);
+        c.V0 = c.A1 & 0x001Fu;
+""",
+        "vehicle horizontal frustum expansion",
+    )
+    for path, function_name, projector_return, clipper_return in (
+        (track, "func_80014708", "80014860", "80014874"),
+        (race, "func_80048528", "8004871C", "80048730"),
+    ):
+        replace_in_function_once(
+            path,
+            function_name,
+            f"""        c.RA = 0x{projector_return}u;
+        GranTurismo2PC.func_8007B8F8(c, m);
+        c.V0 = c.V0 & 0x001Fu;
+""",
+            f"""        c.RA = 0x{projector_return}u;
+        GranTurismo2PC.func_8007B8F8(c, m);
+        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.
+            ApplyModernVehicleViewportMask(c.V0);
+        c.V0 = c.V0 & 0x001Fu;
+""",
+            f"Simulation {function_name} standalone vehicle viewport mask",
+        )
+        replace_in_function_once(
+            path,
+            function_name,
+            f"""        c.A0 = c.S0 + 0u;
+        c.A1 = c.SP + 0x10u;
+        c.RA = 0x{clipper_return}u;
+        GranTurismo2PC.func_80063EF4(c, m);
+""",
+            f"""        if (!RecompOne.Runtime.Sdk.GT2Compat.
+                ModernVehicleViewportClippingEnabled) {{
+            c.A0 = c.S0 + 0u;
+            c.A1 = c.SP + 0x10u;
+            c.RA = 0x{clipper_return}u;
+            GranTurismo2PC.func_80063EF4(c, m);
+        }}
+""",
+            f"Simulation {function_name} modern viewport clip ownership",
+        )
+
+    replace_in_function_once(
+        main,
+        "func_80067444",
+        """        L80067700: ;
+        if (c.V0 == 0u) {
+""",
+        """        L80067700: ;
+        RecompOne.Runtime.Sdk.GT2Compat.TraceVehicleWheelGate(
+            c.S6, c.S5, c.FP, c.V0);
+        if (c.V0 == 0u) {
+""",
+        "vehicle wheel gate tracing hook",
+    )
+
+    replace_in_function_once(
+        main,
+        "func_80067444",
+        """        L8006772C: ;
+        c.A1 = c.S7 + 0u;
+""",
+        """        L8006772C: ;
+        RecompOne.Runtime.Sdk.GT2Compat.TraceVehicleWheelDispatch(
+            c.S6, c.S5, c.FP, c.S0);
+        c.A1 = c.S7 + 0u;
+""",
+        "vehicle wheel actual-dispatch tracing hook",
+    )
+
     replace_once(
         main,
         """        m.WriteU32((c.SP + 0x18u), c.S2);
@@ -703,6 +908,9 @@ def main() -> int:
 """,
         """        m.WriteU32((c.SP + 0x18u), c.S2);
         c.S2 = c.A2 + 0u;
+        RecompOne.Runtime.Sdk.GT2Compat.TraceVehicleWheelRendererEntry(
+            c.S6, c.S2, m.ReadU32(c.SP + 0x4Cu),
+            m.ReadU32(c.SP + 0x48u));
         RecompOne.Runtime.Sdk.GT2Compat.TraceWheelTransform(
             c.S6, c.S2, m.ReadU32(c.SP + 0x4Cu), m);
         m.WriteU32((c.SP + 0x24u), c.S5);
@@ -869,10 +1077,12 @@ def main() -> int:
         """        c.A0 = m.ReadU32((c.SP + 0x1020u));
         RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(
             c.A0, m, RecompOne.Runtime.TrackMeshProjectionPath.Primary);
-        c.RA = 0x800209E4u;
-        GranTurismo2PC.func_8002106C(c, m);
+        if (RecompOne.Runtime.WorldCaptureContext.ShouldRunGuestTrackProjection()) {
+            c.RA = 0x800209E4u;
+            GranTurismo2PC.func_8002106C(c, m);
+        }
 """,
-        "primary track mesh trace hook",
+        "primary track mesh ownership hook",
     )
 
     replace_once(
@@ -884,10 +1094,282 @@ def main() -> int:
         """        c.A0 = m.ReadU32((c.SP + 0x1020u));
         RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(
             c.A0, m, RecompOne.Runtime.TrackMeshProjectionPath.Alternate);
-        c.RA = 0x800209F8u;
-        GranTurismo2PC.func_800234F8(c, m);
+        if (RecompOne.Runtime.WorldCaptureContext.ShouldRunGuestTrackProjection()) {
+            c.RA = 0x800209F8u;
+            GranTurismo2PC.func_800234F8(c, m);
+        }
 """,
-        "alternate track mesh trace hook",
+        "alternate track mesh ownership hook",
+    )
+
+    replace_once(
+        race,
+        """        c.T2 = c.A0 + c.V0;
+        c.A1 = RecompOne.Runtime.Gte.Read(24);
+        if ((int)c.A3 < 0) {
+""",
+        """        c.T2 = c.A0 + c.V0;
+        c.A1 = RecompOne.Runtime.Gte.Read(24);
+#if !OPENGT_RELEASE_PACKAGE
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackFaceDecision(
+            c.T3,
+            RecompOne.Runtime.TrackMeshProjectionPath.Primary,
+            4,
+            c.T0,
+            c.A1,
+            0u,
+            (int)c.A3 >= 0 &&
+            c.A1 != 0u &&
+            (int)(c.A1 & c.T0) >= 0);
+#endif
+        if ((int)c.A3 < 0) {
+""",
+        "primary triangle exact NCLIP oracle",
+    )
+
+    replace_once(
+        race,
+        """        c.S0 = m.ReadU32(c.T8);
+        c.V0 = c.T0 | c.V0;
+        if ((int)c.V0 < 0) {
+            c.At = (int)c.T1 < (int)c.V1 ? 1u : 0u;
+""",
+        """        c.S0 = m.ReadU32(c.T8);
+        c.V0 = c.T0 | c.V0;
+        if ((int)c.V0 < 0) {
+#if !OPENGT_RELEASE_PACKAGE
+            RecompOne.Runtime.WorldCaptureContext.TraceTrackFaceDecision(
+                c.T4,
+                RecompOne.Runtime.TrackMeshProjectionPath.Primary,
+                5,
+                c.S6,
+                c.T3,
+                0u,
+                false);
+#endif
+            c.At = (int)c.T1 < (int)c.V1 ? 1u : 0u;
+""",
+        "primary quad flag-rejection oracle",
+    )
+
+    replace_once(
+        race,
+        """        c.A1 = c.T3 - 0x1u;
+        c.A2 = c.T3 + c.V0;
+        c.V1 = c.T3 | c.V0;
+        if (c.V1 == 0u) {
+""",
+        """        c.A1 = c.T3 - 0x1u;
+        c.A2 = c.T3 + c.V0;
+        c.V1 = c.T3 | c.V0;
+#if !OPENGT_RELEASE_PACKAGE
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackFaceDecision(
+            c.T4,
+            RecompOne.Runtime.TrackMeshProjectionPath.Primary,
+            5,
+            c.S6,
+            c.T3,
+            c.V0,
+            c.V1 != 0u &&
+            (int)((c.T3 - 1u) & (c.V0 - 1u) & c.S6) >= 0);
+#endif
+        if (c.V1 == 0u) {
+""",
+        "primary quad exact NCLIP oracle",
+    )
+    replace_once(
+        race,
+        """        c.V0 = c.V0 | c.V1;
+        c.A0 = c.S5 & 0x0020u;
+        c.V0 = c.V0 | c.A0;
+        c.A1 = c.A0 - 0x20u;
+        c.A2 = m.ReadU32(c.T5);
+        if (c.V0 == 0u) {
+""",
+        """        c.V0 = c.V0 | c.V1;
+        c.A0 = c.S5 & 0x0020u;
+        c.V0 = c.V0 | c.A0;
+        c.A1 = c.A0 - 0x20u;
+        c.A2 = m.ReadU32(c.T5);
+#if !OPENGT_RELEASE_PACKAGE
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackFaceDecision(
+            c.S3,
+            RecompOne.Runtime.TrackMeshProjectionPath.Alternate,
+            1,
+            c.S1,
+            ~c.T1,
+            c.V1,
+            c.V0 != 0u &&
+            (int)(c.T1 & (c.V1 - 1u) & c.S1 & c.A1) >= 0);
+#endif
+        if (c.V0 == 0u) {
+""",
+        "alternate F4 exact NCLIP oracle",
+    )
+
+    replace_once(
+        race,
+        """        m.WriteU32((c.SP + 0x18u), c.S2);
+        c.S2 = c.A2 + 0u;
+        m.WriteU32((c.SP + 0x10u), c.S0);
+        c.S0 = 0u + 0u;
+""",
+        """        m.WriteU32((c.SP + 0x18u), c.S2);
+        c.S2 = c.A2 + 0u;
+        c.S2 = RecompOne.Runtime.WorldCaptureContext.
+            ExpandAuxiliaryTrackVisibility(c.S2);
+        m.WriteU32((c.SP + 0x10u), c.S0);
+        c.S0 = 0u + 0u;
+""",
+        "resident auxiliary track visibility",
+    )
+
+    replace_once(
+        race,
+        """        c.S0 = c.S0 << 2;
+        c.S0 = c.S0 + 0x4u;
+        c.S0 = c.S4 + c.S0;
+        c.S5 = 0x1F800000u;
+""",
+        """        c.S0 = c.S0 << 2;
+        c.S0 = c.S0 + 0x4u;
+        c.S0 = c.S4 + c.S0;
+        RecompOne.Runtime.WorldCaptureContext.
+            BeginAuxiliaryTrackInstance(c.S0);
+        c.S5 = 0x1F800000u;
+""",
+        "auxiliary track instance identity",
+    )
+
+    replace_once(
+        race,
+        """        GranTurismo2PC.func_8007AEF4(c, m);
+        c.V1 = c.V0 + 0u;
+        c.V0 = 0xFFFFFFFFu;
+""",
+        """        GranTurismo2PC.func_8007AEF4(c, m);
+        c.V1 = c.V0 + 0u;
+        c.V1 = RecompOne.Runtime.WorldCaptureContext.
+            SelectAuxiliaryTrackModel(c.V1);
+        c.V0 = 0xFFFFFFFFu;
+""",
+        "resident auxiliary track model selection",
+    )
+
+    replace_once(
+        race,
+        """        c.V0 = c.V1 << 3;
+        c.V0 = c.V0 + 0x4u;
+        c.V0 = c.S0 + c.V0;
+        c.S3 = m.ReadU32((c.V0 + 0x4u));
+        c.A1 = 0x00001000u;
+""",
+        """        c.V0 = c.V1 << 3;
+        c.V0 = c.V0 + 0x4u;
+        c.V0 = c.S0 + c.V0;
+        c.S3 = m.ReadU32((c.V0 + 0x4u));
+        RecompOne.Runtime.WorldCaptureContext.
+            SetAuxiliaryTrackModel(c.S3);
+        c.A1 = 0x00001000u;
+""",
+        "auxiliary track model identity",
+    )
+
+    replace_once(
+        race,
+        """        m.WriteU32((c.SP + 0x14u), c.V0);
+        c.V0 = c.V0 & 0x001Fu;
+        if (c.V0 != 0u) {
+""",
+        """        m.WriteU32((c.SP + 0x14u), c.V0);
+        c.V0 = c.V0 & 0x001Fu;
+        c.V0 = RecompOne.Runtime.WorldCaptureContext.
+            IncludeAuxiliaryTrackObject(c.V0);
+        if (c.V0 != 0u) {
+""",
+        "auxiliary track screen-cull bypass",
+    )
+
+    replace_once(
+        race,
+        """        c.V1 = m.ReadU16((c.S3 + 0x40u));
+        c.T4 = m.ReadU32((c.S3 + 0x24u));
+        if (c.V1 == 0u) {
+""",
+        """        c.V1 = m.ReadU16((c.S3 + 0x40u));
+        c.T4 = m.ReadU32((c.S3 + 0x24u));
+        if (!RecompOne.Runtime.WorldCaptureContext.
+                ShouldRunGuestTrackBillboardProjection()) {
+            c.T1 = c.S4 + 0u;
+            goto L8001FBA8;
+        }
+        if (c.V1 == 0u) {
+""",
+        "auxiliary billboard preprojection ownership",
+    )
+
+    replace_once(
+        race,
+        """        c.V0 = m.ReadU16((c.A0 + 0x40u));
+        c.T5 = m.ReadU32((c.A0 + 0x24u));
+        if (c.V0 == 0u) {
+""",
+        """        c.V0 = m.ReadU16((c.A0 + 0x40u));
+        c.T5 = m.ReadU32((c.A0 + 0x24u));
+        if (!RecompOne.Runtime.WorldCaptureContext.
+                ShouldRunGuestTrackBillboardProjection()) {
+            c.T2 = 0x1F800000u;
+            goto L800205E4;
+        }
+        if (c.V0 == 0u) {
+""",
+        "primary billboard preprojection ownership",
+    )
+
+    replace_once(
+        race,
+        """        c.A0 = c.S3 + 0u;
+        c.RA = 0x8001FFC8u;
+        GranTurismo2PC.func_80019B58(c, m);
+""",
+        """        c.A0 = c.S3 + 0u;
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(
+            c.A0, m, RecompOne.Runtime.TrackMeshProjectionPath.Primary);
+        if (RecompOne.Runtime.WorldCaptureContext.ShouldRunGuestTrackProjection()) {
+            c.RA = 0x8001FFC8u;
+            GranTurismo2PC.func_80019B58(c, m);
+        }
+""",
+        "primary auxiliary track mesh ownership",
+    )
+
+    replace_once(
+        race,
+        """        c.A0 = c.S3 + 0u;
+        c.RA = 0x8001FFD8u;
+        GranTurismo2PC.func_8001C17C(c, m);
+""",
+        """        c.A0 = c.S3 + 0u;
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(
+            c.A0, m, RecompOne.Runtime.TrackMeshProjectionPath.Alternate);
+        if (RecompOne.Runtime.WorldCaptureContext.ShouldRunGuestTrackProjection()) {
+            c.RA = 0x8001FFD8u;
+            GranTurismo2PC.func_8001C17C(c, m);
+        }
+""",
+        "alternate auxiliary track mesh ownership",
+    )
+
+    replace_once(
+        race,
+        """        L8001FFE8: ;
+        c.S4 = m.ReadU32((c.SP + 0x10u));
+""",
+        """        L8001FFE8: ;
+        RecompOne.Runtime.WorldCaptureContext.EndObject();
+        c.S4 = m.ReadU32((c.SP + 0x10u));
+""",
+        "auxiliary track object end",
     )
 
     apply_auxiliary_billboard_projection(race)
@@ -921,7 +1403,11 @@ def main() -> int:
         "extended track draw distance",
     )
 
-    print("Applied GT2 graphics enhancements to generated race overlays")
+    changed_files, memory_calls = rewrite_tree(GENERATED)
+    print(
+        "Applied GT2 graphics enhancements to generated race overlays; "
+        f"concrete memory files={changed_files} calls={memory_calls}"
+    )
     return 0
 
 

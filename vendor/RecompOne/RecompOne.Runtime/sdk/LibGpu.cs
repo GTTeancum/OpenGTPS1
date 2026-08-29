@@ -6,6 +6,12 @@ namespace RecompOne.Runtime.Sdk;
 
 public static class LibGpu
 {
+    static readonly int TraceOrderingTablePoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_OT_WALK_POLL"),
+            out int traceOrderingTablePoll)
+            ? traceOrderingTablePoll
+            : -1;
 
     public static void MoveImage(CpuContext c, IMemory m)
     {
@@ -38,18 +44,60 @@ public static class LibGpu
                 ? MemoryMap.DevkitRamSize
                 : MemoryMap.RetailRamSize) - 4u;
         uint addr = c.A0 & ramAddressMask;
-        for (int guard = 0; guard < 0x100000; guard++)
+        uint orderingTableHead = addr;
+        bool traceOrderingTable =
+            Host.InputManager.CurrentPoll == TraceOrderingTablePoll;
+        int visitedTags = 0;
+        int zeroLengthTags = 0;
+        int positiveLengthTags = 0;
+        int firstZeroLengthIndex = -1;
+        uint firstHeader = m.ReadU32(addr);
+        try
         {
-            uint header = m.ReadU32(addr);
-            uint count = header >> 24;
-            for (uint i = 0; i < count; i++)
+            for (int guard = 0; guard < 0x100000; guard++)
             {
-                uint sourceAddress = addr + 4u + i * 4u;
-                gpu.WriteGp0(m.ReadU32(sourceAddress), sourceAddress);
+                visitedTags++;
+                uint header = m.ReadU32(addr);
+                uint count = header >> 24;
+                // OT entries themselves are zero-length DMA tags. Primitive
+                // packet tags have a positive word count and inherit the most
+                // recently visited entry until their packet chain reaches the
+                // next lower bucket.
+                if (count == 0u && addr <= orderingTableHead &&
+                    ((orderingTableHead - addr) & 3u) == 0u)
+                {
+                    int orderingTableIndex =
+                        checked((int)((orderingTableHead - addr) >> 2));
+                    gpu.SetOrderingTableIndex(orderingTableIndex);
+                    zeroLengthTags++;
+                    if (firstZeroLengthIndex < 0)
+                        firstZeroLengthIndex = orderingTableIndex;
+                }
+                else if (count > 0u)
+                    positiveLengthTags++;
+                for (uint i = 0; i < count; i++)
+                {
+                    uint sourceAddress = addr + 4u + i * 4u;
+                    gpu.WriteGp0(m.ReadU32(sourceAddress), sourceAddress);
+                }
+                uint next = header & 0xFFFFFFu;
+                if (next == 0xFFFFFFu || (next & 0x800000u) != 0) break;
+                addr = next & ramAddressMask;
             }
-            uint next = header & 0xFFFFFFu;
-            if (next == 0xFFFFFFu || (next & 0x800000u) != 0) break;
-            addr = next & ramAddressMask;
+        }
+        finally
+        {
+            if (traceOrderingTable)
+            {
+                Console.Error.WriteLine(
+                    $"[GT2-OT-Walk] poll={Host.InputManager.CurrentPoll} " +
+                    $"start=0x{orderingTableHead:X8} " +
+                    $"firstHeader=0x{firstHeader:X8} " +
+                    $"visited={visitedTags} positive={positiveLengthTags} " +
+                    $"zero={zeroLengthTags} firstZeroIndex={firstZeroLengthIndex} " +
+                    $"finalIndex={gpu.CurrentOrderingTableIndex}");
+            }
+            gpu.SetOrderingTableIndex(0);
         }
     }
 

@@ -95,6 +95,8 @@ struct WorldCaptureTriangle {
     std::int16_t transform_rotation[9];
     std::int32_t transform_translation[3];
     bool exact_transform_valid;
+    std::int32_t depth_scale_exponent;
+    bool depth_scale_valid;
     WorldCaptureVertex vertices[3];
 };
 

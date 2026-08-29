@@ -35,6 +35,54 @@ constexpr std::uint32_t textured_flag = 1U << 0;
 constexpr std::uint32_t semi_transparent_flag = 1U << 1;
 constexpr std::uint32_t set_mask_flag = 1U << 0;
 constexpr std::uint32_t check_mask_flag = 1U << 1;
+std::uint32_t track_overlay_layer(std::uint32_t primitive_flags) noexcept {
+    return
+        (primitive_flags & world_primitive_track_overlay_layer_mask) >>
+        world_primitive_track_overlay_layer_shift;
+}
+
+enum class WorldRenderLayer : std::size_t {
+    background = 0,
+    track = 1,
+    vehicle = 2,
+    unclassified = 3,
+    screen = 4,
+};
+
+constexpr std::size_t world_render_layer_count = 5;
+
+WorldRenderLayer world_render_layer(
+    const WorldDrawCommand& command,
+    const WorldMaterial& material
+) noexcept {
+    if ((material.primitive_flags & world_primitive_screen_space_flag) != 0)
+        return WorldRenderLayer::screen;
+    if (command.object_kind == 1U)
+        return WorldRenderLayer::track;
+    if (command.object_kind == 2U)
+        return WorldRenderLayer::vehicle;
+    if (command.object_kind == 3U)
+        return WorldRenderLayer::background;
+    return WorldRenderLayer::unclassified;
+}
+
+bool uses_modern_world_depth(
+    const WorldDrawCommand& command,
+    const WorldMaterial& material
+) noexcept {
+    const WorldRenderLayer layer = world_render_layer(command, material);
+    // Exact generated-code provenance identifies GT2's authored backdrop.
+    // Seattle can submit that camera-centred mesh after vehicles, with finite
+    // view Z which overlaps distant road. It paints the color target without
+    // reserving physical world depth and is explicitly scheduled before the
+    // physical-world phase below. Unknown 3D packets remain a distinct
+    // diagnostic layer and are never silently reclassified as sky/effects.
+    // Explicit screen packets are the final HUD and presentation layer. Only
+    // course and vehicle geometry owns the coherent modern depth surface.
+    return
+        layer == WorldRenderLayer::track ||
+        layer == WorldRenderLayer::vehicle;
+}
 
 bool soft_vehicle_shadow(
     const WorldDrawCommand& command,
@@ -152,12 +200,44 @@ struct VehicleDiagnosticGroup {
     float maximum_view_z{(std::numeric_limits<float>::lowest)()};
     float minimum_clip_w{(std::numeric_limits<float>::max)()};
     float maximum_clip_w{(std::numeric_limits<float>::lowest)()};
+    std::int32_t minimum_authored_x{(std::numeric_limits<std::int32_t>::max)()};
+    std::int32_t minimum_authored_y{(std::numeric_limits<std::int32_t>::max)()};
+    std::int32_t maximum_authored_x{(std::numeric_limits<std::int32_t>::min)()};
+    std::int32_t maximum_authored_y{(std::numeric_limits<std::int32_t>::min)()};
+    std::int16_t minimum_model_x{(std::numeric_limits<std::int16_t>::max)()};
+    std::int16_t minimum_model_y{(std::numeric_limits<std::int16_t>::max)()};
+    std::int16_t minimum_model_z{(std::numeric_limits<std::int16_t>::max)()};
+    std::int16_t maximum_model_x{(std::numeric_limits<std::int16_t>::min)()};
+    std::int16_t maximum_model_y{(std::numeric_limits<std::int16_t>::min)()};
+    std::int16_t maximum_model_z{(std::numeric_limits<std::int16_t>::min)()};
+    float maximum_view_residual{};
+    float maximum_projection_residual{};
     std::int32_t minimum_clip_x0{(std::numeric_limits<std::int32_t>::max)()};
     std::int32_t minimum_clip_y0{(std::numeric_limits<std::int32_t>::max)()};
     std::int32_t maximum_clip_x1{(std::numeric_limits<std::int32_t>::min)()};
     std::int32_t maximum_clip_y1{(std::numeric_limits<std::int32_t>::min)()};
     std::size_t commands_with_visible_scissor{};
+    std::size_t textured_commands{};
+    std::size_t semi_transparent_commands{};
+    std::int16_t transform_rotation[9]{};
+    std::int32_t transform_translation[3]{};
     bool exact_transform_valid{};
+    bool authored_shadow{};
+    bool authored_wheel{};
+};
+
+struct VehicleDiagnosticGeometry {
+    std::array<std::int16_t, 9> model{};
+    std::size_t opaque_textured{};
+    std::size_t semi_textured{};
+    std::size_t other{};
+};
+
+struct VehicleDiagnosticMaterial {
+    std::uint32_t primitive_flags{};
+    std::uint16_t texture_page{};
+    std::uint16_t clut{};
+    std::size_t commands{};
 };
 
 bool same_vehicle_diagnostic_group(
@@ -185,6 +265,18 @@ void emit_vehicle_diagnostics(
         draw_list.vehicle_commands < 1000U
     )
         return;
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_VEHICLE_DIAGNOSTICS_START_POLL")) {
+        const long start_poll = std::strtol(configured, nullptr, 10);
+        if (draw_list.input_poll < start_poll)
+            return;
+    }
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_VEHICLE_DIAGNOSTICS_END_POLL")) {
+        const long end_poll = std::strtol(configured, nullptr, 10);
+        if (draw_list.input_poll > end_poll)
+            return;
+    }
     static thread_local std::uint64_t diagnostic_sample = 0;
     std::uint64_t interval = 120;
     if (const char* configured = std::getenv(
@@ -202,11 +294,20 @@ void emit_vehicle_diagnostics(
     const float display_y0 = static_cast<float>(draw_list.display_y);
     const float display_x1 = display_x0 + draw_list.display_width;
     const float display_y1 = display_y0 + draw_list.display_height;
+    bool filter_object = false;
+    std::uint32_t requested_object = 0;
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_VEHICLE_DIAGNOSTICS_OBJECT")) {
+        requested_object = static_cast<std::uint32_t>(
+            std::strtoul(configured, nullptr, 0));
+        filter_object = true;
+    }
     for (std::size_t command_index = 0;
          command_index < draw_list.commands.size();
          ++command_index) {
         const auto& command = draw_list.commands[command_index];
-        if (command.object_kind != 2U)
+        if (command.object_kind != 2U ||
+            (filter_object && command.object_id != requested_object))
             continue;
         auto found = std::find_if(
             groups.begin(), groups.end(),
@@ -221,10 +322,30 @@ void emit_vehicle_diagnostics(
             found->transform_id = command.transform_id;
             found->channel = command.channel;
             found->exact_transform_valid = command.exact_transform_valid;
+            for (int component = 0; component < 9; ++component)
+                found->transform_rotation[component] =
+                    command.transform_rotation[component];
+            for (int component = 0; component < 3; ++component)
+                found->transform_translation[component] =
+                    command.transform_translation[component];
         } else {
             found->exact_transform_valid =
                 found->exact_transform_valid &&
                 command.exact_transform_valid;
+        }
+        if (command.material_index < draw_list.materials.size()) {
+            const auto& material =
+                draw_list.materials[command.material_index];
+            found->textured_commands +=
+                (material.primitive_flags & textured_flag) != 0 ? 1U : 0U;
+            found->semi_transparent_commands +=
+                (material.primitive_flags & semi_transparent_flag) != 0
+                    ? 1U
+                    : 0U;
+            found->authored_shadow = found->authored_shadow ||
+                soft_vehicle_shadow(command, material);
+            found->authored_wheel = found->authored_wheel ||
+                vehicle_wheel_tread(command, material);
         }
         ++found->commands;
         found->minimum_clip_x0 = (std::min)(
@@ -267,6 +388,37 @@ void emit_vehicle_diagnostics(
                 found->minimum_clip_w, vertex.clip_w);
             found->maximum_clip_w = (std::max)(
                 found->maximum_clip_w, vertex.clip_w);
+            found->minimum_authored_x = (std::min)(
+                found->minimum_authored_x, vertex.authored_screen_x);
+            found->minimum_authored_y = (std::min)(
+                found->minimum_authored_y, vertex.authored_screen_y);
+            found->maximum_authored_x = (std::max)(
+                found->maximum_authored_x, vertex.authored_screen_x);
+            found->maximum_authored_y = (std::max)(
+                found->maximum_authored_y, vertex.authored_screen_y);
+            found->minimum_model_x = (std::min)(
+                found->minimum_model_x, vertex.model_x);
+            found->minimum_model_y = (std::min)(
+                found->minimum_model_y, vertex.model_y);
+            found->minimum_model_z = (std::min)(
+                found->minimum_model_z, vertex.model_z);
+            found->maximum_model_x = (std::max)(
+                found->maximum_model_x, vertex.model_x);
+            found->maximum_model_y = (std::max)(
+                found->maximum_model_y, vertex.model_y);
+            found->maximum_model_z = (std::max)(
+                found->maximum_model_z, vertex.model_z);
+            found->maximum_view_residual = (std::max)(
+                found->maximum_view_residual,
+                (std::max)({
+                    std::abs(vertex.view_x - vertex.exact_view_x),
+                    std::abs(vertex.view_y - vertex.exact_view_y),
+                    std::abs(vertex.view_z - vertex.exact_view_z)}));
+            found->maximum_projection_residual = (std::max)(
+                found->maximum_projection_residual,
+                (std::max)(
+                    std::abs(vertex.screen_x - vertex.authored_screen_x),
+                    std::abs(vertex.screen_y - vertex.authored_screen_y)));
             if (
                 vertex.screen_x >= display_x0 &&
                 vertex.screen_x < display_x1 &&
@@ -286,7 +438,7 @@ void emit_vehicle_diagnostics(
         groups.size(),
         draw_list.vehicle_commands);
     for (const auto& group : groups) {
-        const bool wheel = std::any_of(
+        const bool diagnostic_shell = std::any_of(
             smooth_wheels.begin(), smooth_wheels.end(),
             [&] (const SmoothWheel& candidate) {
                 return
@@ -295,20 +447,103 @@ void emit_vehicle_diagnostics(
                     candidate.transform_id == group.transform_id &&
                     candidate.channel == group.channel;
             });
+        std::vector<VehicleDiagnosticGeometry> geometries;
+        std::vector<VehicleDiagnosticMaterial> materials;
+        geometries.reserve(group.commands);
+        materials.reserve(16);
+        for (const auto& command : draw_list.commands) {
+            if (!same_vehicle_diagnostic_group(group, command) ||
+                command.material_index >= draw_list.materials.size())
+                continue;
+            const auto& material =
+                draw_list.materials[command.material_index];
+            std::array<std::int16_t, 9> model{};
+            for (int vertex = 0; vertex < 3; ++vertex) {
+                model[vertex * 3] = command.vertices[vertex].model_x;
+                model[vertex * 3 + 1] = command.vertices[vertex].model_y;
+                model[vertex * 3 + 2] = command.vertices[vertex].model_z;
+            }
+            auto geometry = std::find_if(
+                geometries.begin(), geometries.end(),
+                [&] (const VehicleDiagnosticGeometry& candidate) {
+                    return candidate.model == model;
+                });
+            if (geometry == geometries.end()) {
+                geometries.push_back(VehicleDiagnosticGeometry{});
+                geometry = geometries.end() - 1;
+                geometry->model = model;
+            }
+            const bool textured =
+                (material.primitive_flags & textured_flag) != 0;
+            const bool semi =
+                (material.primitive_flags & semi_transparent_flag) != 0;
+            if (textured && semi)
+                ++geometry->semi_textured;
+            else if (textured)
+                ++geometry->opaque_textured;
+            else
+                ++geometry->other;
+
+            auto material_group = std::find_if(
+                materials.begin(), materials.end(),
+                [&] (const VehicleDiagnosticMaterial& candidate) {
+                    return
+                        candidate.primitive_flags == material.primitive_flags &&
+                        candidate.texture_page == material.texture_page &&
+                        candidate.clut == material.clut;
+                });
+            if (material_group == materials.end()) {
+                materials.push_back(VehicleDiagnosticMaterial{
+                    material.primitive_flags,
+                    material.texture_page,
+                    material.clut,
+                    0});
+                material_group = materials.end() - 1;
+            }
+            ++material_group->commands;
+        }
+        std::size_t paired_textured_geometry = 0;
+        std::size_t opaque_only_geometry = 0;
+        std::size_t semi_only_geometry = 0;
+        std::size_t other_geometry = 0;
+        for (const auto& geometry : geometries) {
+            if (geometry.opaque_textured != 0 &&
+                geometry.semi_textured != 0)
+                ++paired_textured_geometry;
+            else if (geometry.opaque_textured != 0)
+                ++opaque_only_geometry;
+            else if (geometry.semi_textured != 0)
+                ++semi_only_geometry;
+            else
+                ++other_geometry;
+        }
         std::fprintf(
             stderr,
             "[Render-Vehicle-Group] sample=%s object=%u model=%08x "
             "transform=%016llx channel=%u role=%s commands=%zu "
+            "textured=%zu/%zu semi=%zu/%zu "
             "range=%zu-%zu exact=%u visible=%zu/%zu front=%zu/%zu "
             "screen=%.1f,%.1f..%.1f,%.1f viewZ=%.1f..%.1f "
+            "authored=%d,%d..%d,%d model=%d,%d,%d..%d,%d,%d "
+            "residual=view:%.3f,projection:%.3f "
             "clipW=%.1f..%.1f scissor=%d,%d..%d,%d visibleScissor=%zu/%zu "
-            "display=%d,%d..%d,%d\n",
+            "display=%d,%d..%d,%d rt=[%d,%d,%d;%d,%d,%d;%d,%d,%d] "
+            "t=[%d,%d,%d] geometry=%zu paired=%zu opaqueOnly=%zu "
+            "semiOnly=%zu other=%zu\n",
             synthetic_midpoint ? "midpoint" : "actual",
             group.object_id,
             group.model_pointer,
             static_cast<unsigned long long>(group.transform_id),
             static_cast<unsigned>(group.channel),
-            wheel ? "wheel" : "body/part",
+            group.authored_shadow
+                ? "authored-shadow"
+                : group.authored_wheel
+                    ? "authored-wheel"
+                    : diagnostic_shell ? "diagnostic-wheel" : "body/part",
+            group.commands,
+            group.textured_commands,
+            group.commands,
+            group.semi_transparent_commands,
             group.commands,
             group.first_command,
             group.last_command,
@@ -323,6 +558,18 @@ void emit_vehicle_diagnostics(
             group.maximum_screen_y,
             group.minimum_view_z,
             group.maximum_view_z,
+            group.minimum_authored_x,
+            group.minimum_authored_y,
+            group.maximum_authored_x,
+            group.maximum_authored_y,
+            group.minimum_model_x,
+            group.minimum_model_y,
+            group.minimum_model_z,
+            group.maximum_model_x,
+            group.maximum_model_y,
+            group.maximum_model_z,
+            group.maximum_view_residual,
+            group.maximum_projection_residual,
             group.minimum_clip_w,
             group.maximum_clip_w,
             group.minimum_clip_x0,
@@ -334,7 +581,39 @@ void emit_vehicle_diagnostics(
             draw_list.display_x,
             draw_list.display_y,
             draw_list.display_x + draw_list.display_width,
-            draw_list.display_y + draw_list.display_height);
+            draw_list.display_y + draw_list.display_height,
+            group.transform_rotation[0],
+            group.transform_rotation[1],
+            group.transform_rotation[2],
+            group.transform_rotation[3],
+            group.transform_rotation[4],
+            group.transform_rotation[5],
+            group.transform_rotation[6],
+            group.transform_rotation[7],
+            group.transform_rotation[8],
+            group.transform_translation[0],
+            group.transform_translation[1],
+            group.transform_translation[2],
+            geometries.size(),
+            paired_textured_geometry,
+            opaque_only_geometry,
+            semi_only_geometry,
+            other_geometry);
+        for (const auto& material : materials) {
+            std::fprintf(
+                stderr,
+                "[Render-Vehicle-Material] sample=%s object=%u "
+                "model=%08x transform=%016llx flags=%08x tpage=%04x "
+                "clut=%04x commands=%zu\n",
+                synthetic_midpoint ? "midpoint" : "actual",
+                group.object_id,
+                group.model_pointer,
+                static_cast<unsigned long long>(group.transform_id),
+                material.primitive_flags,
+                material.texture_page,
+                material.clut,
+                material.commands);
+        }
     }
 }
 
@@ -347,6 +626,18 @@ void emit_vehicle_diagnostics(
 void emit_clip_rect_diagnostics(const WorldDrawList& draw_list) {
     if (std::getenv("OPENGT_RENDER_CLIP_DIAGNOSTICS") == nullptr)
         return;
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_CLIP_DIAGNOSTICS_START_POLL")) {
+        const long start_poll = std::strtol(configured, nullptr, 10);
+        if (draw_list.input_poll < start_poll)
+            return;
+    }
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_CLIP_DIAGNOSTICS_END_POLL")) {
+        const long end_poll = std::strtol(configured, nullptr, 10);
+        if (draw_list.input_poll > end_poll)
+            return;
+    }
     static thread_local std::uint64_t clip_sample = 0;
     std::uint64_t interval = 120;
     if (const char* configured = std::getenv(
@@ -364,7 +655,28 @@ void emit_clip_rect_diagnostics(const WorldDrawList& draw_list) {
         std::int32_t x1{};
         std::int32_t y1{};
         std::size_t commands{};
-        std::array<std::size_t, 3> kinds{};
+        std::array<std::size_t, 4> kinds{};
+        float minimum_projection_plane{
+            std::numeric_limits<float>::infinity()};
+        float maximum_projection_plane{
+            -std::numeric_limits<float>::infinity()};
+        float minimum_projection_offset_x{
+            std::numeric_limits<float>::infinity()};
+        float maximum_projection_offset_x{
+            -std::numeric_limits<float>::infinity()};
+        float minimum_projection_offset_y{
+            std::numeric_limits<float>::infinity()};
+        float maximum_projection_offset_y{
+            -std::numeric_limits<float>::infinity()};
+        float minimum_draw_offset_x{
+            std::numeric_limits<float>::infinity()};
+        float maximum_draw_offset_x{
+            -std::numeric_limits<float>::infinity()};
+        float minimum_draw_offset_y{
+            std::numeric_limits<float>::infinity()};
+        float maximum_draw_offset_y{
+            -std::numeric_limits<float>::infinity()};
+        std::size_t exact_transform_commands{};
     };
     std::vector<ClipGroup> groups;
     groups.reserve(16);
@@ -391,12 +703,50 @@ void emit_clip_rect_diagnostics(const WorldDrawList& draw_list) {
             found = groups.end() - 1;
         }
         ++found->commands;
-        ++found->kinds[command.object_kind <= 2U ? command.object_kind : 0U];
+        ++found->kinds[command.object_kind <= 3U ? command.object_kind : 0U];
+        found->exact_transform_commands +=
+            command.exact_transform_valid ? 1U : 0U;
+        for (const auto& vertex : command.vertices) {
+            found->minimum_projection_plane = (std::min)(
+                found->minimum_projection_plane,
+                vertex.projection_plane);
+            found->maximum_projection_plane = (std::max)(
+                found->maximum_projection_plane,
+                vertex.projection_plane);
+            found->minimum_projection_offset_x = (std::min)(
+                found->minimum_projection_offset_x,
+                vertex.projection_offset_x);
+            found->maximum_projection_offset_x = (std::max)(
+                found->maximum_projection_offset_x,
+                vertex.projection_offset_x);
+            found->minimum_projection_offset_y = (std::min)(
+                found->minimum_projection_offset_y,
+                vertex.projection_offset_y);
+            found->maximum_projection_offset_y = (std::max)(
+                found->maximum_projection_offset_y,
+                vertex.projection_offset_y);
+            found->minimum_draw_offset_x = (std::min)(
+                found->minimum_draw_offset_x,
+                vertex.draw_offset_x);
+            found->maximum_draw_offset_x = (std::max)(
+                found->maximum_draw_offset_x,
+                vertex.draw_offset_x);
+            found->minimum_draw_offset_y = (std::min)(
+                found->minimum_draw_offset_y,
+                vertex.draw_offset_y);
+            found->maximum_draw_offset_y = (std::max)(
+                found->maximum_draw_offset_y,
+                vertex.draw_offset_y);
+        }
     }
     std::fprintf(
         stderr,
-        "[Render-Clip-Rects] rects=%zu commands=%zu rejectedIncomplete=%u "
-        "rejectedOversized=%u incTrack=%u incVehicle=%u screenTargetDrop=%u/%u secondary=%u display=%d,%d..%d,%d\n",
+        "[Render-Clip-Rects] frame=%llu poll=%d rects=%zu commands=%zu "
+        "rejectedIncomplete=%u "
+        "rejectedOversized=%u incTrack=%u incVehicle=%u "
+        "screenTargetDrop=%u/%u secondary=%u display=%d,%d..%d,%d\n",
+        static_cast<unsigned long long>(draw_list.frame_index),
+        draw_list.input_poll,
         groups.size(),
         draw_list.commands.size(),
         draw_list.rejected_incomplete,
@@ -414,7 +764,10 @@ void emit_clip_rect_diagnostics(const WorldDrawList& draw_list) {
         std::fprintf(
             stderr,
             "[Render-Clip-Rect] channel=%u clip=%d,%d..%d,%d commands=%zu "
-            "screen=%zu track=%zu vehicle=%zu\n",
+            "unclassified=%zu track=%zu vehicle=%zu background=%zu "
+            "exact=%zu/%zu "
+            "projectionH=%.0f..%.0f projectionOffset=%.0f..%.0f,"
+            "%.0f..%.0f drawOffset=%.0f..%.0f,%.0f..%.0f\n",
             static_cast<unsigned>(group.channel),
             group.x0,
             group.y0,
@@ -423,7 +776,20 @@ void emit_clip_rect_diagnostics(const WorldDrawList& draw_list) {
             group.commands,
             group.kinds[0],
             group.kinds[1],
-            group.kinds[2]);
+            group.kinds[2],
+            group.kinds[3],
+            group.exact_transform_commands,
+            group.commands,
+            group.minimum_projection_plane,
+            group.maximum_projection_plane,
+            group.minimum_projection_offset_x,
+            group.maximum_projection_offset_x,
+            group.minimum_projection_offset_y,
+            group.maximum_projection_offset_y,
+            group.minimum_draw_offset_x,
+            group.maximum_draw_offset_x,
+            group.minimum_draw_offset_y,
+            group.maximum_draw_offset_y);
     }
 }
 
@@ -431,12 +797,215 @@ void emit_clip_rect_diagnostics(const WorldDrawList& draw_list) {
 // a clip plane or a large authored triangle changes its raster footprint by a
 // fraction of a pixel. Keep this opt-in: at interval 1 it deliberately emits
 // enough provenance to correlate a visible frame with the exact command.
+struct DiagnosticClipVertex {
+    double x{};
+    double y{};
+    double z{};
+    double w{};
+    // D3D clips vertex attributes in homogeneous space before applying the
+    // ordinary perspective interpolation used by the pixel shader. Retaining
+    // these values lets pixel provenance reproduce a near-plane crossing
+    // triangle instead of silently dropping it from the ownership report.
+    double u{};
+    double v{};
+    double r{};
+    double g{};
+    double b{};
+};
+
+struct DiagnosticClipResult {
+    std::array<DiagnosticClipVertex, 16> vertices{};
+    std::size_t vertex_count{};
+    bool finite{true};
+    bool bounded{true};
+    bool clipped{};
+    double minimum_ndc_x{1.0};
+    double minimum_ndc_y{1.0};
+    double maximum_ndc_x{-1.0};
+    double maximum_ndc_y{-1.0};
+    double ndc_area{};
+};
+
+double diagnostic_clip_distance(
+    const DiagnosticClipVertex& vertex,
+    std::size_t plane
+) noexcept {
+    switch (plane) {
+        case 0: return vertex.x + vertex.w;
+        case 1: return vertex.w - vertex.x;
+        case 2: return vertex.y + vertex.w;
+        case 3: return vertex.w - vertex.y;
+        case 4: return vertex.z;
+        case 5: return vertex.w - vertex.z;
+        default: return -1.0;
+    }
+}
+
+DiagnosticClipVertex diagnostic_clip_lerp(
+    const DiagnosticClipVertex& first,
+    const DiagnosticClipVertex& second,
+    double amount
+) noexcept {
+    return {
+        first.x + (second.x - first.x) * amount,
+        first.y + (second.y - first.y) * amount,
+        first.z + (second.z - first.z) * amount,
+        first.w + (second.w - first.w) * amount,
+        first.u + (second.u - first.u) * amount,
+        first.v + (second.v - first.v) * amount,
+        first.r + (second.r - first.r) * amount,
+        first.g + (second.g - first.g) * amount,
+        first.b + (second.b - first.b) * amount,
+    };
+}
+
+DiagnosticClipResult diagnostic_homogeneous_clip(
+    const WorldDrawCommand& command,
+    double horizontal_projection_scale
+) noexcept {
+    // Mirror D3D's six homogeneous clip inequalities after the renderer's
+    // Hor+ X adjustment. A triangle can grow by at most one vertex per plane;
+    // sixteen slots therefore leave comfortable room without per-command
+    // allocation in a verbose whole-course trace.
+    std::array<DiagnosticClipVertex, 16> first{};
+    std::array<DiagnosticClipVertex, 16> second{};
+    std::size_t count = 3;
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto& source = command.vertices[index];
+        first[index] = {
+            source.clip_x * horizontal_projection_scale,
+            source.clip_y,
+            source.clip_z,
+            source.clip_w,
+            source.u,
+            source.v,
+            static_cast<double>(source.r),
+            static_cast<double>(source.g),
+            static_cast<double>(source.b),
+        };
+    }
+
+    DiagnosticClipResult result{};
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto& vertex = first[index];
+        if (!std::isfinite(vertex.x) || !std::isfinite(vertex.y) ||
+            !std::isfinite(vertex.z) || !std::isfinite(vertex.w)) {
+            result.finite = false;
+            return result;
+        }
+    }
+
+    auto* input = &first;
+    auto* output = &second;
+    for (std::size_t plane = 0; plane < 6 && count != 0; ++plane) {
+        std::size_t output_count = 0;
+        DiagnosticClipVertex previous = (*input)[count - 1];
+        double previous_distance = diagnostic_clip_distance(previous, plane);
+        bool previous_inside = previous_distance >= 0.0;
+        for (std::size_t index = 0; index < count; ++index) {
+            const DiagnosticClipVertex current = (*input)[index];
+            const double current_distance =
+                diagnostic_clip_distance(current, plane);
+            const bool current_inside = current_distance >= 0.0;
+            if (previous_inside != current_inside) {
+                result.clipped = true;
+                const double denominator =
+                    previous_distance - current_distance;
+                if (!std::isfinite(denominator) || denominator == 0.0 ||
+                    output_count >= output->size()) {
+                    result.finite = false;
+                    return result;
+                }
+                const double amount = previous_distance / denominator;
+                (*output)[output_count++] = diagnostic_clip_lerp(
+                    previous, current, amount);
+            }
+            if (!current_inside)
+                result.clipped = true;
+            if (current_inside) {
+                if (output_count >= output->size()) {
+                    result.finite = false;
+                    return result;
+                }
+                (*output)[output_count++] = current;
+            }
+            previous = current;
+            previous_distance = current_distance;
+            previous_inside = current_inside;
+        }
+        count = output_count;
+        std::swap(input, output);
+    }
+
+    result.vertex_count = count;
+    for (std::size_t index = 0; index < count; ++index)
+        result.vertices[index] = (*input)[index];
+    if (count < 3)
+        return result;
+    constexpr double bounds_epsilon = 1.0e-6;
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto& vertex = (*input)[index];
+        if (!std::isfinite(vertex.w) || vertex.w <= 0.0) {
+            result.finite = false;
+            return result;
+        }
+        const double ndc_x = vertex.x / vertex.w;
+        const double ndc_y = vertex.y / vertex.w;
+        if (!std::isfinite(ndc_x) || !std::isfinite(ndc_y)) {
+            result.finite = false;
+            return result;
+        }
+        result.minimum_ndc_x = (std::min)(result.minimum_ndc_x, ndc_x);
+        result.minimum_ndc_y = (std::min)(result.minimum_ndc_y, ndc_y);
+        result.maximum_ndc_x = (std::max)(result.maximum_ndc_x, ndc_x);
+        result.maximum_ndc_y = (std::max)(result.maximum_ndc_y, ndc_y);
+        result.bounded = result.bounded &&
+            ndc_x >= -1.0 - bounds_epsilon &&
+            ndc_x <= 1.0 + bounds_epsilon &&
+            ndc_y >= -1.0 - bounds_epsilon &&
+            ndc_y <= 1.0 + bounds_epsilon;
+        const auto& next = (*input)[(index + 1) % count];
+        if (!std::isfinite(next.w) || next.w <= 0.0) {
+            result.finite = false;
+            return result;
+        }
+        result.ndc_area += ndc_x * (next.y / next.w) -
+            (next.x / next.w) * ndc_y;
+    }
+    result.ndc_area = std::fabs(result.ndc_area) * 0.5;
+    return result;
+}
+
 void emit_primitive_diagnostics(
     const WorldDrawList& draw_list,
     const WorldGpuRenderOptions& options
 ) {
     if (std::getenv("OPENGT_RENDER_PRIMITIVE_DIAGNOSTICS") == nullptr)
         return;
+    if (
+        options.synthetic_midpoint &&
+        std::getenv("OPENGT_RENDER_PRIMITIVE_DIAGNOSTICS_ALL_SAMPLES") ==
+            nullptr
+    )
+        return;
+    if (
+        std::getenv("OPENGT_RENDER_PRIMITIVE_DIAGNOSTICS_RACE_ONLY") !=
+            nullptr &&
+        draw_list.track_commands < 1000U
+    )
+        return;
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_PRIMITIVE_DIAGNOSTICS_START_POLL")) {
+        const long start_poll = std::strtol(configured, nullptr, 10);
+        if (draw_list.input_poll < start_poll)
+            return;
+    }
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_PRIMITIVE_DIAGNOSTICS_END_POLL")) {
+        const long end_poll = std::strtol(configured, nullptr, 10);
+        if (draw_list.input_poll > end_poll)
+            return;
+    }
     static thread_local std::uint64_t primitive_sample = 0;
     std::uint64_t interval = 120;
     if (const char* configured = std::getenv(
@@ -455,19 +1024,45 @@ void emit_primitive_diagnostics(
     std::size_t near_crossings = 0;
     std::size_t behind_near = 0;
     std::size_t viewport_crossings = 0;
+    std::size_t target_intersections = 0;
+    std::size_t native_intersections = 0;
+    std::size_t hor_plus_only = 0;
+    std::size_t target_camera_crossings = 0;
+    std::size_t target_near_crossings = 0;
     std::size_t oversized_spans = 0;
+    std::size_t target_oversized_spans = 0;
     std::size_t nonfinite_commands = 0;
+    std::size_t post_clip_visible = 0;
+    std::size_t post_clip_rejected = 0;
+    std::size_t post_clip_nonfinite = 0;
+    std::size_t post_clip_unbounded = 0;
+    std::size_t post_clip_degenerate = 0;
+    std::size_t preclip_false_positive = 0;
+    std::size_t preclip_false_negative = 0;
+    std::size_t maximum_post_clip_vertices = 0;
+    double maximum_post_clip_area_pixels = 0.0;
     std::size_t depth_track_commands = 0;
     float maximum_projection_delta = 0.0F;
     float minimum_view_z = (std::numeric_limits<float>::max)();
     float maximum_view_z = (std::numeric_limits<float>::lowest)();
     std::vector<std::size_t> suspicious;
-    suspicious.reserve(32);
+    suspicious.reserve(64);
 
-    const float display_x0 = static_cast<float>(draw_list.display_x);
-    const float display_y0 = static_cast<float>(draw_list.display_y);
-    const float display_x1 = display_x0 + draw_list.display_width;
-    const float display_y1 = display_y0 + draw_list.display_height;
+    const float native_x0 = static_cast<float>(draw_list.display_x);
+    const float native_y0 = static_cast<float>(draw_list.display_y);
+    const float native_y1 = native_y0 + draw_list.display_height;
+    const float target_width = static_cast<float>(
+        world_gpu_target_display_width(draw_list, options));
+    const float native_center_x =
+        native_x0 + draw_list.display_width * 0.5F;
+    // World clip X is scaled by native_width / target_width before D3D
+    // clipping. Express the real Hor+ frustum back in captured screen units
+    // so edge diagnostics do not accidentally audit only the central 4:3
+    // viewport.
+    const float target_x0 = native_center_x - target_width * 0.5F;
+    const float target_x1 = native_center_x + target_width * 0.5F;
+    const double horizontal_projection_scale =
+        static_cast<double>(draw_list.display_width) / target_width;
     for (std::size_t index = 0; index < draw_list.commands.size(); ++index) {
         const auto& command = draw_list.commands[index];
         const auto& material = draw_list.materials[command.material_index];
@@ -511,23 +1106,67 @@ void emit_primitive_diagnostics(
             min_z < d3d_near_plane && max_z >= d3d_near_plane;
         const bool entirely_behind_near = max_z < d3d_near_plane;
         const bool crosses_viewport =
-            (min_x < display_x0 && max_x >= display_x0) ||
-            (min_x < display_x1 && max_x >= display_x1) ||
-            (min_y < display_y0 && max_y >= display_y0) ||
-            (min_y < display_y1 && max_y >= display_y1);
+            (min_x < target_x0 && max_x >= target_x0) ||
+            (min_x < target_x1 && max_x >= target_x1) ||
+            (min_y < native_y0 && max_y >= native_y0) ||
+            (min_y < native_y1 && max_y >= native_y1);
+        const bool in_front = max_z >= d3d_near_plane;
+        const bool target_intersection =
+            in_front &&
+            max_x >= target_x0 && min_x <= target_x1 &&
+            max_y >= native_y0 && min_y <= native_y1;
+        const bool native_intersection =
+            in_front &&
+            max_x >= native_x0 &&
+            min_x <= native_x0 + draw_list.display_width &&
+            max_y >= native_y0 && min_y <= native_y1;
         const bool oversized =
             max_x - min_x > draw_list.display_width * 4.0F ||
             max_y - min_y > draw_list.display_height * 4.0F;
+        const DiagnosticClipResult post_clip = diagnostic_homogeneous_clip(
+            command, horizontal_projection_scale);
+        const bool post_clip_visible_command =
+            post_clip.finite && post_clip.vertex_count >= 3;
+        post_clip_visible += post_clip_visible_command ? 1U : 0U;
+        post_clip_rejected +=
+            post_clip.finite && post_clip.vertex_count < 3 ? 1U : 0U;
+        post_clip_nonfinite += post_clip.finite ? 0U : 1U;
+        post_clip_unbounded +=
+            post_clip_visible_command && !post_clip.bounded ? 1U : 0U;
+        post_clip_degenerate +=
+            post_clip_visible_command && post_clip.ndc_area <= 1.0e-12
+                ? 1U
+                : 0U;
+        preclip_false_positive +=
+            target_intersection && !post_clip_visible_command ? 1U : 0U;
+        preclip_false_negative +=
+            !target_intersection && post_clip_visible_command ? 1U : 0U;
+        maximum_post_clip_vertices = (std::max)(
+            maximum_post_clip_vertices, post_clip.vertex_count);
+        maximum_post_clip_area_pixels = (std::max)(
+            maximum_post_clip_area_pixels,
+            post_clip.ndc_area * target_width * draw_list.display_height /
+                4.0);
         camera_crossings += crosses_camera ? 1U : 0U;
         near_crossings += crosses_near ? 1U : 0U;
         behind_near += entirely_behind_near ? 1U : 0U;
         viewport_crossings += crosses_viewport ? 1U : 0U;
+        target_intersections += target_intersection ? 1U : 0U;
+        native_intersections += native_intersection ? 1U : 0U;
+        hor_plus_only +=
+            target_intersection && !native_intersection ? 1U : 0U;
+        target_camera_crossings +=
+            target_intersection && crosses_camera ? 1U : 0U;
+        target_near_crossings +=
+            target_intersection && crosses_near ? 1U : 0U;
         oversized_spans += oversized ? 1U : 0U;
+        target_oversized_spans +=
+            target_intersection && oversized ? 1U : 0U;
         nonfinite_commands += finite ? 0U : 1U;
         if (
-            suspicious.size() < 32 &&
-            (crosses_camera || crosses_near || entirely_behind_near ||
-                oversized || !finite)
+            suspicious.size() < 64 &&
+            ((target_intersection &&
+                (crosses_camera || crosses_near || oversized)) || !finite)
         )
             suspicious.push_back(index);
     }
@@ -538,16 +1177,21 @@ void emit_primitive_diagnostics(
     }
     std::fprintf(
         stderr,
-        "[Render-Primitives] frameSample=%llu authored=%s "
+        "[Render-Primitives] frameSample=%llu frame=%llu poll=%d authored=%s "
         "projection=%s textureProjection=%s depth=%s topologyCommands=%zu "
         "world=%zu screen=%zu depthTrack=%zu viewZ=%.3f..%.3f "
-        "cameraCross=%zu nearCross=%zu behindNear=%zu viewportCross=%zu "
-        "oversized=%zu nonfinite=%zu maxAuthoredDelta=%.3f "
-        "display=%d,%d..%d,%d\n",
+        "cameraCross=%zu/%zu nearCross=%zu/%zu behindNear=%zu "
+        "viewportCross=%zu intersections=%zu/%zu horPlusOnly=%zu "
+        "oversized=%zu/%zu nonfinite=%zu maxAuthoredDelta=%.3f "
+        "postClip=%zu/%zu nonfinite=%zu unbounded=%zu degenerate=%zu "
+        "preclipMismatch=%zu/%zu maxVertices=%zu maxAreaPx=%.1f "
+        "nativeDisplay=%d,%d..%d,%d targetDisplay=%.1f,%.1f..%.1f,%.1f\n",
         static_cast<unsigned long long>(primitive_sample - 1),
+        static_cast<unsigned long long>(draw_list.frame_index),
+        draw_list.input_poll,
         options.synthetic_midpoint ? "midpoint" : "actual",
         draw_list.continuous_projection ? "continuous" : "authored-sxy",
-        options.perspective_correct ? "perspective" : "affine",
+        "perspective-fixed",
         options.depth_buffer ? "on" : "off",
         draw_list.commands.size(),
         world_commands,
@@ -556,28 +1200,90 @@ void emit_primitive_diagnostics(
         minimum_view_z,
         maximum_view_z,
         camera_crossings,
+        target_camera_crossings,
         near_crossings,
+        target_near_crossings,
         behind_near,
         viewport_crossings,
+        target_intersections,
+        native_intersections,
+        hor_plus_only,
         oversized_spans,
+        target_oversized_spans,
         nonfinite_commands,
         maximum_projection_delta,
+        post_clip_visible,
+        post_clip_rejected,
+        post_clip_nonfinite,
+        post_clip_unbounded,
+        post_clip_degenerate,
+        preclip_false_positive,
+        preclip_false_negative,
+        maximum_post_clip_vertices,
+        maximum_post_clip_area_pixels,
         draw_list.display_x,
         draw_list.display_y,
         draw_list.display_x + draw_list.display_width,
-        draw_list.display_y + draw_list.display_height);
+        draw_list.display_y + draw_list.display_height,
+        target_x0,
+        native_y0,
+        target_x1,
+        native_y1);
 
     if (std::getenv("OPENGT_RENDER_PRIMITIVE_DIAGNOSTICS_VERBOSE") == nullptr)
         return;
     for (const std::size_t index : suspicious) {
         const auto& command = draw_list.commands[index];
+        float minimum_x = command.vertices[0].screen_x;
+        float maximum_x = minimum_x;
+        float minimum_y = command.vertices[0].screen_y;
+        float maximum_y = minimum_y;
+        float minimum_z = command.vertices[0].view_z;
+        float maximum_z = minimum_z;
+        bool finite = true;
+        for (const auto& vertex : command.vertices) {
+            minimum_x = (std::min)(minimum_x, vertex.screen_x);
+            maximum_x = (std::max)(maximum_x, vertex.screen_x);
+            minimum_y = (std::min)(minimum_y, vertex.screen_y);
+            maximum_y = (std::max)(maximum_y, vertex.screen_y);
+            minimum_z = (std::min)(minimum_z, vertex.view_z);
+            maximum_z = (std::max)(maximum_z, vertex.view_z);
+            finite = finite && std::isfinite(vertex.screen_x) &&
+                std::isfinite(vertex.screen_y) &&
+                std::isfinite(vertex.clip_x) &&
+                std::isfinite(vertex.clip_y) &&
+                std::isfinite(vertex.clip_z) &&
+                std::isfinite(vertex.clip_w);
+        }
+        const bool target_intersection =
+            maximum_z >= d3d_near_plane &&
+            maximum_x >= target_x0 && minimum_x <= target_x1 &&
+            maximum_y >= native_y0 && minimum_y <= native_y1;
+        const bool crosses_camera =
+            minimum_z <= 0.0F && maximum_z > 0.0F;
+        const bool crosses_near =
+            minimum_z < d3d_near_plane && maximum_z >= d3d_near_plane;
+        const bool oversized =
+            maximum_x - minimum_x > draw_list.display_width * 4.0F ||
+            maximum_y - minimum_y > draw_list.display_height * 4.0F;
+        const DiagnosticClipResult post_clip = diagnostic_homogeneous_clip(
+            command, horizontal_projection_scale);
+        const double post_clip_area_pixels =
+            post_clip.ndc_area * target_width * draw_list.display_height /
+                4.0;
         std::fprintf(
             stderr,
-            "[Render-Primitive] cmd=%zu kind=%u object=%u model=%08x "
+            "[Render-Primitive] frame=%llu poll=%d cmd=%zu kind=%u "
+            "object=%u model=%08x "
             "transform=%016llx ot=%d source=%u clip=%d,%d..%d,%d "
+            "reason=target:%u,camera:%u,near:%u,oversized:%u,nonfinite:%u "
             "screen=(%.3f,%.3f)(%.3f,%.3f)(%.3f,%.3f) "
             "authored=(%d,%d)(%d,%d)(%d,%d) "
-            "viewZ=(%.3f,%.3f,%.3f) clipW=(%.3f,%.3f,%.3f)\n",
+            "viewZ=(%.3f,%.3f,%.3f) clipW=(%.3f,%.3f,%.3f) "
+            "postClip=vertices:%zu,finite:%u,bounded:%u,areaPx:%.3f,"
+            "ndc:(%.6f,%.6f)..(%.6f,%.6f)\n",
+            static_cast<unsigned long long>(draw_list.frame_index),
+            draw_list.input_poll,
             index,
             command.object_kind,
             command.object_id,
@@ -589,6 +1295,11 @@ void emit_primitive_diagnostics(
             command.clip_y0,
             command.clip_x1,
             command.clip_y1,
+            target_intersection ? 1U : 0U,
+            crosses_camera ? 1U : 0U,
+            crosses_near ? 1U : 0U,
+            oversized ? 1U : 0U,
+            finite ? 0U : 1U,
             command.vertices[0].screen_x,
             command.vertices[0].screen_y,
             command.vertices[1].screen_x,
@@ -606,8 +1317,1639 @@ void emit_primitive_diagnostics(
             command.vertices[2].view_z,
             command.vertices[0].clip_w,
             command.vertices[1].clip_w,
-            command.vertices[2].clip_w);
+            command.vertices[2].clip_w,
+            post_clip.vertex_count,
+            post_clip.finite ? 1U : 0U,
+            post_clip.bounded ? 1U : 0U,
+            post_clip_area_pixels,
+            post_clip.minimum_ndc_x,
+            post_clip.minimum_ndc_y,
+            post_clip.maximum_ndc_x,
+            post_clip.maximum_ndc_y);
     }
+}
+
+struct ResidentEdgePosition {
+    std::int32_t x{};
+    std::int32_t y{};
+    std::int32_t z{};
+
+    bool operator==(const ResidentEdgePosition& other) const noexcept {
+        return x == other.x && y == other.y && z == other.z;
+    }
+
+    bool operator<(const ResidentEdgePosition& other) const noexcept {
+        if (x != other.x) return x < other.x;
+        if (y != other.y) return y < other.y;
+        return z < other.z;
+    }
+};
+
+struct ResidentEdgeKey {
+    ResidentEdgePosition first{};
+    ResidentEdgePosition second{};
+
+    bool operator==(const ResidentEdgeKey& other) const noexcept {
+        return first == other.first && second == other.second;
+    }
+};
+
+struct ResidentEdgeKeyHash {
+    std::size_t operator()(const ResidentEdgeKey& key) const noexcept {
+        std::size_t result = 1469598103934665603ULL;
+        const auto mix = [&result](std::uint32_t value) {
+            result ^= static_cast<std::size_t>(value);
+            result *= 1099511628211ULL;
+        };
+        for (const auto& position : {key.first, key.second}) {
+            mix(static_cast<std::uint32_t>(position.x));
+            mix(static_cast<std::uint32_t>(position.y));
+            mix(static_cast<std::uint32_t>(position.z));
+        }
+        return result;
+    }
+};
+
+struct ResidentEdgeOccurrence {
+    std::size_t command{};
+    int edge{};
+    std::uint32_t object_id{};
+    std::uint32_t model_pointer{};
+    std::uint32_t material_index{};
+    std::uint64_t transform_id{};
+    float first_x{};
+    float first_y{};
+    float second_x{};
+    float second_y{};
+    bool target_relevant{};
+};
+
+struct ResidentEdgeMismatch {
+    ResidentEdgeKey key{};
+    ResidentEdgeOccurrence first{};
+    ResidentEdgeOccurrence second{};
+    float gap{};
+};
+
+// The resident decoder reconstructs continuous view coordinates from GT2's
+// exact fixed-point transform, while exact_view_* retains the integer GTE
+// result. Two authored boundary copies can therefore have the same GTE edge
+// but slightly different continuous endpoints. D3D rasterization is watertight
+// only when both triangles submit byte-identical clip positions. This audit is
+// read-only: it proves whether a visible seam is possible before any topology
+// correction is allowed to move resident geometry.
+void emit_resident_edge_diagnostics(
+    const WorldDrawList& draw_list,
+    const WorldGpuRenderOptions& options
+) {
+    if (std::getenv("OPENGT_RENDER_RESIDENT_EDGE_DIAGNOSTICS") == nullptr)
+        return;
+    if (options.synthetic_midpoint)
+        return;
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_RESIDENT_EDGE_DIAGNOSTICS_START_POLL")) {
+        const long start_poll = std::strtol(configured, nullptr, 10);
+        if (draw_list.input_poll < start_poll)
+            return;
+    }
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_RESIDENT_EDGE_DIAGNOSTICS_END_POLL")) {
+        const long end_poll = std::strtol(configured, nullptr, 10);
+        if (draw_list.input_poll > end_poll)
+            return;
+    }
+    static thread_local std::uint64_t sample_index = 0;
+    std::uint64_t interval = 120;
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_RESIDENT_EDGE_DIAGNOSTICS_INTERVAL")) {
+        const unsigned long parsed = std::strtoul(configured, nullptr, 10);
+        if (parsed != 0)
+            interval = parsed;
+    }
+    if ((sample_index++ % interval) != 0)
+        return;
+
+    const float native_y0 = static_cast<float>(draw_list.display_y);
+    const float native_y1 = native_y0 + draw_list.display_height;
+    const float target_width = static_cast<float>(
+        world_gpu_target_display_width(draw_list, options));
+    const float center_x =
+        draw_list.display_x + draw_list.display_width * 0.5F;
+    const float target_x0 = center_x - target_width * 0.5F;
+    const float target_x1 = center_x + target_width * 0.5F;
+    std::unordered_map<
+        ResidentEdgeKey,
+        std::vector<ResidentEdgeOccurrence>,
+        ResidentEdgeKeyHash> edges;
+    edges.reserve(draw_list.track_commands * 2U);
+    std::size_t resident_commands = 0;
+    std::size_t resident_edges = 0;
+    for (std::size_t command_index = 0;
+         command_index < draw_list.commands.size();
+         ++command_index) {
+        const auto& command = draw_list.commands[command_index];
+        if (command.object_kind != 1U ||
+            command.channel != WorldViewChannel::main_view ||
+            command.material_index >= draw_list.materials.size())
+            continue;
+        const auto& material = draw_list.materials[command.material_index];
+        if ((material.primitive_flags &
+                world_primitive_resident_course_flag) == 0 ||
+            (material.primitive_flags &
+                world_primitive_screen_space_flag) != 0)
+            continue;
+        if (!command.exact_transform_valid)
+            continue;
+        ++resident_commands;
+        for (int edge_index = 0; edge_index < 3; ++edge_index) {
+            const auto& source_a = command.vertices[edge_index];
+            const auto& source_b =
+                command.vertices[(edge_index + 1) % 3];
+            if (!source_a.exact_transform_valid ||
+                !source_b.exact_transform_valid)
+                continue;
+            ResidentEdgePosition a{
+                source_a.exact_view_x,
+                source_a.exact_view_y,
+                source_a.exact_view_z};
+            ResidentEdgePosition b{
+                source_b.exact_view_x,
+                source_b.exact_view_y,
+                source_b.exact_view_z};
+            float ax = source_a.screen_x;
+            float ay = source_a.screen_y;
+            float bx = source_b.screen_x;
+            float by = source_b.screen_y;
+            if (b < a) {
+                std::swap(a, b);
+                std::swap(ax, bx);
+                std::swap(ay, by);
+            }
+            const float minimum_x = (std::min)(ax, bx);
+            const float maximum_x = (std::max)(ax, bx);
+            const float minimum_y = (std::min)(ay, by);
+            const float maximum_y = (std::max)(ay, by);
+            const bool target_relevant =
+                (source_a.view_z >= 16.0F || source_b.view_z >= 16.0F) &&
+                maximum_x >= target_x0 && minimum_x <= target_x1 &&
+                maximum_y >= native_y0 && minimum_y <= native_y1;
+            edges[ResidentEdgeKey{a, b}].push_back(
+                ResidentEdgeOccurrence{
+                    command_index,
+                    edge_index,
+                    command.object_id,
+                    command.model_pointer,
+                    command.material_index,
+                    command.transform_id,
+                    ax,
+                    ay,
+                    bx,
+                    by,
+                    target_relevant});
+            ++resident_edges;
+        }
+    }
+
+    constexpr float mismatch_epsilon = 1.0e-5F;
+    std::size_t shared_edges = 0;
+    std::size_t target_shared_edges = 0;
+    std::size_t mismatched_edges = 0;
+    std::size_t target_mismatched_edges = 0;
+    std::size_t target_quarter_pixel_edges = 0;
+    std::size_t target_same_material_mismatches = 0;
+    std::size_t target_cross_object_mismatches = 0;
+    float maximum_gap = 0.0F;
+    float maximum_target_gap = 0.0F;
+    std::vector<ResidentEdgeMismatch> details;
+    details.reserve(64);
+    for (const auto& entry : edges) {
+        const auto& occurrences = entry.second;
+        if (occurrences.size() < 2)
+            continue;
+        ++shared_edges;
+        bool target_shared = false;
+        bool mismatched = false;
+        bool target_mismatched = false;
+        float edge_maximum_gap = 0.0F;
+        ResidentEdgeMismatch maximum{};
+        for (std::size_t left = 0; left < occurrences.size(); ++left) {
+            target_shared = target_shared || occurrences[left].target_relevant;
+            for (std::size_t right = left + 1;
+                 right < occurrences.size();
+                 ++right) {
+                const float first_dx =
+                    occurrences[left].first_x - occurrences[right].first_x;
+                const float first_dy =
+                    occurrences[left].first_y - occurrences[right].first_y;
+                const float second_dx =
+                    occurrences[left].second_x - occurrences[right].second_x;
+                const float second_dy =
+                    occurrences[left].second_y - occurrences[right].second_y;
+                const float gap = (std::max)(
+                    std::hypot(first_dx, first_dy),
+                    std::hypot(second_dx, second_dy));
+                maximum_gap = (std::max)(maximum_gap, gap);
+                if (gap <= mismatch_epsilon)
+                    continue;
+                mismatched = true;
+                const bool pair_target =
+                    occurrences[left].target_relevant ||
+                    occurrences[right].target_relevant;
+                if (pair_target) {
+                    target_mismatched = true;
+                    maximum_target_gap = (std::max)(maximum_target_gap, gap);
+                }
+                if (gap > edge_maximum_gap) {
+                    edge_maximum_gap = gap;
+                    maximum = ResidentEdgeMismatch{
+                        entry.first,
+                        occurrences[left],
+                        occurrences[right],
+                        gap};
+                }
+            }
+        }
+        target_shared_edges += target_shared ? 1U : 0U;
+        mismatched_edges += mismatched ? 1U : 0U;
+        target_mismatched_edges += target_mismatched ? 1U : 0U;
+        if (!target_mismatched)
+            continue;
+        target_quarter_pixel_edges += edge_maximum_gap >= 0.25F ? 1U : 0U;
+        target_same_material_mismatches +=
+            maximum.first.material_index == maximum.second.material_index
+                ? 1U
+                : 0U;
+        target_cross_object_mismatches +=
+            maximum.first.object_id != maximum.second.object_id ? 1U : 0U;
+        if (details.size() < 64)
+            details.push_back(maximum);
+    }
+    std::sort(
+        details.begin(), details.end(),
+        [](const ResidentEdgeMismatch& left,
+           const ResidentEdgeMismatch& right) {
+            if (left.gap != right.gap)
+                return left.gap > right.gap;
+            if (left.first.command != right.first.command)
+                return left.first.command < right.first.command;
+            return left.second.command < right.second.command;
+        });
+    std::fprintf(
+        stderr,
+        "[Render-Resident-Edges] sample=%llu frame=%llu poll=%d "
+        "commands=%zu edges=%zu unique=%zu shared=%zu targetShared=%zu "
+        "mismatched=%zu targetMismatched=%zu quarterPixel=%zu "
+        "sameMaterial=%zu crossObject=%zu maximum=%.6f targetMaximum=%.6f\n",
+        static_cast<unsigned long long>(sample_index - 1),
+        static_cast<unsigned long long>(draw_list.frame_index),
+        draw_list.input_poll,
+        resident_commands,
+        resident_edges,
+        edges.size(),
+        shared_edges,
+        target_shared_edges,
+        mismatched_edges,
+        target_mismatched_edges,
+        target_quarter_pixel_edges,
+        target_same_material_mismatches,
+        target_cross_object_mismatches,
+        maximum_gap,
+        maximum_target_gap);
+    if (std::getenv(
+            "OPENGT_RENDER_RESIDENT_EDGE_DIAGNOSTICS_VERBOSE") == nullptr)
+        return;
+    for (std::size_t index = 0; index < details.size() && index < 16; ++index) {
+        const auto& detail = details[index];
+        std::fprintf(
+            stderr,
+            "[Render-Resident-Edge] frame=%llu poll=%d rank=%zu gap=%.6f "
+            "exact=(%d,%d,%d)-(%d,%d,%d) "
+            "first=cmd%zu/edge%d/object%u/model%08x/material%u/transform%016llx/"
+            "screen(%.6f,%.6f)-(%.6f,%.6f) "
+            "second=cmd%zu/edge%d/object%u/model%08x/material%u/transform%016llx/"
+            "screen(%.6f,%.6f)-(%.6f,%.6f)\n",
+            static_cast<unsigned long long>(draw_list.frame_index),
+            draw_list.input_poll,
+            index,
+            detail.gap,
+            detail.key.first.x,
+            detail.key.first.y,
+            detail.key.first.z,
+            detail.key.second.x,
+            detail.key.second.y,
+            detail.key.second.z,
+            detail.first.command,
+            detail.first.edge,
+            detail.first.object_id,
+            detail.first.model_pointer,
+            detail.first.material_index,
+            static_cast<unsigned long long>(detail.first.transform_id),
+            detail.first.first_x,
+            detail.first.first_y,
+            detail.first.second_x,
+            detail.first.second_y,
+            detail.second.command,
+            detail.second.edge,
+            detail.second.object_id,
+            detail.second.model_pointer,
+            detail.second.material_index,
+            static_cast<unsigned long long>(detail.second.transform_id),
+            detail.second.first_x,
+            detail.second.first_y,
+            detail.second.second_x,
+            detail.second.second_y);
+    }
+}
+
+struct SceneDiagnosticGroup {
+    std::uint32_t object_kind{};
+    std::uint32_t object_id{};
+    std::uint32_t model_pointer{};
+    WorldViewChannel channel{};
+    std::size_t commands{};
+    std::size_t textured_commands{};
+    std::size_t transparent_commands{};
+    std::size_t resident_course_commands{};
+    std::size_t native_intersections{};
+    std::size_t target_intersections{};
+    std::size_t hor_plus_only{};
+    std::size_t left_margin_intersections{};
+    std::size_t right_margin_intersections{};
+    std::size_t clip_crossings{};
+    std::size_t target_clip_crossings{};
+    std::array<std::size_t, 6> target_clip_plane_crossings{};
+    std::array<std::size_t, 6> hor_plus_clip_plane_crossings{};
+    std::size_t trivial_clip_rejects{};
+    std::size_t target_trivial_clip_rejects{};
+    std::size_t near_crossings{};
+    std::size_t target_near_crossings{};
+    std::size_t behind_near{};
+    std::size_t nonfinite_commands{};
+    std::size_t full_display_scissors{};
+    std::size_t post_clip_visible{};
+    std::size_t post_clip_rejected{};
+    std::size_t post_clip_nonfinite{};
+    std::size_t post_clip_changed_vertex_count{};
+    double post_clip_ndc_area{};
+    std::size_t target_post_clip_visible{};
+    std::size_t target_post_clip_rejected{};
+    std::size_t target_post_clip_nonfinite{};
+    std::uint64_t geometry_signature{1469598103934665603ULL};
+    float minimum_screen_x{(std::numeric_limits<float>::max)()};
+    float minimum_screen_y{(std::numeric_limits<float>::max)()};
+    float maximum_screen_x{(std::numeric_limits<float>::lowest)()};
+    float maximum_screen_y{(std::numeric_limits<float>::lowest)()};
+    float minimum_view_z{(std::numeric_limits<float>::max)()};
+    float maximum_view_z{(std::numeric_limits<float>::lowest)()};
+    float minimum_projection_plane{(std::numeric_limits<float>::max)()};
+    float maximum_projection_plane{(std::numeric_limits<float>::lowest)()};
+    float minimum_projection_offset_x{(std::numeric_limits<float>::max)()};
+    float maximum_projection_offset_x{(std::numeric_limits<float>::lowest)()};
+    float minimum_projection_offset_y{(std::numeric_limits<float>::max)()};
+    float maximum_projection_offset_y{(std::numeric_limits<float>::lowest)()};
+};
+
+struct SceneDiagnosticGroupKey {
+    std::uint32_t object_kind{};
+    std::uint32_t object_id{};
+    std::uint32_t model_pointer{};
+    WorldViewChannel channel{};
+
+    bool operator==(const SceneDiagnosticGroupKey& other) const noexcept
+    {
+        return object_kind == other.object_kind &&
+            object_id == other.object_id &&
+            model_pointer == other.model_pointer &&
+            channel == other.channel;
+    }
+};
+
+struct SceneDiagnosticGroupKeyHash {
+    std::size_t operator()(
+        const SceneDiagnosticGroupKey& key) const noexcept
+    {
+        std::size_t hash = key.object_kind;
+        const auto mix = [&hash] (std::uint32_t value) {
+            hash ^= static_cast<std::size_t>(value) +
+                0x9E3779B9U + (hash << 6U) + (hash >> 2U);
+        };
+        mix(key.object_id);
+        mix(key.model_pointer);
+        mix(static_cast<std::uint32_t>(key.channel));
+        return hash;
+    }
+};
+
+struct SceneUnownedDiagnosticGroup {
+    std::uint64_t transform_id{};
+    std::uint32_t primitive_flags{};
+    std::uint16_t texture_page{};
+    std::uint16_t clut{};
+    std::int16_t clip_x0{};
+    std::int16_t clip_y0{};
+    std::int16_t clip_x1{};
+    std::int16_t clip_y1{};
+    WorldViewChannel channel{};
+    bool exact_transform_valid{};
+    std::int32_t translation_x{};
+    std::int32_t translation_y{};
+    std::int32_t translation_z{};
+    std::size_t commands{};
+    std::size_t transparent_commands{};
+    std::uint32_t minimum_source_command{
+        (std::numeric_limits<std::uint32_t>::max)()};
+    std::uint32_t maximum_source_command{};
+    float minimum_model_x{(std::numeric_limits<float>::max)()};
+    float minimum_model_y{(std::numeric_limits<float>::max)()};
+    float minimum_model_z{(std::numeric_limits<float>::max)()};
+    float maximum_model_x{(std::numeric_limits<float>::lowest)()};
+    float maximum_model_y{(std::numeric_limits<float>::lowest)()};
+    float maximum_model_z{(std::numeric_limits<float>::lowest)()};
+    float minimum_screen_x{(std::numeric_limits<float>::max)()};
+    float minimum_screen_y{(std::numeric_limits<float>::max)()};
+    float maximum_screen_x{(std::numeric_limits<float>::lowest)()};
+    float maximum_screen_y{(std::numeric_limits<float>::lowest)()};
+    float minimum_view_z{(std::numeric_limits<float>::max)()};
+    float maximum_view_z{(std::numeric_limits<float>::lowest)()};
+    float minimum_projection_plane{(std::numeric_limits<float>::max)()};
+    float maximum_projection_plane{(std::numeric_limits<float>::lowest)()};
+};
+
+bool same_scene_unowned_diagnostic_group(
+    const SceneUnownedDiagnosticGroup& group,
+    const WorldDrawCommand& command,
+    const WorldMaterial& material
+) noexcept {
+    return
+        group.transform_id == command.transform_id &&
+        group.primitive_flags == material.primitive_flags &&
+        group.texture_page == material.texture_page &&
+        group.clut == material.clut &&
+        group.clip_x0 == command.clip_x0 &&
+        group.clip_y0 == command.clip_y0 &&
+        group.clip_x1 == command.clip_x1 &&
+        group.clip_y1 == command.clip_y1 &&
+        group.channel == command.channel &&
+        group.exact_transform_valid == command.exact_transform_valid;
+}
+
+bool same_scene_diagnostic_group(
+    const SceneDiagnosticGroup& group,
+    const WorldDrawCommand& command
+) noexcept {
+    return
+        group.object_kind == command.object_kind &&
+        group.object_id == command.object_id &&
+        group.model_pointer == command.model_pointer &&
+        group.channel == command.channel;
+}
+
+bool same_scene_diagnostic_group(
+    const SceneDiagnosticGroup& left,
+    const SceneDiagnosticGroup& right
+) noexcept {
+    return
+        left.object_kind == right.object_kind &&
+        left.object_id == right.object_id &&
+        left.model_pointer == right.model_pointer &&
+        left.channel == right.channel;
+}
+
+const char* scene_diagnostic_kind_name(std::uint32_t kind) noexcept {
+    switch (kind) {
+        case 0U: return "unclassified";
+        case 1U: return "track";
+        case 2U: return "vehicle";
+        case 3U: return "background";
+        default: return "invalid";
+    }
+}
+
+const char* scene_diagnostic_channel_name(WorldViewChannel channel) noexcept {
+    return channel == WorldViewChannel::main_view ? "main" : "secondary";
+}
+
+void emit_scene_diagnostics(
+    const WorldDrawList& draw_list,
+    const WorldGpuRenderOptions& options
+) {
+    const bool snapshot_diagnostics =
+        std::getenv("OPENGT_RENDER_SCENE_DIAGNOSTICS") != nullptr;
+    const bool scene_continuity_audit =
+        std::getenv("OPENGT_RENDER_SCENE_CONTINUITY_AUDIT") != nullptr;
+    const bool vehicle_boundary_audit =
+        std::getenv("OPENGT_RENDER_VEHICLE_BOUNDARY_AUDIT") != nullptr;
+    const bool continuity_audit =
+        scene_continuity_audit || vehicle_boundary_audit;
+    if (!snapshot_diagnostics && !continuity_audit)
+        return;
+    if (
+        options.synthetic_midpoint &&
+        std::getenv("OPENGT_RENDER_SCENE_DIAGNOSTICS_ALL_SAMPLES") ==
+            nullptr
+    )
+        return;
+    if (
+        std::getenv("OPENGT_RENDER_SCENE_DIAGNOSTICS_RACE_ONLY") != nullptr &&
+        draw_list.track_commands < 1000U
+    )
+        return;
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_SCENE_DIAGNOSTICS_START_POLL")) {
+        const long start_poll = std::strtol(configured, nullptr, 10);
+        if (draw_list.input_poll < start_poll)
+            return;
+    }
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_SCENE_DIAGNOSTICS_END_POLL")) {
+        const long end_poll = std::strtol(configured, nullptr, 10);
+        if (draw_list.input_poll > end_poll)
+            return;
+    }
+
+    static thread_local std::uint64_t diagnostic_sample = 0;
+    std::uint64_t interval = 120;
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_SCENE_DIAGNOSTICS_INTERVAL")) {
+        const unsigned long parsed = std::strtoul(configured, nullptr, 10);
+        if (parsed != 0)
+            interval = parsed;
+    }
+    const std::uint64_t sample_index = diagnostic_sample++;
+    const bool emit_snapshot =
+        snapshot_diagnostics && (sample_index % interval) == 0;
+    if (!emit_snapshot && !continuity_audit)
+        return;
+
+    constexpr float near_plane = 16.0F;
+    const float native_x0 = static_cast<float>(draw_list.display_x);
+    const float native_y0 = static_cast<float>(draw_list.display_y);
+    const float native_x1 = native_x0 + draw_list.display_width;
+    const float native_y1 = native_y0 + draw_list.display_height;
+    const std::uint32_t target_display_width =
+        world_gpu_target_display_width(draw_list, options);
+    const float target_width = static_cast<float>(target_display_width);
+    const float native_center_x =
+        native_x0 + draw_list.display_width * 0.5F;
+    const float target_x0 = native_center_x - target_width * 0.5F;
+    const float target_x1 = native_center_x + target_width * 0.5F;
+    const float horizontal_projection_scale =
+        static_cast<float>(draw_list.display_width) / target_width;
+
+    bool continuity_object_filter = false;
+    std::uint32_t continuity_object = 0;
+    if (continuity_audit) {
+        if (const char* configured = std::getenv(
+                "OPENGT_RENDER_SCENE_CONTINUITY_OBJECT")) {
+            continuity_object = static_cast<std::uint32_t>(
+                std::strtoul(configured, nullptr, 0));
+            continuity_object_filter = true;
+        }
+    }
+
+    std::vector<SceneDiagnosticGroup> groups;
+    groups.reserve(192);
+    std::unordered_map<
+        SceneDiagnosticGroupKey,
+        std::size_t,
+        SceneDiagnosticGroupKeyHash> group_indices;
+    group_indices.reserve(256);
+    std::size_t screen_commands = 0;
+    for (const auto& command : draw_list.commands) {
+        if (continuity_object_filter &&
+            command.object_id != continuity_object)
+            continue;
+        if (
+            vehicle_boundary_audit && !scene_continuity_audit &&
+            command.object_kind != 2U
+        )
+            continue;
+        const auto& material = draw_list.materials[command.material_index];
+        if ((material.primitive_flags & world_primitive_screen_space_flag) != 0) {
+            ++screen_commands;
+            continue;
+        }
+
+        const SceneDiagnosticGroupKey key{
+            command.object_kind,
+            command.object_id,
+            command.model_pointer,
+            command.channel,
+        };
+        const auto [found, inserted] = group_indices.try_emplace(
+            key, groups.size());
+        if (inserted) {
+            groups.push_back(SceneDiagnosticGroup{});
+            auto& group = groups.back();
+            group.object_kind = command.object_kind;
+            group.object_id = command.object_id;
+            group.model_pointer = command.model_pointer;
+            group.channel = command.channel;
+        }
+        auto& group = groups[found->second];
+        ++group.commands;
+
+        DiagnosticClipResult vehicle_post_clip{};
+        bool vehicle_post_clip_evaluated = false;
+        if (vehicle_boundary_audit && command.object_kind == 2U) {
+            const auto signature_add = [&group] (std::uint32_t value) {
+                group.geometry_signature ^= value;
+                group.geometry_signature *= 1099511628211ULL;
+            };
+            signature_add(command.model_pointer);
+            signature_add(material.primitive_flags);
+            signature_add(material.texture_page);
+            signature_add(material.clut);
+            for (const auto& vertex : command.vertices) {
+                signature_add(static_cast<std::uint16_t>(vertex.model_x));
+                signature_add(static_cast<std::uint16_t>(vertex.model_y));
+                signature_add(static_cast<std::uint16_t>(vertex.model_z));
+            }
+            vehicle_post_clip = diagnostic_homogeneous_clip(
+                command, horizontal_projection_scale);
+            vehicle_post_clip_evaluated = true;
+            const bool post_clip_visible_command =
+                vehicle_post_clip.finite &&
+                vehicle_post_clip.vertex_count >= 3U;
+            group.post_clip_visible +=
+                post_clip_visible_command ? 1U : 0U;
+            group.post_clip_rejected +=
+                vehicle_post_clip.finite &&
+                vehicle_post_clip.vertex_count < 3U ? 1U : 0U;
+            group.post_clip_nonfinite +=
+                vehicle_post_clip.finite ? 0U : 1U;
+            group.post_clip_changed_vertex_count +=
+                post_clip_visible_command &&
+                    vehicle_post_clip.vertex_count != 3U
+                    ? 1U
+                    : 0U;
+            group.post_clip_ndc_area += post_clip_visible_command
+                ? vehicle_post_clip.ndc_area
+                : 0.0;
+        }
+
+        if (continuity_audit && !emit_snapshot) {
+            float minimum_x = command.vertices[0].screen_x;
+            float maximum_x = minimum_x;
+            float minimum_y = command.vertices[0].screen_y;
+            float maximum_y = minimum_y;
+            float minimum_z = command.vertices[0].view_z;
+            float maximum_z = minimum_z;
+            for (const auto& vertex : command.vertices) {
+                minimum_x = (std::min)(minimum_x, vertex.screen_x);
+                maximum_x = (std::max)(maximum_x, vertex.screen_x);
+                minimum_y = (std::min)(minimum_y, vertex.screen_y);
+                maximum_y = (std::max)(maximum_y, vertex.screen_y);
+                minimum_z = (std::min)(minimum_z, vertex.view_z);
+                maximum_z = (std::max)(maximum_z, vertex.view_z);
+            }
+            // PS1 double buffering alternates the active drawing page between
+            // y=0 and y=240.  Report coordinates relative to that frame's
+            // displayed page so a stationary object does not appear to jump
+            // 240 lines in a cross-frame continuity trace.
+            group.minimum_screen_x = (std::min)(
+                group.minimum_screen_x, minimum_x - native_x0);
+            group.minimum_screen_y = (std::min)(
+                group.minimum_screen_y, minimum_y - native_y0);
+            group.maximum_screen_x = (std::max)(
+                group.maximum_screen_x, maximum_x - native_x0);
+            group.maximum_screen_y = (std::max)(
+                group.maximum_screen_y, maximum_y - native_y0);
+            group.minimum_view_z = (std::min)(
+                group.minimum_view_z, minimum_z);
+            group.maximum_view_z = (std::max)(
+                group.maximum_view_z, maximum_z);
+            const bool in_front = maximum_z >= near_plane;
+            const bool native_intersection =
+                in_front &&
+                maximum_x >= native_x0 && minimum_x <= native_x1 &&
+                maximum_y >= native_y0 && minimum_y <= native_y1;
+            const bool target_intersection =
+                in_front &&
+                maximum_x >= target_x0 && minimum_x <= target_x1 &&
+                maximum_y >= native_y0 && minimum_y <= native_y1;
+            group.native_intersections +=
+                native_intersection ? 1U : 0U;
+            group.target_intersections +=
+                target_intersection ? 1U : 0U;
+            if (target_intersection && vehicle_post_clip_evaluated) {
+                group.target_post_clip_visible +=
+                    vehicle_post_clip.finite &&
+                        vehicle_post_clip.vertex_count >= 3U ? 1U : 0U;
+                group.target_post_clip_rejected +=
+                    vehicle_post_clip.finite &&
+                        vehicle_post_clip.vertex_count < 3U ? 1U : 0U;
+                group.target_post_clip_nonfinite +=
+                    vehicle_post_clip.finite ? 0U : 1U;
+            }
+            group.full_display_scissors +=
+                command.clip_x0 <= draw_list.display_x &&
+                command.clip_y0 <= draw_list.display_y &&
+                command.clip_x1 >=
+                    draw_list.display_x + draw_list.display_width - 1 &&
+                command.clip_y1 >=
+                    draw_list.display_y + draw_list.display_height - 1
+                    ? 1U
+                    : 0U;
+            continue;
+        }
+
+        group.textured_commands +=
+            (material.primitive_flags & textured_flag) != 0 ? 1U : 0U;
+        group.transparent_commands +=
+            (material.primitive_flags & semi_transparent_flag) != 0 ? 1U : 0U;
+        group.resident_course_commands +=
+            (material.primitive_flags &
+                world_primitive_resident_course_flag) != 0
+                ? 1U
+                : 0U;
+
+        float minimum_x = command.vertices[0].screen_x;
+        float maximum_x = minimum_x;
+        float minimum_y = command.vertices[0].screen_y;
+        float maximum_y = minimum_y;
+        float minimum_z = command.vertices[0].view_z;
+        float maximum_z = minimum_z;
+        bool finite = true;
+        std::array<bool, 6> all_outside{
+            true, true, true, true, true, true};
+        std::array<bool, 6> any_outside{};
+        std::array<bool, 6> any_inside{};
+        for (const auto& vertex : command.vertices) {
+            minimum_x = (std::min)(minimum_x, vertex.screen_x);
+            maximum_x = (std::max)(maximum_x, vertex.screen_x);
+            minimum_y = (std::min)(minimum_y, vertex.screen_y);
+            maximum_y = (std::max)(maximum_y, vertex.screen_y);
+            minimum_z = (std::min)(minimum_z, vertex.view_z);
+            maximum_z = (std::max)(maximum_z, vertex.view_z);
+            group.minimum_projection_plane = (std::min)(
+                group.minimum_projection_plane, vertex.projection_plane);
+            group.maximum_projection_plane = (std::max)(
+                group.maximum_projection_plane, vertex.projection_plane);
+            group.minimum_projection_offset_x = (std::min)(
+                group.minimum_projection_offset_x,
+                vertex.projection_offset_x);
+            group.maximum_projection_offset_x = (std::max)(
+                group.maximum_projection_offset_x,
+                vertex.projection_offset_x);
+            group.minimum_projection_offset_y = (std::min)(
+                group.minimum_projection_offset_y,
+                vertex.projection_offset_y);
+            group.maximum_projection_offset_y = (std::max)(
+                group.maximum_projection_offset_y,
+                vertex.projection_offset_y);
+            finite = finite &&
+                std::isfinite(vertex.screen_x) &&
+                std::isfinite(vertex.screen_y) &&
+                std::isfinite(vertex.view_z) &&
+                std::isfinite(vertex.clip_x) &&
+                std::isfinite(vertex.clip_y) &&
+                std::isfinite(vertex.clip_z) &&
+                std::isfinite(vertex.clip_w);
+
+            const float clip_x =
+                vertex.clip_x * horizontal_projection_scale;
+            const std::array<bool, 6> outside{
+                clip_x < -vertex.clip_w,
+                clip_x > vertex.clip_w,
+                vertex.clip_y < -vertex.clip_w,
+                vertex.clip_y > vertex.clip_w,
+                vertex.clip_z < 0.0F,
+                vertex.clip_z > vertex.clip_w,
+            };
+            for (std::size_t plane = 0; plane < outside.size(); ++plane) {
+                all_outside[plane] = all_outside[plane] && outside[plane];
+                any_outside[plane] = any_outside[plane] || outside[plane];
+                any_inside[plane] = any_inside[plane] || !outside[plane];
+            }
+        }
+        group.minimum_screen_x = (std::min)(
+            group.minimum_screen_x, minimum_x - native_x0);
+        group.minimum_screen_y = (std::min)(
+            group.minimum_screen_y, minimum_y - native_y0);
+        group.maximum_screen_x = (std::max)(
+            group.maximum_screen_x, maximum_x - native_x0);
+        group.maximum_screen_y = (std::max)(
+            group.maximum_screen_y, maximum_y - native_y0);
+        group.minimum_view_z = (std::min)(
+            group.minimum_view_z, minimum_z);
+        group.maximum_view_z = (std::max)(
+            group.maximum_view_z, maximum_z);
+
+        const bool in_front = maximum_z >= near_plane;
+        const bool native_intersection =
+            in_front &&
+            maximum_x >= native_x0 && minimum_x <= native_x1 &&
+            maximum_y >= native_y0 && minimum_y <= native_y1;
+        const bool target_intersection =
+            in_front &&
+            maximum_x >= target_x0 && minimum_x <= target_x1 &&
+            maximum_y >= native_y0 && minimum_y <= native_y1;
+        group.native_intersections += native_intersection ? 1U : 0U;
+        group.target_intersections += target_intersection ? 1U : 0U;
+        if (target_intersection && vehicle_post_clip_evaluated) {
+            group.target_post_clip_visible +=
+                vehicle_post_clip.finite &&
+                    vehicle_post_clip.vertex_count >= 3U ? 1U : 0U;
+            group.target_post_clip_rejected +=
+                vehicle_post_clip.finite &&
+                    vehicle_post_clip.vertex_count < 3U ? 1U : 0U;
+            group.target_post_clip_nonfinite +=
+                vehicle_post_clip.finite ? 0U : 1U;
+        }
+        group.hor_plus_only +=
+            target_intersection && !native_intersection ? 1U : 0U;
+        group.left_margin_intersections +=
+            target_intersection && minimum_x < native_x0 ? 1U : 0U;
+        group.right_margin_intersections +=
+            target_intersection && maximum_x > native_x1 ? 1U : 0U;
+        const bool near_crossing =
+            minimum_z < near_plane && maximum_z >= near_plane;
+        group.near_crossings += near_crossing ? 1U : 0U;
+        group.target_near_crossings +=
+            near_crossing && target_intersection ? 1U : 0U;
+        group.behind_near += maximum_z < near_plane ? 1U : 0U;
+        group.nonfinite_commands += finite ? 0U : 1U;
+        const bool trivial_clip_reject = std::any_of(
+            all_outside.begin(), all_outside.end(),
+            [] (bool value) { return value; });
+        bool clip_crossing = false;
+        for (std::size_t plane = 0; plane < any_outside.size(); ++plane) {
+            const bool crosses_plane =
+                any_outside[plane] && any_inside[plane];
+            clip_crossing = clip_crossing || crosses_plane;
+            group.target_clip_plane_crossings[plane] +=
+                crosses_plane && target_intersection ? 1U : 0U;
+            group.hor_plus_clip_plane_crossings[plane] +=
+                crosses_plane && target_intersection && !native_intersection
+                    ? 1U
+                    : 0U;
+        }
+        group.trivial_clip_rejects += trivial_clip_reject ? 1U : 0U;
+        group.target_trivial_clip_rejects +=
+            trivial_clip_reject && target_intersection ? 1U : 0U;
+        group.clip_crossings += clip_crossing ? 1U : 0U;
+        group.target_clip_crossings +=
+            clip_crossing && target_intersection ? 1U : 0U;
+        group.full_display_scissors +=
+            command.clip_x0 <= draw_list.display_x &&
+            command.clip_y0 <= draw_list.display_y &&
+            command.clip_x1 >=
+                draw_list.display_x + draw_list.display_width - 1 &&
+            command.clip_y1 >=
+                draw_list.display_y + draw_list.display_height - 1
+                ? 1U
+                : 0U;
+    }
+
+    static thread_local std::vector<SceneDiagnosticGroup> previous_groups;
+    static thread_local bool continuity_has_baseline = false;
+    const bool continuity_baseline = !continuity_has_baseline;
+    std::size_t added_groups = 0;
+    std::size_t removed_groups = 0;
+    std::size_t changed_track_groups = 0;
+    std::size_t target_visible_added_groups = 0;
+    std::size_t target_visible_removed_groups = 0;
+    if (!continuity_baseline) {
+        for (const auto& previous : previous_groups) {
+            const auto current = std::find_if(
+                groups.begin(), groups.end(),
+                [&] (const SceneDiagnosticGroup& candidate) {
+                    return same_scene_diagnostic_group(previous, candidate);
+                });
+            if (current == groups.end()) {
+                ++removed_groups;
+                target_visible_removed_groups +=
+                    previous.target_intersections != 0 ? 1U : 0U;
+            } else if (
+                previous.object_kind == 1U &&
+                (previous.resident_course_commands != 0 ||
+                    current->resident_course_commands != 0) &&
+                previous.commands != current->commands
+            )
+                ++changed_track_groups;
+        }
+        for (const auto& current : groups) {
+            const auto previous = std::find_if(
+                previous_groups.begin(), previous_groups.end(),
+                [&] (const SceneDiagnosticGroup& candidate) {
+                    return same_scene_diagnostic_group(current, candidate);
+                });
+            if (previous == previous_groups.end()) {
+                ++added_groups;
+                target_visible_added_groups +=
+                    current.target_intersections != 0 ? 1U : 0U;
+            }
+        }
+    }
+
+    static thread_local std::uint64_t continuity_samples = 0;
+    static thread_local std::uint64_t continuity_target_added = 0;
+    static thread_local std::uint64_t continuity_target_removed = 0;
+    static thread_local std::uint64_t continuity_previous_frame = 0;
+    static thread_local std::uint64_t continuity_frame_gaps = 0;
+    if (continuity_audit) {
+        if (continuity_samples != 0 &&
+            draw_list.frame_index > continuity_previous_frame + 1U)
+            continuity_frame_gaps +=
+                draw_list.frame_index - continuity_previous_frame - 1U;
+        continuity_previous_frame = draw_list.frame_index;
+        ++continuity_samples;
+        continuity_target_added += target_visible_added_groups;
+        continuity_target_removed += target_visible_removed_groups;
+        if (continuity_samples == 1 ||
+            (continuity_samples %
+                (continuity_object_filter ? 100U : 600U)) == 0 ||
+            target_visible_added_groups != 0 ||
+            target_visible_removed_groups != 0) {
+            std::fprintf(
+                stderr,
+                "[Render-Scene-Continuity] sample=%llu frame=%llu poll=%d "
+                "groups=%zu targetAdded=%zu targetRemoved=%zu "
+                "totalAdded=%llu totalRemoved=%llu frameGaps=%llu"
+                " focusObject=%u\n",
+                static_cast<unsigned long long>(continuity_samples),
+                static_cast<unsigned long long>(draw_list.frame_index),
+                draw_list.input_poll,
+                groups.size(),
+                target_visible_added_groups,
+                target_visible_removed_groups,
+                static_cast<unsigned long long>(continuity_target_added),
+                static_cast<unsigned long long>(continuity_target_removed),
+                static_cast<unsigned long long>(continuity_frame_gaps),
+                continuity_object_filter ? continuity_object : 0U);
+        }
+    }
+
+    const auto vehicle_at_legacy_boundary = [&draw_list] (
+        const SceneDiagnosticGroup& group
+    ) noexcept {
+        return
+            group.object_kind == 2U &&
+            group.channel == WorldViewChannel::main_view &&
+            group.target_intersections != 0U &&
+            (group.minimum_screen_x < 0.0F ||
+                group.maximum_screen_x >
+                    static_cast<float>(draw_list.display_width));
+    };
+    if (vehicle_boundary_audit) {
+        for (const auto& current : groups) {
+            if (!vehicle_at_legacy_boundary(current))
+                continue;
+            const bool left = current.minimum_screen_x < 0.0F;
+            const bool right = current.maximum_screen_x >
+                static_cast<float>(draw_list.display_width);
+            std::fprintf(
+                stderr,
+                "[Render-Vehicle-Boundary] sample=%llu frame=%llu poll=%d "
+                "object=%u model=%08x edge=%s commands=%zu "
+                "native=%zu target=%zu "
+                "postClip=%zu/%zu/%zu changedVertices=%zu "
+                "targetPostClip=%zu/%zu/%zu "
+                "ndcArea=%.9f geometry=%016llx fullScissor=%zu/%zu "
+                "screen=%.2f,%.2f..%.2f,%.2f viewZ=%.2f..%.2f\n",
+                static_cast<unsigned long long>(sample_index),
+                static_cast<unsigned long long>(draw_list.frame_index),
+                draw_list.input_poll,
+                current.object_id,
+                current.model_pointer,
+                left && right ? "both" : left ? "left" : "right",
+                current.commands,
+                current.native_intersections,
+                current.target_intersections,
+                current.post_clip_visible,
+                current.post_clip_rejected,
+                current.post_clip_nonfinite,
+                current.post_clip_changed_vertex_count,
+                current.target_post_clip_visible,
+                current.target_post_clip_rejected,
+                current.target_post_clip_nonfinite,
+                current.post_clip_ndc_area,
+                static_cast<unsigned long long>(current.geometry_signature),
+                current.full_display_scissors,
+                current.commands,
+                current.minimum_screen_x,
+                current.minimum_screen_y,
+                current.maximum_screen_x,
+                current.maximum_screen_y,
+                current.minimum_view_z,
+                current.maximum_view_z);
+        }
+
+        if (!continuity_baseline) {
+            for (const auto& previous : previous_groups) {
+                const auto current = std::find_if(
+                    groups.begin(), groups.end(),
+                    [&] (const SceneDiagnosticGroup& candidate) {
+                        return same_scene_diagnostic_group(
+                            previous, candidate);
+                    });
+                const bool previous_boundary =
+                    vehicle_at_legacy_boundary(previous);
+                const bool current_boundary =
+                    current != groups.end() &&
+                    vehicle_at_legacy_boundary(*current);
+                if (!previous_boundary && !current_boundary)
+                    continue;
+                const char* event = nullptr;
+                if (current == groups.end())
+                    event = "missing";
+                else if (previous.commands != current->commands)
+                    event = "command-count";
+                else if (
+                    previous.post_clip_visible !=
+                        current->post_clip_visible ||
+                    previous.post_clip_rejected !=
+                        current->post_clip_rejected ||
+                    previous.post_clip_nonfinite !=
+                        current->post_clip_nonfinite ||
+                    previous.post_clip_changed_vertex_count !=
+                        current->post_clip_changed_vertex_count
+                )
+                    event = "post-clip-count";
+                else if (
+                    previous.geometry_signature !=
+                        current->geometry_signature
+                )
+                    event = "geometry-set";
+                else if (
+                    previous.full_display_scissors !=
+                        current->full_display_scissors
+                )
+                    event = "scissor-count";
+                if (event == nullptr)
+                    continue;
+                std::fprintf(
+                    stderr,
+                    "[Render-Vehicle-Boundary-Transition] "
+                    "sample=%llu frame=%llu poll=%d event=%s "
+                    "object=%u model=%08x commands=%zu->%zu "
+                    "postClip=%zu/%zu/%zu->%zu/%zu/%zu "
+                    "changedVertices=%zu->%zu geometry=%016llx->%016llx "
+                    "fullScissor=%zu->%zu "
+                    "previousScreen=%.2f,%.2f..%.2f,%.2f "
+                    "currentScreen=%.2f,%.2f..%.2f,%.2f\n",
+                    static_cast<unsigned long long>(sample_index),
+                    static_cast<unsigned long long>(draw_list.frame_index),
+                    draw_list.input_poll,
+                    event,
+                    previous.object_id,
+                    previous.model_pointer,
+                    previous.commands,
+                    current == groups.end() ? 0U : current->commands,
+                    previous.post_clip_visible,
+                    previous.post_clip_rejected,
+                    previous.post_clip_nonfinite,
+                    current == groups.end()
+                        ? 0U : current->post_clip_visible,
+                    current == groups.end()
+                        ? 0U : current->post_clip_rejected,
+                    current == groups.end()
+                        ? 0U : current->post_clip_nonfinite,
+                    previous.post_clip_changed_vertex_count,
+                    current == groups.end()
+                        ? 0U : current->post_clip_changed_vertex_count,
+                    static_cast<unsigned long long>(
+                        previous.geometry_signature),
+                    static_cast<unsigned long long>(
+                        current == groups.end()
+                            ? 0ULL : current->geometry_signature),
+                    previous.full_display_scissors,
+                    current == groups.end()
+                        ? 0U : current->full_display_scissors,
+                    previous.minimum_screen_x,
+                    previous.minimum_screen_y,
+                    previous.maximum_screen_x,
+                    previous.maximum_screen_y,
+                    current == groups.end()
+                        ? 0.0F : current->minimum_screen_x,
+                    current == groups.end()
+                        ? 0.0F : current->minimum_screen_y,
+                    current == groups.end()
+                        ? 0.0F : current->maximum_screen_x,
+                    current == groups.end()
+                        ? 0.0F : current->maximum_screen_y);
+            }
+            for (const auto& current : groups) {
+                if (!vehicle_at_legacy_boundary(current))
+                    continue;
+                const auto previous = std::find_if(
+                    previous_groups.begin(), previous_groups.end(),
+                    [&] (const SceneDiagnosticGroup& candidate) {
+                        return same_scene_diagnostic_group(
+                            current, candidate);
+                    });
+                if (previous != previous_groups.end())
+                    continue;
+                std::fprintf(
+                    stderr,
+                    "[Render-Vehicle-Boundary-Transition] "
+                    "sample=%llu frame=%llu poll=%d event=added "
+                    "object=%u model=%08x commands=0->%zu "
+                    "postClip=0/0/0->%zu/%zu/%zu "
+                    "changedVertices=0->%zu geometry=0000000000000000->%016llx "
+                    "fullScissor=0->%zu "
+                    "previousScreen=0.00,0.00..0.00,0.00 "
+                    "currentScreen=%.2f,%.2f..%.2f,%.2f\n",
+                    static_cast<unsigned long long>(sample_index),
+                    static_cast<unsigned long long>(draw_list.frame_index),
+                    draw_list.input_poll,
+                    current.object_id,
+                    current.model_pointer,
+                    current.commands,
+                    current.post_clip_visible,
+                    current.post_clip_rejected,
+                    current.post_clip_nonfinite,
+                    current.post_clip_changed_vertex_count,
+                    static_cast<unsigned long long>(
+                        current.geometry_signature),
+                    current.full_display_scissors,
+                    current.minimum_screen_x,
+                    current.minimum_screen_y,
+                    current.maximum_screen_x,
+                    current.maximum_screen_y);
+            }
+        }
+    }
+
+    std::size_t resident_track_groups = 0;
+    std::size_t resident_track_commands = 0;
+    for (const auto& group : groups)
+        if (group.object_kind == 1U && group.resident_course_commands != 0) {
+            ++resident_track_groups;
+            resident_track_commands += group.resident_course_commands;
+        }
+    if (emit_snapshot) {
+    std::fprintf(
+        stderr,
+        "[Render-Scene] sample=%llu frame=%llu poll=%d source=%s "
+        "camera=%016llx groups=%zu residentTrack=%zu/%zu "
+        "commands=%zu screen=%zu "
+        "secondaryExcluded=%u continuity=%s added=%zu removed=%zu "
+        "trackCommandChanges=%zu culling=none "
+        "native=%d,%d..%d,%d target=%.1f,%.1f..%.1f,%.1f\n",
+        static_cast<unsigned long long>(sample_index),
+        static_cast<unsigned long long>(draw_list.frame_index),
+        draw_list.input_poll,
+        options.synthetic_midpoint ? "midpoint" : "actual",
+        static_cast<unsigned long long>(draw_list.camera_transform_id),
+        groups.size(),
+        resident_track_groups,
+        resident_track_commands,
+        draw_list.commands.size(),
+        screen_commands,
+        draw_list.secondary_commands,
+        continuity_baseline ? "baseline" : "compared",
+        added_groups,
+        removed_groups,
+        changed_track_groups,
+        draw_list.display_x,
+        draw_list.display_y,
+        draw_list.display_x + draw_list.display_width,
+        draw_list.display_y + draw_list.display_height,
+        target_x0,
+        native_y0,
+        target_x1,
+        native_y1);
+
+    for (std::uint32_t kind = 0; kind <= 3U; ++kind) {
+        for (std::uint32_t channel_index = 0; channel_index < 2U;
+             ++channel_index) {
+            const auto channel = channel_index == 0
+                ? WorldViewChannel::main_view
+                : WorldViewChannel::secondary_view;
+            std::size_t class_groups = 0;
+            std::size_t commands = 0;
+            std::size_t textured = 0;
+            std::size_t transparent = 0;
+            std::size_t resident = 0;
+            std::size_t native_intersections = 0;
+            std::size_t target_intersections = 0;
+            std::size_t hor_plus_only = 0;
+            std::size_t left_margin = 0;
+            std::size_t right_margin = 0;
+            std::size_t clip_crossings = 0;
+            std::size_t target_clip_crossings = 0;
+            std::array<std::size_t, 6> target_clip_planes{};
+            std::array<std::size_t, 6> hor_plus_clip_planes{};
+            std::size_t trivial_rejects = 0;
+            std::size_t target_trivial_rejects = 0;
+            std::size_t near_crossings = 0;
+            std::size_t target_near_crossings = 0;
+            std::size_t behind_near = 0;
+            std::size_t nonfinite = 0;
+            std::size_t full_scissors = 0;
+            float minimum_view_z = (std::numeric_limits<float>::max)();
+            float maximum_view_z = (std::numeric_limits<float>::lowest)();
+            float minimum_h = (std::numeric_limits<float>::max)();
+            float maximum_h = (std::numeric_limits<float>::lowest)();
+            float minimum_ofx = (std::numeric_limits<float>::max)();
+            float maximum_ofx = (std::numeric_limits<float>::lowest)();
+            float minimum_ofy = (std::numeric_limits<float>::max)();
+            float maximum_ofy = (std::numeric_limits<float>::lowest)();
+            for (const auto& group : groups) {
+                if (
+                    group.object_kind != kind ||
+                    group.channel != channel
+                )
+                    continue;
+                ++class_groups;
+                commands += group.commands;
+                textured += group.textured_commands;
+                transparent += group.transparent_commands;
+                resident += group.resident_course_commands;
+                native_intersections += group.native_intersections;
+                target_intersections += group.target_intersections;
+                hor_plus_only += group.hor_plus_only;
+                left_margin += group.left_margin_intersections;
+                right_margin += group.right_margin_intersections;
+                clip_crossings += group.clip_crossings;
+                target_clip_crossings += group.target_clip_crossings;
+                for (std::size_t plane = 0;
+                     plane < target_clip_planes.size();
+                     ++plane) {
+                    target_clip_planes[plane] +=
+                        group.target_clip_plane_crossings[plane];
+                    hor_plus_clip_planes[plane] +=
+                        group.hor_plus_clip_plane_crossings[plane];
+                }
+                trivial_rejects += group.trivial_clip_rejects;
+                target_trivial_rejects +=
+                    group.target_trivial_clip_rejects;
+                near_crossings += group.near_crossings;
+                target_near_crossings += group.target_near_crossings;
+                behind_near += group.behind_near;
+                nonfinite += group.nonfinite_commands;
+                full_scissors += group.full_display_scissors;
+                minimum_view_z = (std::min)(
+                    minimum_view_z, group.minimum_view_z);
+                maximum_view_z = (std::max)(
+                    maximum_view_z, group.maximum_view_z);
+                minimum_h = (std::min)(
+                    minimum_h, group.minimum_projection_plane);
+                maximum_h = (std::max)(
+                    maximum_h, group.maximum_projection_plane);
+                minimum_ofx = (std::min)(
+                    minimum_ofx, group.minimum_projection_offset_x);
+                maximum_ofx = (std::max)(
+                    maximum_ofx, group.maximum_projection_offset_x);
+                minimum_ofy = (std::min)(
+                    minimum_ofy, group.minimum_projection_offset_y);
+                maximum_ofy = (std::max)(
+                    maximum_ofy, group.maximum_projection_offset_y);
+            }
+            if (commands == 0)
+                continue;
+            std::fprintf(
+                stderr,
+                "[Render-Scene-Class] sample=%llu channel=%s kind=%s "
+                "groups=%zu commands=%zu resident=%zu textured=%zu "
+                "transparent=%zu "
+                "target=%zu native=%zu horPlusOnly=%zu margins=%zu/%zu "
+                "clipCross=%zu/%zu trivialReject=%zu/%zu "
+                "nearCross=%zu/%zu "
+                "behindNear=%zu nonfinite=%zu fullScissor=%zu/%zu "
+                "targetClipPlanes=%zu/%zu/%zu/%zu/%zu/%zu "
+                "horPlusClipPlanes=%zu/%zu/%zu/%zu/%zu/%zu "
+                "viewZ=%.1f..%.1f H=%.1f..%.1f "
+                "projectionOffset=(%.1f..%.1f,%.1f..%.1f)\n",
+                static_cast<unsigned long long>(sample_index),
+                scene_diagnostic_channel_name(channel),
+                scene_diagnostic_kind_name(kind),
+                class_groups,
+                commands,
+                resident,
+                textured,
+                transparent,
+                target_intersections,
+                native_intersections,
+                hor_plus_only,
+                left_margin,
+                right_margin,
+                clip_crossings,
+                target_clip_crossings,
+                trivial_rejects,
+                target_trivial_rejects,
+                near_crossings,
+                target_near_crossings,
+                behind_near,
+                nonfinite,
+                full_scissors,
+                commands,
+                target_clip_planes[0],
+                target_clip_planes[1],
+                target_clip_planes[2],
+                target_clip_planes[3],
+                target_clip_planes[4],
+                target_clip_planes[5],
+                hor_plus_clip_planes[0],
+                hor_plus_clip_planes[1],
+                hor_plus_clip_planes[2],
+                hor_plus_clip_planes[3],
+                hor_plus_clip_planes[4],
+                hor_plus_clip_planes[5],
+                minimum_view_z,
+                maximum_view_z,
+                minimum_h,
+                maximum_h,
+                minimum_ofx / 65536.0F,
+                maximum_ofx / 65536.0F,
+                minimum_ofy / 65536.0F,
+                maximum_ofy / 65536.0F);
+        }
+    }
+    }
+
+    if (std::getenv("OPENGT_RENDER_SCENE_DIAGNOSTICS_VERBOSE") != nullptr) {
+        std::vector<SceneUnownedDiagnosticGroup> unowned_groups;
+        unowned_groups.reserve(16);
+        for (const auto& command : draw_list.commands) {
+            const auto& material = draw_list.materials[command.material_index];
+            if (
+                command.object_kind != 0U ||
+                (material.primitive_flags &
+                    world_primitive_screen_space_flag) != 0
+            ) {
+                continue;
+            }
+            auto found = std::find_if(
+                unowned_groups.begin(), unowned_groups.end(),
+                [&] (const SceneUnownedDiagnosticGroup& group) {
+                    return same_scene_unowned_diagnostic_group(
+                        group, command, material);
+                });
+            if (found == unowned_groups.end()) {
+                unowned_groups.push_back(SceneUnownedDiagnosticGroup{});
+                found = unowned_groups.end() - 1;
+                found->transform_id = command.transform_id;
+                found->primitive_flags = material.primitive_flags;
+                found->texture_page = material.texture_page;
+                found->clut = material.clut;
+                found->clip_x0 = command.clip_x0;
+                found->clip_y0 = command.clip_y0;
+                found->clip_x1 = command.clip_x1;
+                found->clip_y1 = command.clip_y1;
+                found->channel = command.channel;
+                found->exact_transform_valid =
+                    command.exact_transform_valid;
+                found->translation_x = command.transform_translation[0];
+                found->translation_y = command.transform_translation[1];
+                found->translation_z = command.transform_translation[2];
+            }
+            auto& group = *found;
+            ++group.commands;
+            group.transparent_commands +=
+                (material.primitive_flags & semi_transparent_flag) != 0
+                    ? 1U
+                    : 0U;
+            group.minimum_source_command = (std::min)(
+                group.minimum_source_command,
+                command.source_command_index);
+            group.maximum_source_command = (std::max)(
+                group.maximum_source_command,
+                command.source_command_index);
+            for (const auto& vertex : command.vertices) {
+                group.minimum_model_x = (std::min)(
+                    group.minimum_model_x,
+                    static_cast<float>(vertex.model_x));
+                group.minimum_model_y = (std::min)(
+                    group.minimum_model_y,
+                    static_cast<float>(vertex.model_y));
+                group.minimum_model_z = (std::min)(
+                    group.minimum_model_z,
+                    static_cast<float>(vertex.model_z));
+                group.maximum_model_x = (std::max)(
+                    group.maximum_model_x,
+                    static_cast<float>(vertex.model_x));
+                group.maximum_model_y = (std::max)(
+                    group.maximum_model_y,
+                    static_cast<float>(vertex.model_y));
+                group.maximum_model_z = (std::max)(
+                    group.maximum_model_z,
+                    static_cast<float>(vertex.model_z));
+                group.minimum_screen_x = (std::min)(
+                    group.minimum_screen_x, vertex.screen_x);
+                group.minimum_screen_y = (std::min)(
+                    group.minimum_screen_y, vertex.screen_y);
+                group.maximum_screen_x = (std::max)(
+                    group.maximum_screen_x, vertex.screen_x);
+                group.maximum_screen_y = (std::max)(
+                    group.maximum_screen_y, vertex.screen_y);
+                group.minimum_view_z = (std::min)(
+                    group.minimum_view_z, vertex.view_z);
+                group.maximum_view_z = (std::max)(
+                    group.maximum_view_z, vertex.view_z);
+                group.minimum_projection_plane = (std::min)(
+                    group.minimum_projection_plane,
+                    vertex.projection_plane);
+                group.maximum_projection_plane = (std::max)(
+                    group.maximum_projection_plane,
+                    vertex.projection_plane);
+            }
+        }
+        for (std::size_t group_index = 0;
+             group_index < unowned_groups.size() && group_index < 64;
+             ++group_index) {
+            const auto& group = unowned_groups[group_index];
+            std::fprintf(
+                stderr,
+                "[Render-Scene-Unowned] sample=%llu frame=%llu poll=%d "
+                "group=%zu/%zu channel=%s transform=%016llx exact=%d "
+                "translation=%d,%d,%d flags=%08x tpage=%04x clut=%04x "
+                "scissor=%d,%d..%d,%d commands=%zu transparent=%zu "
+                "source=%u..%u model=%.0f,%.0f,%.0f..%.0f,%.0f,%.0f "
+                "screen=%.1f,%.1f..%.1f,%.1f viewZ=%.1f..%.1f "
+                "H=%.1f..%.1f\n",
+                static_cast<unsigned long long>(sample_index),
+                static_cast<unsigned long long>(draw_list.frame_index),
+                draw_list.input_poll,
+                group_index,
+                unowned_groups.size(),
+                scene_diagnostic_channel_name(group.channel),
+                static_cast<unsigned long long>(group.transform_id),
+                group.exact_transform_valid ? 1 : 0,
+                group.translation_x,
+                group.translation_y,
+                group.translation_z,
+                group.primitive_flags,
+                group.texture_page,
+                group.clut,
+                group.clip_x0,
+                group.clip_y0,
+                group.clip_x1,
+                group.clip_y1,
+                group.commands,
+                group.transparent_commands,
+                group.minimum_source_command,
+                group.maximum_source_command,
+                group.minimum_model_x,
+                group.minimum_model_y,
+                group.minimum_model_z,
+                group.maximum_model_x,
+                group.maximum_model_y,
+                group.maximum_model_z,
+                group.minimum_screen_x,
+                group.minimum_screen_y,
+                group.maximum_screen_x,
+                group.maximum_screen_y,
+                group.minimum_view_z,
+                group.maximum_view_z,
+                group.minimum_projection_plane,
+                group.maximum_projection_plane);
+        }
+        std::size_t margin_details = 0;
+        for (const auto& group : groups) {
+            if (
+                group.object_kind != 1U ||
+                group.hor_plus_only == 0 ||
+                margin_details++ >= 64
+            )
+                continue;
+            std::fprintf(
+                stderr,
+                "[Render-Scene-Margin-Group] sample=%llu frame=%llu poll=%d "
+                "channel=%s object=%u model=%08x commands=%zu "
+                "target=%zu native=%zu horPlusOnly=%zu margins=%zu/%zu "
+                "targetClipPlanes=%zu/%zu/%zu/%zu/%zu/%zu "
+                "horPlusClipPlanes=%zu/%zu/%zu/%zu/%zu/%zu "
+                "screen=%.1f,%.1f..%.1f,%.1f viewZ=%.1f..%.1f\n",
+                static_cast<unsigned long long>(sample_index),
+                static_cast<unsigned long long>(draw_list.frame_index),
+                draw_list.input_poll,
+                scene_diagnostic_channel_name(group.channel),
+                group.object_id,
+                group.model_pointer,
+                group.commands,
+                group.target_intersections,
+                group.native_intersections,
+                group.hor_plus_only,
+                group.left_margin_intersections,
+                group.right_margin_intersections,
+                group.target_clip_plane_crossings[0],
+                group.target_clip_plane_crossings[1],
+                group.target_clip_plane_crossings[2],
+                group.target_clip_plane_crossings[3],
+                group.target_clip_plane_crossings[4],
+                group.target_clip_plane_crossings[5],
+                group.hor_plus_clip_plane_crossings[0],
+                group.hor_plus_clip_plane_crossings[1],
+                group.hor_plus_clip_plane_crossings[2],
+                group.hor_plus_clip_plane_crossings[3],
+                group.hor_plus_clip_plane_crossings[4],
+                group.hor_plus_clip_plane_crossings[5],
+                group.minimum_screen_x,
+                group.minimum_screen_y,
+                group.maximum_screen_x,
+                group.maximum_screen_y,
+                group.minimum_view_z,
+                group.maximum_view_z);
+        }
+    }
+
+    // Object-level continuity is useful on its own when a resident prop
+    // flickers.  Keep it independently selectable: the broader verbose mode
+    // also emits every Hor+ margin group and can bury a one-frame transition
+    // in tens of thousands of unrelated records during a long replay.
+    if (
+        !continuity_baseline &&
+        (std::getenv("OPENGT_RENDER_SCENE_DIAGNOSTICS_VERBOSE") != nullptr ||
+            std::getenv(
+                "OPENGT_RENDER_SCENE_TRANSITION_DIAGNOSTICS") != nullptr ||
+            continuity_audit)
+    ) {
+        std::size_t details = 0;
+        for (const auto& previous : previous_groups) {
+            const auto current = std::find_if(
+                groups.begin(), groups.end(),
+                [&] (const SceneDiagnosticGroup& candidate) {
+                    return same_scene_diagnostic_group(previous, candidate);
+                });
+            const char* event = nullptr;
+            std::size_t current_commands = 0;
+            if (current == groups.end()) {
+                if (continuity_audit &&
+                    previous.target_intersections == 0)
+                    continue;
+                event = "missing";
+            } else if (
+                !continuity_audit &&
+                previous.object_kind == 1U &&
+                (previous.resident_course_commands != 0 ||
+                    current->resident_course_commands != 0) &&
+                previous.commands != current->commands
+            ) {
+                event = "track-command-count";
+                current_commands = current->commands;
+            }
+            if (event == nullptr || details++ >= 64)
+                continue;
+            std::fprintf(
+                stderr,
+                "[Render-Scene-Transition] sample=%llu frame=%llu poll=%d "
+                "camera=%016llx event=%s "
+                "channel=%s kind=%s object=%u model=%08x commands=%zu->%zu "
+                "previousTarget=%zu previousNative=%zu "
+                "previousScreen=%.1f,%.1f..%.1f,%.1f "
+                "previousViewZ=%.1f..%.1f\n",
+                static_cast<unsigned long long>(sample_index),
+                static_cast<unsigned long long>(draw_list.frame_index),
+                draw_list.input_poll,
+                static_cast<unsigned long long>(draw_list.camera_transform_id),
+                event,
+                scene_diagnostic_channel_name(previous.channel),
+                scene_diagnostic_kind_name(previous.object_kind),
+                previous.object_id,
+                previous.model_pointer,
+                previous.commands,
+                current_commands,
+                previous.target_intersections,
+                previous.native_intersections,
+                previous.minimum_screen_x,
+                previous.minimum_screen_y,
+                previous.maximum_screen_x,
+                previous.maximum_screen_y,
+                previous.minimum_view_z,
+                previous.maximum_view_z);
+        }
+        for (const auto& current : groups) {
+            const auto previous = std::find_if(
+                previous_groups.begin(), previous_groups.end(),
+                [&] (const SceneDiagnosticGroup& candidate) {
+                    return same_scene_diagnostic_group(current, candidate);
+                });
+            if (previous != previous_groups.end() ||
+                (continuity_audit && current.target_intersections == 0) ||
+                details++ >= 64)
+                continue;
+            std::fprintf(
+                stderr,
+                "[Render-Scene-Transition] sample=%llu frame=%llu poll=%d "
+                "camera=%016llx event=added "
+                "channel=%s kind=%s object=%u model=%08x commands=0->%zu "
+                "currentTarget=%zu currentNative=%zu "
+                "currentScreen=%.1f,%.1f..%.1f,%.1f "
+                "currentViewZ=%.1f..%.1f\n",
+                static_cast<unsigned long long>(sample_index),
+                static_cast<unsigned long long>(draw_list.frame_index),
+                draw_list.input_poll,
+                static_cast<unsigned long long>(draw_list.camera_transform_id),
+                scene_diagnostic_channel_name(current.channel),
+                scene_diagnostic_kind_name(current.object_kind),
+                current.object_id,
+                current.model_pointer,
+                current.commands,
+                current.target_intersections,
+                current.native_intersections,
+                current.minimum_screen_x,
+                current.minimum_screen_y,
+                current.maximum_screen_x,
+                current.maximum_screen_y,
+                current.minimum_view_z,
+                current.maximum_view_z);
+        }
+    }
+    previous_groups = std::move(groups);
+    continuity_has_baseline = true;
 }
 
 bool same_wheel_group(
@@ -965,6 +3307,12 @@ bool batch_compatible(
     const bool right_textured =
         (right_material.primitive_flags & textured_flag) != 0;
     return
+        track_overlay_layer(left_material.primitive_flags) ==
+            track_overlay_layer(right_material.primitive_flags) &&
+        (left_material.primitive_flags &
+            world_primitive_track_overlay_support_flag) ==
+            (right_material.primitive_flags &
+                world_primitive_track_overlay_support_flag) &&
         left_transparent == right_transparent &&
         (!left_transparent ||
             (left_textured == right_textured &&
@@ -1002,7 +3350,6 @@ struct GpuVertex {
 constexpr std::uint32_t replacement_mode_rgb = 0;
 constexpr std::uint32_t replacement_mode_palette_detail = 1;
 constexpr std::uint32_t perspective_uv_eligible_flag = 1U << 3U;
-constexpr float maximum_gt2_perspective_depth_ratio = 8.0F;
 
 bool is_opaque_track_surface(
     const WorldDrawCommand& command,
@@ -1040,38 +3387,18 @@ bool perspective_uv_eligible(
 ) {
     if ((material.primitive_flags & textured_flag) == 0 ||
         (material.primitive_flags &
-            (world_primitive_screen_space_flag |
-                world_primitive_temporal_seam_flag)) != 0)
+            world_primitive_screen_space_flag) != 0)
         return false;
 
-    // Resident course primitives come from GT2's authored model before the
-    // guest projects, clips, subdivides, or rejects it. Their UVs therefore
-    // describe the model surface and must follow the hardware perspective
-    // interpolation contract, including when an original polygon straddles
-    // the camera plane. D3D clips that polygon in homogeneous space before
-    // rasterization. Falling back to screen-linear UVs here magnifies a small
-    // asphalt tile across the near part of the road and recreates the affine
-    // swim the modern path exists to remove.
-    if ((material.primitive_flags &
-            world_primitive_resident_course_flag) != 0)
-        return true;
-
-    float minimum = (std::numeric_limits<float>::max)();
-    float maximum = 0.0F;
-    for (const auto& vertex : command.vertices) {
-        if (!std::isfinite(vertex.clip_w) || vertex.clip_w <= 0.0F)
-            return false;
-        minimum = (std::min)(minimum, vertex.clip_w);
-        maximum = (std::max)(maximum, vertex.clip_w);
-    }
-    // GT2 subdivides and assigns UVs for the PS1's affine rasterizer. Across
-    // very deep track strips those coordinates are deliberately close to
-    // screen-linear; treating them as an unmodified projective parameterization
-    // double-corrects the strip and expands a one-texel atlas edge into a large
-    // polygon. The original RecompOne perspective path used the same bounded
-    // depth contract. Preserve perspective correction on coherent local
-    // surfaces while the GT-specific UV-island reconstruction is developed.
-    return maximum / minimum <= maximum_gt2_perspective_depth_ratio;
+    // Every textured 3D command entering this renderer carries either GT2's
+    // authored pre-projection course surface or reconstructed model/view/clip
+    // state. Hardware interpolation is therefore the sole world-texture
+    // contract, including homogeneous near-plane clipping. A depth-ratio or
+    // temporal-seam escape to screen-linear UVs reintroduces the affine swim
+    // this renderer exists to remove. Explicit screen-space sprites and HUD
+    // were rejected above because screen-linear UVs are correct for them.
+    (void)command;
+    return true;
 }
 
 struct PerspectiveUvVertexKey {
@@ -1308,7 +3635,14 @@ std::vector<std::uint8_t> perspective_uv_island_eligibility(
     }
     for (std::size_t index = 0; index < count; ++index)
         eligible[index] = island_eligible[find_root(index)];
-    if (std::getenv("OPENGT_RENDER_UV_DIAGNOSTICS") != nullptr) {
+    static thread_local bool emitted_shipping_uv_contract = false;
+    const bool shipping_uv_contract =
+        !emitted_shipping_uv_contract &&
+        draw_list.track_commands >= 1000U;
+    if (
+        std::getenv("OPENGT_RENDER_UV_DIAGNOSTICS") != nullptr ||
+        shipping_uv_contract
+    ) {
         std::size_t textured_commands = 0;
         std::size_t island_eligible_count = 0;
         std::size_t track_fallback = 0;
@@ -1342,9 +3676,9 @@ std::vector<std::uint8_t> perspective_uv_island_eligibility(
             stderr,
             "[Render-UV] commands=%zu textured=%zu "
             "individualPerspective=%zu "
-            "islandPerspective=%zu fallback=%zu trackFallback=%zu "
-            "vehicleFallback=%zu otherFallback=%zu edgeKeys=%zu "
-            "largestIsland=%zu maxDepthRatio=%.1f\n",
+            "islandPerspective=%zu worldFallback=%zu "
+            "trackFallback=%zu vehicleFallback=%zu otherFallback=%zu "
+            "edgeKeys=%zu largestIsland=%zu projection=fixed-modern\n",
             count,
             textured_commands,
             individually_eligible,
@@ -1354,8 +3688,9 @@ std::vector<std::uint8_t> perspective_uv_island_eligibility(
             vehicle_fallback,
             other_fallback,
             edges.size(),
-            largest_island,
-            maximum_gt2_perspective_depth_ratio);
+            largest_island);
+        if (shipping_uv_contract)
+            emitted_shipping_uv_contract = true;
     }
     return eligible;
 }
@@ -1463,6 +3798,12 @@ struct PsOutput {
     float4 blendFactors : SV_Target1;
 };
 
+struct PsPriorityOutput {
+    float4 color : SV_Target0;
+    float4 blendFactors : SV_Target1;
+    float depth : SV_Depth;
+};
+
 VsOutput VSMain(VsInput input) {
     VsOutput output;
     output.position = input.position;
@@ -1515,47 +3856,82 @@ float3 TextureColor(uint word) {
         Expand5((word >> 10) & 31));
 }
 
+)" R"(
+
 struct FootprintSample {
     float3 color;
     uint word;
     bool any;
 };
 
+float3 FilteredTextureColor(
+    float2 uv,
+    uint centerWord,
+    MaterialData material);
+
 // A pixel that covers more than one source texel has to decide transparency
 // from everything it covers. GT2 keys transparency on word==0, so a single
 // point sample of a minified texture drops whatever fraction of pixels happen
-// to land on the key. Vertical scenery - signage, barriers, grandstands,
-// buildings - has no equivalent of the opaque-road texel repair, so at
-// distance it lost most of its pixels and read as invisible while the road
-// behind it kept drawing. Averaging the covered texels restores the coverage
-// a minifying sampler is supposed to produce, and only a footprint that is
-// transparent everywhere still discards, which preserves authored cutouts.
+// to land on the key. A fixed 3x3 grid still undersampled Seattle road spans
+// covering 8..31 texels in one direction and could hit nine transparent words
+// despite substantial opaque coverage between them. Follow the oriented
+// derivatives with a bounded anisotropic grid instead: up to sixteen taps on
+// the major axis and four on the minor axis. This is the indexed-VRAM
+// equivalent of modern anisotropic minification; it preserves dynamic CLUTs
+// and only discards a footprint whose sampled source coverage is all zero.
 FootprintSample SampleFootprint(
     float2 uv,
-    float2 footprint,
+    float2 uvDx,
+    float2 uvDy,
     MaterialData material
 ) {
     FootprintSample result;
     result.color = 0.0;
     result.word = 0;
     result.any = false;
-    // Three stratified taps per axis bound the cost at nine loads however
-    // small the surface becomes on screen.
-    float2 stride = footprint / 3.0;
     float coverage = 0.0;
     float nearest = 1.0e9;
-    [unroll]
-    for (int offsetV = -1; offsetV <= 1; ++offsetV) {
-        [unroll]
-        for (int offsetU = -1; offsetU <= 1; ++offsetU) {
-            float2 offset = float2(offsetU, offsetV) * stride;
+    float dxLengthSquared = dot(uvDx, uvDx);
+    float dyLengthSquared = dot(uvDy, uvDy);
+    float2 major = dxLengthSquared >= dyLengthSquared ? uvDx : uvDy;
+    float2 minor = dxLengthSquared >= dyLengthSquared ? uvDy : uvDx;
+    float majorLength = length(major);
+    float minorLength = length(minor);
+    bool compactFootprint = majorLength < 2.0 && minorLength < 2.0;
+    int majorTaps = clamp((int)ceil(majorLength), 3, 16);
+    // Retain three transverse samples even for a sub-texel minor axis. This
+    // supplies the coverage component a bilinear anisotropic tap would have;
+    // one point at the footprint centre can sit on the transparent side of a
+    // texel boundary while the same pixel still covers its opaque neighbor.
+    int minorTaps = clamp((int)ceil(minorLength), 3, 4);
+    [loop]
+    for (int majorIndex = 0; majorIndex < majorTaps; ++majorIndex) {
+        float majorAmount =
+            ((majorIndex + 0.5) / majorTaps) - 0.5;
+        [loop]
+        for (int minorIndex = 0; minorIndex < minorTaps; ++minorIndex) {
+            float minorAmount =
+                ((minorIndex + 0.5) / minorTaps) - 0.5;
+            // ddx and ddy span the actual pixel footprint in texture space.
+            // Sampling their oriented parallelogram avoids a broad
+            // axis-aligned box that would blur oblique road tiles.
+            float2 offset =
+                majorAmount * major + minorAmount * minor;
+            float2 sampleUv = uv + offset;
             uint word = TextureWord(
-                (int)floor(uv.x + offset.x + 0.0001),
-                (int)floor(uv.y + offset.y + 0.0001),
+                (int)floor(sampleUv.x + 0.0001),
+                (int)floor(sampleUv.y + 0.0001),
                 material);
             if (word == 0)
                 continue;
-            result.color += TextureColor(word);
+            // A footprint sample is itself continuous in texture space.
+            // Filtering nearest texels here made the renderer jump from
+            // bilinear sampling to a phase-dependent point grid as soon as
+            // the footprint crossed one texel, so thin arrows and road marks
+            // appeared to rotate or swap detail with distance.
+            result.color += compactFootprint
+                ? FilteredTextureColor(sampleUv, word, material)
+                : TextureColor(word);
             coverage += 1.0;
             float span = abs(offset.x) + abs(offset.y);
             if (span < nearest) {
@@ -1660,7 +4036,7 @@ float3 Quantize(float3 color, int2 pixel) {
     return ((five << 3) | (five >> 2)) / 255.0;
 }
 
-PsOutput PSMain(VsOutput input) {
+PsOutput ShadePixel(VsOutput input) {
     MaterialData material = Materials[input.commandIndex];
     bool textured = (material.primitiveFlags & 1) != 0;
     bool semitransparent = (material.primitiveFlags & 2) != 0;
@@ -1669,7 +4045,7 @@ PsOutput PSMain(VsOutput input) {
         (material.primitiveFlags & 0x80000000) != 0;
     bool perspectiveEligible =
         (material.coverageFlags & 8) != 0;
-    float2 uv = PerspectiveCorrect != 0 && perspectiveEligible
+    float2 uv = perspectiveEligible
         ? input.perspectiveUv
         : input.affineUv;
     float3 color = saturate(input.color.rgb);
@@ -1685,20 +4061,36 @@ PsOutput PSMain(VsOutput input) {
         // Screen-space HUD material keeps exact PS1 texel selection. Only a
         // world surface small enough that one pixel spans several texels
         // takes the coverage path.
-        float2 footprint = max(abs(ddx(uv)), abs(ddy(uv)));
+        float2 uvDx = ddx(uv);
+        float2 uvDy = ddy(uv);
+        float footprint = max(
+            max(abs(uvDx.x), abs(uvDx.y)),
+            max(abs(uvDy.x), abs(uvDy.y)));
         bool minified =
             FootprintCoverage != 0 &&
-            !screenSpace && max(footprint.x, footprint.y) > 1.0;
+            !screenSpace && footprint > 1.0;
         uint word = TextureWord(sampleU, sampleV, material);
+        uint centerWord = word;
         float3 recoveredColor = 0.0;
         bool coveredTexel = false;
         if (minified) {
             FootprintSample covered = SampleFootprint(
-                uv, footprint, material);
+                uv, uvDx, uvDy, material);
             if (!covered.any)
                 discard;
             word = covered.word;
             recoveredColor = covered.color;
+            // Blend continuously out of the ordinary bilinear result over
+            // the first minification octave. There is no filter-mode step at
+            // footprint 1.0, while footprints of two texels or more use the
+            // complete oriented area estimate.
+            float areaWeight = saturate(footprint - 1.0);
+            if (centerWord != 0 && areaWeight < 1.0) {
+                recoveredColor = lerp(
+                    FilteredTextureColor(uv, centerWord, material),
+                    recoveredColor,
+                    areaWeight);
+            }
             coveredTexel = true;
         } else if (word == 0) {
             if ((material.coverageFlags & 1) == 0)
@@ -1806,6 +4198,50 @@ PsOutput PSMain(VsOutput input) {
         sourceFactor);
     return output;
 }
+
+PsOutput PSMain(VsOutput input) {
+    return ShadePixel(input);
+}
+
+PsPriorityOutput PSMainRoadOverlay(VsOutput input) {
+    PsOutput shaded = ShadePixel(input);
+    PsPriorityOutput output;
+    output.color = shaded.color;
+    output.blendFactors = shaded.blendFactors;
+    // GT2 authors road paint as separate geometry on, or a few model units
+    // above, the road. Give that typed artwork a four-view-unit priority in
+    // the pixel depth result. Doing this after rasterization cannot move or
+    // near-clip the polygon, unlike modifying homogeneous Z in the vertex
+    // shader. Ordinary depth testing remains enabled, so a genuinely nearer
+    // wall or vehicle still wins.
+    // Reversed infinite depth is near/viewZ with near=16, so reducing viewZ
+    // by four units is depth/(1 - depth*4/16). Deriving the priority from the
+    // rasterized depth avoids relying on API-specific SV_Position.w meaning.
+    float priorityScale = max(1.0 - 0.25 * input.position.z, 0.75);
+    output.depth = saturate(input.position.z / priorityScale);
+    return output;
+}
+
+PsPriorityOutput PSMainRoadOverlayTint(VsOutput input) {
+    PsOutput shaded = ShadePixel(input);
+    PsPriorityOutput output;
+    output.color = float4(0.0, 1.0, 1.0, 1.0);
+    output.blendFactors = shaded.blendFactors;
+    float priorityScale = max(1.0 - 0.25 * input.position.z, 0.75);
+    output.depth = saturate(input.position.z / priorityScale);
+    return output;
+}
+
+PsOutput PSMainCommandId(VsOutput input) {
+    PsOutput output = ShadePixel(input);
+    uint encoded = input.commandIndex + 1;
+    output.color = float4(
+        float(encoded & 255) / 255.0,
+        float((encoded >> 8) & 255) / 255.0,
+        float((encoded >> 16) & 255) / 255.0,
+        1.0);
+    return output;
+}
 )";
 
 bool compile_shader(
@@ -1885,18 +4321,55 @@ ComPtr<ID3D11DepthStencilState> depth_state(
     description.DepthWriteMask = write_depth && depth_enabled
         ? D3D11_DEPTH_WRITE_MASK_ALL
         : D3D11_DEPTH_WRITE_MASK_ZERO;
-    description.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
-    description.StencilEnable = check_mask || set_mask;
+    // World vertices use reversed infinite depth (near/Z after divide).
+    // Greater values are physically nearer; equality retains deterministic
+    // authored ownership for exactly coplanar submissions.
+    description.DepthFunc = D3D11_COMPARISON_GREATER_EQUAL;
+    const bool writes_depth_owner = write_depth && depth_enabled;
+    description.StencilEnable = check_mask || set_mask || writes_depth_owner;
     description.StencilReadMask = 1;
-    description.StencilWriteMask = set_mask ? 1 : 0;
+    // Bit zero retains the PS1 mask-bit contract. Bit one records whether the
+    // nearest opaque pixel came from a road primitive that supports typed
+    // course artwork. Every depth-writing draw replaces bit one, so a nearer
+    // vehicle, wall, or other non-support surface clears road ownership.
+    description.StencilWriteMask =
+        (set_mask ? 1 : 0) | (writes_depth_owner ? 2 : 0);
     description.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
     description.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
-    description.FrontFace.StencilPassOp = set_mask
+    description.FrontFace.StencilPassOp = set_mask || writes_depth_owner
         ? D3D11_STENCIL_OP_REPLACE
         : D3D11_STENCIL_OP_KEEP;
     description.FrontFace.StencilFunc = check_mask
         ? D3D11_COMPARISON_NOT_EQUAL
         : D3D11_COMPARISON_ALWAYS;
+    description.BackFace = description.FrontFace;
+    ComPtr<ID3D11DepthStencilState> result;
+    if (FAILED(device->CreateDepthStencilState(
+            &description,
+            result.GetAddressOf())))
+        result.Reset();
+    return result;
+}
+
+ComPtr<ID3D11DepthStencilState> road_overlay_depth_state(
+    ID3D11Device* device,
+    bool check_mask
+) {
+    D3D11_DEPTH_STENCIL_DESC description{};
+    // Typed road artwork is composited wherever the nearest opaque pixel is
+    // one of its classified road supports. It therefore cannot fight that
+    // road's physical depth, while nearer vehicles and walls reject it by
+    // clearing the road-owner stencil bit during the opaque pass.
+    description.DepthEnable = FALSE;
+    description.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+    description.DepthFunc = D3D11_COMPARISON_ALWAYS;
+    description.StencilEnable = TRUE;
+    description.StencilReadMask = check_mask ? 3 : 2;
+    description.StencilWriteMask = 0;
+    description.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+    description.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+    description.FrontFace.StencilPassOp = D3D11_STENCIL_OP_KEEP;
+    description.FrontFace.StencilFunc = D3D11_COMPARISON_EQUAL;
     description.BackFace = description.FrontFace;
     ComPtr<ID3D11DepthStencilState> result;
     if (FAILED(device->CreateDepthStencilState(
@@ -2207,10 +4680,14 @@ struct BaseResources {
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<ID3D11VertexShader> vertex_shader;
     ComPtr<ID3D11PixelShader> pixel_shader;
+    ComPtr<ID3D11PixelShader> road_overlay_pixel_shader;
+    ComPtr<ID3D11PixelShader> road_overlay_tint_pixel_shader;
+    ComPtr<ID3D11PixelShader> command_id_pixel_shader;
     ComPtr<ID3D11InputLayout> input_layout;
     ComPtr<ID3D11RasterizerState> rasterizer;
     std::array<ComPtr<ID3D11BlendState>, 7> blend_states;
     ComPtr<ID3D11DepthStencilState> depth_states[2][2][2][2];
+    ComPtr<ID3D11DepthStencilState> road_overlay_depth_states[2];
     // Mutable inputs can follow the full sixteen-slot asynchronous readback
     // cadence. The low-latency authored path keeps four slots hot; a deeper
     // queue expands to the staging slot's unique resource set. In either case,
@@ -2222,11 +4699,10 @@ struct BaseResources {
     ComPtr<ID3D11RenderTargetView> color_view;
     ComPtr<ID3D11Texture2D> depth_texture;
     ComPtr<ID3D11DepthStencilView> depth_view;
-    // Four slots retain two complete midpoint/actual pairs. The renderer can
-    // therefore absorb a GPU tail longer than one 30 Hz guest interval without
-    // synchronizing the producer thread at Map. Keeping an even slot count is
-    // essential: output is consumed in midpoint/actual pairs, so odd-sized
-    // rings would eventually combine images from different authored states.
+    // Four slots retain four chronological development images, allowing a GPU
+    // tail to complete before a blocking Map. The shipping authored path uses
+    // the separate sixteen-image asynchronous ring below; the even four-slot
+    // layout remains for development-only pair-oracle compatibility.
     std::array<
         ComPtr<ID3D11Texture2D>,
         world_gpu_readback_pair_delay * 2> staging_textures;
@@ -2882,6 +5358,1425 @@ std::uint16_t raw_material_texture_word(
         vram, material, raw_u, raw_v, false, index_output);
 }
 
+// The pixel shader makes its alpha decision after perspective interpolation,
+// including the bounded anisotropic minification footprint. Geometry and
+// command-count audits cannot see a road pixel discarded by that stage, so
+// reproduce the exact centroid derivatives and texture-word taps on the CPU
+// when requested. This is deliberately read-only and bounded to an explicit
+// poll window.
+void emit_texture_coverage_diagnostics(
+    const WorldDrawList& draw_list,
+    const std::uint16_t* vram,
+    std::size_t vram_word_count,
+    const WorldGpuRenderOptions& options
+) {
+    if (std::getenv("OPENGT_RENDER_TEXTURE_COVERAGE_DIAGNOSTICS") == nullptr ||
+        vram == nullptr || vram_word_count < 1024U * 512U ||
+        options.synthetic_midpoint)
+        return;
+    std::int32_t start_poll = 0;
+    std::int32_t end_poll = (std::numeric_limits<std::int32_t>::max)();
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_TEXTURE_COVERAGE_DIAGNOSTICS_START_POLL")) {
+        start_poll = static_cast<std::int32_t>(std::strtol(
+            configured, nullptr, 10));
+    }
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_TEXTURE_COVERAGE_DIAGNOSTICS_END_POLL")) {
+        end_poll = static_cast<std::int32_t>(std::strtol(
+            configured, nullptr, 10));
+    }
+    if (draw_list.input_poll < start_poll || draw_list.input_poll > end_poll)
+        return;
+    static thread_local std::uint64_t sample = 0;
+    std::uint64_t interval = 1;
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_TEXTURE_COVERAGE_DIAGNOSTICS_INTERVAL")) {
+        const unsigned long parsed = std::strtoul(configured, nullptr, 10);
+        if (parsed != 0)
+            interval = parsed;
+    }
+    if ((sample++ % interval) != 0)
+        return;
+
+    const std::uint32_t output_scale = (std::max)(options.output_scale, 1U);
+    const std::uint32_t target_width =
+        world_gpu_target_display_width(draw_list, options);
+    const double output_width =
+        static_cast<double>(target_width) * output_scale;
+    const double output_height =
+        static_cast<double>(draw_list.display_height) * output_scale;
+    const double horizontal_scale =
+        static_cast<double>(draw_list.display_width) / target_width;
+    std::size_t opaque_target = 0;
+    std::size_t minified = 0;
+    std::size_t center_zero = 0;
+    std::size_t partial_zero_footprints = 0;
+    std::size_t all_zero_footprints = 0;
+    std::size_t sparse_footprint_misses = 0;
+    std::size_t densely_transparent_footprints = 0;
+    std::size_t maximum_dense_grid = 0;
+    std::size_t maximum_filter_samples = 0;
+    double maximum_footprint = 0.0;
+    std::size_t verbose_count = 0;
+    const bool verbose = std::getenv(
+        "OPENGT_RENDER_TEXTURE_COVERAGE_DIAGNOSTICS_VERBOSE") != nullptr;
+
+    for (std::size_t command_index = 0;
+         command_index < draw_list.commands.size();
+         ++command_index) {
+        const auto& command = draw_list.commands[command_index];
+        if (command.material_index >= draw_list.materials.size())
+            continue;
+        const auto& material = draw_list.materials[command.material_index];
+        if (!is_opaque_track_surface(command, material))
+            continue;
+        bool in_front = true;
+        std::array<double, 3> screen_x{};
+        std::array<double, 3> screen_y{};
+        std::array<double, 3> reciprocal_w{};
+        double minimum_x = (std::numeric_limits<double>::max)();
+        double maximum_x = (std::numeric_limits<double>::lowest)();
+        double minimum_y = (std::numeric_limits<double>::max)();
+        double maximum_y = (std::numeric_limits<double>::lowest)();
+        for (std::size_t vertex = 0; vertex < 3; ++vertex) {
+            const auto& source = command.vertices[vertex];
+            if (!std::isfinite(source.clip_w) || source.clip_w < 16.0F) {
+                in_front = false;
+                break;
+            }
+            reciprocal_w[vertex] = 1.0 / source.clip_w;
+            screen_x[vertex] =
+                (source.clip_x * horizontal_scale * reciprocal_w[vertex] *
+                    0.5 + 0.5) * output_width;
+            screen_y[vertex] =
+                (-source.clip_y * reciprocal_w[vertex] * 0.5 + 0.5) *
+                    output_height;
+            minimum_x = (std::min)(minimum_x, screen_x[vertex]);
+            maximum_x = (std::max)(maximum_x, screen_x[vertex]);
+            minimum_y = (std::min)(minimum_y, screen_y[vertex]);
+            maximum_y = (std::max)(maximum_y, screen_y[vertex]);
+        }
+        if (!in_front || maximum_x < 0.0 || minimum_x >= output_width ||
+            maximum_y < 0.0 || minimum_y >= output_height)
+            continue;
+        ++opaque_target;
+
+        const double denominator =
+            (screen_y[1] - screen_y[2]) *
+                (screen_x[0] - screen_x[2]) +
+            (screen_x[2] - screen_x[1]) *
+                (screen_y[0] - screen_y[2]);
+        if (!std::isfinite(denominator) || std::abs(denominator) < 1.0e-12)
+            continue;
+        const std::array<double, 3> lambda_dx{{
+            (screen_y[1] - screen_y[2]) / denominator,
+            (screen_y[2] - screen_y[0]) / denominator,
+            (screen_y[0] - screen_y[1]) / denominator,
+        }};
+        const std::array<double, 3> lambda_dy{{
+            (screen_x[2] - screen_x[1]) / denominator,
+            (screen_x[0] - screen_x[2]) / denominator,
+            (screen_x[1] - screen_x[0]) / denominator,
+        }};
+        double q = 0.0;
+        double numerator_u = 0.0;
+        double numerator_v = 0.0;
+        double q_dx = 0.0;
+        double q_dy = 0.0;
+        double numerator_u_dx = 0.0;
+        double numerator_u_dy = 0.0;
+        double numerator_v_dx = 0.0;
+        double numerator_v_dy = 0.0;
+        for (std::size_t vertex = 0; vertex < 3; ++vertex) {
+            const double weighted_u =
+                command.vertices[vertex].u * reciprocal_w[vertex];
+            const double weighted_v =
+                command.vertices[vertex].v * reciprocal_w[vertex];
+            q += reciprocal_w[vertex] / 3.0;
+            numerator_u += weighted_u / 3.0;
+            numerator_v += weighted_v / 3.0;
+            q_dx += lambda_dx[vertex] * reciprocal_w[vertex];
+            q_dy += lambda_dy[vertex] * reciprocal_w[vertex];
+            numerator_u_dx += lambda_dx[vertex] * weighted_u;
+            numerator_u_dy += lambda_dy[vertex] * weighted_u;
+            numerator_v_dx += lambda_dx[vertex] * weighted_v;
+            numerator_v_dy += lambda_dy[vertex] * weighted_v;
+        }
+        if (!std::isfinite(q) || std::abs(q) < 1.0e-18)
+            continue;
+        const double q_squared = q * q;
+        const double u = numerator_u / q;
+        const double v = numerator_v / q;
+        const double du_dx =
+            (numerator_u_dx * q - numerator_u * q_dx) / q_squared;
+        const double du_dy =
+            (numerator_u_dy * q - numerator_u * q_dy) / q_squared;
+        const double dv_dx =
+            (numerator_v_dx * q - numerator_v * q_dx) / q_squared;
+        const double dv_dy =
+            (numerator_v_dy * q - numerator_v * q_dy) / q_squared;
+        const double footprint_u = (std::max)(std::abs(du_dx), std::abs(du_dy));
+        const double footprint_v = (std::max)(std::abs(dv_dx), std::abs(dv_dy));
+        const double footprint = (std::max)(footprint_u, footprint_v);
+        maximum_footprint = (std::max)(maximum_footprint, footprint);
+        if (!(footprint > 1.0))
+            continue;
+        ++minified;
+        const bool zero_center = material_texture_word(
+            vram,
+            material,
+            static_cast<std::int32_t>(std::floor(u + 0.0001)),
+            static_cast<std::int32_t>(std::floor(v + 0.0001))) == 0;
+        center_zero += zero_center ? 1U : 0U;
+        const double dx_length_squared = du_dx * du_dx + dv_dx * dv_dx;
+        const double dy_length_squared = du_dy * du_dy + dv_dy * dv_dy;
+        const bool dx_major = dx_length_squared >= dy_length_squared;
+        const double major_u = dx_major ? du_dx : du_dy;
+        const double major_v = dx_major ? dv_dx : dv_dy;
+        const double minor_u = dx_major ? du_dy : du_dx;
+        const double minor_v = dx_major ? dv_dy : dv_dx;
+        const std::size_t major_taps = static_cast<std::size_t>(std::clamp(
+            std::ceil(std::sqrt((std::max)(
+                dx_length_squared, dy_length_squared))),
+            3.0,
+            16.0));
+        const std::size_t minor_taps = static_cast<std::size_t>(std::clamp(
+            std::ceil(std::sqrt((std::min)(
+                dx_length_squared, dy_length_squared))),
+            3.0,
+            4.0));
+        const std::size_t filter_samples = major_taps * minor_taps;
+        maximum_filter_samples = (std::max)(
+            maximum_filter_samples, filter_samples);
+        std::size_t zero_taps = 0;
+        for (std::size_t major_index = 0;
+             major_index < major_taps;
+             ++major_index) {
+            const double major_amount =
+                (major_index + 0.5) / major_taps - 0.5;
+            for (std::size_t minor_index = 0;
+                 minor_index < minor_taps;
+                 ++minor_index) {
+                const double minor_amount =
+                    (minor_index + 0.5) / minor_taps - 0.5;
+                const double sample_u =
+                    u + major_amount * major_u + minor_amount * minor_u;
+                const double sample_v =
+                    v + major_amount * major_v + minor_amount * minor_v;
+                zero_taps += material_texture_word(
+                    vram,
+                    material,
+                    static_cast<std::int32_t>(std::floor(sample_u + 0.0001)),
+                    static_cast<std::int32_t>(std::floor(sample_v + 0.0001))) == 0
+                    ? 1U
+                    : 0U;
+            }
+        }
+        partial_zero_footprints += zero_taps != 0 ? 1U : 0U;
+        all_zero_footprints += zero_taps == filter_samples ? 1U : 0U;
+        std::size_t dense_nonzero = 0;
+        std::size_t dense_grid = 0;
+        if (zero_taps == filter_samples) {
+            // Audit a denser reference grid only for a bounded-filter miss:
+            // one sample per source texel along the longest derivative
+            // (capped for a pathological sliver) distinguishes truly
+            // transparent artwork from remaining undersampling.
+            dense_grid = static_cast<std::size_t>(std::clamp(
+                std::ceil(std::sqrt((std::max)(
+                    dx_length_squared, dy_length_squared))),
+                3.0,
+                65.0));
+            maximum_dense_grid = (std::max)(maximum_dense_grid, dense_grid);
+            for (std::size_t sample_y = 0;
+                 sample_y < dense_grid;
+                 ++sample_y) {
+                const double along_y =
+                    (sample_y + 0.5) / dense_grid - 0.5;
+                for (std::size_t sample_x = 0;
+                     sample_x < dense_grid;
+                     ++sample_x) {
+                    const double along_x =
+                        (sample_x + 0.5) / dense_grid - 0.5;
+                    const double sample_u =
+                        u + along_x * du_dx + along_y * du_dy;
+                    const double sample_v =
+                        v + along_x * dv_dx + along_y * dv_dy;
+                    dense_nonzero += material_texture_word(
+                        vram,
+                        material,
+                        static_cast<std::int32_t>(
+                            std::floor(sample_u + 0.0001)),
+                        static_cast<std::int32_t>(
+                            std::floor(sample_v + 0.0001))) != 0
+                        ? 1U
+                        : 0U;
+                }
+            }
+            sparse_footprint_misses += dense_nonzero != 0 ? 1U : 0U;
+            densely_transparent_footprints += dense_nonzero == 0 ? 1U : 0U;
+        }
+        if (verbose && zero_taps != 0 && verbose_count++ < 128) {
+            std::fprintf(
+                stderr,
+                "[Render-Texture-Coverage-Command] frame=%llu poll=%d "
+                "command=%zu source=%u object=%u model=%08x ot=%d "
+                "screen=%.1f,%.1f..%.1f,%.1f uv=%.3f,%.3f "
+                "footprint=%.3f,%.3f zero=%zu/%zu centerZero=%u "
+                "filter=%zux%zu "
+                "dense=%zu/%zu "
+                "tpage=%04x clut=%04x z=%.1f/%.1f/%.1f\n",
+                static_cast<unsigned long long>(draw_list.frame_index),
+                draw_list.input_poll,
+                command_index,
+                command.source_command_index,
+                command.object_id,
+                command.model_pointer,
+                command.ordering_table_index,
+                minimum_x,
+                minimum_y,
+                maximum_x,
+                maximum_y,
+                u,
+                v,
+                footprint_u,
+                footprint_v,
+                zero_taps,
+                filter_samples,
+                zero_center ? 1U : 0U,
+                major_taps,
+                minor_taps,
+                dense_nonzero,
+                dense_grid * dense_grid,
+                material.texture_page,
+                material.clut,
+                command.vertices[0].view_z,
+                command.vertices[1].view_z,
+                command.vertices[2].view_z);
+        }
+    }
+    std::fprintf(
+        stderr,
+        "[Render-Texture-Coverage] frame=%llu poll=%d "
+        "opaqueTarget=%zu minified=%zu centerZero=%zu "
+        "partialZero=%zu allZero=%zu sparseMiss=%zu denseTransparent=%zu "
+        "maxFilterSamples=%zu maxDenseGrid=%zu maxFootprint=%.3f\n",
+        static_cast<unsigned long long>(draw_list.frame_index),
+        draw_list.input_poll,
+        opaque_target,
+        minified,
+        center_zero,
+        partial_zero_footprints,
+        all_zero_footprints,
+        sparse_footprint_misses,
+        densely_transparent_footprints,
+        maximum_filter_samples,
+        maximum_dense_grid,
+        maximum_footprint);
+}
+
+// A distant billboard that appears rotated can be caused by at least four
+// independent inputs: different UVs/materials, mutable VRAM contents, a
+// projection-orientation change, or ordinary foreground occlusion. Preserve
+// the first three as a compact per-command time series; pixel provenance can
+// then be enabled only for the exact screen point where ownership is in doubt.
+// This diagnostic is deliberately data-only and bounded by explicit filters.
+void emit_texture_instance_diagnostics(
+    const WorldDrawList& draw_list,
+    const std::uint16_t* vram,
+    std::size_t vram_word_count,
+    const WorldGpuRenderOptions& options
+) {
+    if (std::getenv("OPENGT_RENDER_TEXTURE_INSTANCE_DIAGNOSTICS") == nullptr ||
+        vram == nullptr || vram_word_count < 1024U * 512U ||
+        options.synthetic_midpoint)
+        return;
+
+    std::int32_t start_poll = 0;
+    std::int32_t end_poll = (std::numeric_limits<std::int32_t>::max)();
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_TEXTURE_INSTANCE_DIAGNOSTICS_START_POLL")) {
+        start_poll = static_cast<std::int32_t>(std::strtol(
+            configured, nullptr, 10));
+    }
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_TEXTURE_INSTANCE_DIAGNOSTICS_END_POLL")) {
+        end_poll = static_cast<std::int32_t>(std::strtol(
+            configured, nullptr, 10));
+    }
+    if (draw_list.input_poll < start_poll || draw_list.input_poll > end_poll)
+        return;
+
+    static thread_local std::uint64_t sample = 0;
+    std::uint64_t interval = 1;
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_TEXTURE_INSTANCE_DIAGNOSTICS_INTERVAL")) {
+        const unsigned long parsed = std::strtoul(configured, nullptr, 10);
+        if (parsed != 0)
+            interval = parsed;
+    }
+    if ((sample++ % interval) != 0)
+        return;
+
+    const auto parse_optional_u32 = [] (
+        const char* name,
+        std::uint32_t* value
+    ) {
+        const char* configured = std::getenv(name);
+        if (configured == nullptr || configured[0] == '\0')
+            return false;
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(configured, &end, 0);
+        if (end == configured || *end != '\0')
+            return false;
+        *value = static_cast<std::uint32_t>(parsed);
+        return true;
+    };
+    std::uint32_t requested_object = 0;
+    std::uint32_t requested_model = 0;
+    std::uint32_t requested_tpage = 0;
+    std::uint32_t requested_clut = 0;
+    const bool filter_object = parse_optional_u32(
+        "OPENGT_RENDER_TEXTURE_INSTANCE_DIAGNOSTICS_OBJECT",
+        &requested_object);
+    const bool filter_model = parse_optional_u32(
+        "OPENGT_RENDER_TEXTURE_INSTANCE_DIAGNOSTICS_MODEL",
+        &requested_model);
+    const bool filter_tpage = parse_optional_u32(
+        "OPENGT_RENDER_TEXTURE_INSTANCE_DIAGNOSTICS_TPAGE",
+        &requested_tpage);
+    const bool filter_clut = parse_optional_u32(
+        "OPENGT_RENDER_TEXTURE_INSTANCE_DIAGNOSTICS_CLUT",
+        &requested_clut);
+    const bool overlay_only = std::getenv(
+        "OPENGT_RENDER_TEXTURE_INSTANCE_DIAGNOSTICS_OVERLAY_ONLY") != nullptr;
+
+    const std::uint32_t output_scale = (std::max)(options.output_scale, 1U);
+    const std::uint32_t target_width =
+        world_gpu_target_display_width(draw_list, options);
+    const double output_width =
+        static_cast<double>(target_width) * output_scale;
+    const double output_height =
+        static_cast<double>(draw_list.display_height) * output_scale;
+    const double horizontal_scale =
+        static_cast<double>(draw_list.display_width) / target_width;
+    std::size_t matched = 0;
+
+    for (std::size_t command_index = 0;
+         command_index < draw_list.commands.size();
+         ++command_index) {
+        const auto& command = draw_list.commands[command_index];
+        if (command.material_index >= draw_list.materials.size())
+            continue;
+        const auto& material = draw_list.materials[command.material_index];
+        if ((material.primitive_flags & textured_flag) == 0 ||
+            (material.primitive_flags & world_primitive_screen_space_flag) != 0 ||
+            (overlay_only && track_overlay_layer(
+                material.primitive_flags) == 0) ||
+            (filter_object && command.object_id != requested_object) ||
+            (filter_model && command.model_pointer != requested_model) ||
+            (filter_tpage && material.texture_page != requested_tpage) ||
+            (filter_clut && material.clut != requested_clut))
+            continue;
+
+        const DiagnosticClipResult clipped =
+            diagnostic_homogeneous_clip(command, horizontal_scale);
+        if (!clipped.finite || clipped.vertex_count < 3)
+            continue;
+        double minimum_x = (std::numeric_limits<double>::max)();
+        double minimum_y = (std::numeric_limits<double>::max)();
+        double maximum_x = (std::numeric_limits<double>::lowest)();
+        double maximum_y = (std::numeric_limits<double>::lowest)();
+        for (std::size_t vertex = 0; vertex < clipped.vertex_count; ++vertex) {
+            const auto& source = clipped.vertices[vertex];
+            const double reciprocal_w = 1.0 / source.w;
+            const double x =
+                (source.x * reciprocal_w * 0.5 + 0.5) * output_width;
+            const double y =
+                (-source.y * reciprocal_w * 0.5 + 0.5) * output_height;
+            minimum_x = (std::min)(minimum_x, x);
+            minimum_y = (std::min)(minimum_y, y);
+            maximum_x = (std::max)(maximum_x, x);
+            maximum_y = (std::max)(maximum_y, y);
+        }
+        const bool on_screen = maximum_x >= 0.0 && minimum_x < output_width &&
+            maximum_y >= 0.0 && minimum_y < output_height;
+
+        std::array<double, 3> screen_x{};
+        std::array<double, 3> screen_y{};
+        bool original_projectable = true;
+        double minimum_view_z = (std::numeric_limits<double>::max)();
+        double maximum_view_z = (std::numeric_limits<double>::lowest)();
+        for (std::size_t vertex = 0; vertex < 3; ++vertex) {
+            const auto& source = command.vertices[vertex];
+            minimum_view_z = (std::min)(
+                minimum_view_z, static_cast<double>(source.view_z));
+            maximum_view_z = (std::max)(
+                maximum_view_z, static_cast<double>(source.view_z));
+            if (!std::isfinite(source.clip_w) || source.clip_w <= 0.0F) {
+                original_projectable = false;
+                continue;
+            }
+            const double reciprocal_w = 1.0 / source.clip_w;
+            screen_x[vertex] =
+                (source.clip_x * horizontal_scale * reciprocal_w * 0.5 + 0.5) *
+                output_width;
+            screen_y[vertex] =
+                (-source.clip_y * reciprocal_w * 0.5 + 0.5) * output_height;
+        }
+        const double screen_determinant = original_projectable
+            ? (screen_x[1] - screen_x[0]) * (screen_y[2] - screen_y[0]) -
+                (screen_y[1] - screen_y[0]) * (screen_x[2] - screen_x[0])
+            : 0.0;
+        const double uv_determinant =
+            (command.vertices[1].u - command.vertices[0].u) *
+                (command.vertices[2].v - command.vertices[0].v) -
+            (command.vertices[1].v - command.vertices[0].v) *
+                (command.vertices[2].u - command.vertices[0].u);
+        const int orientation = std::abs(screen_determinant) <= 1.0e-12 ||
+                std::abs(uv_determinant) <= 1.0e-12
+            ? 0
+            : (screen_determinant * uv_determinant < 0.0 ? -1 : 1);
+
+        const std::int32_t minimum_u = static_cast<std::int32_t>(std::floor(
+            (std::min)({command.vertices[0].u, command.vertices[1].u,
+                command.vertices[2].u})));
+        const std::int32_t maximum_u = static_cast<std::int32_t>(std::ceil(
+            (std::max)({command.vertices[0].u, command.vertices[1].u,
+                command.vertices[2].u})));
+        const std::int32_t minimum_v = static_cast<std::int32_t>(std::floor(
+            (std::min)({command.vertices[0].v, command.vertices[1].v,
+                command.vertices[2].v})));
+        const std::int32_t maximum_v = static_cast<std::int32_t>(std::ceil(
+            (std::max)({command.vertices[0].v, command.vertices[1].v,
+                command.vertices[2].v})));
+        std::uint64_t texture_hash = 1469598103934665603ULL;
+        const std::int32_t span_u = (std::min)(maximum_u - minimum_u + 1, 256);
+        const std::int32_t span_v = (std::min)(maximum_v - minimum_v + 1, 256);
+        for (std::int32_t y = 0; y < span_v; ++y) {
+            for (std::int32_t x = 0; x < span_u; ++x) {
+                const std::uint16_t word = material_texture_word(
+                    vram, material, minimum_u + x, minimum_v + y);
+                texture_hash ^= word;
+                texture_hash *= 1099511628211ULL;
+            }
+        }
+        const std::array<std::uint16_t, 3> corner_words{{
+            material_texture_word(vram, material,
+                static_cast<std::int32_t>(std::floor(command.vertices[0].u)),
+                static_cast<std::int32_t>(std::floor(command.vertices[0].v))),
+            material_texture_word(vram, material,
+                static_cast<std::int32_t>(std::floor(command.vertices[1].u)),
+                static_cast<std::int32_t>(std::floor(command.vertices[1].v))),
+            material_texture_word(vram, material,
+                static_cast<std::int32_t>(std::floor(command.vertices[2].u)),
+                static_cast<std::int32_t>(std::floor(command.vertices[2].v))),
+        }};
+
+        std::fprintf(
+            stderr,
+            "[Render-Texture-Instance] frame=%llu poll=%d command=%zu "
+            "source=%u kind=%u object=%u model=%08x transform=%016llx "
+            "channel=%u tpage=%04x clut=%04x flags=%08x "
+            "screen=%.2f,%.2f..%.2f,%.2f onScreen=%u clipped=%u/%zu "
+            "viewZ=%.3f..%.3f uv=%u,%u/%u,%u/%u,%u "
+            "rgb=%u,%u,%u/%u,%u,%u/%u,%u,%u "
+            "screenDet=%.6f uvDet=%.6f orientation=%d "
+            "textureRect=%d,%d..%d,%d textureHash=%016llx "
+            "cornerWords=%04x/%04x/%04x window=%d,%d/%d,%d\n",
+            static_cast<unsigned long long>(draw_list.frame_index),
+            draw_list.input_poll,
+            command_index,
+            command.source_command_index,
+            command.object_kind,
+            command.object_id,
+            command.model_pointer,
+            static_cast<unsigned long long>(command.transform_id),
+            static_cast<unsigned>(command.channel),
+            material.texture_page,
+            material.clut,
+            material.primitive_flags,
+            minimum_x,
+            minimum_y,
+            maximum_x,
+            maximum_y,
+            on_screen ? 1U : 0U,
+            clipped.vertex_count != 3 ? 1U : 0U,
+            clipped.vertex_count,
+            minimum_view_z,
+            maximum_view_z,
+            static_cast<unsigned>(command.vertices[0].u),
+            static_cast<unsigned>(command.vertices[0].v),
+            static_cast<unsigned>(command.vertices[1].u),
+            static_cast<unsigned>(command.vertices[1].v),
+            static_cast<unsigned>(command.vertices[2].u),
+            static_cast<unsigned>(command.vertices[2].v),
+            static_cast<unsigned>(command.vertices[0].r),
+            static_cast<unsigned>(command.vertices[0].g),
+            static_cast<unsigned>(command.vertices[0].b),
+            static_cast<unsigned>(command.vertices[1].r),
+            static_cast<unsigned>(command.vertices[1].g),
+            static_cast<unsigned>(command.vertices[1].b),
+            static_cast<unsigned>(command.vertices[2].r),
+            static_cast<unsigned>(command.vertices[2].g),
+            static_cast<unsigned>(command.vertices[2].b),
+            screen_determinant,
+            uv_determinant,
+            orientation,
+            minimum_u,
+            minimum_v,
+            maximum_u,
+            maximum_v,
+            static_cast<unsigned long long>(texture_hash),
+            corner_words[0],
+            corner_words[1],
+            corner_words[2],
+            material.texture_mask_x,
+            material.texture_mask_y,
+            material.texture_offset_x,
+            material.texture_offset_y);
+        ++matched;
+    }
+    std::fprintf(
+        stderr,
+        "[Render-Texture-Instance-Summary] frame=%llu poll=%d matched=%zu\n",
+        static_cast<unsigned long long>(draw_list.frame_index),
+        draw_list.input_poll,
+        matched);
+}
+
+struct PixelProvenanceCandidate {
+    std::size_t command_index{};
+    double depth{};
+    double view_z{};
+    double u{};
+    double v{};
+    double footprint_u{};
+    double footprint_v{};
+    double minimum_x{};
+    double minimum_y{};
+    double maximum_x{};
+    double maximum_y{};
+    std::uint16_t word{};
+    std::size_t zero_taps{};
+    std::size_t filter_taps{1};
+    double color_r{};
+    double color_g{};
+    double color_b{};
+    double sample_r{};
+    double sample_g{};
+    double sample_b{};
+    double output_r{};
+    double output_g{};
+    double output_b{};
+    bool discarded{};
+    bool homogeneous_clipped{};
+    std::size_t clipped_vertex_count{};
+};
+
+void emit_pixel_provenance_diagnostics(
+    const WorldDrawList& draw_list,
+    const std::uint16_t* vram,
+    std::size_t vram_word_count,
+    const WorldGpuRenderOptions& options
+) {
+    const char* configured_points = std::getenv(
+        "OPENGT_RENDER_PIXEL_PROVENANCE_POINTS");
+    if (configured_points == nullptr || configured_points[0] == '\0' ||
+        vram == nullptr || vram_word_count < 1024U * 512U ||
+        options.synthetic_midpoint)
+        return;
+    std::int32_t start_poll = 0;
+    std::int32_t end_poll = (std::numeric_limits<std::int32_t>::max)();
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_PIXEL_PROVENANCE_START_POLL")) {
+        start_poll = static_cast<std::int32_t>(std::strtol(
+            configured, nullptr, 10));
+    }
+    if (const char* configured = std::getenv(
+            "OPENGT_RENDER_PIXEL_PROVENANCE_END_POLL")) {
+        end_poll = static_cast<std::int32_t>(std::strtol(
+            configured, nullptr, 10));
+    }
+    if (draw_list.input_poll < start_poll || draw_list.input_poll > end_poll)
+        return;
+
+    std::vector<std::array<double, 2>> points;
+    const char* cursor = configured_points;
+    while (*cursor != '\0' && points.size() < 32) {
+        char* after_x = nullptr;
+        const double x = std::strtod(cursor, &after_x);
+        if (after_x == cursor || *after_x != ',')
+            break;
+        char* after_y = nullptr;
+        const double y = std::strtod(after_x + 1, &after_y);
+        if (after_y == after_x + 1 || !std::isfinite(x) || !std::isfinite(y))
+            break;
+        points.push_back({x, y});
+        cursor = after_y;
+        if (*cursor == ';')
+            ++cursor;
+        else if (*cursor != '\0')
+            break;
+    }
+    if (points.empty())
+        return;
+
+    const std::uint32_t output_scale = (std::max)(options.output_scale, 1U);
+    const std::uint32_t target_width =
+        world_gpu_target_display_width(draw_list, options);
+    const double output_width =
+        static_cast<double>(target_width) * output_scale;
+    const double output_height =
+        static_cast<double>(draw_list.display_height) * output_scale;
+    const double horizontal_scale =
+        static_cast<double>(draw_list.display_width) / target_width;
+    const double horizontal_margin =
+        (output_width -
+            static_cast<double>(draw_list.display_width) * output_scale) * 0.5;
+
+    for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
+        const double point_x = points[point_index][0];
+        const double point_y = points[point_index][1];
+        std::vector<PixelProvenanceCandidate> candidates;
+        for (std::size_t command_index = 0;
+             command_index < draw_list.commands.size();
+             ++command_index) {
+            const auto& command = draw_list.commands[command_index];
+            if (command.material_index >= draw_list.materials.size())
+                continue;
+            const auto& material = draw_list.materials[command.material_index];
+            const DiagnosticClipResult post_clip =
+                diagnostic_homogeneous_clip(command, horizontal_scale);
+            if (!post_clip.finite || post_clip.vertex_count < 3)
+                continue;
+            std::array<double, 16> polygon_screen_x{};
+            std::array<double, 16> polygon_screen_y{};
+            double minimum_x = (std::numeric_limits<double>::max)();
+            double minimum_y = (std::numeric_limits<double>::max)();
+            double maximum_x = (std::numeric_limits<double>::lowest)();
+            double maximum_y = (std::numeric_limits<double>::lowest)();
+            for (std::size_t vertex = 0;
+                 vertex < post_clip.vertex_count;
+                 ++vertex) {
+                const auto& source = post_clip.vertices[vertex];
+                const double reciprocal_w = 1.0 / source.w;
+                polygon_screen_x[vertex] =
+                    (source.x * reciprocal_w * 0.5 + 0.5) * output_width;
+                polygon_screen_y[vertex] =
+                    (-source.y * reciprocal_w * 0.5 + 0.5) * output_height;
+                minimum_x = (std::min)(
+                    minimum_x, polygon_screen_x[vertex]);
+                minimum_y = (std::min)(
+                    minimum_y, polygon_screen_y[vertex]);
+                maximum_x = (std::max)(
+                    maximum_x, polygon_screen_x[vertex]);
+                maximum_y = (std::max)(
+                    maximum_y, polygon_screen_y[vertex]);
+            }
+            if (point_x < minimum_x || point_x > maximum_x ||
+                point_y < minimum_y || point_y > maximum_y)
+                continue;
+
+            // Match the command's actual D3D scissor. In Hor+ the full main
+            // world may use the widened target, while a partial authored draw
+            // area remains centred in the original 4:3 viewport.
+            const bool full_main_world_scissor =
+                command.channel == WorldViewChannel::main_view &&
+                command.clip_x0 <= draw_list.display_x &&
+                command.clip_x1 >=
+                    draw_list.display_x + draw_list.display_width - 1;
+            const double scissor_left = full_main_world_scissor
+                ? 0.0
+                : std::clamp(
+                    static_cast<double>(
+                        (command.clip_x0 - draw_list.display_x) *
+                            static_cast<std::int32_t>(output_scale)) +
+                        horizontal_margin,
+                    0.0,
+                    output_width);
+            const double scissor_top = std::clamp(
+                static_cast<double>(
+                    (command.clip_y0 - draw_list.display_y) *
+                        static_cast<std::int32_t>(output_scale)),
+                0.0,
+                output_height);
+            const double scissor_right = full_main_world_scissor
+                ? output_width
+                : std::clamp(
+                    static_cast<double>(
+                        (command.clip_x1 - draw_list.display_x + 1) *
+                            static_cast<std::int32_t>(output_scale)) +
+                        horizontal_margin,
+                    0.0,
+                    output_width);
+            const double scissor_bottom = std::clamp(
+                static_cast<double>(
+                    (command.clip_y1 - draw_list.display_y + 1) *
+                        static_cast<std::int32_t>(output_scale)),
+                0.0,
+                output_height);
+            if (point_x < scissor_left || point_x >= scissor_right ||
+                point_y < scissor_top || point_y >= scissor_bottom)
+                continue;
+
+            // A clipped triangle is a convex polygon. D3D rasterizes the same
+            // fan, so find the fan triangle containing this output pixel and
+            // use its post-clip vertices for depth and attribute interpolation.
+            std::array<DiagnosticClipVertex, 3> raster_vertices{};
+            std::array<double, 3> screen_x{};
+            std::array<double, 3> screen_y{};
+            std::array<double, 3> weights{};
+            double denominator = 0.0;
+            bool contains_point = false;
+            for (std::size_t fan = 1;
+                 fan + 1 < post_clip.vertex_count;
+                 ++fan) {
+                const std::array<std::size_t, 3> indices{{0, fan, fan + 1}};
+                for (std::size_t vertex = 0; vertex < 3; ++vertex) {
+                    raster_vertices[vertex] = post_clip.vertices[indices[vertex]];
+                    screen_x[vertex] = polygon_screen_x[indices[vertex]];
+                    screen_y[vertex] = polygon_screen_y[indices[vertex]];
+                }
+                denominator =
+                    (screen_y[1] - screen_y[2]) *
+                        (screen_x[0] - screen_x[2]) +
+                    (screen_x[2] - screen_x[1]) *
+                        (screen_y[0] - screen_y[2]);
+                if (!std::isfinite(denominator) ||
+                    std::abs(denominator) < 1.0e-12)
+                    continue;
+                weights[0] =
+                    ((screen_y[1] - screen_y[2]) *
+                            (point_x - screen_x[2]) +
+                        (screen_x[2] - screen_x[1]) *
+                            (point_y - screen_y[2])) / denominator;
+                weights[1] =
+                    ((screen_y[2] - screen_y[0]) *
+                            (point_x - screen_x[2]) +
+                        (screen_x[0] - screen_x[2]) *
+                            (point_y - screen_y[2])) / denominator;
+                weights[2] = 1.0 - weights[0] - weights[1];
+                if (weights[0] >= -1.0e-8 &&
+                    weights[1] >= -1.0e-8 &&
+                    weights[2] >= -1.0e-8) {
+                    contains_point = true;
+                    break;
+                }
+            }
+            if (!contains_point)
+                continue;
+            const std::array<double, 3> lambda_dx{{
+                (screen_y[1] - screen_y[2]) / denominator,
+                (screen_y[2] - screen_y[0]) / denominator,
+                (screen_y[0] - screen_y[1]) / denominator,
+            }};
+            const std::array<double, 3> lambda_dy{{
+                (screen_x[2] - screen_x[1]) / denominator,
+                (screen_x[0] - screen_x[2]) / denominator,
+                (screen_x[1] - screen_x[0]) / denominator,
+            }};
+            double q = 0.0;
+            double numerator_u = 0.0;
+            double numerator_v = 0.0;
+            double q_dx = 0.0;
+            double q_dy = 0.0;
+            double numerator_u_dx = 0.0;
+            double numerator_u_dy = 0.0;
+            double numerator_v_dx = 0.0;
+            double numerator_v_dy = 0.0;
+            double depth = 0.0;
+            for (std::size_t vertex = 0; vertex < 3; ++vertex) {
+                const double reciprocal_w = 1.0 / raster_vertices[vertex].w;
+                const double weighted_u =
+                    raster_vertices[vertex].u * reciprocal_w;
+                const double weighted_v =
+                    raster_vertices[vertex].v * reciprocal_w;
+                q += weights[vertex] * reciprocal_w;
+                numerator_u += weights[vertex] * weighted_u;
+                numerator_v += weights[vertex] * weighted_v;
+                q_dx += lambda_dx[vertex] * reciprocal_w;
+                q_dy += lambda_dy[vertex] * reciprocal_w;
+                numerator_u_dx += lambda_dx[vertex] * weighted_u;
+                numerator_u_dy += lambda_dy[vertex] * weighted_u;
+                numerator_v_dx += lambda_dx[vertex] * weighted_v;
+                numerator_v_dy += lambda_dy[vertex] * weighted_v;
+                depth += weights[vertex] *
+                    raster_vertices[vertex].z * reciprocal_w;
+            }
+            if (!std::isfinite(q) || q <= 0.0)
+                continue;
+            const double q_squared = q * q;
+            const double u = numerator_u / q;
+            const double v = numerator_v / q;
+            const double du_dx =
+                (numerator_u_dx * q - numerator_u * q_dx) / q_squared;
+            const double du_dy =
+                (numerator_u_dy * q - numerator_u * q_dy) / q_squared;
+            const double dv_dx =
+                (numerator_v_dx * q - numerator_v * q_dx) / q_squared;
+            const double dv_dy =
+                (numerator_v_dy * q - numerator_v * q_dy) / q_squared;
+            const double footprint_u =
+                (std::max)(std::abs(du_dx), std::abs(du_dy));
+            const double footprint_v =
+                (std::max)(std::abs(dv_dx), std::abs(dv_dy));
+            const bool textured =
+                (material.primitive_flags & textured_flag) != 0;
+            double color_r = 0.0;
+            double color_g = 0.0;
+            double color_b = 0.0;
+            for (std::size_t vertex = 0; vertex < 3; ++vertex) {
+                const double reciprocal_w = 1.0 / raster_vertices[vertex].w;
+                color_r += weights[vertex] *
+                    raster_vertices[vertex].r * reciprocal_w;
+                color_g += weights[vertex] *
+                    raster_vertices[vertex].g * reciprocal_w;
+                color_b += weights[vertex] *
+                    raster_vertices[vertex].b * reciprocal_w;
+            }
+            color_r /= q;
+            color_g /= q;
+            color_b /= q;
+            std::uint16_t word = 1;
+            std::size_t zero_taps = 0;
+            std::size_t filter_taps = 1;
+            bool discarded = false;
+            double sample_r = 255.0;
+            double sample_g = 255.0;
+            double sample_b = 255.0;
+            if (textured) {
+                word = material_texture_word(
+                    vram,
+                    material,
+                    static_cast<std::int32_t>(std::floor(u + 0.0001)),
+                    static_cast<std::int32_t>(std::floor(v + 0.0001)));
+                const auto bilinear_color = [&] (
+                    double sample_u,
+                    double sample_v,
+                    std::uint16_t fallback_word
+                ) {
+                    std::array<double, 3> result{};
+                    const std::int32_t base_u = static_cast<std::int32_t>(
+                        std::floor(sample_u));
+                    const std::int32_t base_v = static_cast<std::int32_t>(
+                        std::floor(sample_v));
+                    const double blend_u = sample_u - std::floor(sample_u);
+                    const double blend_v = sample_v - std::floor(sample_v);
+                    const std::array<std::array<std::int32_t, 2>, 4> offsets{{
+                        {{0, 0}}, {{1, 0}}, {{0, 1}}, {{1, 1}},
+                    }};
+                    const std::array<double, 4> weights{{
+                        (1.0 - blend_u) * (1.0 - blend_v),
+                        blend_u * (1.0 - blend_v),
+                        (1.0 - blend_u) * blend_v,
+                        blend_u * blend_v,
+                    }};
+                    double coverage = 0.0;
+                    for (std::size_t tap = 0; tap < offsets.size(); ++tap) {
+                        const std::uint16_t sampled = material_texture_word(
+                            vram,
+                            material,
+                            base_u + offsets[tap][0],
+                            base_v + offsets[tap][1]);
+                        if (sampled == 0)
+                            continue;
+                        result[0] += expand_ps1_five(sampled & 31U) *
+                            weights[tap];
+                        result[1] += expand_ps1_five(
+                            (sampled >> 5U) & 31U) * weights[tap];
+                        result[2] += expand_ps1_five(
+                            (sampled >> 10U) & 31U) * weights[tap];
+                        coverage += weights[tap];
+                    }
+                    if (coverage > 0.0001) {
+                        for (double& channel : result)
+                            channel /= coverage;
+                    } else {
+                        result = {
+                            static_cast<double>(expand_ps1_five(
+                                fallback_word & 31U)),
+                            static_cast<double>(expand_ps1_five(
+                                (fallback_word >> 5U) & 31U)),
+                            static_cast<double>(expand_ps1_five(
+                                (fallback_word >> 10U) & 31U)),
+                        };
+                    }
+                    return result;
+                };
+                if ((std::max)(footprint_u, footprint_v) > 1.0) {
+                    sample_r = 0.0;
+                    sample_g = 0.0;
+                    sample_b = 0.0;
+                    std::size_t covered_taps = 0;
+                    const double dx_length_squared =
+                        du_dx * du_dx + dv_dx * dv_dx;
+                    const double dy_length_squared =
+                        du_dy * du_dy + dv_dy * dv_dy;
+                    const bool dx_major =
+                        dx_length_squared >= dy_length_squared;
+                    const double major_u = dx_major ? du_dx : du_dy;
+                    const double major_v = dx_major ? dv_dx : dv_dy;
+                    const double minor_u = dx_major ? du_dy : du_dx;
+                    const double minor_v = dx_major ? dv_dy : dv_dx;
+                    const double major_length = std::sqrt((std::max)(
+                        dx_length_squared,
+                        dy_length_squared));
+                    const double minor_length = std::sqrt((std::min)(
+                        dx_length_squared,
+                        dy_length_squared));
+                    const bool compact_footprint =
+                        major_length < 2.0 && minor_length < 2.0;
+                    const std::size_t major_taps =
+                        static_cast<std::size_t>(std::clamp(
+                            std::ceil(major_length),
+                            3.0,
+                            16.0));
+                    const std::size_t minor_taps =
+                        static_cast<std::size_t>(std::clamp(
+                            std::ceil(minor_length),
+                            3.0,
+                            4.0));
+                    filter_taps = major_taps * minor_taps;
+                    for (std::size_t major_index = 0;
+                         major_index < major_taps;
+                         ++major_index) {
+                        const double major_amount =
+                            (major_index + 0.5) / major_taps - 0.5;
+                        for (std::size_t minor_index = 0;
+                             minor_index < minor_taps;
+                             ++minor_index) {
+                            const double minor_amount =
+                                (minor_index + 0.5) / minor_taps - 0.5;
+                            const double sample_u =
+                                u + major_amount * major_u +
+                                minor_amount * minor_u;
+                            const double sample_v =
+                                v + major_amount * major_v +
+                                minor_amount * minor_v;
+                            const std::uint16_t sampled_word = material_texture_word(
+                                vram,
+                                material,
+                                static_cast<std::int32_t>(
+                                    std::floor(sample_u + 0.0001)),
+                                static_cast<std::int32_t>(
+                                    std::floor(sample_v + 0.0001)));
+                            if (sampled_word == 0) {
+                                ++zero_taps;
+                                continue;
+                            }
+                            if (compact_footprint) {
+                                const auto filtered = bilinear_color(
+                                    sample_u, sample_v, sampled_word);
+                                sample_r += filtered[0];
+                                sample_g += filtered[1];
+                                sample_b += filtered[2];
+                            } else {
+                                sample_r += expand_ps1_five(
+                                    sampled_word & 31U);
+                                sample_g += expand_ps1_five(
+                                    (sampled_word >> 5U) & 31U);
+                                sample_b += expand_ps1_five(
+                                    (sampled_word >> 10U) & 31U);
+                            }
+                            ++covered_taps;
+                        }
+                    }
+                    discarded = zero_taps == filter_taps;
+                    if (covered_taps != 0) {
+                        sample_r /= covered_taps;
+                        sample_g /= covered_taps;
+                        sample_b /= covered_taps;
+                        const double area_weight = std::clamp(
+                            (std::max)(footprint_u, footprint_v) - 1.0,
+                            0.0,
+                            1.0);
+                        if (word != 0 && area_weight < 1.0) {
+                            const auto center = bilinear_color(u, v, word);
+                            sample_r = center[0] * (1.0 - area_weight) +
+                                sample_r * area_weight;
+                            sample_g = center[1] * (1.0 - area_weight) +
+                                sample_g * area_weight;
+                            sample_b = center[2] * (1.0 - area_weight) +
+                                sample_b * area_weight;
+                        }
+                    }
+                } else if (word == 0) {
+                    sample_r = 0.0;
+                    sample_g = 0.0;
+                    sample_b = 0.0;
+                    std::size_t visible_neighbors = 0;
+                    const std::int32_t base_u = static_cast<std::int32_t>(
+                        std::floor(u + 0.0001));
+                    const std::int32_t base_v = static_cast<std::int32_t>(
+                        std::floor(v + 0.0001));
+                    const std::array<std::array<std::int32_t, 2>, 4> offsets{{
+                        {{-1, 0}}, {{1, 0}}, {{0, -1}}, {{0, 1}},
+                    }};
+                    for (const auto& offset : offsets) {
+                        const std::uint16_t sampled_word = material_texture_word(
+                            vram,
+                            material,
+                            base_u + offset[0],
+                            base_v + offset[1]);
+                        if (sampled_word == 0)
+                            continue;
+                        sample_r += expand_ps1_five(sampled_word & 31U);
+                        sample_g += expand_ps1_five(
+                            (sampled_word >> 5U) & 31U);
+                        sample_b += expand_ps1_five(
+                            (sampled_word >> 10U) & 31U);
+                        ++visible_neighbors;
+                    }
+                    discarded = !is_opaque_track_surface(command, material) ||
+                        visible_neighbors < 3;
+                    if (visible_neighbors != 0) {
+                        sample_r /= visible_neighbors;
+                        sample_g /= visible_neighbors;
+                        sample_b /= visible_neighbors;
+                    }
+                } else if (options.texture_smoothing) {
+                    sample_r = 0.0;
+                    sample_g = 0.0;
+                    sample_b = 0.0;
+                    double covered_weight = 0.0;
+                    const std::int32_t base_u = static_cast<std::int32_t>(
+                        std::floor(u));
+                    const std::int32_t base_v = static_cast<std::int32_t>(
+                        std::floor(v));
+                    const double blend_u = u - std::floor(u);
+                    const double blend_v = v - std::floor(v);
+                    const std::array<std::array<std::int32_t, 2>, 4> offsets{{
+                        {{0, 0}}, {{1, 0}}, {{0, 1}}, {{1, 1}},
+                    }};
+                    const std::array<double, 4> sample_weights{{
+                        (1.0 - blend_u) * (1.0 - blend_v),
+                        blend_u * (1.0 - blend_v),
+                        (1.0 - blend_u) * blend_v,
+                        blend_u * blend_v,
+                    }};
+                    for (std::size_t tap = 0; tap < offsets.size(); ++tap) {
+                        const std::uint16_t sampled_word = material_texture_word(
+                            vram,
+                            material,
+                            base_u + offsets[tap][0],
+                            base_v + offsets[tap][1]);
+                        if (sampled_word == 0)
+                            continue;
+                        sample_r += expand_ps1_five(sampled_word & 31U) *
+                            sample_weights[tap];
+                        sample_g += expand_ps1_five(
+                            (sampled_word >> 5U) & 31U) * sample_weights[tap];
+                        sample_b += expand_ps1_five(
+                            (sampled_word >> 10U) & 31U) * sample_weights[tap];
+                        covered_weight += sample_weights[tap];
+                    }
+                    if (covered_weight > 0.0001) {
+                        sample_r /= covered_weight;
+                        sample_g /= covered_weight;
+                        sample_b /= covered_weight;
+                    } else {
+                        sample_r = expand_ps1_five(word & 31U);
+                        sample_g = expand_ps1_five((word >> 5U) & 31U);
+                        sample_b = expand_ps1_five((word >> 10U) & 31U);
+                    }
+                } else {
+                    sample_r = expand_ps1_five(word & 31U);
+                    sample_g = expand_ps1_five((word >> 5U) & 31U);
+                    sample_b = expand_ps1_five((word >> 10U) & 31U);
+                }
+            }
+            const bool raw_texture =
+                (material.primitive_flags & 4U) != 0;
+            double output_r = textured
+                ? raw_texture
+                    ? sample_r
+                    : std::clamp(sample_r * color_r * 2.0 / 255.0, 0.0, 255.0)
+                : color_r;
+            double output_g = textured
+                ? raw_texture
+                    ? sample_g
+                    : std::clamp(sample_g * color_g * 2.0 / 255.0, 0.0, 255.0)
+                : color_g;
+            double output_b = textured
+                ? raw_texture
+                    ? sample_b
+                    : std::clamp(sample_b * color_b * 2.0 / 255.0, 0.0, 255.0)
+                : color_b;
+            if (options.dithering &&
+                (material.environment_flags & 4U) != 0 &&
+                (!textured || !raw_texture)) {
+                static constexpr std::array<std::int32_t, 16> dither{{
+                    -4, 0, -3, 1,
+                     2, -2, 3, -1,
+                    -3, 1, -4, 0,
+                     3, -1, 2, -2,
+                }};
+                const std::int32_t pixel_x = static_cast<std::int32_t>(
+                    std::floor(point_x));
+                const std::int32_t pixel_y = static_cast<std::int32_t>(
+                    std::floor(point_y));
+                const std::int32_t adjustment = dither[
+                    static_cast<std::size_t>((pixel_y & 3) * 4 +
+                        (pixel_x & 3))];
+                const auto quantize = [adjustment] (double value) {
+                    const std::int32_t adjusted = std::clamp(
+                        static_cast<std::int32_t>(value + 0.5) + adjustment,
+                        0,
+                        255);
+                    return static_cast<double>(expand_ps1_five(
+                        static_cast<std::uint16_t>(
+                            (std::min)(adjusted >> 3, 31))));
+                };
+                output_r = quantize(output_r);
+                output_g = quantize(output_g);
+                output_b = quantize(output_b);
+            }
+            candidates.push_back(PixelProvenanceCandidate{
+                command_index,
+                depth,
+                1.0 / q,
+                u,
+                v,
+                footprint_u,
+                footprint_v,
+                minimum_x,
+                minimum_y,
+                maximum_x,
+                maximum_y,
+                word,
+                zero_taps,
+                filter_taps,
+                color_r,
+                color_g,
+                color_b,
+                sample_r,
+                sample_g,
+                sample_b,
+                output_r,
+                output_g,
+                output_b,
+                discarded,
+                post_clip.clipped,
+                post_clip.vertex_count,
+            });
+        }
+        std::sort(
+            candidates.begin(),
+            candidates.end(),
+            [] (const auto& left, const auto& right) {
+                if (left.depth != right.depth)
+                    return left.depth > right.depth;
+                return left.command_index > right.command_index;
+            });
+        // Track and vehicle commands share the modern reversed-depth buffer.
+        // Background commands are deliberately depthless, so sorting them by
+        // their diagnostic view depth can never identify the owning fragment.
+        auto visible = std::find_if(
+            candidates.begin(), candidates.end(),
+            [&draw_list] (const auto& candidate) {
+                const auto& command = draw_list.commands[candidate.command_index];
+                return !candidate.discarded &&
+                    (command.object_kind == 1U || command.object_kind == 2U);
+            });
+        if (visible == candidates.end()) {
+            visible = std::find_if(
+                candidates.begin(), candidates.end(),
+                [] (const auto& candidate) { return !candidate.discarded; });
+        }
+        std::fprintf(
+            stderr,
+            "[Render-Pixel-Provenance] frame=%llu poll=%d point=%zu/%.1f,%.1f "
+            "candidates=%zu visible=%s%zu\n",
+            static_cast<unsigned long long>(draw_list.frame_index),
+            draw_list.input_poll,
+            point_index,
+            point_x,
+            point_y,
+            candidates.size(),
+            visible == candidates.end() ? "none/" : "command/",
+            visible == candidates.end() ? 0U : visible->command_index);
+        const std::size_t report_count = (std::min)(
+            candidates.size(), static_cast<std::size_t>(32));
+        for (std::size_t rank = 0; rank < report_count; ++rank) {
+            const auto& candidate = candidates[rank];
+            const auto& command = draw_list.commands[candidate.command_index];
+            const auto& material = draw_list.materials[command.material_index];
+            std::fprintf(
+                stderr,
+                "[Render-Pixel-Candidate] point=%zu rank=%zu command=%zu "
+                "source=%u kind=%u object=%u model=%08x ot=%d overlay=%u "
+                "screen=%u "
+                "depth=%.9f viewZ=%.3f discarded=%u clipped=%u/%zu "
+                "textured=%u semi=%u "
+                "word=%04x zero=%zu/%zu uv=%.3f,%.3f footprint=%.3f,%.3f "
+                "color=%.1f,%.1f,%.1f sample=%.1f,%.1f,%.1f "
+                "output=%.1f,%.1f,%.1f raw=%u flags=%08x env=%08x "
+                "screen=%.1f,%.1f..%.1f,%.1f tpage=%04x clut=%04x "
+                "window=%d,%d/%d,%d "
+                "transform=%016llx exact=%u t=%d,%d,%d "
+                "uvCorners=%u,%u/%u,%u/%u,%u "
+                "model=%d,%d,%d/%d,%d,%d/%d,%d,%d "
+                "world=%.3f,%.3f,%.3f/%.3f,%.3f,%.3f/"
+                    "%.3f,%.3f,%.3f "
+                "view=%.3f,%.3f,%.3f/%.3f,%.3f,%.3f/"
+                    "%.3f,%.3f,%.3f "
+                "rgb=%u,%u,%u/%u,%u,%u/%u,%u,%u\n",
+                point_index,
+                rank,
+                candidate.command_index,
+                command.source_command_index,
+                command.object_kind,
+                command.object_id,
+                command.model_pointer,
+                command.ordering_table_index,
+                track_overlay_layer(material.primitive_flags),
+                (material.primitive_flags &
+                    world_primitive_screen_space_flag) != 0 ? 1U : 0U,
+                candidate.depth,
+                candidate.view_z,
+                candidate.discarded ? 1U : 0U,
+                candidate.homogeneous_clipped ? 1U : 0U,
+                candidate.clipped_vertex_count,
+                (material.primitive_flags & textured_flag) != 0 ? 1U : 0U,
+                (material.primitive_flags & semi_transparent_flag) != 0 ? 1U : 0U,
+                candidate.word,
+                candidate.zero_taps,
+                candidate.filter_taps,
+                candidate.u,
+                candidate.v,
+                candidate.footprint_u,
+                candidate.footprint_v,
+                candidate.color_r,
+                candidate.color_g,
+                candidate.color_b,
+                candidate.sample_r,
+                candidate.sample_g,
+                candidate.sample_b,
+                candidate.output_r,
+                candidate.output_g,
+                candidate.output_b,
+                (material.primitive_flags & 4U) != 0 ? 1U : 0U,
+                material.primitive_flags,
+                material.environment_flags,
+                candidate.minimum_x,
+                candidate.minimum_y,
+                candidate.maximum_x,
+                candidate.maximum_y,
+                material.texture_page,
+                material.clut,
+                material.texture_mask_x,
+                material.texture_mask_y,
+                material.texture_offset_x,
+                material.texture_offset_y,
+                static_cast<unsigned long long>(command.transform_id),
+                command.exact_transform_valid ? 1U : 0U,
+                command.transform_translation[0],
+                command.transform_translation[1],
+                command.transform_translation[2],
+                static_cast<unsigned>(command.vertices[0].u),
+                static_cast<unsigned>(command.vertices[0].v),
+                static_cast<unsigned>(command.vertices[1].u),
+                static_cast<unsigned>(command.vertices[1].v),
+                static_cast<unsigned>(command.vertices[2].u),
+                static_cast<unsigned>(command.vertices[2].v),
+                command.vertices[0].model_x,
+                command.vertices[0].model_y,
+                command.vertices[0].model_z,
+                command.vertices[1].model_x,
+                command.vertices[1].model_y,
+                command.vertices[1].model_z,
+                command.vertices[2].model_x,
+                command.vertices[2].model_y,
+                command.vertices[2].model_z,
+                command.vertices[0].world_x,
+                command.vertices[0].world_y,
+                command.vertices[0].world_z,
+                command.vertices[1].world_x,
+                command.vertices[1].world_y,
+                command.vertices[1].world_z,
+                command.vertices[2].world_x,
+                command.vertices[2].world_y,
+                command.vertices[2].world_z,
+                command.vertices[0].view_x,
+                command.vertices[0].view_y,
+                command.vertices[0].view_z,
+                command.vertices[1].view_x,
+                command.vertices[1].view_y,
+                command.vertices[1].view_z,
+                command.vertices[2].view_x,
+                command.vertices[2].view_y,
+                command.vertices[2].view_z,
+                static_cast<unsigned>(command.vertices[0].r),
+                static_cast<unsigned>(command.vertices[0].g),
+                static_cast<unsigned>(command.vertices[0].b),
+                static_cast<unsigned>(command.vertices[1].r),
+                static_cast<unsigned>(command.vertices[1].g),
+                static_cast<unsigned>(command.vertices[1].b),
+                static_cast<unsigned>(command.vertices[2].r),
+                static_cast<unsigned>(command.vertices[2].g),
+                static_cast<unsigned>(command.vertices[2].b));
+        }
+        if (visible != candidates.end()) {
+            const std::size_t owner_index = visible->command_index;
+            const auto& owner = draw_list.commands[owner_index];
+            const auto& owner_material =
+                draw_list.materials[owner.material_index];
+            std::size_t sibling_rank = 0;
+            const std::size_t first_command = owner_index > 8
+                ? owner_index - 8
+                : 0;
+            const std::size_t last_command = (std::min)(
+                draw_list.commands.size(), owner_index + 9);
+            for (std::size_t command_index = first_command;
+                 command_index < last_command;
+                 ++command_index) {
+                const auto& sibling = draw_list.commands[command_index];
+                const auto& sibling_material =
+                    draw_list.materials[sibling.material_index];
+                if (
+                    sibling.object_id != owner.object_id ||
+                    sibling.model_pointer != owner.model_pointer ||
+                    sibling.transform_id != owner.transform_id ||
+                    sibling_material.texture_page !=
+                        owner_material.texture_page ||
+                    sibling_material.clut != owner_material.clut
+                )
+                    continue;
+                std::fprintf(
+                    stderr,
+                    "[Render-Pixel-Sibling] point=%zu rank=%zu command=%zu "
+                    "source=%u object=%u model=%08x "
+                    "screen=(%.3f,%.3f)(%.3f,%.3f)(%.3f,%.3f) "
+                    "uvCorners=%u,%u/%u,%u/%u,%u "
+                    "viewZ=%.3f/%.3f/%.3f flags=%08x\n",
+                    point_index,
+                    sibling_rank++,
+                    command_index,
+                    sibling.source_command_index,
+                    sibling.object_id,
+                    sibling.model_pointer,
+                    sibling.vertices[0].screen_x,
+                    sibling.vertices[0].screen_y,
+                    sibling.vertices[1].screen_x,
+                    sibling.vertices[1].screen_y,
+                    sibling.vertices[2].screen_x,
+                    sibling.vertices[2].screen_y,
+                    static_cast<unsigned>(sibling.vertices[0].u),
+                    static_cast<unsigned>(sibling.vertices[0].v),
+                    static_cast<unsigned>(sibling.vertices[1].u),
+                    static_cast<unsigned>(sibling.vertices[1].v),
+                    static_cast<unsigned>(sibling.vertices[2].u),
+                    static_cast<unsigned>(sibling.vertices[2].v),
+                    sibling.vertices[0].view_z,
+                    sibling.vertices[1].view_z,
+                    sibling.vertices[2].view_z,
+                    sibling_material.primitive_flags);
+            }
+        }
+    }
+}
+
 void update_replacement_vram_revisions(
     BaseResources* resources,
     const std::uint16_t* vram
@@ -3247,9 +7142,19 @@ bool initialize_base(
         return false;
     ComPtr<ID3DBlob> vertex_blob;
     ComPtr<ID3DBlob> pixel_blob;
+    ComPtr<ID3DBlob> road_overlay_pixel_blob;
+    ComPtr<ID3DBlob> road_overlay_tint_pixel_blob;
+    ComPtr<ID3DBlob> command_id_pixel_blob;
     if (
         !compile_shader("VSMain", "vs_4_0", &vertex_blob) ||
-        !compile_shader("PSMain", "ps_4_0", &pixel_blob)
+        !compile_shader("PSMain", "ps_4_0", &pixel_blob) ||
+        !compile_shader(
+            "PSMainRoadOverlay", "ps_4_0", &road_overlay_pixel_blob) ||
+        !compile_shader(
+            "PSMainRoadOverlayTint", "ps_4_0",
+            &road_overlay_tint_pixel_blob) ||
+        !compile_shader(
+            "PSMainCommandId", "ps_4_0", &command_id_pixel_blob)
     )
         return false;
     if (
@@ -3262,7 +7167,22 @@ bool initialize_base(
             pixel_blob->GetBufferPointer(),
             pixel_blob->GetBufferSize(),
             nullptr,
-            resources->pixel_shader.GetAddressOf()))
+            resources->pixel_shader.GetAddressOf())) ||
+        FAILED(resources->device->CreatePixelShader(
+            road_overlay_pixel_blob->GetBufferPointer(),
+            road_overlay_pixel_blob->GetBufferSize(),
+            nullptr,
+            resources->road_overlay_pixel_shader.GetAddressOf())) ||
+        FAILED(resources->device->CreatePixelShader(
+            road_overlay_tint_pixel_blob->GetBufferPointer(),
+            road_overlay_tint_pixel_blob->GetBufferSize(),
+            nullptr,
+            resources->road_overlay_tint_pixel_shader.GetAddressOf())) ||
+        FAILED(resources->device->CreatePixelShader(
+            command_id_pixel_blob->GetBufferPointer(),
+            command_id_pixel_blob->GetBufferSize(),
+            nullptr,
+            resources->command_id_pixel_shader.GetAddressOf()))
     )
         return false;
     const D3D11_INPUT_ELEMENT_DESC elements[] = {
@@ -3315,9 +7235,8 @@ bool initialize_base(
         for (int transparent = 0; transparent < 2; ++transparent) {
             for (int check = 0; check < 2; ++check) {
                 for (int set = 0; set < 2; ++set) {
-                    auto& state =
-                        resources->depth_states
-                            [enabled][transparent][check][set];
+                    auto& state = resources->depth_states
+                        [enabled][transparent][check][set];
                     state = depth_state(
                         resources->device.Get(),
                         transparent == 0,
@@ -3329,6 +7248,12 @@ bool initialize_base(
                 }
             }
         }
+    }
+    for (int check = 0; check < 2; ++check) {
+        resources->road_overlay_depth_states[check] =
+            road_overlay_depth_state(resources->device.Get(), check != 0);
+        if (!resources->road_overlay_depth_states[check])
+            return false;
     }
     resources->ready = true;
     return true;
@@ -3558,7 +7483,11 @@ bool ensure_output_resources(
         return false;
 
     D3D11_TEXTURE2D_DESC depth_description = color_description;
-    depth_description.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    // Extending GT2's whole course to the horizon makes conventional D24
+    // collapse distinct road layers to one value.  Reversed infinite depth
+    // needs floating-point storage to preserve its precision advantage; the
+    // stencil component retains the PS1 mask-bit contract.
+    depth_description.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
     depth_description.BindFlags = D3D11_BIND_DEPTH_STENCIL;
     if (
         FAILED(device->CreateTexture2D(
@@ -3711,6 +7640,14 @@ WorldGpuRenderResult render_world_d3d11(
             draw_list, smooth_wheels, options.synthetic_midpoint);
         emit_clip_rect_diagnostics(draw_list);
         emit_primitive_diagnostics(draw_list, options);
+        emit_resident_edge_diagnostics(draw_list, options);
+        emit_scene_diagnostics(draw_list, options);
+        emit_texture_coverage_diagnostics(
+            draw_list, vram, vram_word_count, options);
+        emit_texture_instance_diagnostics(
+            draw_list, vram, vram_word_count, options);
+        emit_pixel_provenance_diagnostics(
+            draw_list, vram, vram_word_count, options);
     } catch (const std::bad_alloc&) {
         return WorldGpuRenderResult::resource_failed;
     }
@@ -3867,10 +7804,11 @@ WorldGpuRenderResult render_world_d3d11(
     ID3D11DeviceContext* context = base.context.Get();
     const std::size_t authored_vertex_count =
         draw_list.commands.size() * 3;
+    // Perspective-correct 3D projection is fixed renderer behavior rather
+    // than a quality option. The retained ABI flag is ignored here so an old
+    // caller cannot silently reactivate affine world rendering.
     const std::vector<std::uint8_t> perspective_uv_eligibility =
-        options.perspective_correct
-            ? perspective_uv_island_eligibility(draw_list)
-            : std::vector<std::uint8_t>{};
+        perspective_uv_island_eligibility(draw_list);
     const std::size_t vertex_count = std::max<std::size_t>(
         3,
         authored_vertex_count +
@@ -3966,12 +7904,9 @@ WorldGpuRenderResult render_world_d3d11(
         output_valid = true;
         return true;
     };
-    // Once all four slots are populated, read the slot this call will
-    // overwrite. It was submitted four render calls ago (the corresponding
-    // image from two authored pairs earlier), giving the GPU two complete
-    // 30 Hz guest intervals to finish. The even ring size preserves exact
-    // midpoint/actual pairing while moving the blocking Map out of the
-    // observed 39-49 ms GPU tail.
+    // Once all four development slots are populated, read the slot this call
+    // will overwrite. It was submitted four render calls ago, moving the
+    // blocking Map out of the producer's immediate submission path.
     if (
         !options.asynchronous_readback &&
         staging_fill_count >= base.staging_textures.size()
@@ -4017,7 +7952,7 @@ WorldGpuRenderResult render_world_d3d11(
     context->ClearDepthStencilView(
         base.depth_view.Get(),
         D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
-        1.0F,
+        0.0F,
         0);
     ID3D11RenderTargetView* render_target = base.color_view.Get();
     context->OMSetRenderTargets(1, &render_target, base.depth_view.Get());
@@ -4149,17 +8084,11 @@ WorldGpuRenderResult render_world_d3d11(
                 1.0 - ((projected_y - draw_list.display_y) /
                     draw_list.display_height) * 2.0;
             constexpr double near_plane = 16.0;
-            constexpr double far_plane = 1048576.0;
-            constexpr double depth_a =
-                far_plane / (far_plane - near_plane);
-            constexpr double depth_b =
-                -near_plane * far_plane /
-                (far_plane - near_plane);
             return GpuVertex{
                 {
                     static_cast<float>(ndc_x * view_z),
                     static_cast<float>(ndc_y * view_z),
-                    static_cast<float>(depth_a * view_z + depth_b),
+                    static_cast<float>(near_plane),
                     static_cast<float>(view_z),
                 },
                 {0.0F, 0.0F},
@@ -4296,7 +8225,6 @@ WorldGpuRenderResult render_world_d3d11(
                 (wheel_tread || vehicle_wheel_sidewall_ring(
                     command, material, *smooth_wheel));
             const bool perspective_eligible =
-                options.perspective_correct &&
                 perspective_uv_eligibility[command_index] != 0;
             const ReplacementResolution replacement = inspect_replacements
                 ? resolve_texture_replacement(
@@ -4358,12 +8286,14 @@ WorldGpuRenderResult render_world_d3d11(
         0, 1, &raw_vertex_buffer, &stride, &offset);
     context->VSSetShader(base.vertex_shader.Get(), nullptr, 0);
     context->PSSetShader(base.pixel_shader.Get(), nullptr, 0);
+    ID3D11PixelShader* bound_pixel_shader = base.pixel_shader.Get();
     ID3D11ShaderResourceView* shader_views[] = {
         frame.vram_view.Get(),
         frame.material_view.Get(),
         options.high_resolution_textures
             ? base.replacement_view.Get()
             : nullptr,
+        nullptr,
     };
     context->PSSetShaderResources(
         0,
@@ -4378,7 +8308,7 @@ WorldGpuRenderResult render_world_d3d11(
             0,
             pass,
             options.dithering ? 1U : 0U,
-            options.perspective_correct ? 1U : 0U,
+            1U,
             options.texture_smoothing ? 1U : 0U,
             // Off only for rendering an A/B proof of the coverage path from
             // identical captured geometry.
@@ -4409,26 +8339,247 @@ WorldGpuRenderResult render_world_d3d11(
     ID3D11BlendState* bound_blend_state = nullptr;
     float bound_blend_factor = -1.0F;
     ID3D11DepthStencilState* bound_depth_state = nullptr;
+    UINT bound_stencil_reference = (std::numeric_limits<UINT>::max)();
+    static thread_local bool emitted_shipping_depth_contract = false;
+    static thread_local bool emitted_shipping_layer_contract = false;
+    const bool shipping_layer_contract =
+        !emitted_shipping_layer_contract &&
+        draw_list.track_commands >= 1000U &&
+        draw_list.vehicle_commands != 0U;
+    if (
+        !emitted_shipping_depth_contract &&
+        draw_list.track_commands >= 1000U &&
+        draw_list.vehicle_commands != 0U
+    ) {
+        std::fprintf(
+            stderr,
+            "[Render-Depth] projection=reversed-infinite near=16 "
+            "format=D32_FLOAT_S8X24_UINT compare=GREATER_EQUAL "
+            "clear=0 stencilBits=8\n");
+        emitted_shipping_depth_contract = true;
+    }
     const bool diagnose_batches =
-        std::getenv("OPENGT_RENDER_BATCH_DIAGNOSTICS") != nullptr;
-    std::array<std::uint64_t, 3> diagnostic_batches{};
-    std::array<std::uint64_t, 3> diagnostic_draws{};
-    std::array<std::uint64_t, 3> diagnostic_commands{};
-    std::array<std::uint64_t, 3> diagnostic_transparent_draws{};
+        std::getenv("OPENGT_RENDER_BATCH_DIAGNOSTICS") != nullptr ||
+        shipping_layer_contract;
+    std::array<std::uint64_t, world_render_layer_count> diagnostic_batches{};
+    std::array<std::uint64_t, world_render_layer_count> diagnostic_draws{};
+    std::array<std::uint64_t, world_render_layer_count> diagnostic_commands{};
+    std::array<std::uint64_t, world_render_layer_count>
+        diagnostic_transparent_draws{};
     std::array<std::uint64_t, 4> diagnostic_blend_batches{};
-    std::array<std::size_t, 3> diagnostic_max_batch{};
-    // Draw every 3D command before the explicit screen-space layer. Raw
-    // resident course meshes are decoded while GT2 is still building its
-    // ordering table and can otherwise be appended after HUD packets. The
-    // HUD is a presentation layer, not geometry that should compete with the
-    // course for painter order.
-    for (int render_phase = 0; render_phase < 2; ++render_phase) {
+    std::array<std::size_t, world_render_layer_count> diagnostic_max_batch{};
+    // GT2's projected backdrop can occur after vehicle commands in the source
+    // ordering table. Because it intentionally paints color without owning
+    // physical depth, drawing it late overwrites a vehicle's color while
+    // leaving that vehicle's invisible depth behind to reject later road.
+    // Road artwork is composited explicitly after opaque world depth. Typed
+    // overlay primitives receive a bounded post-clip depth priority over their
+    // road support; ordinary depth testing still leaves genuinely nearer walls
+    // and vehicles in front. Transparent world effects follow so they retain
+    // ordinary foreground ownership.
+    const auto command_in_render_phase = [] (
+        const WorldDrawCommand& command,
+        const WorldMaterial& material,
+        int phase
+    ) noexcept {
+        if ((material.primitive_flags &
+                world_primitive_screen_space_flag) != 0)
+            return phase == 4;
+        if (command.object_kind == 3U)
+            return phase == 0;
+        const bool overlay = command.object_kind == 1U &&
+            track_overlay_layer(material.primitive_flags) != 0;
+        if (overlay)
+            return phase == 2;
+        const bool semitransparent =
+            (material.primitive_flags & semi_transparent_flag) != 0;
+        if (semitransparent)
+            return phase == 3;
+        return phase == 1;
+    };
+    enum class DebugRenderLayerFilter {
+        all,
+        background,
+        track,
+        vehicle,
+        unclassified,
+        screen,
+    };
+    const auto debug_render_layer_filter = [] () noexcept {
+        const char* configured = std::getenv(
+            "OPENGT_DEBUG_RENDER_LAYER");
+        if (configured == nullptr || configured[0] == '\0')
+            return DebugRenderLayerFilter::all;
+        if (std::strcmp(configured, "background") == 0)
+            return DebugRenderLayerFilter::background;
+        if (std::strcmp(configured, "track") == 0)
+            return DebugRenderLayerFilter::track;
+        if (std::strcmp(configured, "vehicle") == 0)
+            return DebugRenderLayerFilter::vehicle;
+        if (std::strcmp(configured, "unclassified") == 0)
+            return DebugRenderLayerFilter::unclassified;
+        if (std::strcmp(configured, "screen") == 0)
+            return DebugRenderLayerFilter::screen;
+        return DebugRenderLayerFilter::all;
+    }();
+    const auto debug_layer_selected = [debug_render_layer_filter] (
+        WorldRenderLayer layer
+    ) noexcept {
+        if (debug_render_layer_filter == DebugRenderLayerFilter::all)
+            return true;
+        return static_cast<std::size_t>(debug_render_layer_filter) - 1U ==
+            static_cast<std::size_t>(layer);
+    };
+    const char* debug_track_source = std::getenv(
+        "OPENGT_DEBUG_TRACK_SOURCE");
+    const bool debug_track_overlays_only = std::getenv(
+        "OPENGT_DEBUG_TRACK_OVERLAYS_ONLY") != nullptr;
+    const bool debug_road_overlay_tint = std::getenv(
+        "OPENGT_DEBUG_ROAD_OVERLAY_TINT") != nullptr;
+    const bool debug_road_overlay_use_depth = std::getenv(
+        "OPENGT_DEBUG_ROAD_OVERLAY_USE_DEPTH") != nullptr;
+    const bool debug_road_overlay_no_depth = std::getenv(
+        "OPENGT_DEBUG_ROAD_OVERLAY_NO_DEPTH") != nullptr;
+    const bool debug_command_id = std::getenv(
+        "OPENGT_DEBUG_COMMAND_ID") != nullptr;
+    const auto debug_optional_u32 = [] (
+        const char* name
+    ) noexcept -> std::optional<std::uint32_t> {
+        const char* configured = std::getenv(name);
+        if (configured == nullptr || configured[0] == '\0')
+            return std::nullopt;
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(configured, &end, 0);
+        if (end == configured || *end != '\0')
+            return std::nullopt;
+        return static_cast<std::uint32_t>(parsed);
+    };
+    const auto debug_model = debug_optional_u32("OPENGT_DEBUG_MODEL");
+    const auto debug_object = debug_optional_u32("OPENGT_DEBUG_OBJECT");
+    const auto debug_command_id_log_poll = debug_optional_u32(
+        "OPENGT_DEBUG_COMMAND_ID_LOG_POLL");
+    const auto debug_identity_selected = [debug_model, debug_object] (
+        const WorldDrawCommand& command
+    ) noexcept {
+        return (!debug_model || command.model_pointer == *debug_model) &&
+            (!debug_object || command.object_id == *debug_object);
+    };
+    const auto debug_command_bound = [] (
+        const char* name,
+        std::size_t fallback
+    ) noexcept {
+        const char* configured = std::getenv(name);
+        if (configured == nullptr || configured[0] == '\0')
+            return fallback;
+        return static_cast<std::size_t>(std::strtoull(
+            configured, nullptr, 10));
+    };
+    const std::size_t debug_command_start = debug_command_bound(
+        "OPENGT_DEBUG_COMMAND_START", 0U);
+    const std::size_t debug_command_end = debug_command_bound(
+        "OPENGT_DEBUG_COMMAND_END",
+        (std::numeric_limits<std::size_t>::max)());
+    const auto debug_command_selected = [
+        debug_command_start,
+        debug_command_end
+    ] (std::size_t index) noexcept {
+        return index >= debug_command_start && index <= debug_command_end;
+    };
+    const auto debug_track_source_selected = [debug_track_source] (
+        const WorldDrawCommand& command,
+        const WorldMaterial& material
+    ) noexcept {
+        if (debug_track_source == nullptr || command.object_kind != 1U)
+            return true;
+        const bool resident = (material.primitive_flags &
+            world_primitive_resident_course_flag) != 0;
+        if (std::strcmp(debug_track_source, "resident") == 0)
+            return resident;
+        if (std::strcmp(debug_track_source, "projected") == 0)
+            return !resident;
+        return true;
+    };
+    if (debug_command_id &&
+        std::getenv("OPENGT_DEBUG_COMMAND_ID_LOG") != nullptr &&
+        (!debug_command_id_log_poll ||
+            draw_list.input_poll ==
+                static_cast<std::int32_t>(*debug_command_id_log_poll))) {
+        for (std::size_t command_index = 0;
+             command_index < draw_list.commands.size();
+             ++command_index) {
+            const auto& command = draw_list.commands[command_index];
+            if (command.material_index >= draw_list.materials.size())
+                continue;
+            const auto& material = draw_list.materials[command.material_index];
+            if (!debug_identity_selected(command) ||
+                !debug_layer_selected(world_render_layer(command, material)) ||
+                !debug_track_source_selected(command, material))
+                continue;
+            std::fprintf(
+                stderr,
+                "[Render-Command-Id] frame=%llu poll=%d command=%zu "
+                "source=%u kind=%u object=%08x model=%08x flags=%08x "
+                "env=%08x tpage=%04x clut=%04x\n",
+                static_cast<unsigned long long>(draw_list.frame_index),
+                draw_list.input_poll,
+                command_index,
+                command.source_command_index,
+                command.object_kind,
+                command.object_id,
+                command.model_pointer,
+                material.primitive_flags,
+                material.environment_flags,
+                material.texture_page,
+                material.clut);
+        }
+    }
+    if (debug_render_layer_filter != DebugRenderLayerFilter::all) {
+        static thread_local DebugRenderLayerFilter reported_filter =
+            DebugRenderLayerFilter::all;
+        if (reported_filter != debug_render_layer_filter) {
+            std::fprintf(
+                stderr,
+                "[Render-Debug-Layer] filter=%s\n",
+                std::getenv("OPENGT_DEBUG_RENDER_LAYER"));
+            reported_filter = debug_render_layer_filter;
+        }
+    }
+    if (debug_track_source != nullptr) {
+        static thread_local std::string reported_track_source{};
+        if (reported_track_source != debug_track_source) {
+            std::fprintf(
+                stderr,
+                "[Render-Debug-Track-Source] filter=%s\n",
+                debug_track_source);
+            reported_track_source = debug_track_source;
+        }
+    }
+    for (int render_phase = 0; render_phase < 5; ++render_phase) {
+    ID3D11RenderTargetView* phase_target = base.color_view.Get();
+    context->OMSetRenderTargets(1, &phase_target, base.depth_view.Get());
+    ID3D11PixelShader* phase_pixel_shader =
+        debug_command_id
+        ? base.command_id_pixel_shader.Get()
+        : render_phase == 2 && debug_road_overlay_tint
+        ? base.road_overlay_tint_pixel_shader.Get()
+        : render_phase == 2
+        ? base.road_overlay_pixel_shader.Get()
+        : base.pixel_shader.Get();
+    if (phase_pixel_shader != bound_pixel_shader) {
+        context->PSSetShader(phase_pixel_shader, nullptr, 0);
+        bound_pixel_shader = phase_pixel_shader;
+    }
+    bound_depth_state = nullptr;
+    bound_blend_state = nullptr;
+    has_bound_scissor = false;
     for (std::size_t command_index = 0;
          command_index < draw_list.commands.size();) {
         for (std::size_t wheel_index = 0;
              wheel_index < smooth_wheels.size();
              ++wheel_index) {
-            if (render_phase != 0)
+            if (render_phase != 1)
+                break;
+            if (!debug_layer_selected(WorldRenderLayer::vehicle))
                 break;
             const auto& wheel = smooth_wheels[wheel_index];
             if (wheel.insertion_command != command_index)
@@ -4476,6 +8627,10 @@ WorldGpuRenderResult render_world_d3d11(
                 frame.constant_buffers[0].Get();
             context->PSSetConstantBuffers(0, 1, &raw_constant_buffer);
             bound_pass = 0;
+            if (bound_pixel_shader != base.pixel_shader.Get()) {
+                context->PSSetShader(base.pixel_shader.Get(), nullptr, 0);
+                bound_pixel_shader = base.pixel_shader.Get();
+            }
             const float blend_factor[4] = {1.0F, 1.0F, 1.0F, 1.0F};
             context->OMSetBlendState(
                 base.blend_states[0].Get(),
@@ -4485,8 +8640,9 @@ WorldGpuRenderResult render_world_d3d11(
             bound_blend_factor = 1.0F;
             ID3D11DepthStencilState* depth_state =
                 base.depth_states[0][0][0][0].Get();
-            context->OMSetDepthStencilState(depth_state, 1);
+            context->OMSetDepthStencilState(depth_state, 0);
             bound_depth_state = depth_state;
+            bound_stencil_reference = 0;
             context->Draw(
                 static_cast<UINT>(smooth_wheel_vertices),
                 static_cast<UINT>(
@@ -4506,7 +8662,18 @@ WorldGpuRenderResult render_world_d3d11(
         const bool screen_space =
             (material.primitive_flags &
                 world_primitive_screen_space_flag) != 0;
-        if (screen_space != (render_phase == 1)) {
+        if (
+            !debug_command_selected(command_index) ||
+            !debug_identity_selected(command) ||
+            !debug_layer_selected(world_render_layer(command, material)) ||
+            !debug_track_source_selected(command, material) ||
+            (debug_track_overlays_only && command.object_kind == 1U &&
+                track_overlay_layer(material.primitive_flags) == 0)
+        ) {
+            ++command_index;
+            continue;
+        }
+        if (!command_in_render_phase(command, material, render_phase)) {
             ++command_index;
             continue;
         }
@@ -4546,10 +8713,18 @@ WorldGpuRenderResult render_world_d3d11(
                 return WorldGpuRenderResult::render_failed;
             const auto& next_material = draw_list.materials[
                 next_command.material_index];
-            const bool next_screen_space =
-                (next_material.primitive_flags &
-                    world_primitive_screen_space_flag) != 0;
-            if (next_screen_space != (render_phase == 1))
+            if (
+                !debug_command_selected(command_index + batch_commands) ||
+                !debug_identity_selected(next_command) ||
+                !debug_layer_selected(
+                    world_render_layer(next_command, next_material)) ||
+                !debug_track_source_selected(next_command, next_material) ||
+                (debug_track_overlays_only && next_command.object_kind == 1U &&
+                    track_overlay_layer(next_material.primitive_flags) == 0)
+            )
+                break;
+            if (!command_in_render_phase(
+                    next_command, next_material, render_phase))
                 break;
             if (!batch_compatible(
                     command,
@@ -4559,8 +8734,8 @@ WorldGpuRenderResult render_world_d3d11(
                 break;
             ++batch_commands;
         }
-        const std::size_t diagnostic_kind =
-            command.object_kind <= 2U ? command.object_kind : 0U;
+        const std::size_t diagnostic_kind = static_cast<std::size_t>(
+            world_render_layer(command, material));
         if (diagnose_batches) {
             ++diagnostic_batches[diagnostic_kind];
             diagnostic_draws[diagnostic_kind] += pass_count;
@@ -4641,8 +8816,7 @@ WorldGpuRenderResult render_world_d3d11(
             has_bound_scissor = true;
         }
         const bool uses_modern_depth =
-            (command.object_kind == 1U || command.object_kind == 2U) &&
-            !screen_space;
+            uses_modern_world_depth(command, material);
         if (
             options.depth_buffer &&
             uses_modern_depth &&
@@ -4656,8 +8830,8 @@ WorldGpuRenderResult render_world_d3d11(
             // secondary camera is a new view and therefore starts clean.
             context->ClearDepthStencilView(
                 base.depth_view.Get(),
-                D3D11_CLEAR_DEPTH,
-                1.0F,
+                D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
+                0.0F,
                 0);
         }
         if (uses_modern_depth) {
@@ -4708,20 +8882,45 @@ WorldGpuRenderResult render_world_d3d11(
                 (material.environment_flags & check_mask_flag) != 0;
             const bool set_mask =
                 (material.environment_flags & set_mask_flag) != 0;
-            // Course and vehicles share one modern depth surface. LESS_EQUAL
-            // retains later coplanar vehicle detail while allowing a car
+            // Course and vehicles share one modern depth surface. Reversed
+            // GREATER_EQUAL retains later coplanar vehicle detail while
+            // allowing a car
             // authored before the resident course to protect its nearer
             // pixels from that later course submission.
+            // Road paint, lane markers, arrows, grids, and other typed course
+            // artwork are separate polygons in GT2, not baked road texture.
+            // Their priority must therefore be a property of the artwork
+            // class itself, not contingent on an exact support triangle
+            // retaining a stencil tag.  A later coplanar road triangle can
+            // legitimately replace that tag even though it is still the same
+            // road surface.  Keep ordinary depth testing enabled here and let
+            // PSMainRoadOverlay apply its bounded four-view-unit depth
+            // priority.  This makes the rule work on every course while a
+            // genuinely nearer wall or vehicle continues to occlude it.
             const bool use_depth =
+                (render_phase != 2 ||
+                    ((!debug_road_overlay_tint ||
+                        debug_road_overlay_use_depth) &&
+                        !debug_road_overlay_no_depth)) &&
                 options.depth_buffer && uses_modern_depth;
+            const bool road_support =
+                render_phase == 1 && command.object_kind == 1U &&
+                (material.primitive_flags &
+                    world_primitive_track_overlay_support_flag) != 0;
             ID3D11DepthStencilState* depth_state =
                 base.depth_states[use_depth ? 1 : 0]
                     [blended && !combined_semitransparent ? 1 : 0]
                     [check_mask ? 1 : 0]
                     [set_mask ? 1 : 0].Get();
-            if (depth_state != bound_depth_state) {
-                context->OMSetDepthStencilState(depth_state, 1);
+            const UINT stencil_reference =
+                ((check_mask || set_mask) ? 1U : 0U) |
+                (road_support ? 2U : 0U);
+            if (depth_state != bound_depth_state ||
+                stencil_reference != bound_stencil_reference) {
+                context->OMSetDepthStencilState(
+                    depth_state, stencil_reference);
                 bound_depth_state = depth_state;
+                bound_stencil_reference = stencil_reference;
             }
             context->Draw(
                 static_cast<UINT>(batch_commands * 3),
@@ -4737,10 +8936,13 @@ WorldGpuRenderResult render_world_d3d11(
     if (diagnose_batches) {
         std::fprintf(
             stderr,
-            "[Render-Batches] unknown=%llu/%llu/%llu/max%zu "
+            "[Render-Batches] background=%llu/%llu/%llu/max%zu "
             "track=%llu/%llu/%llu/max%zu "
-            "vehicle=%llu/%llu/%llu/max%zu transparent=%llu/%llu/%llu "
-            "blendModes=%llu/%llu/%llu/%llu\n",
+            "vehicle=%llu/%llu/%llu/max%zu "
+            "unclassified=%llu/%llu/%llu/max%zu "
+            "screen=%llu/%llu/%llu/max%zu "
+            "transparent=%llu/%llu/%llu/%llu/%llu "
+            "depth=track+vehicle blendModes=%llu/%llu/%llu/%llu\n",
             static_cast<unsigned long long>(diagnostic_commands[0]),
             static_cast<unsigned long long>(diagnostic_batches[0]),
             static_cast<unsigned long long>(diagnostic_draws[0]),
@@ -4753,16 +8955,30 @@ WorldGpuRenderResult render_world_d3d11(
             static_cast<unsigned long long>(diagnostic_batches[2]),
             static_cast<unsigned long long>(diagnostic_draws[2]),
             diagnostic_max_batch[2],
+            static_cast<unsigned long long>(diagnostic_commands[3]),
+            static_cast<unsigned long long>(diagnostic_batches[3]),
+            static_cast<unsigned long long>(diagnostic_draws[3]),
+            diagnostic_max_batch[3],
+            static_cast<unsigned long long>(diagnostic_commands[4]),
+            static_cast<unsigned long long>(diagnostic_batches[4]),
+            static_cast<unsigned long long>(diagnostic_draws[4]),
+            diagnostic_max_batch[4],
             static_cast<unsigned long long>(
                 diagnostic_transparent_draws[0]),
             static_cast<unsigned long long>(
                 diagnostic_transparent_draws[1]),
             static_cast<unsigned long long>(
                 diagnostic_transparent_draws[2]),
+            static_cast<unsigned long long>(
+                diagnostic_transparent_draws[3]),
+            static_cast<unsigned long long>(
+                diagnostic_transparent_draws[4]),
             static_cast<unsigned long long>(diagnostic_blend_batches[0]),
             static_cast<unsigned long long>(diagnostic_blend_batches[1]),
             static_cast<unsigned long long>(diagnostic_blend_batches[2]),
             static_cast<unsigned long long>(diagnostic_blend_batches[3]));
+        if (shipping_layer_contract)
+            emitted_shipping_layer_contract = true;
     }
 
     if (options.asynchronous_readback) {
@@ -4776,9 +8992,9 @@ WorldGpuRenderResult render_world_d3d11(
             static_cast<UINT>(base.async_staging_textures.size());
         ++base.async_staging_count;
     } else {
-        // Keep two complete midpoint/actual pairs behind the GPU. Each slot is
-        // read before it is overwritten, preserving chronological output while
-        // allowing up to two authored intervals for asynchronous completion.
+        // Keep four chronological development images behind the GPU. Each slot
+        // is read before overwrite, preserving order while allowing earlier
+        // copies time to complete.
         context->CopyResource(
             base.staging_textures[staging_write].Get(),
             base.color_texture.Get());
@@ -4787,7 +9003,7 @@ WorldGpuRenderResult render_world_d3d11(
     // The immediate context may otherwise retain several CopyResource calls
     // in its driver command buffer until the later staging Map forces a
     // flush. Submit now so the GPU performs this copy during the intentional
-    // two-pair readback delay; Flush does not wait for completion.
+    // four-image development readback delay; Flush does not wait for completion.
     context->Flush();
     if (
         !options.asynchronous_readback &&

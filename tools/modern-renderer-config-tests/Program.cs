@@ -3,6 +3,7 @@ using RecompOne.Runtime.Config;
 using RecompOne.Runtime.Context;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 
 static void Require(bool condition, string message)
 {
@@ -26,6 +27,22 @@ static string ReadRepoFile(string relativePath)
 
 static int Occurrences(string text, string value) =>
     text.Split(value, StringSplitOptions.None).Length - 1;
+
+static short[] ReadBillboardCoordinates(object value)
+{
+    string[] names =
+    [
+        "X0", "Y0", "Z0",
+        "X1", "Y1", "Z1",
+        "X2", "Y2", "Z2",
+        "X3", "Y3", "Z3",
+    ];
+    return names.Select(name =>
+        (short)value.GetType().GetProperty(
+            name,
+            BindingFlags.Public | BindingFlags.Instance)!.GetValue(value)!)
+        .ToArray();
+}
 
 static void RequireModern(ViewConfig view, string context)
 {
@@ -167,12 +184,99 @@ static void VerifyProjectionOriginHandleFlow()
     }
 }
 
+if (args.Contains("--verify-release-policy", StringComparer.OrdinalIgnoreCase))
+{
+    Require(ReleasePolicy.IsReleasePackage, "release policy was not compiled in");
+    foreach (string name in new[]
+    {
+        "OPENGT_RELEASE_POLICY_SENTINEL",
+        "RECOMPONE_AUDIT_RELEASE_POLICY_SENTINEL",
+        "RECOMPONE_TRACE_RELEASE_POLICY_SENTINEL",
+        "RECOMPONE_GT2_RELEASE_POLICY_SENTINEL",
+        "RECOMPONE_NATIVE_WORLD_RELEASE_POLICY_SENTINEL",
+    })
+    {
+        Require(
+            Environment.GetEnvironmentVariable(name) is null,
+            $"release policy retained development control: {name}");
+    }
+    Require(
+        Environment.GetEnvironmentVariable("RECOMPONE_DISABLE_LIVE_INPUT") ==
+            "keep",
+        "release policy removed bounded package-test control");
+    Type releaseGpuType = typeof(ReleasePolicy).Assembly.GetType(
+        "RecompOne.Runtime.Gpu",
+        throwOnError: true)!;
+    MethodInfo releaseCompatibilityRasterDecision = releaseGpuType.GetMethod(
+        "ShouldRasterizeCompatibilityTriangle",
+        BindingFlags.NonPublic | BindingFlags.Static)!;
+    bool releaseRasterizesWorld =
+        (bool)releaseCompatibilityRasterDecision.Invoke(null, [true])!;
+    bool releaseRasterizesScreen =
+        (bool)releaseCompatibilityRasterDecision.Invoke(null, [false])!;
+    Require(
+        !releaseRasterizesWorld,
+        "release package can route 3D world geometry to a compatibility rasterizer");
+    Require(
+        releaseRasterizesScreen,
+        "release package disabled provenance-free screen composition");
+    Type releaseRendererType = typeof(ReleasePolicy).Assembly.GetType(
+        "RecompOne.Runtime.Hle.LiveWorldRenderer",
+        throwOnError: true)!;
+    Require(
+        releaseRendererType.GetMethod(
+            "ThrowIfFailed",
+            BindingFlags.NonPublic | BindingFlags.Instance) is not null,
+        "release package cannot surface a native world-renderer failure");
+    Console.WriteLine(
+        "release_policy=pass diagnostics=unavailable " +
+        "compatibility_world_path=absent screen_compositor=present " +
+        "native_failure=fail-closed");
+    return;
+}
+
 VerifyProjectionOriginHandleFlow();
+
+static void VerifyBackgroundOwnership()
+{
+    const uint modelPointer = 0x800AE324u;
+    WorldCaptureContext.LiveRenderingEnabled = true;
+    try
+    {
+        WorldCaptureContext.BeginBackgroundObject(modelPointer);
+        WorldObjectContext background = WorldCaptureContext.Current;
+        Require(
+            background.Kind == WorldObjectKind.Background &&
+            background.StableId == modelPointer &&
+            background.ModelPointer == modelPointer,
+            "authored background ownership was not retained");
+    }
+    finally
+    {
+        WorldCaptureContext.EndObject();
+        WorldCaptureContext.LiveRenderingEnabled = false;
+    }
+}
+
+VerifyBackgroundOwnership();
 
 string unifiedHostProject = ReadRepoFile(
     @"tools\unified-host\GranTurismo2PC.csproj");
 string unifiedHostProgram = ReadRepoFile(
     @"tools\unified-host\Program.cs");
+string inputManager = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Host\InputManager.cs");
+string runtimeProject = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\RecompOne.Runtime.csproj");
+string releasePolicy = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\ReleasePolicy.cs");
+string nativeProject = ReadRepoFile(@"native\CMakeLists.txt");
+string releasePackager = ReadRepoFile(@"tools\package_release.ps1");
+string releaseSetup = ReadRepoFile(@"release\Setup-From-GT2-Discs.ps1");
+string releaseReadme = ReadRepoFile(@"release\README.md");
+string releasePackageTest = ReadRepoFile(@"tools\test_release_package.ps1");
+string seattleReleaseSmoke = ReadRepoFile(
+    @"tools\test_seattle_release_smoke.ps1");
 Require(
     unifiedHostProject.Contains(
         "<AppHostDotNetSearch>AppLocal;Global</AppHostDotNetSearch>",
@@ -187,6 +291,36 @@ Require(
         StringComparison.Ordinal),
     "single-file publish no longer embeds the native renderer bridge");
 Require(
+    releasePackager.Contains(
+        "Release exposed app-local DLL dependencies instead of",
+        StringComparison.Ordinal) &&
+    releasePackageTest.Contains(
+        "|dat|dll|ovl|",
+        StringComparison.Ordinal),
+    "public package no longer rejects loose DLL dependencies");
+Require(
+    releasePackager.Contains(
+        "work\\release-package-scratch", StringComparison.Ordinal) &&
+    releasePackageTest.Contains(
+        "work\\release-audit-scratch", StringComparison.Ordinal) &&
+    !releasePackager.Contains("GetTempPath", StringComparison.Ordinal) &&
+    !releasePackageTest.Contains("GetTempPath", StringComparison.Ordinal) &&
+    releasePackageTest.Contains(
+        "DOTNET_BUNDLE_EXTRACT_BASE_DIR", StringComparison.Ordinal) &&
+    seattleReleaseSmoke.Contains(
+        "DOTNET_BUNDLE_EXTRACT_BASE_DIR", StringComparison.Ordinal),
+    "release packaging or validation can write artifacts outside the repository");
+Require(
+    releasePackageTest.Contains(
+        "stage 'replay_1' at absolute poll", StringComparison.Ordinal) &&
+    releasePackageTest.Contains(
+        "$replayProofPolls -lt 300", StringComparison.Ordinal) &&
+    releasePackageTest.Contains(
+        "phase=replay car=0", StringComparison.Ordinal) &&
+    releasePackageTest.Contains(
+        "$replayWorldFrames.Count -lt 3", StringComparison.Ordinal),
+    "release-package replay gate no longer proves the natural replay stage");
+Require(
     unifiedHostProject.Contains(
         "<OutputType>WinExe</OutputType>",
         StringComparison.Ordinal) &&
@@ -197,6 +331,89 @@ Require(
         "PreloadBundledNative(\"cimgui.dll\");",
         StringComparison.Ordinal),
     "interactive single-file launch no longer initializes a console-free window backend");
+Require(
+    unifiedHostProgram.Contains(
+        "RECOMPONE_CAPTURE_AUTOMATIC_STAGE", StringComparison.Ordinal) &&
+    unifiedHostProgram.Contains(
+        "RECOMPONE_CAPTURE_AUTOMATIC_STAGE\", \"0", StringComparison.Ordinal) &&
+    !unifiedHostProgram.Contains("300+1=CAPTURE", StringComparison.Ordinal) &&
+    inputManager.Contains(
+        "RECOMPONE_CAPTURE_INPUT_STAGE_POLL", StringComparison.Ordinal),
+    "direct Seattle replay can still emit an unsolicited user capture");
+Require(
+    runtimeProject.Contains("OPENGT_RELEASE_PACKAGE", StringComparison.Ordinal) &&
+    releasePolicy.Contains("[ModuleInitializer]", StringComparison.Ordinal) &&
+    releasePolicy.Contains("\"OPENGT_\"", StringComparison.Ordinal) &&
+    releasePolicy.Contains("\"RECOMPONE_AUDIT_\"", StringComparison.Ordinal) &&
+    releasePolicy.Contains("\"RECOMPONE_TRACE_\"", StringComparison.Ordinal) &&
+    releasePolicy.Contains("\"RECOMPONE_GT2_\"", StringComparison.Ordinal) &&
+    releasePackager.Contains(
+        "-p:OpenGTReleasePackage=true", StringComparison.Ordinal) &&
+    Occurrences(
+        releasePackager,
+        "--artifacts-path $managedBuild") == 2 &&
+    releasePackager.Contains(
+        "OpenGTPS1-release-managed-", StringComparison.Ordinal) &&
+    releasePackager.Contains(
+        "[IO.Directory]::Delete($managedBuildFull, $true)",
+        StringComparison.Ordinal),
+    "release package can still activate development renderer controls");
+Require(
+    nativeProject.Contains(
+        "OPENGT_BUILD_DEV_TOOLS", StringComparison.Ordinal) &&
+    nativeProject.Contains(
+        "opengt_renderer_dev_support", StringComparison.Ordinal) &&
+    releasePackager.Contains(
+        "-DOPENGT_BUILD_TESTS=OFF", StringComparison.Ordinal) &&
+    releasePackager.Contains(
+        "-DOPENGT_BUILD_DEV_TOOLS=OFF", StringComparison.Ordinal),
+    "release native renderer still links diagnostic or oracle support");
+Require(
+    releasePackager.Contains(
+        @"tools\unified-host\GranTurismo2PC.csproj",
+        StringComparison.Ordinal) &&
+    releasePackager.Contains(
+        "Setup-From-GT2-Discs.ps1",
+        StringComparison.Ordinal) &&
+    releasePackager.Contains(
+        "recompone.simulation.unified.json",
+        StringComparison.Ordinal) &&
+    releasePackager.Contains(
+        "recompone.arcade.unified.json",
+        StringComparison.Ordinal) &&
+    !releasePackager.Contains(
+        @"generated\recompiled\GranTurismo2PC.csproj",
+        StringComparison.Ordinal) &&
+    !releasePackager.Contains(
+        "Setup-From-Simulation-Disc.ps1",
+        StringComparison.Ordinal) &&
+    releaseSetup.Contains(
+        "D0AB6E70539601057590A36299543C0ADAD219254D712F7D4273219094ED5031",
+        StringComparison.Ordinal) &&
+    releaseSetup.Contains(
+        "C2E97D6B0C847CA4336D9D84D8D98C349D1240ED075E81AB3FD5C977E9A45075",
+        StringComparison.Ordinal) &&
+    releaseSetup.Contains(
+        "7C3BF68061E5867DE5AF831121C50091128DDBDE4F13026A050D3C71EF0EEE53",
+        StringComparison.Ordinal) &&
+    releaseSetup.Contains(
+        "735D838C3A0F12E2917593648790F9FD1CB6ADA13D402E19022D7C814737321C",
+        StringComparison.Ordinal) &&
+    releaseReadme.Contains("SCUS-94488", StringComparison.Ordinal) &&
+    releaseReadme.Contains("SCUS-94455", StringComparison.Ordinal) &&
+    releasePackageTest.Contains(
+        "--headless --arcade-replay seattle-circuit",
+        StringComparison.Ordinal),
+    "release packaging no longer proves the authoritative unified Seattle path");
+Require(
+    releaseSetup.Contains(
+        "BEF591A382F4DCEC1990F5DB01B43CD42ED9CBDFE504BCB47E3FDB4013495A0E",
+        StringComparison.Ordinal) &&
+    Regex.IsMatch(
+        releaseSetup,
+        @"Join-Path \$arcade 'DISC_META\.DAT'\),\s*" +
+        @"'GT2\.VOL;1',\s*473,\s*213596160\)"),
+    "release setup no longer aligns Arcade unified metadata to LBA 473");
 Require(
     unifiedHostProgram.Contains(
         "ResolveUnifiedGameRoot(AppContext.BaseDirectory, launchDirectory)",
@@ -224,10 +441,34 @@ string liveRendererSource = ReadRepoFile(
     @"vendor\RecompOne\RecompOne.Runtime\Gpu\Hle\LiveWorldRenderer.cs");
 string gt2CompatSource = ReadRepoFile(
     @"vendor\RecompOne\RecompOne.Runtime\sdk\GT2Compat.cs");
+string gteSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Hardware\Gte.cs");
+string worldCaptureContextSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Gpu\WorldCaptureContext.cs");
+string psMemorySource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Memory\PSMemory.cs");
+string generatedMemoryAccessSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.GeneratedSupport\MemoryAccess.cs");
+string rawTrackSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Gpu\GpuRawTrack.cs");
+string nativeRendererSource = ReadRepoFile(
+    @"native\src\world_gpu_renderer_d3d11.cpp");
+string worldDrawListHeader = ReadRepoFile(
+    @"native\include\opengt\world_draw_list.hpp");
+string liveBridgeSource = ReadRepoFile(
+    @"native\src\live_renderer_bridge.cpp");
+string seattleDirectHarness = ReadRepoFile(
+    @"tools\test_seattle_direct_replay.ps1");
+string simulationEnhancements = ReadRepoFile(
+    @"tools\apply_gt2_enhancements.py");
+string arcadeEnhancements = ReadRepoFile(
+    @"tools\apply_gt2_arcade_enhancements.py");
 string presentationRendererSource = ReadRepoFile(
     @"vendor\RecompOne\RecompOne.Runtime\Host\Window\PresentationRenderer.cs");
 string motionCaptureHarness = ReadRepoFile(
     @"tools\capture_modern_renderer_final_motion.ps1");
+string ssr5VehicleBoundaryHarness = ReadRepoFile(
+    @"tools\run_ssr5_vehicle_boundary_trace.ps1");
 const string selfContainedDeploy =
     @"tools\unified-host\bin\Release\net10.0\win-x64\publish";
 Require(
@@ -264,21 +505,414 @@ Require(
     "paced emulation and native pair production no longer share the highest thread priority");
 Require(
     gt2CompatSource.Contains(
-        "static readonly bool True60HzEnabled",
+        "CopyAlignedGuestWords(", StringComparison.Ordinal) &&
+    psMemorySource.Contains(
+        "TryCopyAlignedRamWords(", StringComparison.Ordinal) &&
+    psMemorySource.Contains(
+        "Gte.NotifyRamRead(offset, value);", StringComparison.Ordinal) &&
+    arcadeEnhancements.Contains(
+        "Arcade exact aligned scene render-record copy",
         StringComparison.Ordinal) &&
+    ReadRepoFile(
+        @"generated\arcade-recompiled\gt2_arcade_overlay_0.cs").Contains(
+            "GT2Compat.CopyAlignedGuestWords(", StringComparison.Ordinal),
+    "Seattle scene-record copy lost exact RAM/GTE observers or generated integration");
+Require(
+    Occurrences(
+        generatedMemoryAccessSource,
+        "MethodImplOptions.AggressiveInlining | " +
+        "MethodImplOptions.AggressiveOptimization") == 10 &&
+    !generatedMemoryAccessSource.Contains(
+        "MethodImplOptions.NoInlining", StringComparison.Ordinal),
+    "profiled guest RAM dispatch regained its redundant non-inlined boundary");
+Require(
     gt2CompatSource.Contains(
-        "\"RECOMPONE_GT2_TRUE_60HZ\") != \"0\";",
+        "static readonly bool True60HzEnabled = true;",
+        StringComparison.Ordinal) &&
+    !gt2CompatSource.Contains(
+        "RECOMPONE_GT2_TRUE_60HZ",
         StringComparison.Ordinal) &&
     !gt2CompatSource.Contains(
         "True60HzExperiment",
         StringComparison.Ordinal) &&
-    liveRendererSource.Contains(
-        "\"RECOMPONE_GT2_TRUE_60HZ\") != \"0\";",
+    !liveRendererSource.Contains("RenderPair", StringComparison.Ordinal) &&
+    !liveRendererSource.Contains("TryReadPair", StringComparison.Ordinal) &&
+    !liveRendererSource.Contains(
+        "LiveInterpolationStats",
         StringComparison.Ordinal) &&
-    stockScenarioHarness.Contains(
-        "RECOMPONE_GT2_TRUE_60HZ = '1'",
+    !liveRendererSource.Contains(
+        "RECOMPONE_GT2_TRUE_60HZ",
         StringComparison.Ordinal),
-    "genuine per-VBlank simulation is no longer the shipping and explicit-test default");
+    "genuine per-VBlank simulation can still be downgraded at runtime");
+Require(
+    rawTrackSource.Contains(
+        "readonly bool _rawTrackReplacementRequested = true;",
+        StringComparison.Ordinal) &&
+    !rawTrackSource.Contains(
+        "RECOMPONE_DEV_GT2_RAW_TRACK_REPLACE",
+        StringComparison.Ordinal) &&
+    releasePolicy.Contains("\"RECOMPONE_DEV_\"", StringComparison.Ordinal) &&
+    rawTrackSource.Contains("objectsPerFrame=", StringComparison.Ordinal) &&
+    rawTrackSource.Contains(
+        "sourcePrimitivesPerFrame=",
+        StringComparison.Ordinal) &&
+    rawTrackSource.Contains("trianglesPerFrame=", StringComparison.Ordinal) &&
+    rawTrackSource.Contains(
+        "RegisterResidentRawTrackMeshDefinition(",
+        StringComparison.Ordinal) &&
+    rawTrackSource.Contains("companionPath =", StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "The release build has no stock-sector fallback.",
+        StringComparison.Ordinal),
+    "shipping course residency can still fall back to guest visibility packets");
+Require(
+    gt2CompatSource.Contains(
+        "const int ExtendedVisibilitySectorRadius = 4;",
+        StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "distance <= ExtendedVisibilitySectorRadius",
+        StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "scope=bounded-sector-horizon",
+        StringComparison.Ordinal) &&
+    !gt2CompatSource.Contains(
+        "scope=complete-static-course",
+        StringComparison.Ordinal) &&
+    worldCaptureContextSource.Contains(
+        "policy=authored-mutual-exclusion",
+        StringComparison.Ordinal) &&
+    worldCaptureContextSource.Contains(
+        "return visibilityMask;",
+        StringComparison.Ordinal) &&
+    !worldCaptureContextSource.Contains(
+        "return _trackMeshConsumer == null ? visibilityMask : uint.MaxValue;",
+        StringComparison.Ordinal),
+    "course selection can co-render mutually exclusive sector or auxiliary meshes");
+Require(
+    rawTrackSource.Contains(
+        "RawTrackPrimaryQuadAccepted(",
+        StringComparison.Ordinal) &&
+    rawTrackSource.Contains(
+        "RawTrackAlternateQuadAccepted(",
+        StringComparison.Ordinal) &&
+    rawTrackSource.Contains(
+        "RawTrackQuadTriangleAccepted(",
+        StringComparison.Ordinal) &&
+    rawTrackSource.Contains(
+        "guestPrimitiveTruthRMG=",
+        StringComparison.Ordinal) &&
+    rawTrackSource.Contains(
+        "guestPrimitiveQuantizedZeroDivergences=",
+        StringComparison.Ordinal) &&
+    Occurrences(simulationEnhancements, "TraceTrackFaceDecision(") == 4 &&
+    Occurrences(arcadeEnhancements, "TraceTrackFaceDecision(") == 4 &&
+    Occurrences(simulationEnhancements, "#if !OPENGT_RELEASE_PACKAGE") == 4 &&
+    Occurrences(arcadeEnhancements, "#if !OPENGT_RELEASE_PACKAGE") == 4 &&
+    rawTrackSource.Contains(
+        "RECOMPONE_AUDIT_GT2_RAW_TRACK_TEMPORAL_COVERAGE",
+        StringComparison.Ordinal) &&
+    rawTrackSource.Contains(
+        "RECOMPONE_AUDIT_GT2_RAW_TRACK_STAGE",
+        StringComparison.Ordinal) &&
+    rawTrackSource.Contains(
+        "temporalCoverageNearExcluded=",
+        StringComparison.Ordinal) &&
+    rawTrackSource.Contains(
+        "temporalCoverageMaximum=",
+        StringComparison.Ordinal) &&
+    rawTrackSource.Contains(
+        "RECOMPONE_AUDIT_GT2_RAW_TRACK_NEAR_CLIP",
+        StringComparison.Ordinal) &&
+    rawTrackSource.Contains(
+        "RawTrackNearClipFacingAccepted(",
+        StringComparison.Ordinal) &&
+    simulationEnhancements.Contains(
+        "(int)c.A3 >= 0 &&",
+        StringComparison.Ordinal) &&
+    arcadeEnhancements.Contains(
+        "(int)((c.T3 - 1u) & (c.V0 - 1u) & c.S6) >= 0",
+        StringComparison.Ordinal) &&
+    unifiedHostProject.Contains(
+        "$(DefineConstants);OPENGT_RELEASE_PACKAGE",
+        StringComparison.Ordinal),
+    "track-face oracle no longer records exact GT2 branches or is present in release guest code");
+Require(
+    nativeRendererSource.Contains(
+        "OPENGT_RENDER_TEXTURE_COVERAGE_DIAGNOSTICS",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "[Render-Texture-Coverage]",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "OPENGT_RENDER_PIXEL_PROVENANCE_POINTS",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "OPENGT_RENDER_SCENE_CONTINUITY_AUDIT",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "OPENGT_RENDER_SCENE_CONTINUITY_OBJECT",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "frameGaps=%llu",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "[Render-Pixel-Provenance]",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "[Render-Resident-Edges]",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "OPENGT_RENDER_VEHICLE_BOUNDARY_AUDIT",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "[Render-Vehicle-Boundary]",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "[Render-Vehicle-Boundary-Transition]",
+        StringComparison.Ordinal),
+    "native renderer lost the bounded texture-coverage or resident-edge diagnostics");
+Require(
+    worldDrawListHeader.Contains(
+        "unclassified_world_commands",
+        StringComparison.Ordinal) &&
+    liveBridgeSource.Contains(
+        "[Native-World-Classification]",
+        StringComparison.Ordinal) &&
+    liveBridgeSource.Contains(
+        "frames_with_unclassified_world",
+        StringComparison.Ordinal) &&
+    seattleDirectHarness.Contains(
+        "unclassifiedWorldCommands=0",
+        StringComparison.Ordinal) &&
+    seattleDirectHarness.Contains(
+        "framesWithUnclassifiedWorld=0",
+        StringComparison.Ordinal),
+    "Seattle can no longer prove whole-run world/effect ownership");
+Require(
+    seattleDirectHarness.Contains(
+        "$diagnosticReplay -or",
+        StringComparison.Ordinal) &&
+    seattleDirectHarness.Contains(
+        "$ExitAtReplayHandoff",
+        StringComparison.Ordinal) &&
+    seattleDirectHarness.Contains(
+        "$pacedStage = if ($diagnosticReplay) { 'replay_1' } else { 'race_1' }",
+        StringComparison.Ordinal) &&
+    seattleDirectHarness.Contains(
+        "RECOMPONE_THROTTLE_ON_SCRIPT_STAGE = $(if ($Paced) { $pacedStage }",
+        StringComparison.Ordinal),
+    "Seattle natural replay no longer has an authored 60 Hz pacing gate");
+Require(
+    rawTrackSource.Contains(
+        "RawTrackMaterialCoverageFromNclips(",
+        StringComparison.Ordinal) &&
+    rawTrackSource.Contains(
+        "materialThreshold >= materialCoverage",
+        StringComparison.Ordinal) &&
+    rawTrackSource.Contains("materialLod=", StringComparison.Ordinal),
+    "resident course geometry no longer preserves GT2's authored material LOD");
+Require(
+    worldDrawListHeader.Contains(
+        "world_primitive_track_overlay_layer_mask",
+        StringComparison.Ordinal) &&
+    worldDrawListHeader.Contains(
+        "world_primitive_track_overlay_support_flag",
+        StringComparison.Ordinal) &&
+    liveBridgeSource.Contains(
+        "classify_resident_track_overlays(",
+        StringComparison.Ordinal) &&
+    liveBridgeSource.Contains(
+        "resident_primitives_positive_overlap(",
+        StringComparison.Ordinal) &&
+    liveBridgeSource.Contains(
+        "resident_overlay_is_smaller_than_support(",
+        StringComparison.Ordinal) &&
+    liveBridgeSource.Contains(
+        "resident_elevated_overlay_relation(",
+        StringComparison.Ordinal) &&
+    liveBridgeSource.Contains(
+        "overlay_support = true",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "PSMainRoadOverlay(",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "bounded four-view-unit depth",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "const bool use_depth =",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "render_phase == 2",
+        StringComparison.Ordinal) &&
+    !nativeRendererSource.Contains(
+        "const bool use_road_support_mask",
+        StringComparison.Ordinal),
+    "resident course rendering lost typed road-artwork support priority");
+Require(
+    nativeRendererSource.Contains(
+        "int majorTaps = clamp((int)ceil(majorLength), 3, 16);",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "int minorTaps = clamp((int)ceil(minorLength), 3, 4);",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "majorAmount * major + minorAmount * minor",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "(majorIndex + 0.5) / majorTaps) - 0.5",
+        StringComparison.Ordinal),
+    "world texture minification lost oriented anisotropic sampling");
+Require(
+    gt2CompatSource.Contains(
+        "const uint authoredViewportBits = 0x003F001Eu;",
+        StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "uint expanded = ApplyModernVehicleViewportMask(mask, enabled);",
+        StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "public static bool ModernVehicleViewportClippingEnabled =>",
+        StringComparison.Ordinal) &&
+    Occurrences(simulationEnhancements, "ExpandVehicleFrustumMask(") == 1 &&
+    Occurrences(arcadeEnhancements, "ExpandVehicleFrustumMask(") == 1 &&
+    Occurrences(simulationEnhancements, "TraceVehicleWheelGate(") == 1 &&
+    Occurrences(arcadeEnhancements, "TraceVehicleWheelGate(") == 1 &&
+    Occurrences(simulationEnhancements, "TraceVehicleWheelDispatch(") == 1 &&
+    Occurrences(arcadeEnhancements, "TraceVehicleWheelDispatch(") == 1 &&
+    Occurrences(
+        simulationEnhancements,
+        "TraceVehicleWheelRendererEntry(") == 1 &&
+    Occurrences(
+        arcadeEnhancements,
+        "TraceVehicleWheelRendererEntry(") == 1 &&
+    Occurrences(
+        simulationEnhancements,
+        "BeginVehicleRenderIdentity(c.S0)") == 1 &&
+    Occurrences(
+        arcadeEnhancements,
+        "BeginVehicleRenderIdentity(c.S0)") == 1 &&
+    Occurrences(
+        simulationEnhancements,
+        "EndVehicleRenderIdentity()") == 1 &&
+    Occurrences(
+        arcadeEnhancements,
+        "EndVehicleRenderIdentity()") == 1 &&
+    simulationEnhancements.Contains(
+        "\"func_800140A4\"", StringComparison.Ordinal) &&
+    arcadeEnhancements.Contains(
+        "\"func_800140A4\"", StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "WorldCaptureContext.BeginVehicle(vehicleIdentity, modelPointer);",
+        StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "scopedCaptures=", StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "fallbackCaptures=", StringComparison.Ordinal) &&
+    simulationEnhancements.Contains("L80067700: ;", StringComparison.Ordinal) &&
+    arcadeEnhancements.Contains("L80067610: ;", StringComparison.Ordinal) &&
+    simulationEnhancements.Contains("L8006772C: ;", StringComparison.Ordinal) &&
+    arcadeEnhancements.Contains("L8006763C: ;", StringComparison.Ordinal) &&
+    simulationEnhancements.Contains(
+        "(track, \"func_80014708\"", StringComparison.Ordinal) &&
+    simulationEnhancements.Contains(
+        "(race, \"func_80048528\"", StringComparison.Ordinal) &&
+    arcadeEnhancements.Contains(
+        "(OVERLAY2, \"func_800146EC\"", StringComparison.Ordinal) &&
+    arcadeEnhancements.Contains(
+        "(OVERLAY0, \"func_80048448\"", StringComparison.Ordinal),
+    "vehicle ownership, Hor+ expansion, or wheel control-flow evidence misses a renderer variant");
+Require(
+    !gt2CompatSource.Contains(
+        "RECOMPONE_GT2_DIAGNOSTIC_SPEED_CAP_MPH",
+        StringComparison.Ordinal) &&
+    !gt2CompatSource.Contains(
+        "public static void ApplyDiagnosticVehicleSpeedCap(",
+        StringComparison.Ordinal) &&
+    Occurrences(
+        simulationEnhancements,
+        "ApplyDiagnosticVehicleSpeedCap(") == 0 &&
+    Occurrences(
+        arcadeEnhancements,
+        "ApplyDiagnosticVehicleSpeedCap(") == 0 &&
+    Occurrences(
+        ReadRepoFile(@"generated\recompiled\gt2_overlay_0.cs"),
+        "ApplyDiagnosticVehicleSpeedCap(") == 0 &&
+    Occurrences(
+        ReadRepoFile(
+            @"generated\arcade-recompiled\gt2_arcade_overlay_0.cs"),
+        "ApplyDiagnosticVehicleSpeedCap(") == 0 &&
+    !ssr5VehicleBoundaryHarness.Contains(
+        "RECOMPONE_GT2_DIAGNOSTIC_SPEED_CAP_MPH",
+        StringComparison.Ordinal) &&
+    !ssr5VehicleBoundaryHarness.Contains(
+        "RECOMPONE_DIAGNOSTIC_KEYBOARD_THROTTLE_PERCENT",
+        StringComparison.Ordinal) &&
+    !ReadRepoFile(
+        @"vendor\RecompOne\RecompOne.Runtime\Host\InputManager.cs").Contains(
+            "RECOMPONE_DIAGNOSTIC_KEYBOARD_THROTTLE_PERCENT",
+            StringComparison.Ordinal) &&
+    ssr5VehicleBoundaryHarness.Contains(
+        "RECOMPONE_TRACE_GT2_VEHICLE_GTE_FLAGS = '1'",
+        StringComparison.Ordinal) &&
+    gteSource.Contains(
+        "FilterModernVehicleProjectionLimits(FLAG)",
+        StringComparison.Ordinal) &&
+    gteSource.Contains(
+        "[GT2-VEHICLE-GTE-FLAG]",
+        StringComparison.Ordinal) &&
+    ssr5VehicleBoundaryHarness.Contains(
+        "special-stage-route-5",
+        StringComparison.Ordinal) &&
+    ssr5VehicleBoundaryHarness.Contains(
+        "OPENGT_RENDER_VEHICLE_BOUNDARY_AUDIT = '1'",
+        StringComparison.Ordinal) &&
+    ssr5VehicleBoundaryHarness.Contains(
+        "RECOMPONE_DISABLE_DISPLAY_CAPTURE = '1'",
+        StringComparison.Ordinal),
+    "SSR5 close-pass telemetry regressed or the unsafe physical speed cap returned");
+
+foreach (string standaloneVehicleOverlay in new[]
+{
+    @"generated\recompiled\gt2_overlay_0.cs",
+    @"generated\recompiled\gt2_overlay_2.cs",
+    @"generated\arcade-recompiled\gt2_arcade_overlay_0.cs",
+    @"generated\arcade-recompiled\gt2_arcade_overlay_2.cs",
+})
+{
+    string source = ReadRepoFile(standaloneVehicleOverlay);
+    Require(
+        Occurrences(source, "ApplyModernVehicleViewportMask(c.V0)") == 1 &&
+        Occurrences(source, "ModernVehicleViewportClippingEnabled") == 1,
+        $"{standaloneVehicleOverlay}: standalone vehicle still uses GT2's 4:3 polygon clipper in modern mode");
+}
+
+const uint stockVehicleFrustumMask = 0x003F001Fu;
+Require(
+    RecompOne.Runtime.Sdk.GT2Compat.ApplyModernTrackFrustumClassification(
+        0u, enabled: true) == 0u &&
+    RecompOne.Runtime.Sdk.GT2Compat.ApplyModernTrackFrustumClassification(
+        1u, enabled: true) == 1u &&
+    RecompOne.Runtime.Sdk.GT2Compat.ApplyModernTrackFrustumClassification(
+        2u, enabled: true) == 1u &&
+    RecompOne.Runtime.Sdk.GT2Compat.ApplyModernTrackFrustumClassification(
+        2u, enabled: false) == 2u,
+    "expanded track objects did not retain GT2's intersecting packet order");
+Require(
+    RecompOne.Runtime.Sdk.GT2Compat.ApplyModernVehicleViewportMask(
+        stockVehicleFrustumMask, enabled: false) == stockVehicleFrustumMask,
+    "vehicle viewport policy no longer preserves the stock isolation mask");
+Require(
+    RecompOne.Runtime.Sdk.GT2Compat.ApplyModernVehicleViewportMask(
+        stockVehicleFrustumMask, enabled: true) == 0x00000001u,
+    "modern viewport did not delegate vehicle viewport clipping to D3D");
+Require(
+    RecompOne.Runtime.Sdk.GT2Compat.ApplyModernVehicleViewportMask(
+        0x00010000u, enabled: true) == 0u,
+    "vehicle near-plane intersection still routes through GT2's 4:3 polygon clipper");
+Require(
+    RecompOne.Runtime.Sdk.GT2Compat.ApplyModernVehicleViewportMask(
+        0x00320012u, enabled: true) == 0u,
+    "close vehicle still routes through GT2's 4:3 polygon clipper");
 Require(
     presentationRendererSource.Contains(
         "Environment.GetEnvironmentVariable(\"RECOMPONE_VIDEO_CRF\")",
@@ -356,26 +990,65 @@ Type rendererType = typeof(ViewConfig).Assembly.GetType(
 Type gt2CompatType = typeof(ViewConfig).Assembly.GetType(
     "RecompOne.Runtime.Sdk.GT2Compat",
     throwOnError: true)!;
-string? savedTrue60Override = Environment.GetEnvironmentVariable(
-    "RECOMPONE_GT2_TRUE_60HZ");
-Environment.SetEnvironmentVariable("RECOMPONE_GT2_TRUE_60HZ", null);
-bool authoredRendererDefault = (bool)rendererType.GetField(
-    "AuthoredOnly",
-    BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
-bool true60GuestDefault = (bool)gt2CompatType.GetField(
+string ssr5ClassCPreBase64 = (string)gt2CompatType.GetField(
+    "DirectSpecialStageRoute5PreFinalizeConfigBase64",
+    BindingFlags.NonPublic | BindingFlags.Static)!.GetRawConstantValue()!;
+string ssr5ClassCFinalBase64 = (string)gt2CompatType.GetField(
+    "DirectSpecialStageRoute5RaceConfigBase64",
+    BindingFlags.NonPublic | BindingFlags.Static)!.GetRawConstantValue()!;
+string ssr5ClassCStateBase64 = (string)gt2CompatType.GetField(
+    "DirectSpecialStageRoute5RaceStateBase64",
+    BindingFlags.NonPublic | BindingFlags.Static)!.GetRawConstantValue()!;
+byte[] ssr5ClassCPre = Convert.FromBase64String(ssr5ClassCPreBase64);
+byte[] ssr5ClassCFinal = Convert.FromBase64String(ssr5ClassCFinalBase64);
+byte[] ssr5ClassCState = Convert.FromBase64String(ssr5ClassCStateBase64);
+int ssr5PlayerNameStart = 0x5C + 0x90;
+int ssr5PlayerNameLength = Array.IndexOf(
+    ssr5ClassCState,
+    (byte)0,
+    ssr5PlayerNameStart) - ssr5PlayerNameStart;
+string ssr5PlayerName = System.Text.Encoding.ASCII.GetString(
+    ssr5ClassCState,
+    ssr5PlayerNameStart,
+    ssr5PlayerNameLength);
+Require(
+    ssr5ClassCPre.Length == 0x2D4 &&
+    ssr5ClassCPre[1] == 3 &&
+    BitConverter.ToUInt32(ssr5ClassCPre, 0x0C) == 0x10362258u &&
+    BitConverter.ToUInt32(ssr5ClassCPre, 0x10) == 0x10362258u &&
+    ssr5ClassCFinal.Length == 0x2D4 &&
+    ssr5ClassCState.Length == 0x58C &&
+    ssr5PlayerName == "Citroen Xsara 1.8i 16V" &&
+    Convert.ToHexString(
+        System.Security.Cryptography.SHA256.HashData(ssr5ClassCPre)) ==
+        "71FF6B22EC08B6C7516469BA24C0947B2470069436CDE80122A298E1497E0897" &&
+    Convert.ToHexString(
+        System.Security.Cryptography.SHA256.HashData(ssr5ClassCFinal)) ==
+        "EDCC10480B919EEB5232E59220006ACF64B6509F7AC7AE99F5915F1D962A65BD" &&
+    Convert.ToHexString(
+        System.Security.Cryptography.SHA256.HashData(ssr5ClassCState)) ==
+        "D5EF736926371AB91A89F9E058399B3D95867BA18DAC4790040CE337C580AF08",
+    "direct SSR5 launch no longer carries the native Class C Xsara fixture");
+bool true60GuestFixed = (bool)gt2CompatType.GetField(
     "True60HzEnabled",
     BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
-Environment.SetEnvironmentVariable(
-    "RECOMPONE_GT2_TRUE_60HZ", savedTrue60Override);
 Require(
-    authoredRendererDefault && true60GuestDefault,
-    "shipping process without a True60 override did not select authored per-VBlank operation");
-Type interpolationStatsType = typeof(ViewConfig).Assembly.GetType(
-    "RecompOne.Runtime.Hle.LiveInterpolationStats",
-    throwOnError: true)!;
+    true60GuestFixed,
+    "shipping process did not lock authored per-VBlank operation");
+Type nativeMethodsType = rendererType.GetNestedType(
+    "NativeMethods",
+    BindingFlags.NonPublic)!;
 Require(
-    Marshal.SizeOf(interpolationStatsType) == 128,
-    "managed native-interpolation ABI v4 layout is not 128 bytes");
+    rendererType.Assembly.GetType(
+        "RecompOne.Runtime.Hle.LiveInterpolationStats",
+        throwOnError: false) is null &&
+    nativeMethodsType.GetMethod(
+        "RenderPair",
+        BindingFlags.NonPublic | BindingFlags.Static) is null &&
+    nativeMethodsType.GetMethod(
+        "TryReadPair",
+        BindingFlags.NonPublic | BindingFlags.Static) is null,
+    "managed runtime still carries a synthetic-frame native ABI");
 bool rendererRequested = (bool)rendererType.GetProperty(
     "Requested",
     BindingFlags.Public | BindingFlags.Static)!.GetValue(null)!;
@@ -415,8 +1088,8 @@ int publishedOutputCapacity = (int)rendererType.GetField(
     "PublishedOutputCapacity",
     BindingFlags.NonPublic | BindingFlags.Static)!.GetRawConstantValue()!;
 Require(
-    outputBufferCount == 11 && publishedOutputCapacity == 8,
-    "native output ring lacks host + worker ownership beside eight outputs");
+    outputBufferCount == 4 && publishedOutputCapacity == 3,
+    "native output ring no longer covers the bounded capture work window");
 
 Type recorderType = rendererType.Assembly.GetType(
     "RecompOne.Runtime.Hle.LiveWorldFrameRecorder",
@@ -467,6 +1140,218 @@ using (var captureStream = new MemoryStream(
 Type gpuType = rendererType.Assembly.GetType(
     "RecompOne.Runtime.Gpu",
     throwOnError: true)!;
+MethodInfo billboardCoordinates = gpuType.GetMethod(
+    "RawTrackBillboardCoordinates",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+object[] billboardInputs =
+[
+    false,
+    (short)1000,
+    (short)2000,
+    (short)3000,
+    (short)100,
+    (ushort)400,
+    (short)2048,
+    (short)1024,
+];
+short[] primaryBillboard = ReadBillboardCoordinates(
+    billboardCoordinates.Invoke(null, billboardInputs)!);
+billboardInputs[0] = true;
+short[] auxiliaryBillboard = ReadBillboardCoordinates(
+    billboardCoordinates.Invoke(null, billboardInputs)!);
+Require(
+    primaryBillboard.SequenceEqual(new short[]
+    {
+        950, 2025, 3400,
+        1050, 1975, 3400,
+        950, 2025, 3000,
+        1050, 1975, 3000,
+    }) &&
+    auxiliaryBillboard.SequenceEqual(new short[]
+    {
+        950, 2400, 2975,
+        1050, 2400, 3025,
+        950, 2000, 2975,
+        1050, 2000, 3025,
+    }),
+    "primary and auxiliary GT2 billboard axes were conflated");
+MethodInfo quadPacketCorner = gpuType.GetMethod(
+    "RawTrackQuadPacketCorner",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+MethodInfo quadPacketUvCorner = gpuType.GetMethod(
+    "RawTrackQuadPacketUvCorner",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+int[] ReadQuadPacketMap(
+    MethodInfo method,
+    TrackMeshProjectionPath path,
+    int triangle) => Enumerable.Range(0, 3).Select(vertex =>
+        (int)method.Invoke(null, [path, triangle, vertex])!).ToArray();
+Require(
+    ReadQuadPacketMap(
+        quadPacketCorner,
+        TrackMeshProjectionPath.Primary,
+        0).SequenceEqual([3, 1, 0]) &&
+    ReadQuadPacketMap(
+        quadPacketCorner,
+        TrackMeshProjectionPath.Primary,
+        1).SequenceEqual([1, 2, 3]) &&
+    ReadQuadPacketMap(
+        quadPacketUvCorner,
+        TrackMeshProjectionPath.Primary,
+        0).SequenceEqual([3, 1, 0]) &&
+    ReadQuadPacketMap(
+        quadPacketUvCorner,
+        TrackMeshProjectionPath.Primary,
+        1).SequenceEqual([1, 2, 3]) &&
+    ReadQuadPacketMap(
+        quadPacketCorner,
+        TrackMeshProjectionPath.Alternate,
+        0).SequenceEqual([0, 1, 3]) &&
+    ReadQuadPacketMap(
+        quadPacketCorner,
+        TrackMeshProjectionPath.Alternate,
+        1).SequenceEqual([1, 3, 2]) &&
+    ReadQuadPacketMap(
+        quadPacketUvCorner,
+        TrackMeshProjectionPath.Alternate,
+        0).SequenceEqual([0, 1, 3]) &&
+    ReadQuadPacketMap(
+        quadPacketUvCorner,
+        TrackMeshProjectionPath.Alternate,
+        1).SequenceEqual([1, 3, 2]),
+    "indexed course quad packet order no longer matches GT2's two projection paths");
+MethodInfo primaryQuadAccepted = gpuType.GetMethod(
+    "RawTrackPrimaryQuadAccepted",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+Require(
+    (bool)primaryQuadAccepted.Invoke(null, [true, 2.0, 3.0])! &&
+    (bool)primaryQuadAccepted.Invoke(null, [true, -2.0, -3.0])! &&
+    !(bool)primaryQuadAccepted.Invoke(null, [true, -2.0, 3.0])! &&
+    !(bool)primaryQuadAccepted.Invoke(null, [true, 0.0, 0.0])! &&
+    (bool)primaryQuadAccepted.Invoke(null, [false, -2.0, 0.0])!,
+    "primary course quad facing no longer preserves GT2's two NCLIP half decisions");
+MethodInfo alternateQuadAccepted = gpuType.GetMethod(
+    "RawTrackAlternateQuadAccepted",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+Require(
+    (bool)alternateQuadAccepted.Invoke(null, [true, -2.0, -3.0])! &&
+    (bool)alternateQuadAccepted.Invoke(null, [true, 2.0, 3.0])! &&
+    !(bool)alternateQuadAccepted.Invoke(null, [true, 2.0, -3.0])! &&
+    !(bool)alternateQuadAccepted.Invoke(null, [true, 0.0, 0.0])! &&
+    (bool)alternateQuadAccepted.Invoke(null, [false, 2.0, 0.0])!,
+    "alternate course quad oracle no longer matches GT2's two NCLIP orders");
+MethodInfo quadTriangleAccepted = gpuType.GetMethod(
+    "RawTrackQuadTriangleAccepted",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+Require(
+    (bool)quadTriangleAccepted.Invoke(
+        null,
+        [true, TrackMeshProjectionPath.Primary, 0, 2.0])! &&
+    !(bool)quadTriangleAccepted.Invoke(
+        null,
+        [true, TrackMeshProjectionPath.Primary, 0, -2.0])! &&
+    (bool)quadTriangleAccepted.Invoke(
+        null,
+        [true, TrackMeshProjectionPath.Primary, 1, -2.0])! &&
+    (bool)quadTriangleAccepted.Invoke(
+        null,
+        [true, TrackMeshProjectionPath.Alternate, 0, -2.0])! &&
+    (bool)quadTriangleAccepted.Invoke(
+        null,
+        [true, TrackMeshProjectionPath.Alternate, 1, 2.0])! &&
+    !(bool)quadTriangleAccepted.Invoke(
+        null,
+        [true, TrackMeshProjectionPath.Alternate, 1, -2.0])!,
+    "modern course quad halves no longer use independent authored winding");
+MethodInfo fixedViewDeterminant = gpuType.GetMethod(
+    "RawTrackFixedViewDeterminant",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+double positiveSubpixelFacing = (double)fixedViewDeterminant.Invoke(
+    null,
+    [
+        0L, 0L, 4096L,
+        1L, 0L, 4096L,
+        0L, 1L, 4096L,
+    ])!;
+double negativeSubpixelFacing = (double)fixedViewDeterminant.Invoke(
+    null,
+    [
+        0L, 0L, 4096L,
+        0L, 1L, 4096L,
+        1L, 0L, 4096L,
+    ])!;
+Require(
+    positiveSubpixelFacing == 4096.0 &&
+    negativeSubpixelFacing == -4096.0,
+    "course facing discarded the GTE transform's twelve fractional bits");
+MethodInfo projectFixedAxis = gpuType.GetMethod(
+    "RawTrackProjectAxis",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+double fixedHalfPixel = (double)projectFixedAxis.Invoke(
+    null,
+    [2048L, 4096L, 0, (ushort)1, 0])!;
+double fixedProjectionCenter = (double)projectFixedAxis.Invoke(
+    null,
+    [4096L, 0L, 65536, (ushort)320, 5])!;
+Require(
+    fixedHalfPixel == 0.5 && fixedProjectionCenter == 6.0,
+    "course projection discarded the GTE transform's twelve fractional bits");
+MethodInfo cameraCutStep = gpuType.GetMethod(
+    "RawTrackCameraCutStep",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+Require(
+    !(bool)cameraCutStep.Invoke(null, [0.49, 1999.0])! &&
+    (bool)cameraCutStep.Invoke(null, [0.5, 0.0])! &&
+    (bool)cameraCutStep.Invoke(null, [0.0, 2000.0])!,
+    "course continuity audit no longer separates replay camera cuts");
+MethodInfo nearClippedAccepted = gpuType.GetMethod(
+    "RawTrackNearClippedAccepted",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+const long nearFixed = 16L * 4096L;
+Require(
+    (bool)nearClippedAccepted.Invoke(
+        null,
+        [
+            0L, 0L, nearFixed + 4096L,
+            4096L, 0L, nearFixed + 4096L,
+            0L, 4096L, nearFixed + 4096L,
+            true, true,
+        ])! &&
+    !(bool)nearClippedAccepted.Invoke(
+        null,
+        [
+            0L, 0L, nearFixed,
+            4096L, 0L, nearFixed - 4096L,
+            0L, 4096L, nearFixed - 4096L,
+            false, true,
+        ])!,
+    "near-plane course facing does not reject a clipped tangent polygon");
+MethodInfo materialCoverage = gpuType.GetMethod(
+    "RawTrackMaterialCoverageFromNclips",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+Require(
+    (uint)materialCoverage.Invoke(null, [500, 0, false])! == 500u &&
+    (uint)materialCoverage.Invoke(null, [-1, 0, false])! == uint.MaxValue &&
+    (uint)materialCoverage.Invoke(null, [300, -500, true])! == 200u &&
+    (uint)materialCoverage.Invoke(null, [-700, 200, true])! == 500u,
+    "authored course material LOD no longer matches GT2's NCLIP arithmetic");
+MethodInfo clippedTriangleArea = gpuType.GetMethod(
+    "RawTrackClippedTriangleArea",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+double insideArea = (double)clippedTriangleArea.Invoke(
+    null,
+    [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0])!;
+double partialArea = (double)clippedTriangleArea.Invoke(
+    null,
+    [-1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0])!;
+double outsideArea = (double)clippedTriangleArea.Invoke(
+    null,
+    [-2.0, 0.0, -1.0, 0.0, -1.0, 1.0, 0.0, 0.0, 1.0, 1.0])!;
+Require(
+    Math.Abs(insideArea - 0.5) < 1e-12 &&
+    Math.Abs(partialArea - 0.75) < 1e-12 &&
+    outsideArea == 0.0,
+    "temporal target-coverage audit does not clip projected triangles exactly");
 MethodInfo compatibilityRasterDecision = gpuType
     .GetMethod(
         "ShouldRasterizeCompatibilityTriangle",
@@ -483,17 +1368,50 @@ Require(
 Require(
     rasterizesScreen,
     "authored screen-space command composition was disabled");
-MethodInfo commandMatchRate = rendererType.GetMethod(
-    "CommandMatchRate",
-    BindingFlags.NonPublic | BindingFlags.Static)!;
 Require(
-    Math.Abs((double)commandMatchRate.Invoke(null, [90U, 100U])! - 90.0) <
-        0.001 &&
-    (double)commandMatchRate.Invoke(null, [0U, 0U])! == 0.0,
-    "interpolation diagnostics use a partial world-only denominator");
+    liveRendererSource.Contains(
+        "the release build has no compatibility fallback.",
+        StringComparison.Ordinal) &&
+    liveRendererSource.Contains(
+        "The release build has no compositor fallback.",
+        StringComparison.Ordinal) &&
+    !liveRendererSource.Contains(
+        "[Native-World] compositor fallback",
+        StringComparison.Ordinal),
+    "native failure or oversize output can silently degrade to a compositor-only run");
+Require(
+    rendererType.GetMethod(
+        "CommandMatchRate",
+        BindingFlags.NonPublic | BindingFlags.Static) is null,
+    "retired interpolation diagnostics remain in the live runtime");
 Type gteType = rendererType.Assembly.GetType(
     "RecompOne.Runtime.Gte",
     throwOnError: true)!;
+MethodInfo filterVehicleProjectionLimits = gteType.GetMethod(
+    "FilterVehicleProjectionSummary",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+uint screenOnlyFlag = (uint)filterVehicleProjectionLimits.Invoke(
+    null,
+    [0x80006000u, true])!;
+uint screenAndDivideFlag = (uint)filterVehicleProjectionLimits.Invoke(
+    null,
+    [0x80026000u, true])!;
+uint depthAndDivideFlag = (uint)filterVehicleProjectionLimits.Invoke(
+    null,
+    [0x80060000u, true])!;
+uint screenAndMatrixFlag = (uint)filterVehicleProjectionLimits.Invoke(
+    null,
+    [0xC0006000u, true])!;
+uint nonProjectionFlag = (uint)filterVehicleProjectionLimits.Invoke(
+    null,
+    [0x80026000u, false])!;
+Require(
+    screenOnlyFlag == 0u &&
+    screenAndDivideFlag == 0u &&
+    depthAndDivideFlag == 0u &&
+    screenAndMatrixFlag == 0u &&
+    nonProjectionFlag == 0x80026000u,
+    "vehicle GTE policy does not delegate the complete vehicle projection summary while preserving non-projection errors");
 MethodInfo packetOriginCoordinatesMatch = gteType.GetMethod(
     "PacketOriginCoordinatesMatch",
     BindingFlags.NonPublic | BindingFlags.Static)!;
@@ -580,15 +1498,9 @@ Require(
 int prebufferOutputs = (int)hostWindowType.GetField(
     "NativeWorldPrebufferOutputs",
     BindingFlags.NonPublic | BindingFlags.Static)!.GetRawConstantValue()!;
-int initialPrebufferOutputs = (int)hostWindowType.GetField(
-    "NativeWorldInitialPrebufferOutputs",
-    BindingFlags.NonPublic | BindingFlags.Static)!.GetRawConstantValue()!;
 Require(
-    prebufferOutputs == 8 && initialPrebufferOutputs == 8,
-    "native presentation reserve does not retain four unique frames");
-MethodInfo nativePrebufferTarget = hostWindowType.GetMethod(
-    "SelectNativeWorldPrebufferTarget",
-    BindingFlags.NonPublic | BindingFlags.Static)!;
+    prebufferOutputs == 3,
+    "native presentation reserve no longer covers two-presentation GPU tails");
 MethodInfo nativeStaleDiscardBeforePoll = hostWindowType.GetMethod(
     "SelectNativeWorldStaleDiscardBeforePoll",
     BindingFlags.NonPublic | BindingFlags.Static)!;
@@ -605,14 +1517,7 @@ MethodInfo nativePendingOutputHold = hostWindowType.GetMethod(
     "ShouldHoldForPendingNativeWorldOutput",
     BindingFlags.NonPublic | BindingFlags.Static)!;
 Require(
-    (int)nativePrebufferTarget.Invoke(null, [true, true, true, 0])! == 8 &&
-    (int)nativePrebufferTarget.Invoke(null, [false, true, false, 4])! == 8 &&
-    (int)nativePrebufferTarget.Invoke(null, [false, true, true, 2])! == 6 &&
-    (int)nativePrebufferTarget.Invoke(null, [false, true, true, 7])! == 7 &&
-    (int)nativePrebufferTarget.Invoke(null, [false, true, true, 10])! == 8,
-    "recent native ownership-gap prebuffer target is not bounded");
-Require(
-    (int)nativeStaleDiscardBeforePoll.Invoke(null, [1000])! == 994,
+    (int)nativeStaleDiscardBeforePoll.Invoke(null, [1000])! == 993,
     "new native world segments can still count stale queued outputs");
 Require(
     (bool)nativeShouldStartPrebuffer.Invoke(
@@ -659,13 +1564,13 @@ Require(
 Require(
     (bool)nativePendingOutputHold.Invoke(
         null,
-        [true, false, false, true, 7])! &&
+        [true, false, false, true, 8])! &&
     (bool)nativePendingOutputHold.Invoke(
         null,
-        [true, false, false, true, 16])! &&
+        [true, false, false, true, 17])! &&
     !(bool)nativePendingOutputHold.Invoke(
         null,
-        [true, false, false, true, 17])! &&
+        [true, false, false, true, 18])! &&
     !(bool)nativePendingOutputHold.Invoke(
         null,
         [true, false, false, false, 7])! &&
@@ -721,7 +1626,8 @@ Require(
     !(bool)nativeOutputAgeEligible.Invoke(null, [-1])! &&
     (bool)nativeOutputAgeEligible.Invoke(null, [0])! &&
     (bool)nativeOutputAgeEligible.Invoke(null, [6])! &&
-    !(bool)nativeOutputAgeEligible.Invoke(null, [7])!,
+    (bool)nativeOutputAgeEligible.Invoke(null, [7])! &&
+    !(bool)nativeOutputAgeEligible.Invoke(null, [8])!,
     "native texture reuse age guard no longer rejects stale frames");
 
 Console.WriteLine(
@@ -729,14 +1635,16 @@ Console.WriteLine(
     "custom_migration=pass runtime_downgrade_removed=pass " +
     "native_disable_removed=pass legacy_world_rasterization_removed=pass " +
     "screen_compositor_retained=pass stale_world_transition_blocked=pass " +
-    "bounded_output_wait=pass native_pair_prebuffer=pass " +
+    "bounded_output_wait=pass authored_output_prebuffer=pass " +
     "native_output_ring=pass capture_stream_reservation=pass " +
     "native_capture_v6=pass " +
     "true60_shipping_default=pass " +
     "no_argument_startup=pass " +
-    "native_interpolation_abi=pass " +
+    "synthetic_runtime_abi_absent=pass " +
     "auxiliary_billboard_projection_scopes=pass " +
     "stage_throttle_latch=pass output_dock_validation=pass " +
     "native_reuse_age_guard=pass packet_origin_coordinate_guard=pass " +
     "bounded_world_ownership=pass cpu_projection_fast_path=pass " +
-    "projection_origin_handle_flow=pass");
+    "projection_origin_handle_flow=pass " +
+    "continuous_track_facing=pass exact_face_oracle=pass " +
+    "authored_material_lod=pass oriented_minification=pass");

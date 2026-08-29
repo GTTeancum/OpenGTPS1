@@ -254,6 +254,19 @@ visible and repeatable in the packaged build at:
 
 ## Graphics enhancements
 
+- [ ] Correct Special Stage Route 5 lens-flare visibility after the close-car
+  culling defect is resolved. Blue flare emitters must not remain visible from
+  invalid sectors, through occluding course geometry, or merely because their
+  billboard faces the camera. Preserve the now-stable yellow-flare continuity
+  and verify the rule on other night courses rather than hard-coding SSR5
+  object IDs.
+
+- [ ] Quantitatively compare SSR5 lens-flare apparent size against original
+  GT2 footage at matched camera positions and normalized frame height. The
+  original game deliberately uses large halos, so change their scale only if
+  matched evidence proves the PC renderer is larger; do not treat a global
+  shrink as a substitute for fixing excess emitter visibility.
+
 - [x] Fix affine texture projection.
   - Texture mapping must remain stable on road surfaces, walls, cars, and other
     polygons as the camera moves.

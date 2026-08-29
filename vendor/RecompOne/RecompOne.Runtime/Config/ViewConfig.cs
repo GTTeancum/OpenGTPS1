@@ -70,11 +70,10 @@ public class ViewConfig
 
     public bool PerspectiveCorrectTextures
     {
-        // The shipping renderer consumes authored model-space geometry and
-        // uses hardware perspective interpolation. Legacy projected packets
-        // may still be classified conservatively inside the renderer while
-        // their GT-specific UV reconstruction is being completed, but the
-        // global modern-renderer contract itself is never affine-only.
+        // The shipping renderer consumes authored or reconstructed 3D state
+        // and always uses hardware perspective interpolation. The key remains
+        // serializable only to migrate old files; it cannot disable the fixed
+        // modern projection contract.
         get => true;
         set
         {

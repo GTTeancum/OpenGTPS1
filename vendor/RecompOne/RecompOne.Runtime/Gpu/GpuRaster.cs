@@ -224,6 +224,9 @@ public sealed partial class Gpu
     void DrawRectangle()
     {
         uint cmd = _fifo[0];
+        uint commandSource = _fifoSources.Count > 0
+            ? _fifoSources[0]
+            : uint.MaxValue;
         int sz = (int)((cmd >> 27) & 3);
         bool tex = (cmd & (1u << 26)) != 0;
         bool semi = (cmd & (1u << 25)) != 0;
@@ -232,6 +235,9 @@ public sealed partial class Gpu
 
         int idx = 1;
         uint vw = _fifo[idx++];
+        uint coordinateSource = _fifoSources.Count > 1
+            ? _fifoSources[1]
+            : uint.MaxValue;
         int x = _drawOffsetX + CoordX(vw);
         int y = _drawOffsetY + CoordY(vw);
 
@@ -248,7 +254,21 @@ public sealed partial class Gpu
         else { w = h = sz == 1 ? 1 : sz == 2 ? 8 : 16; }
 
         CaptureRect(
-            x, y, w, h, u0, v0, clut, cr, cg, cb, tex, semi, raw);
+            x,
+            y,
+            w,
+            h,
+            u0,
+            v0,
+            clut,
+            cr,
+            cg,
+            cb,
+            tex,
+            semi,
+            raw,
+            commandSource,
+            coordinateSource);
         if (HleOn) { HleRect(x, y, w, h, u0, v0, clut, cr, cg, cb, tex, semi, raw); return; }
 
         for (int dy = 0; dy < h; dy++)

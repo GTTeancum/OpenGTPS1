@@ -314,6 +314,12 @@ void parse_triangle(
                 vertex.world_valid && triangle->exact_transform_valid;
         }
     }
+    triangle->depth_scale_exponent = 0;
+    triangle->depth_scale_valid = false;
+    if (header.version >= 6) {
+        triangle->depth_scale_exponent = i32(bytes + 376);
+        triangle->depth_scale_valid = (u32(bytes + 380) & 1U) != 0;
+    }
 }
 
 } // namespace

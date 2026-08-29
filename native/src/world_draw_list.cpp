@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <unordered_map>
 #include <utility>
@@ -54,22 +55,67 @@ bool same_material(
         left.environment_flags == right.environment_flags;
 }
 
+struct WorldMaterialHash {
+    std::size_t operator()(const WorldMaterial& material) const noexcept {
+        std::size_t hash = static_cast<std::size_t>(
+            0x9E3779B97F4A7C15ULL);
+        const auto mix = [&hash] (std::uint64_t value) {
+            hash ^= static_cast<std::size_t>(
+                value + 0x9E3779B97F4A7C15ULL +
+                (static_cast<std::uint64_t>(hash) << 6U) +
+                (static_cast<std::uint64_t>(hash) >> 2U));
+        };
+        mix(material.primitive_flags);
+        mix(material.texture_page);
+        mix(material.clut);
+        mix(static_cast<std::uint16_t>(material.texture_mask_x));
+        mix(static_cast<std::uint16_t>(material.texture_mask_y));
+        mix(static_cast<std::uint16_t>(material.texture_offset_x));
+        mix(static_cast<std::uint16_t>(material.texture_offset_y));
+        mix(material.environment_flags);
+        return hash;
+    }
+};
+
+struct WorldMaterialEqual {
+    bool operator()(
+        const WorldMaterial& left,
+        const WorldMaterial& right
+    ) const noexcept {
+        return same_material(left, right);
+    }
+};
+
+using WorldMaterialIndices = std::unordered_map<
+    WorldMaterial,
+    std::uint32_t,
+    WorldMaterialHash,
+    WorldMaterialEqual>;
+
 bool main_projection(
     const WorldCaptureHeader& header,
     const WorldCaptureTriangle& triangle
 ) {
+    if ((triangle.primitive_flags &
+            world_primitive_secondary_view_flag) != 0)
+        return false;
     if (
         triangle.draw_offset_x != header.draw_offset_x ||
         triangle.draw_offset_y != header.draw_offset_y
     )
         return false;
     for (const auto& vertex : triangle.vertices) {
+        // GTE H is a per-submission lens value, not a view/depth-space
+        // identity. Seattle's replay camera changes H while building a frame:
+        // the resident course receives the new value and vehicles retain the
+        // prior value. Both still use the same projection centre, drawing
+        // target, and view-space Z. Splitting them into separate channels
+        // clears coherent depth and lets the later road overwrite cars.
+        // Preserve each primitive's authored H for projection, but identify
+        // an independent view only by its projection centre or drawing target.
         if (
             vertex.projection_offset_x != header.projection_offset_x ||
-            vertex.projection_offset_y != header.projection_offset_y ||
-            std::abs(
-                static_cast<std::int32_t>(vertex.projection_plane) -
-                static_cast<std::int32_t>(header.projection_plane)) > 1
+            vertex.projection_offset_y != header.projection_offset_y
         )
             return false;
     }
@@ -148,7 +194,8 @@ bool valid_ps1_screen_polygon_span(
 std::uint32_t material_index(
     const WorldCaptureTriangle& triangle,
     bool screen_space,
-    std::vector<WorldMaterial>* materials
+    std::vector<WorldMaterial>* materials,
+    WorldMaterialIndices* indices
 ) {
     const WorldMaterial material{
         triangle.primitive_flags |
@@ -163,12 +210,14 @@ std::uint32_t material_index(
         triangle.texture_offset_y,
         triangle.environment_flags,
     };
-    for (std::size_t index = 0; index < materials->size(); ++index) {
-        if (same_material((*materials)[index], material))
-            return static_cast<std::uint32_t>(index);
-    }
+    const auto found = indices->find(material);
+    if (found != indices->end())
+        return found->second;
     materials->push_back(material);
-    return static_cast<std::uint32_t>(materials->size() - 1);
+    const std::uint32_t index = static_cast<std::uint32_t>(
+        materials->size() - 1);
+    indices->emplace(material, index);
+    return index;
 }
 
 void normal(WorldDrawCommand* command) {
@@ -196,6 +245,69 @@ void normal(WorldDrawCommand* command) {
     command->face_normal_x = x;
     command->face_normal_y = y;
     command->face_normal_z = z;
+}
+
+struct ContinuousViewPoint {
+    double x;
+    double y;
+    double z;
+};
+
+ContinuousViewPoint continuous_view_point(
+    const WorldCaptureVertex& vertex
+) noexcept {
+    if (!vertex.exact_transform_valid) {
+        return ContinuousViewPoint{
+            static_cast<double>(vertex.view_x),
+            static_cast<double>(vertex.view_y),
+            static_cast<double>(vertex.view_z),
+        };
+    }
+
+    constexpr double fixed_scale = 1.0 / 4096.0;
+    const double model[3]{
+        static_cast<double>(vertex.model_x),
+        static_cast<double>(vertex.model_y),
+        static_cast<double>(vertex.model_z),
+    };
+    ContinuousViewPoint result{};
+    double* components[3]{&result.x, &result.y, &result.z};
+    for (int view_axis = 0; view_axis < 3; ++view_axis) {
+        double value = vertex.transform_translation[view_axis];
+        for (int model_axis = 0; model_axis < 3; ++model_axis) {
+            value +=
+                vertex.transform_rotation[view_axis * 3 + model_axis] *
+                model[model_axis] * fixed_scale;
+        }
+        *components[view_axis] = value;
+    }
+    return result;
+}
+
+ContinuousProjectedPoint project_continuous_view(
+    const WorldCaptureVertex& vertex,
+    const ContinuousViewPoint& view,
+    std::int16_t draw_offset_x,
+    std::int16_t draw_offset_y
+) noexcept {
+    constexpr double projection_fixed_scale = 1.0 / 65536.0;
+    const double center_x =
+        draw_offset_x +
+        vertex.projection_offset_x * projection_fixed_scale;
+    const double center_y =
+        draw_offset_y +
+        vertex.projection_offset_y * projection_fixed_scale;
+    if (view.z == 0.0) {
+        return ContinuousProjectedPoint{
+            static_cast<float>(center_x),
+            static_cast<float>(center_y),
+        };
+    }
+    const double scale = vertex.projection_plane / view.z;
+    return ContinuousProjectedPoint{
+        static_cast<float>(center_x + view.x * scale),
+        static_cast<float>(center_y + view.y * scale),
+    };
 }
 
 } // namespace
@@ -232,6 +344,19 @@ Ps1ProjectedPoint project_ps1_vertex(
     };
 }
 
+ContinuousProjectedPoint project_continuous_vertex(
+    const WorldCaptureVertex& vertex,
+    std::int16_t draw_offset_x,
+    std::int16_t draw_offset_y
+) noexcept {
+    const ContinuousViewPoint view = continuous_view_point(vertex);
+    return project_continuous_view(
+        vertex,
+        view,
+        draw_offset_x,
+        draw_offset_y);
+}
+
 WorldDrawListResult build_world_draw_list(
     const WorldCaptureHeader& header,
     const WorldCaptureTriangle* triangles,
@@ -250,15 +375,27 @@ WorldDrawListResult build_world_draw_list(
         return WorldDrawListResult::invalid_camera;
 
     try {
+        // The live bridge alternates two draw lists so the preceding authored
+        // frame remains available while the current frame is built. Reuse the
+        // returned buffers instead of allocating and freeing tens of thousands
+        // of commands every 60 Hz tick.
         WorldDrawList result{};
+        result.materials = std::move(output->materials);
+        result.commands = std::move(output->commands);
+        result.materials.clear();
+        result.commands.clear();
         result.display_x = header.display_x;
         result.display_y = header.display_y;
         result.display_width = header.display_width;
         result.display_height = header.display_height;
+        result.frame_index = header.frame_index;
+        result.input_poll = header.input_poll;
         result.camera_transform_id = header.camera_transform_id;
         result.continuous_projection = options.continuous_projection;
         result.materials.reserve(256);
         result.commands.reserve(triangle_count);
+        WorldMaterialIndices material_indices;
+        material_indices.reserve(256);
 
         for (std::size_t index = 0; index < triangle_count; ++index) {
             const auto& triangle = triangles[index];
@@ -269,6 +406,34 @@ WorldDrawListResult build_world_draw_list(
                 complete && main_projection(header, triangle);
             const bool screen_space =
                 options.include_screen_space && !complete;
+            if (
+                options.require_world_depth_scale && complete &&
+                (triangle.object_kind == 1U || triangle.object_kind == 2U) &&
+                (!triangle.depth_scale_valid ||
+                    triangle.depth_scale_exponent < -16 ||
+                    triangle.depth_scale_exponent > 16)
+            ) {
+                std::fprintf(
+                    stderr,
+                    "[Native-Depth-Scale-Failure] frame=%llu poll=%d "
+                    "triangle=%zu kind=%u object=%08x model=%08x "
+                    "flags=%08x valid=%u exponent=%d transform=%016llx "
+                    "viewZ=%d/%d/%d\n",
+                    static_cast<unsigned long long>(header.frame_index),
+                    header.input_poll,
+                    index,
+                    triangle.object_kind,
+                    triangle.object_id,
+                    triangle.model_pointer,
+                    triangle.primitive_flags,
+                    triangle.depth_scale_valid ? 1U : 0U,
+                    triangle.depth_scale_exponent,
+                    static_cast<unsigned long long>(triangle.transform_id),
+                    triangle.vertices[0].view_z,
+                    triangle.vertices[1].view_z,
+                    triangle.vertices[2].view_z);
+                return WorldDrawListResult::invalid_depth_scale;
+            }
             if (
                 screen_space &&
                 !valid_ps1_screen_polygon_span(triangle)
@@ -305,7 +470,8 @@ WorldDrawListResult build_world_draw_list(
                 material_index(
                     triangle,
                     screen_space,
-                    &result.materials);
+                    &result.materials,
+                    &material_indices);
             command.ordering_table_index =
                 triangle.ordering_table_index;
             command.clip_x0 = triangle.clip_x0;
@@ -346,6 +512,13 @@ WorldDrawListResult build_world_draw_list(
             for (int vertex_index = 0; vertex_index < 3; ++vertex_index) {
                 const auto& source = triangle.vertices[vertex_index];
                 auto& destination = command.vertices[vertex_index];
+                ContinuousViewPoint view{
+                    static_cast<double>(source.view_x),
+                    static_cast<double>(source.view_y),
+                    static_cast<double>(source.view_z),
+                };
+                if (!screen_space && options.continuous_projection)
+                    view = continuous_view_point(source);
                 const Ps1ProjectedPoint projected = screen_space
                     ? Ps1ProjectedPoint{
                         static_cast<std::int32_t>(
@@ -362,32 +535,21 @@ WorldDrawListResult build_world_draw_list(
                 if (
                     !screen_space &&
                     options.continuous_projection &&
-                    source.view_z > 0
+                    view.z > 0.0
                 ) {
-                    // Enhanced rendering starts from the exact captured GTE
-                    // view coordinates, not the PS1's integer SXY result.
-                    // Adjacent sections can deliberately use different
-                    // fixed-point transform scales; their ratios describe
-                    // the same authored boundary, but independent integer
-                    // projection can round its copies to neighboring pixels.
-                    // Keeping the division continuous removes that engine
-                    // quantization without adding geometry or expanding a
-                    // triangle in screen space.
-                    constexpr float fixed_scale = 1.0F / 65536.0F;
-                    const float inverse_depth =
-                        1.0F / static_cast<float>(source.view_z);
-                    projected_x =
-                        triangle.draw_offset_x +
-                        source.projection_offset_x * fixed_scale +
-                        source.projection_plane *
-                            static_cast<float>(source.view_x) *
-                            inverse_depth;
-                    projected_y =
-                        triangle.draw_offset_y +
-                        source.projection_offset_y * fixed_scale +
-                        source.projection_plane *
-                            static_cast<float>(source.view_y) *
-                            inverse_depth;
+                    // Reconstruct camera space from the captured model point
+                    // and exact 12-bit GT2 transform before dividing. Using
+                    // the GTE's integer IR/SZ outputs here independently
+                    // truncated every corner and made otherwise rigid edges
+                    // jitter at sub-view-unit motion. PS1 SXY remains above as
+                    // the authored oracle; it does not drive modern geometry.
+                    const auto continuous = project_continuous_view(
+                        source,
+                        view,
+                        triangle.draw_offset_x,
+                        triangle.draw_offset_y);
+                    projected_x = continuous.x;
+                    projected_y = continuous.y;
                 }
                 const float ndc_x =
                     ((projected_x - header.display_x) /
@@ -398,22 +560,25 @@ WorldDrawListResult build_world_draw_list(
                     ((projected_y - header.display_y) /
                         static_cast<float>(header.display_height)) *
                         2.0F;
+                const float depth_scale =
+                    !screen_space && triangle.depth_scale_valid
+                        ? std::ldexp(
+                            1.0F,
+                            triangle.depth_scale_exponent)
+                        : 1.0F;
+                const float raw_clip_w = screen_space
+                    ? 1.0F
+                    : static_cast<float>(view.z);
                 const float clip_w = screen_space
                     ? 1.0F
-                    : static_cast<float>(source.view_z);
+                    : raw_clip_w * depth_scale;
                 constexpr float near_plane = 16.0F;
-                constexpr float far_plane = 1048576.0F;
-                constexpr float depth_a =
-                    far_plane / (far_plane - near_plane);
-                constexpr float depth_b =
-                    -near_plane * far_plane /
-                    (far_plane - near_plane);
                 destination.world_x = source.world_x;
                 destination.world_y = source.world_y;
                 destination.world_z = source.world_z;
-                destination.view_x = static_cast<float>(source.view_x);
-                destination.view_y = static_cast<float>(source.view_y);
-                destination.view_z = static_cast<float>(source.view_z);
+                destination.view_x = static_cast<float>(view.x);
+                destination.view_y = static_cast<float>(view.y);
+                destination.view_z = static_cast<float>(view.z);
                 if (!screen_space && options.continuous_projection) {
                     // Build homogeneous coordinates directly from GT2's
                     // captured camera-space vertex. This remains linear on
@@ -437,23 +602,28 @@ WorldDrawListResult build_world_draw_list(
                         ((projection_center_y - header.display_y) /
                             static_cast<float>(header.display_height)) *
                             2.0F;
-                    destination.clip_x =
-                        ndc_center_x * clip_w +
+                    destination.clip_x = depth_scale * (
+                        ndc_center_x * raw_clip_w +
                         2.0F * source.projection_plane *
-                            static_cast<float>(source.view_x) /
-                            static_cast<float>(header.display_width);
-                    destination.clip_y =
-                        ndc_center_y * clip_w -
+                            static_cast<float>(view.x) /
+                            static_cast<float>(header.display_width));
+                    destination.clip_y = depth_scale * (
+                        ndc_center_y * raw_clip_w -
                         2.0F * source.projection_plane *
-                            static_cast<float>(source.view_y) /
-                            static_cast<float>(header.display_height);
+                            static_cast<float>(view.y) /
+                            static_cast<float>(header.display_height));
                 } else {
                     destination.clip_x = ndc_x * clip_w;
                     destination.clip_y = ndc_y * clip_w;
                 }
                 destination.clip_z = screen_space
                     ? 0.5F
-                    : depth_a * clip_w + depth_b;
+                    // Reversed infinite projection: after homogeneous divide,
+                    // depth is near/Z.  D3D's 0 <= Zclip <= Wclip rule still
+                    // clips exactly at the authored modern near plane, while
+                    // a D32_FLOAT surface retains useful precision across the
+                    // complete resident course without imposing a far plane.
+                    : near_plane;
                 destination.clip_w = clip_w;
                 destination.screen_x = projected_x;
                 destination.screen_y = projected_y;
@@ -507,8 +677,13 @@ WorldDrawListResult build_world_draw_list(
                 ++result.track_commands;
             else if (command.object_kind == 2)
                 ++result.vehicle_commands;
-            else
+            else if (command.object_kind == 3)
+                ++result.background_commands;
+            else {
                 ++result.unclassified_commands;
+                if (!screen_space)
+                    ++result.unclassified_world_commands;
+            }
         }
         *output = std::move(result);
         return WorldDrawListResult::success;
@@ -526,6 +701,8 @@ const char* world_draw_list_result_name(
             return "invalid_argument";
         case WorldDrawListResult::invalid_camera:
             return "invalid_camera";
+        case WorldDrawListResult::invalid_depth_scale:
+            return "invalid_depth_scale";
         case WorldDrawListResult::allocation_failed:
             return "allocation_failed";
     }

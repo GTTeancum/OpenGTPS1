@@ -5,7 +5,11 @@ namespace RecompOne.Runtime.Host.Window;
 
 internal sealed class DisplaySettingsSection : ISettingsSection
 {
-    static readonly string[] OutputResolutions = ["1280x720", "1920x1080", "2560x1440", "3840x2160"];
+    static readonly string[] OutputResolutions =
+    [
+        "1280x720", "1920x1080", "2560x1440", "3840x2160",
+        "2560x1080", "3440x1440", "3840x1600", "5120x1440",
+    ];
     static readonly string[] AntiAliasingModes = ["Off", "FXAA"];
 
     public string Id => "display";

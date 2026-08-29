@@ -59,6 +59,14 @@ typedef struct opengt_live_stats {
     uint64_t draw_list_microseconds;
     uint64_t topology_microseconds;
     uint64_t pipeline_microseconds;
+    // Development audit only. Zero unless
+    // RECOMPONE_AUDIT_NATIVE_WORLD_OUTPUT_HASH=1; otherwise FNV-1a over the
+    // exact tightly-packed RGBA output associated with this authored frame.
+    uint64_t output_fingerprint;
+    // Ordered semantic fingerprint of the final post-topology world draw
+    // list. Unlike output_fingerprint this is produced before asynchronous
+    // GPU staging, so it remains intrinsically tied to frame_index/input_poll.
+    uint64_t world_fingerprint;
 } opengt_live_stats;
 
 enum {
@@ -68,6 +76,7 @@ enum {
     OPENGT_LIVE_STATS_NO_OUTPUT = 1u << 3,
 };
 
+#if defined(OPENGT_SYNTHETIC_FRAME_DEV_SUPPORT)
 typedef struct opengt_live_interpolation_stats {
     uint32_t struct_size;
     uint32_t result;
@@ -103,6 +112,7 @@ typedef struct opengt_live_interpolation_stats {
     // topology percentile samples aligned.
     uint64_t current_topology_microseconds;
 } opengt_live_interpolation_stats;
+#endif
 
 typedef struct opengt_live_texture_upload {
     uint64_t key;
@@ -129,7 +139,9 @@ OPENGT_LIVE_EXPORT int32_t opengt_live_render(
     const opengt_live_options* options,
     opengt_live_stats* stats);
 
-// Submits one midpoint/actual pair and drains the oldest completed pair without
+#if defined(OPENGT_SYNTHETIC_FRAME_DEV_SUPPORT)
+// Development oracle only: submits one midpoint/actual pair and drains the
+// oldest completed pair without
 // blocking. output_count is one for an immediate temporal reset, zero when no
 // prior pair is ready, and two for a completed chronological pair. Pixel data
 // and frame metadata always come from the same staging slots. stats.reserved
@@ -157,12 +169,31 @@ OPENGT_LIVE_EXPORT int32_t opengt_live_try_read_pair(
     size_t output_capacity,
     opengt_live_stats* first_stats,
     opengt_live_stats* second_stats);
+#endif
 
 OPENGT_LIVE_EXPORT int32_t opengt_live_set_texture_uploads(
     void* handle,
     int32_t software_adapter,
     const opengt_live_texture_upload* uploads,
     size_t upload_count);
+
+// Registers immutable GT2 authored course data. The byte contract is owned by
+// the managed raw-track decoder and versioned independently from OGTWCAP.
+// Re-registering a key atomically replaces the prior definition, which keeps
+// stage/race discontinuities from retaining stale guest RAM contents.
+OPENGT_LIVE_EXPORT int32_t opengt_live_register_resident_mesh(
+    void* handle,
+    const uint8_t* definition_bytes,
+    size_t definition_size);
+
+// Selects the exact resident course instances for the next render call. Each
+// 96-byte record contains one mesh key plus GT2's exact object-to-view matrix,
+// projection state, draw environment, default untextured page, and authored
+// capture insertion point. A zero count clears the selection.
+OPENGT_LIVE_EXPORT int32_t opengt_live_set_resident_instances(
+    void* handle,
+    const uint8_t* instance_bytes,
+    size_t instance_count);
 
 OPENGT_LIVE_EXPORT uint32_t opengt_live_api_version(void);
 

@@ -11,20 +11,303 @@
 #include <tuple>
 #include <vector>
 
+namespace {
+
+struct DepthAuditSurface {
+    double view_z{std::numeric_limits<double>::infinity()};
+    std::uint32_t object_id{};
+    std::uint32_t model_pointer{};
+    std::uint32_t material_index{};
+    std::uint32_t command_index{};
+};
+
+struct DepthAuditPixel {
+    DepthAuditSurface nearest{};
+    DepthAuditSurface second{};
+};
+
+std::uint32_t quantize_standard_d24(double view_z) {
+    constexpr double near_plane = 16.0;
+    constexpr double far_plane = 1048576.0;
+    constexpr double maximum_d24 = 16777215.0;
+    const double depth =
+        far_plane / (far_plane - near_plane) -
+        near_plane * far_plane /
+            ((far_plane - near_plane) * view_z);
+    return static_cast<std::uint32_t>(std::llround(
+        std::clamp(depth, 0.0, 1.0) * maximum_d24));
+}
+
+float reversed_infinite_d32(double view_z) {
+    constexpr double near_plane = 16.0;
+    return static_cast<float>(near_plane / view_z);
+}
+
+void insert_depth_surface(
+    DepthAuditPixel* pixel,
+    const DepthAuditSurface& candidate
+) {
+    constexpr double distinct_epsilon = 1.0e-4;
+    if (candidate.view_z < pixel->nearest.view_z - distinct_epsilon) {
+        pixel->second = pixel->nearest;
+        pixel->nearest = candidate;
+    } else if (
+        std::abs(candidate.view_z - pixel->nearest.view_z) >
+            distinct_epsilon &&
+        candidate.view_z < pixel->second.view_z
+    ) {
+        pixel->second = candidate;
+    }
+}
+
+void audit_depth_precision(const opengt::render::WorldDrawList& draw_list) {
+    constexpr double near_plane = 16.0;
+    constexpr std::uint32_t semi_transparent_flag = 1U << 1;
+    const int target_height = draw_list.display_height;
+    const int target_width =
+        (target_height * 16 + 9 - 1) / 9;
+    const double target_x0 =
+        draw_list.display_x + draw_list.display_width * 0.5 -
+        target_width * 0.5;
+    const double target_y0 = draw_list.display_y;
+    std::vector<DepthAuditPixel> pixels(
+        static_cast<std::size_t>(target_width) * target_height);
+    std::uint64_t rasterized_commands = 0;
+    std::uint64_t rasterized_samples = 0;
+
+    const auto edge = [](
+        double ax, double ay,
+        double bx, double by,
+        double px, double py
+    ) {
+        return (px - ax) * (by - ay) -
+            (py - ay) * (bx - ax);
+    };
+
+    for (std::size_t command_index = 0;
+         command_index < draw_list.commands.size();
+         ++command_index) {
+        const auto& command = draw_list.commands[command_index];
+        if (
+            command.object_kind != 1U ||
+            command.channel != opengt::render::WorldViewChannel::main_view ||
+            command.material_index >= draw_list.materials.size()
+        ) {
+            continue;
+        }
+        const auto& material = draw_list.materials[command.material_index];
+        if (
+            (material.primitive_flags &
+                (opengt::render::world_primitive_screen_space_flag |
+                    semi_transparent_flag)) != 0
+        ) {
+            continue;
+        }
+        bool entirely_in_front = true;
+        double x[3]{};
+        double y[3]{};
+        double inverse_z[3]{};
+        for (int vertex = 0; vertex < 3; ++vertex) {
+            const auto& source = command.vertices[vertex];
+            entirely_in_front =
+                entirely_in_front && source.view_z >= near_plane;
+            x[vertex] = source.screen_x - target_x0;
+            y[vertex] = source.screen_y - target_y0;
+            inverse_z[vertex] = 1.0 / source.view_z;
+        }
+        if (!entirely_in_front)
+            continue;
+        const double signed_area = edge(
+            x[0], y[0], x[1], y[1], x[2], y[2]);
+        if (std::abs(signed_area) <= 1.0e-12)
+            continue;
+        const int minimum_x = std::clamp(
+            static_cast<int>(std::floor(
+                std::min({x[0], x[1], x[2]}))),
+            0,
+            target_width - 1);
+        const int maximum_x = std::clamp(
+            static_cast<int>(std::floor(
+                std::max({x[0], x[1], x[2]}))),
+            0,
+            target_width - 1);
+        const int minimum_y = std::clamp(
+            static_cast<int>(std::floor(
+                std::min({y[0], y[1], y[2]}))),
+            0,
+            target_height - 1);
+        const int maximum_y = std::clamp(
+            static_cast<int>(std::floor(
+                std::max({y[0], y[1], y[2]}))),
+            0,
+            target_height - 1);
+        if (minimum_x > maximum_x || minimum_y > maximum_y)
+            continue;
+        ++rasterized_commands;
+        for (int pixel_y = minimum_y; pixel_y <= maximum_y; ++pixel_y) {
+            for (int pixel_x = minimum_x; pixel_x <= maximum_x; ++pixel_x) {
+                const double sample_x = pixel_x + 0.5;
+                const double sample_y = pixel_y + 0.5;
+                const double w0 = edge(
+                    x[1], y[1], x[2], y[2], sample_x, sample_y);
+                const double w1 = edge(
+                    x[2], y[2], x[0], y[0], sample_x, sample_y);
+                const double w2 = edge(
+                    x[0], y[0], x[1], y[1], sample_x, sample_y);
+                // Exclude exact shared edges from this precision audit. D3D's
+                // top-left fill rule gives them to only one triangle, while a
+                // symmetric software test would otherwise report false
+                // overlaps between adjacent road faces.
+                constexpr double boundary_epsilon = 1.0e-9;
+                const bool positive =
+                    w0 > boundary_epsilon &&
+                    w1 > boundary_epsilon &&
+                    w2 > boundary_epsilon;
+                const bool negative =
+                    w0 < -boundary_epsilon &&
+                    w1 < -boundary_epsilon &&
+                    w2 < -boundary_epsilon;
+                if (!positive && !negative)
+                    continue;
+                const double reciprocal_depth =
+                    (w0 * inverse_z[0] +
+                        w1 * inverse_z[1] +
+                        w2 * inverse_z[2]) /
+                    signed_area;
+                if (!(reciprocal_depth > 0.0) ||
+                    !std::isfinite(reciprocal_depth))
+                    continue;
+                const double view_z = 1.0 / reciprocal_depth;
+                if (view_z < near_plane || !std::isfinite(view_z))
+                    continue;
+                insert_depth_surface(
+                    &pixels[static_cast<std::size_t>(pixel_y) *
+                        target_width + pixel_x],
+                    DepthAuditSurface{
+                        view_z,
+                        command.object_id,
+                        command.model_pointer,
+                        command.material_index,
+                        static_cast<std::uint32_t>(command_index)});
+                ++rasterized_samples;
+            }
+        }
+    }
+
+    std::uint64_t covered_pixels = 0;
+    std::uint64_t overlap_pixels = 0;
+    std::uint64_t standard_d24_collisions = 0;
+    std::uint64_t reversed_d32_collisions = 0;
+    std::uint64_t horizon_d24_collisions = 0;
+    double maximum_collision_separation = 0.0;
+    int collision_x0 = target_width;
+    int collision_y0 = target_height;
+    int collision_x1 = -1;
+    int collision_y1 = -1;
+    DepthAuditSurface maximum_nearest{};
+    DepthAuditSurface maximum_second{};
+    int maximum_x = -1;
+    int maximum_y = -1;
+    for (int y = 0; y < target_height; ++y) {
+        for (int x = 0; x < target_width; ++x) {
+            const auto& pixel = pixels[static_cast<std::size_t>(y) *
+                target_width + x];
+            if (std::isfinite(pixel.nearest.view_z))
+                ++covered_pixels;
+            if (!std::isfinite(pixel.second.view_z))
+                continue;
+            ++overlap_pixels;
+            const bool standard_collision =
+                quantize_standard_d24(pixel.nearest.view_z) ==
+                quantize_standard_d24(pixel.second.view_z);
+            const bool reversed_collision =
+                reversed_infinite_d32(pixel.nearest.view_z) ==
+                reversed_infinite_d32(pixel.second.view_z);
+            reversed_d32_collisions += reversed_collision ? 1U : 0U;
+            if (!standard_collision)
+                continue;
+            ++standard_d24_collisions;
+            horizon_d24_collisions += y < target_height / 2 ? 1U : 0U;
+            collision_x0 = std::min(collision_x0, x);
+            collision_y0 = std::min(collision_y0, y);
+            collision_x1 = std::max(collision_x1, x);
+            collision_y1 = std::max(collision_y1, y);
+            const double separation =
+                pixel.second.view_z - pixel.nearest.view_z;
+            if (separation > maximum_collision_separation) {
+                maximum_collision_separation = separation;
+                maximum_nearest = pixel.nearest;
+                maximum_second = pixel.second;
+                maximum_x = x;
+                maximum_y = y;
+            }
+        }
+    }
+    std::printf(
+        "depthAudit=16:9@%dx%d opaqueTrackCommands=%llu "
+        "rasterSamples=%llu coveredPixels=%llu overlapPixels=%llu "
+        "standardD24Collisions=%llu horizonD24Collisions=%llu "
+        "reversedInfiniteD32Collisions=%llu collisionBounds=%d,%d..%d,%d "
+        "maximumCollisionSeparation=%.9f maximumCollisionPixel=%d,%d "
+        "nearest=z%.9f/object%u/model%08x/material%u/command%u "
+        "second=z%.9f/object%u/model%08x/material%u/command%u\n",
+        target_width,
+        target_height,
+        static_cast<unsigned long long>(rasterized_commands),
+        static_cast<unsigned long long>(rasterized_samples),
+        static_cast<unsigned long long>(covered_pixels),
+        static_cast<unsigned long long>(overlap_pixels),
+        static_cast<unsigned long long>(standard_d24_collisions),
+        static_cast<unsigned long long>(horizon_d24_collisions),
+        static_cast<unsigned long long>(reversed_d32_collisions),
+        collision_x0,
+        collision_y0,
+        collision_x1,
+        collision_y1,
+        maximum_collision_separation,
+        maximum_x,
+        maximum_y,
+        maximum_nearest.view_z,
+        maximum_nearest.object_id,
+        maximum_nearest.model_pointer,
+        maximum_nearest.material_index,
+        maximum_nearest.command_index,
+        maximum_second.view_z,
+        maximum_second.object_id,
+        maximum_second.model_pointer,
+        maximum_second.material_index,
+        maximum_second.command_index);
+}
+
+} // namespace
+
 int main(int argc, char** argv) {
-    if (argc < 2 || argc > 5) {
+    if (argc < 2 || argc > 8) {
         std::fprintf(
             stderr,
             "usage: opengt_world_capture_inspect <capture.ogtwcap> "
-            "[output.obj] [topology.csv] [--include-screen-space]\n");
+            "[output.obj] [topology.csv] [--include-secondary] "
+            "[--include-screen-space] [--continuous-projection] "
+            "[--depth-audit]\n");
         return 2;
     }
-    const bool include_screen_space =
-        argc == 5 &&
-        std::strcmp(argv[4], "--include-screen-space") == 0;
-    if (argc == 5 && !include_screen_space) {
-        std::fprintf(stderr, "unknown option: %s\n", argv[4]);
-        return 2;
+    bool include_secondary = false;
+    bool include_screen_space = false;
+    bool continuous_projection = false;
+    bool depth_audit = false;
+    for (int index = 4; index < argc; ++index) {
+        if (std::strcmp(argv[index], "--include-secondary") == 0)
+            include_secondary = true;
+        else if (std::strcmp(argv[index], "--include-screen-space") == 0)
+            include_screen_space = true;
+        else if (std::strcmp(argv[index], "--continuous-projection") == 0)
+            continuous_projection = true;
+        else if (std::strcmp(argv[index], "--depth-audit") == 0)
+            depth_audit = true;
+        else {
+            std::fprintf(stderr, "unknown option: %s\n", argv[index]);
+            return 2;
+        }
     }
     opengt::render::WorldCaptureHeader header{};
     auto result = opengt::render::read_world_capture_header(argv[1], &header);
@@ -91,6 +374,8 @@ int main(int argc, char** argv) {
     std::uint64_t obj_vertex = 1;
     for (const auto& triangle : triangles) {
         bool main_projection =
+            (triangle.primitive_flags &
+                opengt::render::world_primitive_secondary_view_flag) == 0 &&
             triangle.draw_offset_x == header.draw_offset_x &&
             triangle.draw_offset_y == header.draw_offset_y;
         for (const auto& vertex : triangle.vertices) {
@@ -99,8 +384,7 @@ int main(int argc, char** argv) {
                 vertex.projection_offset_x ==
                     header.projection_offset_x &&
                 vertex.projection_offset_y ==
-                    header.projection_offset_y &&
-                vertex.projection_plane == header.projection_plane;
+                    header.projection_offset_y;
         }
         if (main_projection)
             ++main_projection_triangles;
@@ -160,13 +444,25 @@ int main(int argc, char** argv) {
                 squared_error += difference * difference;
             }
             if (vertex.projection_plane != 0 && vertex.view_z > 0) {
-                const auto projected =
-                    opengt::render::project_ps1_vertex(
-                        vertex,
-                        triangle.draw_offset_x,
-                        triangle.draw_offset_y);
-                const double projected_x = projected.x;
-                const double projected_y = projected.y;
+                double projected_x = 0.0;
+                double projected_y = 0.0;
+                if (continuous_projection) {
+                    const auto projected =
+                        opengt::render::project_continuous_vertex(
+                            vertex,
+                            triangle.draw_offset_x,
+                            triangle.draw_offset_y);
+                    projected_x = projected.x;
+                    projected_y = projected.y;
+                } else {
+                    const auto projected =
+                        opengt::render::project_ps1_vertex(
+                            vertex,
+                            triangle.draw_offset_x,
+                            triangle.draw_offset_y);
+                    projected_x = projected.x;
+                    projected_y = projected.y;
+                }
                 const double difference_x =
                     projected_x - vertex.screen_x;
                 const double difference_y =
@@ -228,8 +524,14 @@ int main(int argc, char** argv) {
         triangles.data(),
         triangles.size(),
         opengt::render::WorldDrawListOptions{
-            false, include_screen_space, false},
+            include_secondary, include_screen_space, continuous_projection},
         &draw_list);
+    if (
+        depth_audit &&
+        draw_result == opengt::render::WorldDrawListResult::success
+    ) {
+        audit_depth_precision(draw_list);
+    }
     if (argc >= 4 && draw_result ==
             opengt::render::WorldDrawListResult::success) {
         std::FILE* csv = std::fopen(argv[3], "wb");
@@ -310,7 +612,10 @@ int main(int argc, char** argv) {
                 &topology)
             : opengt::render::WorldTopologyResult::invalid_argument;
     std::printf(
-        "version=%u frame=%llu poll=%d triangles=%u validVertices=%llu "
+        "version=%u frame=%llu poll=%d "
+        "display=%d,%d/%dx%d drawOffset=%d,%d "
+        "projectionOffset=%d,%d projectionPlane=%u "
+        "continuousProjection=%s triangles=%u validVertices=%llu "
         "sourceVertices=%llu trackSourceVertices=%llu "
         "trackMissingSourceVertices=%llu uniqueTrackSources=%zu "
         "trackTriangles=%llu vehicleTriangles=%llu trackObjects=%zu "
@@ -340,6 +645,16 @@ int main(int argc, char** argv) {
         header.version,
         static_cast<unsigned long long>(header.frame_index),
         header.input_poll,
+        header.display_x,
+        header.display_y,
+        header.display_width,
+        header.display_height,
+        header.draw_offset_x,
+        header.draw_offset_y,
+        header.projection_offset_x,
+        header.projection_offset_y,
+        header.projection_plane,
+        continuous_projection ? "yes" : "no",
         header.triangle_count,
         static_cast<unsigned long long>(valid_vertices),
         static_cast<unsigned long long>(source_vertices),

@@ -3,6 +3,8 @@
 
 from pathlib import Path
 
+from rewrite_recompiled_memory_access import rewrite_tree
+
 
 REPO = Path(__file__).resolve().parents[1]
 ENTRY = REPO / "generated" / "arcade-recompiled" / "Entry.cs"
@@ -69,6 +71,36 @@ def replace_exact_count(
     path.write_text(source.replace(old, new), encoding="utf-8")
 
 
+def replace_in_function_once(
+    path: Path,
+    function_name: str,
+    old: str,
+    new: str,
+    description: str,
+) -> None:
+    source = path.read_text(encoding="utf-8")
+    marker = (
+        f"    public static void {function_name}(CpuContext c, IMemory m)\n"
+    )
+    if source.count(marker) != 1:
+        raise RuntimeError(
+            f"{description}: expected one {function_name} definition in "
+            f"{path}, found {source.count(marker)}"
+        )
+    start = source.index(marker)
+    end = source.find("\n    public static void ", start + len(marker))
+    if end < 0:
+        end = len(source)
+    body = source[start:end]
+    if body.count(old) != 1:
+        raise RuntimeError(
+            f"{description}: expected one source match in {function_name}, "
+            f"found {body.count(old)}"
+        )
+    body = body.replace(old, new, 1)
+    path.write_text(source[:start] + body + source[end:], encoding="utf-8")
+
+
 def include_livery_preview_helper() -> None:
     source = PROJECT.read_text(encoding="utf-8")
     if "ArcadeLiveryPreview.cs" in source:
@@ -111,6 +143,161 @@ def apply_frontend_arena() -> None:
 
 
 def apply_renderer_enhancements() -> None:
+    replace_in_function_once(
+        OVERLAY0,
+        "func_80029480",
+        """        c.V1 = c.SP + 0x20u;
+        c.V0 = c.S4 + 0u;
+        c.A0 = c.S4 + 0x110u;
+        L80029514: ;
+        c.T0 = m.ReadU32(c.V0);
+        c.T1 = m.ReadU32((c.V0 + 0x4u));
+        c.T2 = m.ReadU32((c.V0 + 0x8u));
+        c.T3 = m.ReadU32((c.V0 + 0xCu));
+        m.WriteU32(c.V1, c.T0);
+        m.WriteU32((c.V1 + 0x4u), c.T1);
+        m.WriteU32((c.V1 + 0x8u), c.T2);
+        m.WriteU32((c.V1 + 0xCu), c.T3);
+        c.V0 = c.V0 + 0x10u;
+        if (c.V0 != c.A0) {
+            c.V1 = c.V1 + 0x10u;
+            goto L80029514;
+        }
+        c.V1 = c.V1 + 0x10u;
+""",
+        """        c.A0 = c.S4 + 0x110u;
+        RecompOne.Runtime.Sdk.GT2Compat.CopyAlignedGuestWords(
+            c, m, c.S4, c.SP + 0x20u, 0x110u);
+""",
+        "Arcade exact aligned scene render-record copy",
+    )
+    replace_in_function_once(
+        OVERLAY0,
+        "func_800140A4",
+        """        c.A0 = c.S4 + 0u;
+        c.A1 = c.SP + 0x10u;
+        c.A2 = c.S5 + 0u;
+        c.RA = 0x800145D0u;
+        GranTurismo2ArcadePC.func_80067354(c, m);
+""",
+        """        c.A0 = c.S4 + 0u;
+        c.A1 = c.SP + 0x10u;
+        c.A2 = c.S5 + 0u;
+        RecompOne.Runtime.Sdk.GT2Compat.BeginVehicleRenderIdentity(c.S0);
+        c.RA = 0x800145D0u;
+        GranTurismo2ArcadePC.func_80067354(c, m);
+        RecompOne.Runtime.Sdk.GT2Compat.EndVehicleRenderIdentity();
+""",
+        "Arcade race vehicle stable ownership",
+    )
+    replace_in_function_once(
+        OVERLAY0,
+        "func_80029480",
+        """        c.RA = 0x80029654u;
+        GranTurismo2ArcadePC.func_800298A8(c, m);
+        c.A0 = 0x800B0000u;
+""",
+        """        c.RA = 0x80029654u;
+        GranTurismo2ArcadePC.func_800298A8(c, m);
+        RecompOne.Runtime.WorldCaptureContext.BeginScenePass(
+            RecompOne.Runtime.WorldScenePass.Auxiliary);
+        RecompOne.Runtime.Sdk.GT2Compat.ActivateVehicleProjectionFromView(
+            c.S1, m);
+        c.A0 = 0x800B0000u;
+""",
+        "Arcade auxiliary-view vehicle projection activation",
+    )
+    replace_in_function_once(
+        OVERLAY0,
+        "func_80029480",
+        """        c.RA = 0x8002967Cu;
+        GranTurismo2ArcadePC.func_800298E8(c, m);
+        L8002967C: ;
+""",
+        """        c.RA = 0x8002967Cu;
+        GranTurismo2ArcadePC.func_800298E8(c, m);
+        RecompOne.Runtime.WorldCaptureContext.EndScenePass();
+        L8002967C: ;
+""",
+        "Arcade auxiliary scene-pass boundary",
+    )
+    replace_in_function_once(
+        OVERLAY0,
+        "func_80029480",
+        """        c.RA = 0x8002968Cu;
+        GranTurismo2ArcadePC.func_800298A8(c, m);
+        c.A0 = 0x800B0000u;
+""",
+        """        c.RA = 0x8002968Cu;
+        GranTurismo2ArcadePC.func_800298A8(c, m);
+        RecompOne.Runtime.WorldCaptureContext.BeginScenePass(
+            RecompOne.Runtime.WorldScenePass.Main);
+        RecompOne.Runtime.Sdk.GT2Compat.ActivateVehicleProjectionFromView(
+            c.S4, m);
+        RecompOne.Runtime.Sdk.GT2Compat.TraceProjectionPhase(
+            "main-before-vehicles", c.S4, m);
+        c.A0 = 0x800B0000u;
+""",
+        "Arcade main-view projection pre-vehicle trace",
+    )
+    replace_in_function_once(
+        OVERLAY0,
+        "func_80029480",
+        """        c.RA = 0x800296A4u;
+        GranTurismo2ArcadePC.func_8001545C(c, m);
+        c.A0 = c.S5 + 0u;
+""",
+        """        c.RA = 0x800296A4u;
+        GranTurismo2ArcadePC.func_8001545C(c, m);
+        RecompOne.Runtime.Sdk.GT2Compat.TraceProjectionPhase(
+            "main-after-vehicles", c.S4, m);
+        c.A0 = c.S5 + 0u;
+""",
+        "Arcade main-view projection post-vehicle trace",
+    )
+    replace_in_function_once(
+        OVERLAY0,
+        "func_80029480",
+        """        c.RA = 0x800296B4u;
+        GranTurismo2ArcadePC.func_800298E8(c, m);
+        c.RA = m.ReadU32((c.SP + 0x158u));
+""",
+        """        c.RA = 0x800296B4u;
+        GranTurismo2ArcadePC.func_800298E8(c, m);
+        RecompOne.Runtime.WorldCaptureContext.EndScenePass();
+        c.RA = m.ReadU32((c.SP + 0x158u));
+""",
+        "Arcade main scene-pass boundary",
+    )
+    replace_in_function_once(
+        OVERLAY0,
+        "func_800298E8",
+        "        GranTurismo2ArcadePC.func_80018CA8(c, m);\n",
+        """        RecompOne.Runtime.Sdk.GT2Compat.TraceProjectionPhase(
+            c.S0 == 0u ? "main-before-background" : "aux-before-background",
+            c.S2, m);
+        RecompOne.Runtime.WorldCaptureContext.BeginBackgroundObject(c.A2);
+        GranTurismo2ArcadePC.func_80018CA8(c, m);
+        RecompOne.Runtime.WorldCaptureContext.EndObject();
+""",
+        "Arcade authored background ownership",
+    )
+    replace_in_function_once(
+        OVERLAY0,
+        "func_80018CA8",
+        """        m.WriteU32((c.S3 + 0x64u), c.S0);
+        c.V0 = m.ReadU32((c.S2 + 0xCu));
+""",
+        """        m.WriteU32((c.S3 + 0x64u), c.S0);
+        RecompOne.Runtime.WorldCaptureContext.TraceBackgroundMesh(c.S2, m);
+        if (!RecompOne.Runtime.WorldCaptureContext.
+                ShouldRunGuestBackgroundProjection()) {
+            goto L800195B8;
+        }
+        c.V0 = m.ReadU32((c.S2 + 0xCu));
+""",
+        "Arcade resident authored background mesh",
+    )
     replace_once(
         OVERLAY0,
         """        L80014344: ;
@@ -140,6 +327,127 @@ def apply_renderer_enhancements() -> None:
 """,
         "Arcade vehicle LOD and world-capture tracing",
     )
+    replace_in_function_once(
+        MAIN,
+        "func_80067354",
+        """        c.RA = 0x800674F4u;
+        GranTurismo2ArcadePC.func_8007B7B0(c, m);
+        c.A0 = c.S1 + 0u;
+""",
+        """        c.RA = 0x800674F4u;
+        GranTurismo2ArcadePC.func_8007B7B0(c, m);
+        RecompOne.Runtime.Sdk.GT2Compat.CaptureVehicleDepthNormalization(
+            c.S0, m);
+        c.A0 = c.S1 + 0u;
+""",
+        "Arcade vehicle authored depth-normalization tracing",
+    )
+    replace_in_function_once(
+        MAIN,
+        "func_80067000",
+        """        c.RA = 0x800671A0u;
+        GranTurismo2ArcadePC.func_8007B7B0(c, m);
+        c.V0 = m.ReadU8((c.S1 + 0x398u));
+""",
+        """        c.RA = 0x800671A0u;
+        GranTurismo2ArcadePC.func_8007B7B0(c, m);
+        RecompOne.Runtime.Sdk.GT2Compat.CaptureVehicleDepthNormalization(
+            0u, m);
+        c.V0 = m.ReadU8((c.S1 + 0x398u));
+""",
+        "Arcade vehicle wheel depth-normalization capture",
+    )
+    replace_in_function_once(
+        MAIN,
+        "func_80067F14",
+        """        c.RA = 0x80067F94u;
+        GranTurismo2ArcadePC.func_8007B7B0(c, m);
+        c.A0 = c.S0 + 0u;
+""",
+        """        c.RA = 0x80067F94u;
+        GranTurismo2ArcadePC.func_8007B7B0(c, m);
+        RecompOne.Runtime.Sdk.GT2Compat.CaptureVehicleDepthNormalization(
+            c.S0, m);
+        c.A0 = c.S0 + 0u;
+""",
+        "Arcade standalone vehicle-part depth-normalization capture",
+    )
+    replace_in_function_once(
+        MAIN,
+        "func_80067354",
+        """        c.A1 = c.V0 + 0u;
+        c.V0 = c.A1 & 0x001Fu;
+""",
+        """        c.A1 = c.V0 + 0u;
+        c.A1 = RecompOne.Runtime.Sdk.GT2Compat.ExpandVehicleFrustumMask(
+            c.A1, c.S6);
+        c.V0 = c.A1 & 0x001Fu;
+""",
+        "Arcade vehicle horizontal frustum expansion",
+    )
+    for path, function_name, projector_return, clipper_return in (
+        (OVERLAY2, "func_800146EC", "80014844", "80014858"),
+        (OVERLAY0, "func_80048448", "8004863C", "80048650"),
+    ):
+        replace_in_function_once(
+            path,
+            function_name,
+            f"""        c.RA = 0x{projector_return}u;
+        GranTurismo2ArcadePC.func_8007B808(c, m);
+        c.V0 = c.V0 & 0x001Fu;
+""",
+            f"""        c.RA = 0x{projector_return}u;
+        GranTurismo2ArcadePC.func_8007B808(c, m);
+        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.
+            ApplyModernVehicleViewportMask(c.V0);
+        c.V0 = c.V0 & 0x001Fu;
+""",
+            f"Arcade {function_name} standalone vehicle viewport mask",
+        )
+        replace_in_function_once(
+            path,
+            function_name,
+            f"""        c.A0 = c.S0 + 0u;
+        c.A1 = c.SP + 0x10u;
+        c.RA = 0x{clipper_return}u;
+        GranTurismo2ArcadePC.func_80063E04(c, m);
+""",
+            f"""        if (!RecompOne.Runtime.Sdk.GT2Compat.
+                ModernVehicleViewportClippingEnabled) {{
+            c.A0 = c.S0 + 0u;
+            c.A1 = c.SP + 0x10u;
+            c.RA = 0x{clipper_return}u;
+            GranTurismo2ArcadePC.func_80063E04(c, m);
+        }}
+""",
+            f"Arcade {function_name} modern viewport clip ownership",
+        )
+    replace_in_function_once(
+        MAIN,
+        "func_80067354",
+        """        L80067610: ;
+        if (c.V0 == 0u) {
+""",
+        """        L80067610: ;
+        RecompOne.Runtime.Sdk.GT2Compat.TraceVehicleWheelGate(
+            c.S6, c.S5, c.FP, c.V0);
+        if (c.V0 == 0u) {
+""",
+        "Arcade vehicle wheel gate tracing hook",
+    )
+    replace_in_function_once(
+        MAIN,
+        "func_80067354",
+        """        L8006763C: ;
+        c.A1 = c.S7 + 0u;
+""",
+        """        L8006763C: ;
+        RecompOne.Runtime.Sdk.GT2Compat.TraceVehicleWheelDispatch(
+            c.S6, c.S5, c.FP, c.S0);
+        c.A1 = c.S7 + 0u;
+""",
+        "Arcade vehicle wheel actual-dispatch tracing hook",
+    )
     replace_once(
         MAIN,
         """        m.WriteU32((c.SP + 0x18u), c.S2);
@@ -148,6 +456,9 @@ def apply_renderer_enhancements() -> None:
 """,
         """        m.WriteU32((c.SP + 0x18u), c.S2);
         c.S2 = c.A2 + 0u;
+        RecompOne.Runtime.Sdk.GT2Compat.TraceVehicleWheelRendererEntry(
+            c.S6, c.S2, m.ReadU32(c.SP + 0x4Cu),
+            m.ReadU32(c.SP + 0x48u));
         RecompOne.Runtime.Sdk.GT2Compat.TraceWheelTransform(
             c.S6, c.S2, m.ReadU32(c.SP + 0x4Cu), m);
         m.WriteU32((c.SP + 0x24u), c.S5);
@@ -287,10 +598,12 @@ def apply_renderer_enhancements() -> None:
         """        c.A0 = m.ReadU32((c.SP + 0x1020u));
         RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(
             c.A0, m, RecompOne.Runtime.TrackMeshProjectionPath.Primary);
-        c.RA = 0x80020970u;
-        GranTurismo2ArcadePC.func_80020FF8(c, m);
+        if (RecompOne.Runtime.WorldCaptureContext.ShouldRunGuestTrackProjection()) {
+            c.RA = 0x80020970u;
+            GranTurismo2ArcadePC.func_80020FF8(c, m);
+        }
 """,
-        "Arcade primary track mesh trace",
+        "Arcade primary track mesh ownership",
     )
     replace_once(
         OVERLAY0,
@@ -301,10 +614,273 @@ def apply_renderer_enhancements() -> None:
         """        c.A0 = m.ReadU32((c.SP + 0x1020u));
         RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(
             c.A0, m, RecompOne.Runtime.TrackMeshProjectionPath.Alternate);
-        c.RA = 0x80020984u;
-        GranTurismo2ArcadePC.func_80023484(c, m);
+        if (RecompOne.Runtime.WorldCaptureContext.ShouldRunGuestTrackProjection()) {
+            c.RA = 0x80020984u;
+            GranTurismo2ArcadePC.func_80023484(c, m);
+        }
 """,
-        "Arcade alternate track mesh trace",
+        "Arcade alternate track mesh ownership",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.T2 = c.A0 + c.V0;
+        c.A1 = RecompOne.Runtime.Gte.Read(24);
+        if ((int)c.A3 < 0) {
+""",
+        """        c.T2 = c.A0 + c.V0;
+        c.A1 = RecompOne.Runtime.Gte.Read(24);
+#if !OPENGT_RELEASE_PACKAGE
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackFaceDecision(
+            c.T3,
+            RecompOne.Runtime.TrackMeshProjectionPath.Primary,
+            4,
+            c.T0,
+            c.A1,
+            0u,
+            (int)c.A3 >= 0 &&
+            c.A1 != 0u &&
+            (int)(c.A1 & c.T0) >= 0);
+#endif
+        if ((int)c.A3 < 0) {
+""",
+        "Arcade primary triangle exact NCLIP oracle",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.S0 = m.ReadU32(c.T8);
+        c.V0 = c.T0 | c.V0;
+        if ((int)c.V0 < 0) {
+            c.At = (int)c.T1 < (int)c.V1 ? 1u : 0u;
+""",
+        """        c.S0 = m.ReadU32(c.T8);
+        c.V0 = c.T0 | c.V0;
+        if ((int)c.V0 < 0) {
+#if !OPENGT_RELEASE_PACKAGE
+            RecompOne.Runtime.WorldCaptureContext.TraceTrackFaceDecision(
+                c.T4,
+                RecompOne.Runtime.TrackMeshProjectionPath.Primary,
+                5,
+                c.S6,
+                c.T3,
+                0u,
+                false);
+#endif
+            c.At = (int)c.T1 < (int)c.V1 ? 1u : 0u;
+""",
+        "Arcade primary quad flag-rejection oracle",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.A1 = c.T3 - 0x1u;
+        c.A2 = c.T3 + c.V0;
+        c.V1 = c.T3 | c.V0;
+        if (c.V1 == 0u) {
+""",
+        """        c.A1 = c.T3 - 0x1u;
+        c.A2 = c.T3 + c.V0;
+        c.V1 = c.T3 | c.V0;
+#if !OPENGT_RELEASE_PACKAGE
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackFaceDecision(
+            c.T4,
+            RecompOne.Runtime.TrackMeshProjectionPath.Primary,
+            5,
+            c.S6,
+            c.T3,
+            c.V0,
+            c.V1 != 0u &&
+            (int)((c.T3 - 1u) & (c.V0 - 1u) & c.S6) >= 0);
+#endif
+        if (c.V1 == 0u) {
+""",
+        "Arcade primary quad exact NCLIP oracle",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.V0 = c.V0 | c.V1;
+        c.A0 = c.S5 & 0x0020u;
+        c.V0 = c.V0 | c.A0;
+        c.A1 = c.A0 - 0x20u;
+        c.A2 = m.ReadU32(c.T5);
+        if (c.V0 == 0u) {
+""",
+        """        c.V0 = c.V0 | c.V1;
+        c.A0 = c.S5 & 0x0020u;
+        c.V0 = c.V0 | c.A0;
+        c.A1 = c.A0 - 0x20u;
+        c.A2 = m.ReadU32(c.T5);
+#if !OPENGT_RELEASE_PACKAGE
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackFaceDecision(
+            c.S3,
+            RecompOne.Runtime.TrackMeshProjectionPath.Alternate,
+            1,
+            c.S1,
+            ~c.T1,
+            c.V1,
+            c.V0 != 0u &&
+            (int)(c.T1 & (c.V1 - 1u) & c.S1 & c.A1) >= 0);
+#endif
+        if (c.V0 == 0u) {
+""",
+        "Arcade alternate F4 exact NCLIP oracle",
+    )
+    replace_once(
+        OVERLAY0,
+        """        m.WriteU32((c.SP + 0x18u), c.S2);
+        c.S2 = c.A2 + 0u;
+        m.WriteU32((c.SP + 0x10u), c.S0);
+        c.S0 = 0u + 0u;
+""",
+        """        m.WriteU32((c.SP + 0x18u), c.S2);
+        c.S2 = c.A2 + 0u;
+        c.S2 = RecompOne.Runtime.WorldCaptureContext.
+            ExpandAuxiliaryTrackVisibility(c.S2);
+        m.WriteU32((c.SP + 0x10u), c.S0);
+        c.S0 = 0u + 0u;
+""",
+        "Arcade resident auxiliary track visibility",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.S0 = c.S0 << 2;
+        c.S0 = c.S0 + 0x4u;
+        c.S0 = c.S4 + c.S0;
+        c.S5 = 0x1F800000u;
+""",
+        """        c.S0 = c.S0 << 2;
+        c.S0 = c.S0 + 0x4u;
+        c.S0 = c.S4 + c.S0;
+        RecompOne.Runtime.WorldCaptureContext.
+            BeginAuxiliaryTrackInstance(c.S0);
+        c.S5 = 0x1F800000u;
+""",
+        "Arcade auxiliary track instance identity",
+    )
+    replace_once(
+        OVERLAY0,
+        """        GranTurismo2ArcadePC.func_8007AE04(c, m);
+        c.V1 = c.V0 + 0u;
+        c.V0 = 0xFFFFFFFFu;
+""",
+        """        GranTurismo2ArcadePC.func_8007AE04(c, m);
+        c.V1 = c.V0 + 0u;
+        c.V1 = RecompOne.Runtime.WorldCaptureContext.
+            SelectAuxiliaryTrackModel(c.V1);
+        c.V0 = 0xFFFFFFFFu;
+""",
+        "Arcade resident auxiliary track model selection",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.V0 = c.V1 << 3;
+        c.V0 = c.V0 + 0x4u;
+        c.V0 = c.S0 + c.V0;
+        c.S3 = m.ReadU32((c.V0 + 0x4u));
+        c.A1 = 0x00001000u;
+""",
+        """        c.V0 = c.V1 << 3;
+        c.V0 = c.V0 + 0x4u;
+        c.V0 = c.S0 + c.V0;
+        c.S3 = m.ReadU32((c.V0 + 0x4u));
+        RecompOne.Runtime.WorldCaptureContext.
+            SetAuxiliaryTrackModel(c.S3);
+        c.A1 = 0x00001000u;
+""",
+        "Arcade auxiliary track model identity",
+    )
+    replace_once(
+        OVERLAY0,
+        """        m.WriteU32((c.SP + 0x14u), c.V0);
+        c.V0 = c.V0 & 0x001Fu;
+        if (c.V0 != 0u) {
+""",
+        """        m.WriteU32((c.SP + 0x14u), c.V0);
+        c.V0 = c.V0 & 0x001Fu;
+        c.V0 = RecompOne.Runtime.WorldCaptureContext.
+            IncludeAuxiliaryTrackObject(c.V0);
+        if (c.V0 != 0u) {
+""",
+        "Arcade auxiliary track screen-cull bypass",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.V1 = m.ReadU16((c.S3 + 0x40u));
+        c.T4 = m.ReadU32((c.S3 + 0x24u));
+        if (c.V1 == 0u) {
+""",
+        """        c.V1 = m.ReadU16((c.S3 + 0x40u));
+        c.T4 = m.ReadU32((c.S3 + 0x24u));
+        RecompOne.Runtime.Sdk.GT2Compat.
+            CaptureTrackBillboardDepthNormalization(true, m);
+        if (!RecompOne.Runtime.WorldCaptureContext.
+                ShouldRunGuestTrackBillboardProjection()) {
+            c.T1 = c.S4 + 0u;
+            goto L8001FB34;
+        }
+        if (c.V1 == 0u) {
+""",
+        "Arcade auxiliary billboard preprojection ownership",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.V0 = m.ReadU16((c.A0 + 0x40u));
+        c.T5 = m.ReadU32((c.A0 + 0x24u));
+        if (c.V0 == 0u) {
+""",
+        """        c.V0 = m.ReadU16((c.A0 + 0x40u));
+        c.T5 = m.ReadU32((c.A0 + 0x24u));
+        RecompOne.Runtime.Sdk.GT2Compat.
+            CaptureTrackBillboardDepthNormalization(false, m);
+        if (!RecompOne.Runtime.WorldCaptureContext.
+                ShouldRunGuestTrackBillboardProjection()) {
+            c.T2 = 0x1F800000u;
+            goto L80020570;
+        }
+        if (c.V0 == 0u) {
+""",
+        "Arcade primary billboard preprojection ownership",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.A0 = c.S3 + 0u;
+        c.RA = 0x8001FF54u;
+        GranTurismo2ArcadePC.func_80019AE4(c, m);
+""",
+        """        c.A0 = c.S3 + 0u;
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(
+            c.A0, m, RecompOne.Runtime.TrackMeshProjectionPath.Primary);
+        if (RecompOne.Runtime.WorldCaptureContext.ShouldRunGuestTrackProjection()) {
+            c.RA = 0x8001FF54u;
+            GranTurismo2ArcadePC.func_80019AE4(c, m);
+        }
+""",
+        "Arcade primary auxiliary track mesh ownership",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.A0 = c.S3 + 0u;
+        c.RA = 0x8001FF64u;
+        GranTurismo2ArcadePC.func_8001C108(c, m);
+""",
+        """        c.A0 = c.S3 + 0u;
+        RecompOne.Runtime.WorldCaptureContext.TraceTrackMesh(
+            c.A0, m, RecompOne.Runtime.TrackMeshProjectionPath.Alternate);
+        if (RecompOne.Runtime.WorldCaptureContext.ShouldRunGuestTrackProjection()) {
+            c.RA = 0x8001FF64u;
+            GranTurismo2ArcadePC.func_8001C108(c, m);
+        }
+""",
+        "Arcade alternate auxiliary track mesh ownership",
+    )
+    replace_once(
+        OVERLAY0,
+        """        L8001FF74: ;
+        c.S4 = m.ReadU32((c.SP + 0x10u));
+""",
+        """        L8001FF74: ;
+        RecompOne.Runtime.WorldCaptureContext.EndObject();
+        c.S4 = m.ReadU32((c.SP + 0x10u));
+""",
+        "Arcade auxiliary track object end",
     )
     replace_exact_count(
         OVERLAY0,
@@ -924,7 +1500,11 @@ def main() -> int:
 """,
         "Arcade MDEC output GPU-DMA interrupt ordering end",
     )
-    print("Applied Arcade guest control-flow enhancements")
+    changed_files, memory_calls = rewrite_tree(ENTRY.parent)
+    print(
+        "Applied Arcade guest control-flow enhancements; "
+        f"concrete memory files={changed_files} calls={memory_calls}"
+    )
     return 0
 
 

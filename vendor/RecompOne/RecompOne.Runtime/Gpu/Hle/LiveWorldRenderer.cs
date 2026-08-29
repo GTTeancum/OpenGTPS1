@@ -53,37 +53,8 @@ internal struct LiveNativeStats
     public ulong DrawListMicroseconds;
     public ulong TopologyMicroseconds;
     public ulong PipelineMicroseconds;
-}
-
-[StructLayout(LayoutKind.Sequential)]
-internal struct LiveInterpolationStats
-{
-    public uint StructSize;
-    public uint Result;
-    public uint OutputCount;
-    public uint PreviousCommands;
-    public uint CurrentCommands;
-    public uint EligibleWorldCommands;
-    public uint MatchedCommands;
-    public uint MatchedTrackCommands;
-    public uint MatchedVehicleCommands;
-    public uint HeldScreenCommands;
-    public uint HeldUnmatchedCommands;
-    public uint PreviousTransformGroups;
-    public uint CurrentTransformGroups;
-    public uint MatchedTransformGroups;
-    public uint TemporalReset;
-    public uint Reserved;
-    public uint ExactRigidTransformGroups;
-    public uint IncoherentExactTransformGroups;
-    public uint HeldIncoherentVehicleCommands;
-    public uint HeldTrackVisibilityCommands;
-    public uint HeldUnsafeTrackCommands;
-    public ulong InterpolationMicroseconds;
-    public ulong PairPipelineMicroseconds;
-    public ulong MidpointRenderMicroseconds;
-    public ulong ActualRenderMicroseconds;
-    public ulong CurrentTopologyMicroseconds;
+    public ulong OutputFingerprint;
+    public ulong WorldFingerprint;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -118,11 +89,14 @@ internal sealed class LiveWorldRenderer : IDisposable
 {
     const int CaptureBufferCount = 3;
     const int PendingCaptureCount = CaptureBufferCount - 1;
-    internal const int OutputBufferCount = 11;
-    // Eight completed outputs, up to two buffers owned by legacy RenderPair,
-    // and one briefly owned by the host upload path must coexist without
-    // starving the worker. Authored-only true-60 rendering rents one buffer.
-    internal const int PublishedOutputCapacity = 8;
+    internal const int OutputBufferCount = 4;
+    // The capture side owns one active frame plus a two-frame pending FIFO.
+    // Give every member of that bounded window a completion slot, plus one
+    // buffer briefly owned by the host upload path. The host prebuffers three
+    // outputs: one for presentation and two as a completion-tail reserve. The
+    // fourth buffer is transiently owned by the host upload or active native
+    // render and does not expand steady-state latency.
+    internal const int PublishedOutputCapacity = 3;
     // Presentation spends this only when the chronological output queue is
     // empty. It is returned by the later vblank throttle in the normal case;
     // Twelve milliseconds catches imminent native completions without letting a
@@ -132,8 +106,11 @@ internal sealed class LiveWorldRenderer : IDisposable
     internal const int HeaderSize = 160;
     internal const int TriangleStride = 384;
     internal const int VramBytes = 1024 * 512 * 2;
+    internal const int ResidentTrackInstanceStride = 104;
+    internal const int MaxResidentTrackInstances = 1024;
     internal const int CaptureCapacity =
-        HeaderSize + MaxTriangles * TriangleStride + VramBytes;
+        HeaderSize + MaxTriangles * TriangleStride + VramBytes +
+        MaxResidentTrackInstances * ResidentTrackInstanceStride;
     internal const int LiveViewportWidth = 320;
     internal const int LiveViewportHeight = 240;
     // GT2 races normally use a 320x240 display, but race/replay transitions
@@ -156,11 +133,14 @@ internal sealed class LiveWorldRenderer : IDisposable
     static readonly bool ForceWarp =
         Environment.GetEnvironmentVariable(
             "RECOMPONE_NATIVE_WORLD_WARP") == "1";
-    // Authored per-VBlank output is the shipping default.  The explicit 0
-    // override exists only for retired midpoint-pipeline diagnostics.
-    static readonly bool AuthoredOnly =
+#if !OPENGT_RELEASE_PACKAGE
+    // Diagnostic classifier only. Release builds always use the modern depth
+    // path; this switch exists to isolate depth reconstruction from guest
+    // submission and visibility failures at an identical authored frame.
+    internal static readonly bool DisableDepthForDiagnostics =
         Environment.GetEnvironmentVariable(
-            "RECOMPONE_GT2_TRUE_60HZ") != "0";
+            "RECOMPONE_NATIVE_WORLD_DISABLE_DEPTH") == "1";
+#endif
     static readonly bool TraceTextureUploads =
         Environment.GetEnvironmentVariable(
             "RECOMPONE_TRACE_TEXTURE_UPLOADS") == "1";
@@ -195,9 +175,27 @@ internal sealed class LiveWorldRenderer : IDisposable
             out int dumpCaptureInterval)
             ? Math.Clamp(dumpCaptureInterval, 1, 3_600)
             : 1;
+    static readonly string? DumpOutputPath =
+        Environment.GetEnvironmentVariable(
+            "RECOMPONE_NATIVE_WORLD_OUTPUT_DUMP_PATH");
+    static readonly int DumpOutputInputPoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_NATIVE_WORLD_OUTPUT_DUMP_INPUT_POLL"),
+            out int dumpOutputInputPoll)
+            ? Math.Max(0, dumpOutputInputPoll)
+            : -1;
+    static readonly int DumpOutputCount =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_NATIVE_WORLD_OUTPUT_DUMP_COUNT"),
+            out int dumpOutputCount)
+            ? Math.Clamp(dumpOutputCount, 1, 16)
+            : 1;
 
     readonly ConcurrentQueue<byte[]> _capturePool = new();
     readonly ConcurrentQueue<byte[]> _outputPool = new();
+    readonly ConcurrentQueue<byte[]> _residentMeshRegistrations = new();
     readonly object _gate = new();
     readonly object _textureUploadGate = new();
     readonly AutoResetEvent _workReady = new(false);
@@ -208,13 +206,12 @@ internal sealed class LiveWorldRenderer : IDisposable
     readonly Queue<LiveWorldOutput> _published = new();
     bool _stopping;
     bool _failed;
+    Exception? _failure;
     long _submitted;
     long _rendered;
     long _renderedActual;
     long _renderedSynthetic;
     long _renderedRepeated;
-    long _syntheticAttempts;
-    long _syntheticNoOutput;
     long _authoredNoOutput;
     long _dropped;
     long _droppedPendingCaptures;
@@ -227,35 +224,51 @@ internal sealed class LiveWorldRenderer : IDisposable
     long _outputWaitTicks;
     long _outputWaitMaxTicks;
     int _activeCaptureInputPoll = -1;
-    long _activePairStartTicks;
+    long _activeRenderStartTicks;
     long _totalRenderMicroseconds;
     long _totalPipelineMicroseconds;
-    long _pairOperations;
+    long _renderOperations;
     int _dumpEligibleCaptures;
     // Keep the three components aligned so each percentile window describes
-    // the same authored-state pairs. Submit is CPU time inside the two D3D11
-    // render calls; the asynchronous live path does not wait for GPU
-    // completion. Topology is paid once on the geometric midpoint; pipeline
-    // includes both plus decode, interpolation, draw-list construction, and
-    // bridge overhead.
+    // the same authored frame submissions. Submit is CPU time inside the
+    // D3D11 render call; the asynchronous live path does not wait for GPU
+    // completion. Pipeline includes capture decode, topology, draw-list
+    // construction, submission, and bridge overhead for that authored frame.
     readonly ulong[] _recentPipelineMicroseconds = new ulong[240];
     readonly ulong[] _recentSubmitMicroseconds = new ulong[240];
     readonly ulong[] _recentTopologyMicroseconds = new ulong[240];
     int _recentProfileCount;
     int _recentProfileCursor;
     int _dumpedCaptureCount;
+    int _dumpedOutputCount;
     LiveTextureUpload[] _textureUploads = [];
     readonly HashSet<ulong> _tracedTextureUploadKeys = [];
 
     readonly record struct PendingCapture(
         byte[] Buffer,
         int Size,
+        int ResidentInstanceOffset,
+        int ResidentInstanceCount,
         LiveRenderSettings Settings,
         LiveTextureUpload[] TextureUploads);
 
     public static bool Requested => OperatingSystem.IsWindows();
 
     public bool Enabled => Requested && !_failed && !_stopping;
+
+    internal void ThrowIfFailed()
+    {
+#if OPENGT_RELEASE_PACKAGE
+        Exception? failure = Volatile.Read(ref _failure);
+        if (failure is not null)
+        {
+            throw new InvalidOperationException(
+                "The required modern world renderer failed; " +
+                "the release build has no compatibility fallback.",
+                failure);
+        }
+#endif
+    }
 
     public LiveWorldRenderer()
     {
@@ -269,25 +282,20 @@ internal sealed class LiveWorldRenderer : IDisposable
         {
             IsBackground = true,
             Name = "OpenGT native world renderer",
-            // GT2 authors 30 complete world states per second. Native emits a
-            // provenance-matched geometric midpoint followed by its authored
-            // endpoint, yielding two unique states per authoring interval
-            // without blending two complete car silhouettes.
-            // Native pair production is presentation-critical once real-time
-            // pacing begins. Keep it at the same highest thread priority as
-            // the paced emulation thread while the process itself remains
-            // AboveNormal. This prevents unrelated AboveNormal application
-            // workers from descheduling both halves of the 60 Hz pipeline;
-            // the bounded pending/output queues still prevent this worker
-            // from running ahead and turning a full output queue into slow
-            // game time.
+            // The patched NTSC-U build authors one complete world state per
+            // vblank. Rendering those states is presentation-critical once
+            // real-time pacing begins. Keep this at the same highest thread
+            // priority as the paced emulation thread while the process itself
+            // remains AboveNormal. The bounded pending/output queues prevent
+            // the worker from running ahead and turning a full output queue
+            // into slow game time.
             Priority = ThreadPriority.Highest,
         };
         _worker.Start();
         Console.Error.WriteLine(
             $"[Native-World] enabled buffers={CaptureBufferCount} " +
             $"maxTriangles={MaxTriangles} outputBuffers={OutputBufferCount} " +
-            $"mode={(AuthoredOnly ? "authored-only" : "interpolated-pair")}");
+            "mode=authored-only syntheticPath=absent");
     }
 
     public bool TryRentCaptureBuffer(out byte[] buffer) =>
@@ -302,9 +310,16 @@ internal sealed class LiveWorldRenderer : IDisposable
     public bool Submit(
         byte[] capture,
         int size,
+        int residentInstanceOffset,
+        int residentInstanceCount,
         LiveRenderSettings settings)
     {
-        if (!Enabled || size <= HeaderSize || size > capture.Length)
+        if (!Enabled || size <= HeaderSize || size > capture.Length ||
+            residentInstanceCount < 0 ||
+            residentInstanceCount > MaxResidentTrackInstances ||
+            residentInstanceOffset < 0 ||
+            residentInstanceOffset +
+                residentInstanceCount * ResidentTrackInstanceStride > size)
         {
             ReturnCaptureBuffer(capture);
             return false;
@@ -323,6 +338,8 @@ internal sealed class LiveWorldRenderer : IDisposable
             _pendingCaptures.Enqueue(new PendingCapture(
                 capture,
                 size,
+                residentInstanceOffset,
+                residentInstanceCount,
                 settings,
                 Volatile.Read(ref _textureUploads)));
             _submitted++;
@@ -346,6 +363,16 @@ internal sealed class LiveWorldRenderer : IDisposable
                     "[Native-World] first-output seed ready");
         }
         return true;
+    }
+
+    public void RegisterResidentTrackMesh(byte[] definition)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        if (definition.Length < 32)
+            throw new ArgumentException(
+                "Resident track mesh definition is truncated.",
+                nameof(definition));
+        _residentMeshRegistrations.Enqueue(definition);
     }
 
     static bool Overlaps(
@@ -447,11 +474,10 @@ internal sealed class LiveWorldRenderer : IDisposable
             {
                 // Presentation runs before FrameClock consumes the remaining
                 // NTSC vblank budget. Spend only that bounded idle margin here
-                // when a dense native pair finishes a few milliseconds late;
-                // this preserves a unique midpoint instead of duplicating the
-                // prior 30 Hz image. Monitor.PulseAll in PublishOutput wakes the
-                // host immediately, normally reducing the later throttle wait
-                // by the same amount rather than extending the frame.
+                // when a dense authored frame finishes a few milliseconds
+                // late. Monitor.PulseAll in PublishOutput wakes the host
+                // immediately, normally reducing the later throttle wait by
+                // the same amount rather than extending the frame.
                 long waitStart = Stopwatch.GetTimestamp();
                 long waitDeadline = waitStart +
                     waitMilliseconds * Stopwatch.Frequency / 1000;
@@ -482,7 +508,7 @@ internal sealed class LiveWorldRenderer : IDisposable
                     int activePoll = Volatile.Read(
                         ref _activeCaptureInputPoll);
                     long activeStart = Volatile.Read(
-                        ref _activePairStartTicks);
+                        ref _activeRenderStartTicks);
                     double activeMilliseconds = activeStart == 0
                         ? 0.0
                         : (Stopwatch.GetTimestamp() - activeStart) *
@@ -518,7 +544,7 @@ internal sealed class LiveWorldRenderer : IDisposable
     {
         get
         {
-            if (Volatile.Read(ref _activePairStartTicks) != 0)
+            if (Volatile.Read(ref _activeRenderStartTicks) != 0)
                 return true;
             lock (_gate)
                 return _pendingCaptures.Count != 0;
@@ -582,7 +608,7 @@ internal sealed class LiveWorldRenderer : IDisposable
         LiveTextureUpload[] boundTextureUploads = [];
         try
         {
-            if (NativeMethods.ApiVersion() != 7)
+            if (NativeMethods.ApiVersion() != 10)
                 throw new InvalidOperationException(
                     "native renderer API version mismatch");
             handle = NativeMethods.Create();
@@ -604,6 +630,42 @@ internal sealed class LiveWorldRenderer : IDisposable
                 byte[] capture = pending.Buffer;
                 int size = pending.Size;
                 LiveRenderSettings settings = pending.Settings;
+                while (_residentMeshRegistrations.TryDequeue(
+                    out byte[]? definition))
+                {
+                    int registrationResult =
+                        NativeMethods.RegisterResidentMesh(
+                            handle,
+                            definition,
+                            (nuint)definition.Length);
+                    if (registrationResult != 0)
+                    {
+                        throw new InvalidOperationException(
+                            "native resident mesh registration failed " +
+                            $"result={registrationResult}");
+                    }
+                }
+                unsafe
+                {
+                    fixed (byte* capturePointer = capture)
+                    {
+                        nint instancePointer = pending.ResidentInstanceCount == 0
+                            ? 0
+                            : (nint)(capturePointer +
+                                pending.ResidentInstanceOffset);
+                        int instanceResult =
+                            NativeMethods.SetResidentInstances(
+                                handle,
+                                instancePointer,
+                                (nuint)pending.ResidentInstanceCount);
+                        if (instanceResult != 0)
+                        {
+                            throw new InvalidOperationException(
+                                "native resident instance selection failed " +
+                                $"result={instanceResult}");
+                        }
+                    }
+                }
                 if (!ReferenceEquals(
                         boundTextureUploads,
                         pending.TextureUploads))
@@ -629,21 +691,7 @@ internal sealed class LiveWorldRenderer : IDisposable
                     }
                     continue;
                 }
-                byte[]? secondOutput = null;
-                if (!AuthoredOnly &&
-                    !_outputPool.TryDequeue(out secondOutput))
-                {
-                    ReturnOutput(firstOutput);
-                    ReturnCaptureBuffer(capture);
-                    lock (_gate)
-                    {
-                        _dropped++;
-                        _droppedOutputPool++;
-                    }
-                    continue;
-                }
                 bool firstPublished = false;
-                bool secondPublished = false;
                 try
                 {
                     int captureInputPoll =
@@ -709,181 +757,96 @@ internal sealed class LiveWorldRenderer : IDisposable
                         StructSize =
                             (uint)Marshal.SizeOf<LiveNativeStats>(),
                     };
-                    var secondStats = new LiveNativeStats
-                    {
-                        StructSize =
-                            (uint)Marshal.SizeOf<LiveNativeStats>(),
-                    };
-                    var interpolation = new LiveInterpolationStats
-                    {
-                        StructSize =
-                            (uint)Marshal.SizeOf<LiveInterpolationStats>(),
-                    };
                     Volatile.Write(
                         ref _activeCaptureInputPoll,
                         captureInputPoll);
                     Volatile.Write(
-                        ref _activePairStartTicks,
+                        ref _activeRenderStartTicks,
                         Stopwatch.GetTimestamp());
-                    int result = AuthoredOnly
-                        ? NativeMethods.Render(
-                            handle,
-                            capture,
-                            (nuint)size,
-                            firstOutput,
-                            (nuint)firstOutput.Length,
-                            in options,
-                            ref firstStats)
-                        : NativeMethods.RenderPair(
-                            handle,
-                            capture,
-                            (nuint)size,
-                            firstOutput,
-                            secondOutput!,
-                            (nuint)firstOutput.Length,
-                            in options,
-                            ref firstStats,
-                            ref secondStats,
-                            ref interpolation);
+                    int result = NativeMethods.Render(
+                        handle,
+                        capture,
+                        (nuint)size,
+                        firstOutput,
+                        (nuint)firstOutput.Length,
+                        in options,
+                        ref firstStats);
                     if (result != 0)
                         throw new InvalidOperationException(
                             $"native render failed result={result} " +
-                            $"detail={(AuthoredOnly ? firstStats.Result : interpolation.Result)} " +
+                            $"detail={firstStats.Result} " +
                             $"captureDisplay=" +
                             $"{BitConverter.ToInt32(capture, 36)}x" +
                             $"{BitConverter.ToInt32(capture, 40)} " +
                             $"outputScale={options.OutputScale} " +
                             $"outputCapacity={firstOutput.Length}");
-                    if (AuthoredOnly)
+                    bool hasOutput =
+                        (firstStats.Reserved & NoOutputStatsFlag) == 0;
+                    if (hasOutput)
                     {
-                        bool hasOutput =
-                            (firstStats.Reserved & NoOutputStatsFlag) == 0;
-                        interpolation.OutputCount = hasOutput ? 1u : 0u;
-                        interpolation.ActualRenderMicroseconds =
-                            firstStats.RenderMicroseconds;
-                        interpolation.PairPipelineMicroseconds =
-                            firstStats.PipelineMicroseconds;
-                        interpolation.CurrentTopologyMicroseconds =
-                            firstStats.TopologyMicroseconds;
-                        if (firstStats.TopologyMicroseconds != 0)
-                            interpolation.Reserved |= 2u;
-                        if (hasOutput)
-                        {
-                            PublishRenderedOutput(firstOutput, in firstStats);
-                            firstPublished = true;
-                        }
-                        else
-                            _authoredNoOutput++;
+                        PublishRenderedOutput(firstOutput, in firstStats);
+                        firstPublished = true;
                     }
                     else
-                    {
-                        if (interpolation.OutputCount > 2)
-                            throw new InvalidOperationException(
-                                $"native render returned invalid output count " +
-                                $"{interpolation.OutputCount}");
-                        if (interpolation.OutputCount == 0)
-                        {
-                            int lateRead = NativeMethods.TryReadPair(
-                                handle,
-                                firstOutput,
-                                secondOutput!,
-                                (nuint)firstOutput.Length,
-                                ref firstStats,
-                                ref secondStats);
-                            if (lateRead < 0)
-                                throw new InvalidOperationException(
-                                    $"native readback drain failed " +
-                                    $"result={lateRead} " +
-                                    $"detail={firstStats.Result}");
-                            if (lateRead == 1)
-                                interpolation.OutputCount = 2;
-                        }
-                        _syntheticAttempts++;
-                        if (interpolation.OutputCount >= 1)
-                        {
-                            PublishRenderedOutput(firstOutput, in firstStats);
-                            firstPublished = true;
-                        }
-                        if (interpolation.OutputCount >= 2)
-                        {
-                            PublishRenderedOutput(secondOutput!, in secondStats);
-                            secondPublished = true;
-                        }
-                        DrainCompletedPairs(handle);
-                        if (interpolation.OutputCount < 2)
-                            _syntheticNoOutput++;
-                    }
-                    _pairOperations++;
+                        _authoredNoOutput++;
+                    _renderOperations++;
                     _totalRenderMicroseconds +=
-                        checked((long)(
-                            interpolation.MidpointRenderMicroseconds +
-                            interpolation.ActualRenderMicroseconds));
+                        checked((long)firstStats.RenderMicroseconds);
                     _totalPipelineMicroseconds +=
-                        checked((long)interpolation.PairPipelineMicroseconds);
+                        checked((long)firstStats.PipelineMicroseconds);
                     // Component percentiles deliberately describe track-world
                     // work only. Menus, showroom, and Results are valid native
                     // 2D/3D transitions but would dilute topology to zero and
                     // make the shutdown profile misleading.
-                    if ((interpolation.Reserved & 2u) != 0)
+                    if (firstStats.TopologyMicroseconds != 0)
                     {
                         RecordProfileDurations(
-                            interpolation.PairPipelineMicroseconds,
-                            checked(
-                                interpolation.MidpointRenderMicroseconds +
-                                interpolation.ActualRenderMicroseconds),
-                            interpolation.CurrentTopologyMicroseconds);
+                            firstStats.PipelineMicroseconds,
+                            firstStats.RenderMicroseconds,
+                            firstStats.TopologyMicroseconds);
                     }
                     if (
-                        _pairOperations <= 3 ||
-                        interpolation.TemporalReset != 0 ||
-                        (_pairOperations % TraceInterval) == 0
+                        _renderOperations <= 3 ||
+                        (_renderOperations % TraceInterval) == 0
                     )
                     {
                         double averageMs =
                             _totalRenderMicroseconds /
                             1000.0 /
-                            Math.Max(1, _pairOperations);
+                            Math.Max(1, _renderOperations);
                         double pipelineAverageMs =
                             _totalPipelineMicroseconds /
                             1000.0 /
-                            Math.Max(1, _pairOperations);
+                            Math.Max(1, _renderOperations);
                         var pipelinePercentiles = GetPercentiles(
                             _recentPipelineMicroseconds);
                         var submitPercentiles = GetPercentiles(
                             _recentSubmitMicroseconds);
                         var topologyPercentiles = GetPercentiles(
                             _recentTopologyMicroseconds);
-                        LiveNativeStats traceStats =
-                            interpolation.OutputCount != 0 ||
-                            interpolation.TemporalReset != 0
-                                ? firstStats
-                                : secondStats;
                         int completionAge = Math.Max(
                             0, InputManager.CurrentPoll -
-                                traceStats.InputPoll);
-                        double matchRate = CommandMatchRate(
-                            interpolation.MatchedCommands,
-                            interpolation.PreviousCommands);
+                                firstStats.InputPoll);
                         Console.Error.WriteLine(
-                            $"[Native-World] frame={traceStats.FrameIndex} " +
-                            $"poll={traceStats.InputPoll} " +
-                            $"mode={(AuthoredOnly ? "authored" : "pair")} " +
-                            $"outputs={interpolation.OutputCount} " +
-                            $"reset={interpolation.TemporalReset} " +
-                            $"triangles={traceStats.CaptureTriangles} " +
-                            $"commands={traceStats.OutputCommands} " +
-                            $"drawCalls={traceStats.DrawCalls} " +
-                            $"transparent={traceStats.TransparentDrawCalls} " +
-                            $"size={traceStats.OutputWidth}x{traceStats.OutputHeight} " +
-                            $"pairMs={interpolation.PairPipelineMicroseconds / 1000.0:F3} " +
-                            $"interpolationMs={interpolation.InterpolationMicroseconds / 1000.0:F3} " +
-                            $"midpointMs={interpolation.MidpointRenderMicroseconds / 1000.0:F3} " +
-                            $"actualMs={interpolation.ActualRenderMicroseconds / 1000.0:F3} " +
+                            $"[Native-World] frame={firstStats.FrameIndex} " +
+                            $"poll={firstStats.InputPoll} " +
+                            $"mode=authored outputs={(hasOutput ? 1 : 0)} " +
+                            "syntheticPath=absent " +
+                            $"triangles={firstStats.CaptureTriangles} " +
+                            $"commands={firstStats.OutputCommands} " +
+                            $"drawCalls={firstStats.DrawCalls} " +
+                            $"transparent={firstStats.TransparentDrawCalls} " +
+                            $"outputHash=0x{firstStats.OutputFingerprint:X16} " +
+                            $"worldHash=0x{firstStats.WorldFingerprint:X16} " +
+                            $"size={firstStats.OutputWidth}x{firstStats.OutputHeight} " +
+                            $"pipelineMs={firstStats.PipelineMicroseconds / 1000.0:F3} " +
+                            $"submitMs={firstStats.RenderMicroseconds / 1000.0:F3} " +
+                            $"actualMs={firstStats.RenderMicroseconds / 1000.0:F3} " +
                             $"averageMs={averageMs:F3} " +
                             $"pipelineAverageMs={pipelineAverageMs:F3} " +
-                            $"decodeMs={traceStats.DecodeMicroseconds / 1000.0:F3} " +
-                            $"drawListMs={traceStats.DrawListMicroseconds / 1000.0:F3} " +
-                            $"topologyMs={traceStats.TopologyMicroseconds / 1000.0:F3} " +
+                            $"decodeMs={firstStats.DecodeMicroseconds / 1000.0:F3} " +
+                            $"drawListMs={firstStats.DrawListMicroseconds / 1000.0:F3} " +
+                            $"topologyMs={firstStats.TopologyMicroseconds / 1000.0:F3} " +
                             // Preserve the original names as pipeline aliases
                             // for existing harnesses, then report every required
                             // component explicitly.
@@ -901,45 +864,22 @@ internal sealed class LiveWorldRenderer : IDisposable
                             $"topologyP99Ms={topologyPercentiles.p99 / 1000.0:F3} " +
                             $"profileSamples={_recentProfileCount} " +
                             $"profileScope=track-world " +
-                            $"matched={interpolation.MatchedCommands}/" +
-                            $"{interpolation.PreviousCommands} " +
-                            $"matchRate={matchRate:F2}% " +
-                            $"worldEligible=" +
-                            $"{interpolation.EligibleWorldCommands} " +
-                            $"trackMatched={interpolation.MatchedTrackCommands} " +
-                            $"vehicleMatched={interpolation.MatchedVehicleCommands} " +
-                            $"groups={interpolation.MatchedTransformGroups}/" +
-                            $"{interpolation.PreviousTransformGroups}/" +
-                            $"{interpolation.CurrentTransformGroups} " +
-                            $"exactGroups={interpolation.ExactRigidTransformGroups} " +
-                            $"incoherentExactGroups=" +
-                            $"{interpolation.IncoherentExactTransformGroups} " +
-                            $"heldIncoherentVehicle=" +
-                            $"{interpolation.HeldIncoherentVehicleCommands} " +
-                            $"heldTrackVisibility=" +
-                            $"{interpolation.HeldTrackVisibilityCommands} " +
-                            $"heldUnsafeTrack=" +
-                            $"{interpolation.HeldUnsafeTrackCommands} " +
                             $"firstOutput={firstStats.OutputWidth}x" +
                             $"{firstStats.OutputHeight}/r{firstStats.Reserved} " +
-                            $"secondOutput={secondStats.OutputWidth}x" +
-                            $"{secondStats.OutputHeight}/r{secondStats.Reserved} " +
                             $"completionAge={completionAge} " +
-                            $"topologyBoundary={traceStats.TopologyBoundaryGroups} " +
-                            $"tJunctions={traceStats.TopologyTJunctions} " +
-                            $"coplanar={traceStats.TopologyCoplanarPairs} " +
+                            $"topologyBoundary={firstStats.TopologyBoundaryGroups} " +
+                            $"tJunctions={firstStats.TopologyTJunctions} " +
+                            $"coplanar={firstStats.TopologyCoplanarPairs} " +
                             $"submitted={_submitted} rendered={_rendered} " +
                             $"consumed={_consumed} dropped={_dropped}");
                     }
                 }
                 finally
                 {
-                    Volatile.Write(ref _activePairStartTicks, 0);
+                    Volatile.Write(ref _activeRenderStartTicks, 0);
                     Volatile.Write(ref _activeCaptureInputPoll, -1);
                     if (!firstPublished)
                         ReturnOutput(firstOutput);
-                    if (secondOutput is not null && !secondPublished)
-                        ReturnOutput(secondOutput);
                     ReturnCaptureBuffer(capture);
                     lock (_gate)
                     {
@@ -951,6 +891,7 @@ internal sealed class LiveWorldRenderer : IDisposable
         }
         catch (Exception exception)
         {
+            Volatile.Write(ref _failure, exception);
             _failed = true;
             Console.Error.WriteLine(
                 $"[Native-World] disabled: " +
@@ -967,6 +908,7 @@ internal sealed class LiveWorldRenderer : IDisposable
         byte[] pixels,
         in LiveNativeStats stats)
     {
+        DumpRenderedOutput(pixels, in stats);
         PublishOutput(pixels, in stats);
         _rendered++;
         if ((stats.Reserved & 2u) != 0)
@@ -977,57 +919,68 @@ internal sealed class LiveWorldRenderer : IDisposable
             _renderedActual++;
     }
 
-    void DrainCompletedPairs(nint handle)
+    void DumpRenderedOutput(
+        byte[] pixels,
+        in LiveNativeStats stats)
     {
-        while (PublishedOutputCount <= PublishedOutputCapacity - 2)
+        if (
+            _dumpedOutputCount >= DumpOutputCount ||
+            string.IsNullOrWhiteSpace(DumpOutputPath) ||
+            stats.InputPoll < DumpOutputInputPoll
+        )
+            return;
+
+        int width = checked((int)stats.OutputWidth);
+        int height = checked((int)stats.OutputHeight);
+        int pixelCount = checked(width * height);
+        int rgbaBytes = checked(pixelCount * 4);
+        if (width <= 0 || height <= 0 || rgbaBytes > pixels.Length)
+            throw new InvalidOperationException(
+                $"native output dump dimensions are invalid: " +
+                $"{width}x{height} capacity={pixels.Length}");
+
+        string path = Path.GetFullPath(DumpOutputPath!);
+        if (DumpOutputCount > 1)
         {
-            if (!_outputPool.TryDequeue(out byte[]? first))
-                return;
-            if (!_outputPool.TryDequeue(out byte[]? second))
-            {
-                ReturnOutput(first);
-                return;
-            }
-            bool firstPublished = false;
-            bool secondPublished = false;
-            try
-            {
-                var firstStats = new LiveNativeStats
-                {
-                    StructSize =
-                        (uint)Marshal.SizeOf<LiveNativeStats>(),
-                };
-                var secondStats = new LiveNativeStats
-                {
-                    StructSize =
-                        (uint)Marshal.SizeOf<LiveNativeStats>(),
-                };
-                int result = NativeMethods.TryReadPair(
-                    handle,
-                    first,
-                    second,
-                    (nuint)first.Length,
-                    ref firstStats,
-                    ref secondStats);
-                if (result < 0)
-                    throw new InvalidOperationException(
-                        $"native readback drain failed result={result} " +
-                        $"detail={firstStats.Result}");
-                if (result == 0)
-                    return;
-                PublishRenderedOutput(first, in firstStats);
-                firstPublished = true;
-                PublishRenderedOutput(second, in secondStats);
-                secondPublished = true;
-            }
-            finally
-            {
-                if (!firstPublished)
-                    ReturnOutput(first);
-                if (!secondPublished)
-                    ReturnOutput(second);
-            }
+            string? parent = Path.GetDirectoryName(path);
+            string stem = Path.GetFileNameWithoutExtension(path);
+            string extension = Path.GetExtension(path);
+            path = Path.Combine(
+                parent ?? string.Empty,
+                $"{stem}_frame_{stats.FrameIndex}_poll_" +
+                $"{stats.InputPoll}{extension}");
         }
+        string? directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(directory))
+            Directory.CreateDirectory(directory);
+
+        byte[] rgb = ArrayPool<byte>.Shared.Rent(checked(pixelCount * 3));
+        try
+        {
+            for (int source = 0, destination = 0;
+                source < rgbaBytes;
+                source += 4)
+            {
+                rgb[destination++] = pixels[source];
+                rgb[destination++] = pixels[source + 1];
+                rgb[destination++] = pixels[source + 2];
+            }
+            using var dump = File.Create(path);
+            byte[] header = Encoding.ASCII.GetBytes(
+                $"P6\n{width} {height}\n255\n");
+            dump.Write(header);
+            dump.Write(rgb, 0, pixelCount * 3);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rgb);
+        }
+
+        _dumpedOutputCount++;
+        Console.Error.WriteLine(
+            $"[Native-World-Output-Dump] frame={stats.FrameIndex} " +
+            $"poll={stats.InputPoll} size={width}x{height} " +
+            $"outputHash=0x{stats.OutputFingerprint:X16} path={path}");
     }
 
     void PublishOutput(byte[] pixels, in LiveNativeStats stats)
@@ -1035,13 +988,10 @@ internal sealed class LiveWorldRenderer : IDisposable
         LiveWorldOutput? discarded = null;
         lock (_gate)
         {
-            // Keep a short queue of complete authored frames. Native work lands
-            // in short bursts around dense GT2 object buckets even when its
-            // average rate is above 60 Hz. A two-image queue discarded those
-            // bursts and then left later vblanks with no unique image. Eight
-            // chronological outputs absorb opposing producer/consumer bursts;
-            // the remaining fixed buffers cover RenderPair, one catch-up pair,
-            // and the host upload without starving the worker.
+            // The three-frame limit mirrors the complete bounded capture work
+            // window. It absorbs catch-up after one active render plus two
+            // pending captures without expanding the two-output steady-state
+            // prebuffer or returning to the retired eight-frame latency queue.
             if (_published.Count >= PublishedOutputCapacity)
             {
                 discarded = _published.Dequeue();
@@ -1091,13 +1041,6 @@ internal sealed class LiveWorldRenderer : IDisposable
             Percentile(samples, 0.95),
             Percentile(samples, 0.99));
     }
-
-    internal static double CommandMatchRate(
-        uint matchedCommands,
-        uint previousCommands) =>
-        previousCommands == 0
-            ? 0.0
-            : matchedCommands * 100.0 / previousCommands;
 
     static ulong Percentile(ulong[] sortedSamples, double percentile)
     {
@@ -1152,8 +1095,7 @@ internal sealed class LiveWorldRenderer : IDisposable
             $"rendered={_rendered} actual={_renderedActual} " +
             $"synthetic={_renderedSynthetic} " +
             $"repeated={_renderedRepeated} " +
-            $"syntheticAttempts={_syntheticAttempts} " +
-            $"syntheticNoOutput={_syntheticNoOutput} " +
+            "syntheticPath=absent " +
             $"authoredNoOutput={_authoredNoOutput} " +
             $"consumed={_consumed} dropped={_dropped} " +
             $"droppedPending={_droppedPendingCaptures} " +
@@ -1197,34 +1139,6 @@ internal sealed class LiveWorldRenderer : IDisposable
 
         [DllImport(
             Library,
-            EntryPoint = "opengt_live_render_pair",
-            CallingConvention = CallingConvention.Cdecl)]
-        internal static extern int RenderPair(
-            nint handle,
-            byte[] capture,
-            nuint captureSize,
-            byte[] firstOutput,
-            byte[] secondOutput,
-            nuint outputCapacity,
-            in LiveNativeOptions options,
-            ref LiveNativeStats firstStats,
-            ref LiveNativeStats secondStats,
-            ref LiveInterpolationStats interpolationStats);
-
-        [DllImport(
-            Library,
-            EntryPoint = "opengt_live_try_read_pair",
-            CallingConvention = CallingConvention.Cdecl)]
-        internal static extern int TryReadPair(
-            nint handle,
-            byte[] firstOutput,
-            byte[] secondOutput,
-            nuint outputCapacity,
-            ref LiveNativeStats firstStats,
-            ref LiveNativeStats secondStats);
-
-        [DllImport(
-            Library,
             EntryPoint = "opengt_live_set_texture_uploads",
             CallingConvention = CallingConvention.Cdecl)]
         internal static extern int SetTextureUploads(
@@ -1232,6 +1146,24 @@ internal sealed class LiveWorldRenderer : IDisposable
             int softwareAdapter,
             [In] LiveTextureUpload[] uploads,
             nuint uploadCount);
+
+        [DllImport(
+            Library,
+            EntryPoint = "opengt_live_register_resident_mesh",
+            CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int RegisterResidentMesh(
+            nint handle,
+            byte[] definition,
+            nuint definitionSize);
+
+        [DllImport(
+            Library,
+            EntryPoint = "opengt_live_set_resident_instances",
+            CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int SetResidentInstances(
+            nint handle,
+            nint instances,
+            nuint instanceCount);
 
         [DllImport(
             Library,
@@ -1249,20 +1181,16 @@ internal sealed class LiveWorldRenderer : IDisposable
 internal sealed class LiveWorldFrameRecorder : IDisposable
 {
     const int MaxDeferredScreenLineTriangles = 256;
+    const int MaxDeferredStaticScenes = 8;
+    const int InitialDeferredStaticTriangles = 4096;
     internal const int TriangleReservationRecords = 64;
 
     static (int Width, int Height) ParseTargetAspect()
     {
-        string resolution = ConfigManager.View.OutputResolution;
-        int separator = resolution.IndexOfAny(['x', 'X']);
-        if (separator > 0 &&
-            int.TryParse(resolution.AsSpan(0, separator), out int width) &&
-            int.TryParse(resolution.AsSpan(separator + 1), out int height) &&
-            width > 0 && height > 0)
-        {
-            return (Math.Min(width, 8192), Math.Min(height, 8192));
-        }
-        return (16, 9);
+        var aspect = Host.HostWindow.GetWorldTargetAspect();
+        return (
+            Math.Clamp(aspect.Width, 1, 8192),
+            Math.Clamp(aspect.Height, 1, 8192));
     }
 
     readonly record struct CameraProjectionKey(
@@ -1277,6 +1205,58 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         short Z,
         byte ScreenOffsetDirection);
 
+    sealed class DeferredStaticScene
+    {
+        public uint Generation;
+        public int TriangleCount;
+        public int ResidentInstanceCount;
+        public byte[] Triangles = new byte[
+            InitialDeferredStaticTriangles *
+            LiveWorldRenderer.TriangleStride];
+        public readonly byte[] ResidentInstances = new byte[
+            LiveWorldRenderer.MaxResidentTrackInstances *
+            LiveWorldRenderer.ResidentTrackInstanceStride];
+        public readonly Dictionary<
+            CameraProjectionKey,
+            (int Count, GteProjectionOrigin Origin)> Cameras = [];
+#if !OPENGT_RELEASE_PACKAGE
+        public readonly Dictionary<(WorldObjectKind Kind, ushort Plane), int>
+            TraceCounts = [];
+#endif
+
+        public void EnsureTriangleCapacity(int requiredTriangles)
+        {
+            if (requiredTriangles <=
+                Triangles.Length / LiveWorldRenderer.TriangleStride)
+            {
+                return;
+            }
+            int capacity = Math.Min(
+                LiveWorldRenderer.MaxTriangles,
+                Math.Max(
+                    requiredTriangles,
+                    checked(Triangles.Length /
+                        LiveWorldRenderer.TriangleStride * 2)));
+            if (capacity < requiredTriangles)
+                throw new InvalidOperationException(
+                    "Deferred static-scene triangle capacity exceeded.");
+            Array.Resize(
+                ref Triangles,
+                checked(capacity * LiveWorldRenderer.TriangleStride));
+        }
+
+        public void Reset(uint generation = 0)
+        {
+            Generation = generation;
+            TriangleCount = 0;
+            ResidentInstanceCount = 0;
+            Cameras.Clear();
+#if !OPENGT_RELEASE_PACKAGE
+            TraceCounts.Clear();
+#endif
+        }
+    }
+
     readonly LiveWorldRenderer _renderer;
     readonly Dictionary<
         CameraProjectionKey,
@@ -1289,6 +1269,28 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         new byte[
             MaxDeferredScreenLineTriangles *
             LiveWorldRenderer.TriangleStride];
+    readonly byte[] _alignedResidentTrackInstances =
+        new byte[
+            LiveWorldRenderer.MaxResidentTrackInstances *
+            LiveWorldRenderer.ResidentTrackInstanceStride];
+    readonly DeferredStaticScene[] _staticScenes =
+        new DeferredStaticScene[MaxDeferredStaticScenes];
+    readonly Dictionary<uint, int> _vehicleGenerationCounts = [];
+#if !OPENGT_RELEASE_PACKAGE
+    readonly int _cameraTraceStartPoll = ParseDiagnosticPoll(
+        "RECOMPONE_TRACE_GT2_CAMERA_START_POLL");
+    readonly int _cameraTraceEndPoll = ParseDiagnosticPoll(
+        "RECOMPONE_TRACE_GT2_CAMERA_END_POLL");
+    readonly int _scenePassTracePoll = ParseDiagnosticPoll(
+        "RECOMPONE_TRACE_GT2_SCENE_PASS_POLL");
+    readonly int _staticSceneTraceStartPoll = ParseDiagnosticPoll(
+        "RECOMPONE_TRACE_GT2_STATIC_SCENE_START_POLL");
+    readonly int _staticSceneTraceEndPoll = ParseDiagnosticPoll(
+        "RECOMPONE_TRACE_GT2_STATIC_SCENE_END_POLL");
+    readonly Dictionary<
+        (WorldObjectKind Kind, uint Generation, ushort Plane), int>
+        _sceneGenerationCounts = [];
+#endif
 
     byte[]? _buffer;
     MemoryStream? _stream;
@@ -1296,8 +1298,14 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
     long _geometryFrame;
     uint _triangleCount;
     uint _worldTriangleCount;
+    int _outputResidentTrackInstanceCount;
+    uint _selectedStaticGeneration;
+    bool _staticSceneInjected;
+    bool _staticSceneActivity;
     bool _truncated;
+#if !OPENGT_RELEASE_PACKAGE
     bool _reportedOversizeOutput;
+#endif
     int _nonprojectableWorldFrames;
     int _deferredScreenLineTriangles;
     long _deferredScreenLineUpdates;
@@ -1311,15 +1319,73 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
     int _drawOffsetY;
 
     public bool Enabled => _renderer.Enabled && _buffer != null;
+    // Static Seattle geometry is cached by authored scene generation in
+    // recorder-owned storage. It remains recordable while the transient
+    // per-presentation capture buffers are all in flight on the render thread.
+    public bool CanRecordDeferredStatic => _renderer.Enabled;
     public bool NeedsVramSnapshot =>
-        Enabled && _worldTriangleCount != 0;
+        Enabled &&
+        (_worldTriangleCount != 0 ||
+         _staticSceneActivity);
     public bool LastPresentedFrameContainedWorld { get; private set; }
     public GteProjectionOrigin MainProjection { get; private set; }
 
     public LiveWorldFrameRecorder(LiveWorldRenderer renderer)
     {
         _renderer = renderer;
+        for (int index = 0; index < _staticScenes.Length; index++)
+            _staticScenes[index] = new DeferredStaticScene();
         RentAndReset();
+    }
+
+    DeferredStaticScene GetOrCreateStaticScene(uint generation)
+    {
+        if (generation == 0)
+            throw new InvalidOperationException(
+                "A deferred static scene requires authored generation identity.");
+        DeferredStaticScene? empty = null;
+        DeferredStaticScene? oldest = null;
+        foreach (DeferredStaticScene scene in _staticScenes)
+        {
+            if (scene.Generation == generation)
+                return scene;
+            if (scene.Generation == 0)
+                empty ??= scene;
+            if (oldest == null || scene.Generation < oldest.Generation)
+                oldest = scene;
+        }
+        DeferredStaticScene selected = empty ?? oldest!;
+        if (selected.Generation != 0 &&
+            selected.Generation > _selectedStaticGeneration)
+        {
+            throw new InvalidOperationException(
+                "The GT2 static-scene generation queue overflowed before " +
+                $"generation {selected.Generation} was consumed.");
+        }
+#if !OPENGT_RELEASE_PACKAGE
+        int poll = Host.InputManager.CurrentPoll;
+        if (_staticSceneTraceStartPoll >= 0 &&
+            poll >= _staticSceneTraceStartPoll &&
+            (_staticSceneTraceEndPoll < 0 ||
+             poll <= _staticSceneTraceEndPoll))
+        {
+            Console.Error.WriteLine(
+                $"[GT2-Static-Scene] poll={poll} action=create " +
+                $"generation={generation} replaced={selected.Generation}");
+        }
+#endif
+        selected.Reset(generation);
+        return selected;
+    }
+
+    DeferredStaticScene? FindStaticScene(uint generation)
+    {
+        foreach (DeferredStaticScene scene in _staticScenes)
+        {
+            if (scene.Generation == generation)
+                return scene;
+        }
+        return null;
     }
 
     [MethodImpl(
@@ -1346,7 +1412,155 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             in originB,
             in originC,
             in flags,
-            explicitScreenSpace: false);
+            explicitScreenSpace: false,
+            residentTrack: false,
+            0,
+            0,
+            0);
+    }
+
+    [MethodImpl(
+        MethodImplOptions.AggressiveInlining |
+        MethodImplOptions.AggressiveOptimization)]
+    public void RegisterResidentTrackProjection(
+        in GteProjectionOrigin origin,
+        int vertexWeight)
+    {
+        if (vertexWeight > 0)
+            CountStaticTransform(in origin, vertexWeight);
+    }
+
+    public void RegisterResidentTrackMesh(byte[] definition) =>
+        _renderer.RegisterResidentTrackMesh(definition);
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    public void RecordResidentTrackInstance(
+        long pendingFrame,
+        ulong meshKey,
+        in HleDrawEnv env,
+        in GteProjectionOrigin origin,
+        ushort defaultTexturePage)
+    {
+        // Resident/static scene storage is independent of the transient live
+        // capture buffer. Keep authoring it while every capture buffer is
+        // briefly owned by the asynchronous renderer; the matching vehicle
+        // ordering-table packets can arrive after a buffer has been returned.
+        if (!_renderer.Enabled || !origin.Valid || meshKey == 0 ||
+            origin.Object.ScenePass == WorldScenePass.Auxiliary)
+            return;
+        bool hadDeferredStatic = _staticSceneActivity;
+        DeferredStaticScene scene = GetOrCreateStaticScene(
+            origin.Object.SceneGeneration);
+        _staticSceneActivity = true;
+        if (scene.ResidentInstanceCount >=
+            LiveWorldRenderer.MaxResidentTrackInstances)
+        {
+            _truncated = true;
+            return;
+        }
+        if (_triangleCount == 0 && !hadDeferredStatic)
+            _geometryFrame = pendingFrame;
+        int viewportWidth = env.ClipX1 - env.ClipX0 + 1;
+        int viewportHeight = env.ClipY1 - env.ClipY0 + 1;
+        long viewportArea = (long)viewportWidth * viewportHeight;
+        if (viewportWidth > 0 && viewportHeight > 0 &&
+            viewportArea > _viewportArea)
+        {
+            _viewportX = env.ClipX0;
+            _viewportY = env.ClipY0;
+            _viewportWidth = viewportWidth;
+            _viewportHeight = viewportHeight;
+            _viewportArea = viewportArea;
+            _drawOffsetX = env.DrawOffsetX;
+            _drawOffsetY = env.DrawOffsetY;
+        }
+        Span<byte> record = scene.ResidentInstances.AsSpan(
+            scene.ResidentInstanceCount *
+                LiveWorldRenderer.ResidentTrackInstanceStride,
+            LiveWorldRenderer.ResidentTrackInstanceStride);
+        record.Clear();
+        int offset = 0;
+        WriteUInt64(record, ref offset, meshKey);
+        WriteUInt32(record, ref offset, origin.Object.StableId);
+        WriteUInt32(record, ref offset, origin.Object.ModelPointer);
+        WriteUInt64(record, ref offset, origin.TransformId);
+        WriteInt16(record, ref offset, origin.R00);
+        WriteInt16(record, ref offset, origin.R01);
+        WriteInt16(record, ref offset, origin.R02);
+        WriteInt16(record, ref offset, origin.R10);
+        WriteInt16(record, ref offset, origin.R11);
+        WriteInt16(record, ref offset, origin.R12);
+        WriteInt16(record, ref offset, origin.R20);
+        WriteInt16(record, ref offset, origin.R21);
+        WriteInt16(record, ref offset, origin.R22);
+        WriteInt16(record, ref offset, 0);
+        WriteInt32(record, ref offset, origin.TranslateX);
+        WriteInt32(record, ref offset, origin.TranslateY);
+        WriteInt32(record, ref offset, origin.TranslateZ);
+        WriteInt32(record, ref offset, origin.ProjectionOffsetX);
+        WriteInt32(record, ref offset, origin.ProjectionOffsetY);
+        WriteUInt32(record, ref offset, origin.ProjectionPlane);
+        WriteInt16(record, ref offset, (short)env.ClipX0);
+        WriteInt16(record, ref offset, (short)env.ClipY0);
+        WriteInt16(record, ref offset, (short)env.ClipX1);
+        WriteInt16(record, ref offset, (short)env.ClipY1);
+        WriteInt16(record, ref offset, (short)env.TwMaskX);
+        WriteInt16(record, ref offset, (short)env.TwMaskY);
+        WriteInt16(record, ref offset, (short)env.TwOffX);
+        WriteInt16(record, ref offset, (short)env.TwOffY);
+        WriteInt16(record, ref offset, (short)env.DrawOffsetX);
+        WriteInt16(record, ref offset, (short)env.DrawOffsetY);
+        uint environmentFlags = 0;
+        if (env.SetMask) environmentFlags |= 1U << 0;
+        if (env.CheckMask) environmentFlags |= 1U << 1;
+        if (env.Dither) environmentFlags |= 1U << 2;
+        WriteUInt32(record, ref offset, environmentFlags);
+        uint packedResidentState =
+            defaultTexturePage |
+            ((uint)checked((ushort)scene.TriangleCount) << 16);
+        WriteUInt32(record, ref offset, packedResidentState);
+        WriteInt32(record, ref offset, origin.Object.DepthScaleExponent);
+        WriteUInt32(
+            record,
+            ref offset,
+            origin.Object.DepthScaleValid ? 1U : 0U);
+        Debug.Assert(offset == LiveWorldRenderer.ResidentTrackInstanceStride);
+        scene.ResidentInstanceCount++;
+        CountStaticTransform(in origin, 1);
+    }
+
+    [MethodImpl(
+        MethodImplOptions.AggressiveInlining |
+        MethodImplOptions.AggressiveOptimization)]
+    public void RecordResidentTrackTriangle(
+        long pendingFrame,
+        in HleDrawEnv env,
+        in HleVertex a,
+        in HleVertex b,
+        in HleVertex c,
+        in GteProjectionOrigin originA,
+        in GteProjectionOrigin originB,
+        in GteProjectionOrigin originC,
+        in PrimFlags flags,
+        uint sourceA,
+        uint sourceB,
+        uint sourceC)
+    {
+        RecordTriangleCore(
+            pendingFrame,
+            in env,
+            in a,
+            in b,
+            in c,
+            in originA,
+            in originB,
+            in originC,
+            in flags,
+            explicitScreenSpace: false,
+            residentTrack: true,
+            sourceA,
+            sourceB,
+            sourceC);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
@@ -1360,18 +1574,39 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         in GteProjectionOrigin originB,
         in GteProjectionOrigin originC,
         in PrimFlags flags,
-        bool explicitScreenSpace)
+        bool explicitScreenSpace,
+        bool residentTrack,
+        uint sourceA,
+        uint sourceB,
+        uint sourceC)
     {
-        if (!Enabled)
+        if (!_renderer.Enabled)
             return;
         int valid = (originA.Valid ? 1 : 0) +
             (originB.Valid ? 1 : 0) +
             (originC.Valid ? 1 : 0);
         if (valid == 0 && !explicitScreenSpace)
             return;
-        if (_triangleCount == 0)
+        GteProjectionOrigin identity = originA.Valid
+            ? originA
+            : originB.Valid ? originB : originC;
+        bool deferredStatic = IsDeferredStaticScene(in identity);
+        // Track/background generations live in their own bounded cache and do
+        // not require a free output-capture buffer. Screen-space and vehicle
+        // records still do, because they are written directly to that buffer.
+        if (!deferredStatic && !Enabled)
+            return;
+        bool hadDeferredStatic = _staticSceneActivity;
+        DeferredStaticScene? staticScene = deferredStatic
+            ? GetOrCreateStaticScene(identity.Object.SceneGeneration)
+            : null;
+        if (deferredStatic)
+            _staticSceneActivity = true;
+        if (_triangleCount == 0 && !hadDeferredStatic)
             _geometryFrame = pendingFrame;
-        if (_triangleCount >= LiveWorldRenderer.MaxTriangles)
+        if ((deferredStatic
+                ? staticScene!.TriangleCount
+                : _triangleCount) >= LiveWorldRenderer.MaxTriangles)
         {
             _truncated = true;
             return;
@@ -1394,32 +1629,92 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             _drawOffsetX = env.DrawOffsetX;
             _drawOffsetY = env.DrawOffsetY;
         }
-        GteProjectionOrigin identity = originA.Valid
-            ? originA
-            : originB.Valid ? originB : originC;
-        if (valid != 0)
+#if !OPENGT_RELEASE_PACKAGE
+        if (_scenePassTracePoll >= 0)
+        {
+            if (deferredStatic)
+            {
+                var key = (
+                    identity.Object.Kind,
+                    identity.ProjectionPlane);
+                ref int sceneCount = ref
+                    CollectionsMarshal.GetValueRefOrAddDefault(
+                        staticScene!.TraceCounts,
+                        key,
+                        out _);
+                sceneCount++;
+            }
+            else
+            {
+                var key = (
+                    identity.Object.Kind,
+                    identity.Object.SceneGeneration,
+                    identity.ProjectionPlane);
+                ref int sceneCount = ref
+                    CollectionsMarshal.GetValueRefOrAddDefault(
+                        _sceneGenerationCounts,
+                        key,
+                        out _);
+                sceneCount++;
+            }
+        }
+#endif
+        if (!deferredStatic && valid != 0)
             _worldTriangleCount++;
-        CountTransforms(in originA, in originB, in originC);
+        if (!residentTrack)
+        {
+            if (deferredStatic)
+                CountStaticTransforms(in originA, in originB, in originC);
+            else
+                CountTransforms(in originA, in originB, in originC);
+        }
+        if (identity.Object.Kind == WorldObjectKind.Vehicle &&
+            identity.Object.ScenePass == WorldScenePass.Main &&
+            identity.Object.SceneGeneration != 0)
+        {
+            ref int generationCount = ref
+                CollectionsMarshal.GetValueRefOrAddDefault(
+                    _vehicleGenerationCounts,
+                    identity.Object.SceneGeneration,
+                    out _);
+            generationCount++;
+        }
         uint primitiveFlags = 0;
         if (flags.Textured) primitiveFlags |= 1U << 0;
         if (flags.SemiTrans) primitiveFlags |= 1U << 1;
         if (flags.RawTexture) primitiveFlags |= 1U << 2;
         if (flags.Gouraud) primitiveFlags |= 1U << 3;
         if (flags.ResidentCourse) primitiveFlags |= 1U << 4;
+        if (identity.Object.ScenePass == WorldScenePass.Auxiliary)
+            primitiveFlags |= 1U << 5;
         uint environmentFlags = 0;
         if (env.SetMask) environmentFlags |= 1U << 0;
         if (env.CheckMask) environmentFlags |= 1U << 1;
         if (env.Dither) environmentFlags |= 1U << 2;
-        int streamOffset = checked((int)_stream!.Position);
-        EnsureTriangleStorage(
-            _stream,
-            checked(streamOffset + LiveWorldRenderer.TriangleStride),
-            LiveWorldRenderer.HeaderSize +
-                LiveWorldRenderer.MaxTriangles *
+        int streamOffset = deferredStatic
+            ? staticScene!.TriangleCount * LiveWorldRenderer.TriangleStride
+            : checked((int)_stream!.Position);
+        Span<byte> record;
+        if (deferredStatic)
+        {
+            staticScene!.EnsureTriangleCapacity(
+                staticScene.TriangleCount + 1);
+            record = staticScene.Triangles.AsSpan(
+                streamOffset,
                 LiveWorldRenderer.TriangleStride);
-        Span<byte> record = _buffer!.AsSpan(
-            streamOffset,
-            LiveWorldRenderer.TriangleStride);
+        }
+        else
+        {
+            EnsureTriangleStorage(
+                _stream!,
+                checked(streamOffset + LiveWorldRenderer.TriangleStride),
+                LiveWorldRenderer.HeaderSize +
+                    LiveWorldRenderer.MaxTriangles *
+                    LiveWorldRenderer.TriangleStride);
+            record = _buffer!.AsSpan(
+                streamOffset,
+                LiveWorldRenderer.TriangleStride);
+        }
         int offset = 0;
         WriteUInt32(record, ref offset, primitiveFlags);
         WriteUInt16(record, ref offset, flags.TPage);
@@ -1441,13 +1736,33 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         WriteInt16(record, ref offset, (short)env.DrawOffsetY);
         WriteUInt64(record, ref offset, identity.TransformId);
         WriteTransform(record, ref offset, in identity);
-        WriteVertex(record, ref offset, in a, in originA);
-        WriteVertex(record, ref offset, in b, in originB);
-        WriteVertex(record, ref offset, in c, in originC);
-        WriteUInt64(record, ref offset, 0);
+        if (residentTrack)
+        {
+            WriteVertex(record, ref offset, in a, in originA, sourceA);
+            WriteVertex(record, ref offset, in b, in originB, sourceB);
+            WriteVertex(record, ref offset, in c, in originC, sourceC);
+        }
+        else
+        {
+            WriteVertex(record, ref offset, in a, in originA);
+            WriteVertex(record, ref offset, in b, in originB);
+            WriteVertex(record, ref offset, in c, in originC);
+        }
+        WriteInt32(record, ref offset, identity.Object.DepthScaleExponent);
+        WriteUInt32(
+            record,
+            ref offset,
+            identity.Object.DepthScaleValid ? 1U : 0U);
         Debug.Assert(offset == LiveWorldRenderer.TriangleStride);
-        _stream.Position = streamOffset + offset;
-        _triangleCount++;
+        if (deferredStatic)
+        {
+            staticScene!.TriangleCount++;
+        }
+        else
+        {
+            _stream!.Position = streamOffset + offset;
+            _triangleCount++;
+        }
     }
 
     /// <summary>
@@ -1497,7 +1812,11 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             in origin,
             in origin,
             in flags,
-            explicitScreenSpace: true);
+            explicitScreenSpace: true,
+            residentTrack: false,
+            0,
+            0,
+            0);
     }
 
     public void RecordScreenLine(
@@ -1603,24 +1922,36 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         in HleDispEnv display,
         ReadOnlySpan<ushort> vram)
     {
+        _renderer.ThrowIfFailed();
         LastPresentedFrameContainedWorld = false;
         if (!Enabled || presentedFrame < _geometryFrame)
         {
             ResetCurrent();
             return;
         }
-        if (_worldTriangleCount == 0)
+        if (_worldTriangleCount == 0 && !_staticSceneActivity)
+        {
+            CacheCurrentScreenLines();
+            ResetCurrent();
+            return;
+        }
+        InjectAlignedStaticScene(inputPoll);
+        if (_worldTriangleCount == 0 &&
+            _outputResidentTrackInstanceCount == 0)
         {
             CacheCurrentScreenLines();
             ResetCurrent();
             return;
         }
         // Provenance without a usable projection plane occurs in authored 2D
-        // transitions and cannot define a native 3D camera.  Keep those frames
-        // with the compatibility compositor.  Once a usable camera exists,
-        // malformed, oversized, truncated, or temporarily unrenderable world
-        // work remains an observable modern-renderer miss.
+        // transitions and cannot define a native 3D camera. Preserve only the
+        // provenance-free screen compositor on those frames. Once a usable
+        // camera exists, malformed, oversized, truncated, or temporarily
+        // unrenderable world work remains an observable modern-renderer miss.
         GteProjectionOrigin camera = SelectCamera();
+#if !OPENGT_RELEASE_PACKAGE
+        TraceSceneGenerations(inputPoll);
+#endif
         if (!camera.Valid || camera.ProjectionPlane == 0)
         {
             if (++_nonprojectableWorldFrames <= 3)
@@ -1628,11 +1959,15 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
                 Console.Error.WriteLine(
                     $"[Native-World] compositor retained nonprojectable " +
                     $"provenance frame={presentedFrame} poll={inputPoll} " +
-                    $"triangles={_worldTriangleCount}");
+                    $"triangles={_worldTriangleCount} " +
+                    $"residentInstances={_outputResidentTrackInstanceCount}");
             }
             ResetCurrent();
             return;
         }
+#if !OPENGT_RELEASE_PACKAGE
+        TraceCameraTransform(inputPoll, in camera);
+#endif
         LastPresentedFrameContainedWorld = true;
         if (_truncated)
         {
@@ -1656,18 +1991,36 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             ResetCurrent();
             return;
         }
-        long captureLength = vramOffset + vramBytes;
+        long residentInstanceOffset = vramOffset + vramBytes;
+        int residentInstanceBytes = checked(
+            _outputResidentTrackInstanceCount *
+            LiveWorldRenderer.ResidentTrackInstanceStride);
+        long captureLength = residentInstanceOffset +
+            residentInstanceBytes;
+        if (captureLength > _buffer.Length)
+        {
+            ResetCurrent();
+            return;
+        }
         // The fixed-capacity stream deliberately retains the full backing
         // length. Native receives the exact used byte count separately, so
         // there is no reason to zero-fill the VRAM range immediately before
         // overwriting every byte of it.
         MemoryMarshal.AsBytes(vram).CopyTo(
             _buffer.AsSpan(checked((int)vramOffset), vramBytes));
+        _alignedResidentTrackInstances.AsSpan(0, residentInstanceBytes).CopyTo(
+            _buffer.AsSpan(
+                checked((int)residentInstanceOffset),
+                residentInstanceBytes));
         _stream.Position = captureLength;
         MainProjection = camera;
         var targetAspect = ParseTargetAspect();
+        bool enableDepth = true;
+#if !OPENGT_RELEASE_PACKAGE
+        enableDepth = !LiveWorldRenderer.DisableDepthForDiagnostics;
+#endif
         var settings = new LiveRenderSettings(
-            Depth: true,
+            Depth: enableDepth,
             Dithering: ConfigManager.View.Ps1Dithering,
             Topology: ConfigManager.View.StabilizeGeometrySeams,
             PerspectiveCorrect:
@@ -1701,11 +2054,20 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             requiredOutputBytes > LiveWorldRenderer.MaxOutputBytes
         )
         {
+#if OPENGT_RELEASE_PACKAGE
+            throw new InvalidOperationException(
+                "The required modern world frame exceeds the bounded " +
+                $"output pool: viewport={outputWidth}x{outputHeight} " +
+                $"scale={settings.OutputScale} " +
+                $"requiredBytes={requiredOutputBytes} " +
+                $"capacity={LiveWorldRenderer.MaxOutputBytes}. " +
+                "The release build has no compositor fallback.");
+#else
             if (!_reportedOversizeOutput)
             {
                 _reportedOversizeOutput = true;
                 Console.Error.WriteLine(
-                    $"[Native-World] compositor fallback " +
+                    $"[Native-World] development compositor-only " +
                     $"viewport={outputWidth}x{outputHeight} " +
                     $"scale={settings.OutputScale} " +
                     $"requiredBytes={requiredOutputBytes} " +
@@ -1713,8 +2075,11 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             }
             ResetCurrent();
             return;
+#endif
         }
+#if !OPENGT_RELEASE_PACKAGE
         _reportedOversizeOutput = false;
+#endif
         WriteHeader(
             presentedFrame,
             inputPoll,
@@ -1723,20 +2088,225 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             vramBytes,
             in camera);
         _writer!.Flush();
-        int size = checked((int)(vramOffset + vramBytes));
+        int size = checked((int)captureLength);
         byte[] submitted = _buffer;
         _writer.Dispose();
         _stream.Dispose();
         _writer = null;
         _stream = null;
         _buffer = null;
-        if (!_renderer.Submit(submitted, size, settings))
+        if (!_renderer.Submit(
+            submitted,
+            size,
+            checked((int)residentInstanceOffset),
+            _outputResidentTrackInstanceCount,
+            settings))
         {
             Console.Error.WriteLine(
                 $"[Native-World] submission rejected frame={presentedFrame} " +
                 $"poll={inputPoll}");
         }
         RentAndReset();
+    }
+
+    void InjectAlignedStaticScene(int inputPoll)
+    {
+        if (_staticSceneInjected)
+            return;
+        _staticSceneInjected = true;
+
+        uint vehicleGeneration = 0;
+        int vehicleMaximum = 0;
+        foreach (var entry in _vehicleGenerationCounts)
+        {
+            if (entry.Value <= vehicleMaximum)
+                continue;
+            vehicleMaximum = entry.Value;
+            vehicleGeneration = entry.Key;
+        }
+
+        DeferredStaticScene? staticScene = vehicleGeneration == 0
+            ? null
+            : FindStaticScene(vehicleGeneration);
+        if (vehicleGeneration == 0)
+        {
+            foreach (DeferredStaticScene candidate in _staticScenes)
+            {
+                if (candidate.Generation != 0 &&
+                    (staticScene == null ||
+                     candidate.Generation > staticScene.Generation))
+                {
+                    staticScene = candidate;
+                }
+            }
+        }
+        if (staticScene == null)
+        {
+            string available = string.Join(
+                ',',
+                _staticScenes
+                    .Where(static scene => scene.Generation != 0)
+                    .Select(static scene => scene.Generation)
+                    .Order());
+            Console.Error.WriteLine(
+                $"[GT2-Scene-Alignment] poll={inputPoll} " +
+                $"vehicleGeneration={vehicleGeneration} " +
+                $"availableStaticGenerations={available} " +
+                "result=no-exact-static-generation");
+            _truncated = true;
+            return;
+        }
+
+        byte[] staticTriangles = staticScene.Triangles;
+        int staticTriangleCount = staticScene.TriangleCount;
+        byte[] residentInstances = staticScene.ResidentInstances;
+        int residentInstanceCount = staticScene.ResidentInstanceCount;
+        var staticCameras = staticScene.Cameras;
+        uint staticGeneration = staticScene.Generation;
+        _selectedStaticGeneration = Math.Max(
+            _selectedStaticGeneration,
+            staticGeneration);
+
+        int staticInsertIndex = checked((int)_triangleCount);
+        if (staticTriangleCount >
+            LiveWorldRenderer.MaxTriangles - staticInsertIndex)
+        {
+            _truncated = true;
+            return;
+        }
+        int staticBytes = checked(
+            staticTriangleCount * LiveWorldRenderer.TriangleStride);
+        int streamOffset = checked((int)_stream!.Position);
+        EnsureTriangleStorage(
+            _stream,
+            checked(streamOffset + staticBytes),
+            LiveWorldRenderer.HeaderSize +
+                LiveWorldRenderer.MaxTriangles *
+                LiveWorldRenderer.TriangleStride);
+        for (int index = 0; index < staticTriangleCount; index++)
+        {
+            ReadOnlySpan<byte> source = staticTriangles.AsSpan(
+                index * LiveWorldRenderer.TriangleStride,
+                LiveWorldRenderer.TriangleStride);
+            Span<byte> destination = _buffer!.AsSpan(
+                streamOffset + index * LiveWorldRenderer.TriangleStride,
+                LiveWorldRenderer.TriangleStride);
+            RetargetTriangleRecord(
+                source,
+                destination,
+                _drawOffsetX,
+                _drawOffsetY);
+        }
+        _stream.Position = streamOffset + staticBytes;
+        _triangleCount += checked((uint)staticTriangleCount);
+        _worldTriangleCount += checked((uint)staticTriangleCount);
+
+        foreach (var entry in staticCameras)
+            _trackCameras[entry.Key] = entry.Value;
+#if !OPENGT_RELEASE_PACKAGE
+        foreach (var entry in staticScene.TraceCounts)
+        {
+            _sceneGenerationCounts[(
+                entry.Key.Kind,
+                staticGeneration,
+                entry.Key.Plane)] = entry.Value;
+        }
+#endif
+
+        _outputResidentTrackInstanceCount = residentInstanceCount;
+        for (int index = 0; index < residentInstanceCount; index++)
+        {
+            ReadOnlySpan<byte> source = residentInstances.AsSpan(
+                index * LiveWorldRenderer.ResidentTrackInstanceStride,
+                LiveWorldRenderer.ResidentTrackInstanceStride);
+            Span<byte> destination = _alignedResidentTrackInstances.AsSpan(
+                index * LiveWorldRenderer.ResidentTrackInstanceStride,
+                LiveWorldRenderer.ResidentTrackInstanceStride);
+            RetargetResidentInstanceRecord(
+                source,
+                destination,
+                _drawOffsetX,
+                _drawOffsetY,
+                staticInsertIndex);
+        }
+
+#if !OPENGT_RELEASE_PACKAGE
+        if (_scenePassTracePoll == inputPoll)
+        {
+            Console.Error.WriteLine(
+                $"[GT2-Scene-Alignment] poll={inputPoll} " +
+                $"vehicleGeneration={vehicleGeneration} " +
+                $"staticGeneration={staticGeneration} " +
+                "source=generation-cache " +
+                $"triangles={staticTriangleCount} " +
+                $"residentInstances={residentInstanceCount} " +
+                $"insert={staticInsertIndex} result=aligned");
+        }
+#endif
+    }
+
+    static void RetargetTriangleRecord(
+        ReadOnlySpan<byte> source,
+        Span<byte> destination,
+        int targetDrawOffsetX,
+        int targetDrawOffsetY)
+    {
+        source.CopyTo(destination);
+        int sourceDrawOffsetX =
+            BinaryPrimitives.ReadInt16LittleEndian(source[44..]);
+        int sourceDrawOffsetY =
+            BinaryPrimitives.ReadInt16LittleEndian(source[46..]);
+        int deltaX = targetDrawOffsetX - sourceDrawOffsetX;
+        int deltaY = targetDrawOffsetY - sourceDrawOffsetY;
+        RetargetInt16(destination, 12, deltaX);
+        RetargetInt16(destination, 14, deltaY);
+        RetargetInt16(destination, 16, deltaX);
+        RetargetInt16(destination, 18, deltaY);
+        BinaryPrimitives.WriteInt16LittleEndian(
+            destination[44..], checked((short)targetDrawOffsetX));
+        BinaryPrimitives.WriteInt16LittleEndian(
+            destination[46..], checked((short)targetDrawOffsetY));
+    }
+
+    static void RetargetResidentInstanceRecord(
+        ReadOnlySpan<byte> source,
+        Span<byte> destination,
+        int targetDrawOffsetX,
+        int targetDrawOffsetY,
+        int staticInsertIndex)
+    {
+        source.CopyTo(destination);
+        int sourceDrawOffsetX =
+            BinaryPrimitives.ReadInt16LittleEndian(source[84..]);
+        int sourceDrawOffsetY =
+            BinaryPrimitives.ReadInt16LittleEndian(source[86..]);
+        int deltaX = targetDrawOffsetX - sourceDrawOffsetX;
+        int deltaY = targetDrawOffsetY - sourceDrawOffsetY;
+        RetargetInt16(destination, 68, deltaX);
+        RetargetInt16(destination, 70, deltaY);
+        RetargetInt16(destination, 72, deltaX);
+        RetargetInt16(destination, 74, deltaY);
+        BinaryPrimitives.WriteInt16LittleEndian(
+            destination[84..], checked((short)targetDrawOffsetX));
+        BinaryPrimitives.WriteInt16LittleEndian(
+            destination[86..], checked((short)targetDrawOffsetY));
+        int relativeInsert =
+            BinaryPrimitives.ReadUInt16LittleEndian(source[94..]);
+        BinaryPrimitives.WriteUInt16LittleEndian(
+            destination[94..],
+            checked((ushort)(staticInsertIndex + relativeInsert)));
+    }
+
+    static void RetargetInt16(
+        Span<byte> destination,
+        int offset,
+        int delta)
+    {
+        int value = BinaryPrimitives.ReadInt16LittleEndian(
+            destination[offset..]);
+        BinaryPrimitives.WriteInt16LittleEndian(
+            destination[offset..],
+            checked((short)(value + delta)));
     }
 
     void RememberScreenLineTriangles(int firstTriangle)
@@ -1821,6 +2391,65 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
              left.ProjectionOffsetY == right.ProjectionOffsetY &&
              left.ProjectionPlane == right.ProjectionPlane));
 
+    static bool IsDeferredStaticScene(in GteProjectionOrigin origin) =>
+        origin.Valid &&
+        origin.Object.ScenePass == WorldScenePass.Main &&
+        origin.Object.SceneGeneration != 0 &&
+        (origin.Object.Kind == WorldObjectKind.Track ||
+         origin.Object.Kind == WorldObjectKind.Background);
+
+    void CountStaticTransforms(
+        in GteProjectionOrigin a,
+        in GteProjectionOrigin b,
+        in GteProjectionOrigin c)
+    {
+        int aWeight = a.Valid ? 1 : 0;
+        int bWeight = b.Valid ? 1 : 0;
+        int cWeight = c.Valid ? 1 : 0;
+        if (SameCameraProjection(in a, in b))
+        {
+            aWeight += bWeight;
+            bWeight = 0;
+        }
+        if (SameCameraProjection(in a, in c))
+        {
+            aWeight += cWeight;
+            cWeight = 0;
+        }
+        else if (SameCameraProjection(in b, in c))
+        {
+            bWeight += cWeight;
+            cWeight = 0;
+        }
+        if (aWeight != 0)
+            CountStaticTransform(in a, aWeight);
+        if (bWeight != 0)
+            CountStaticTransform(in b, bWeight);
+        if (cWeight != 0)
+            CountStaticTransform(in c, cWeight);
+    }
+
+    void CountStaticTransform(in GteProjectionOrigin origin, int weight)
+    {
+        if (!IsDeferredStaticScene(in origin) ||
+            origin.Object.Kind != WorldObjectKind.Track)
+        {
+            return;
+        }
+        DeferredStaticScene scene = GetOrCreateStaticScene(
+            origin.Object.SceneGeneration);
+        var key = new CameraProjectionKey(
+            origin.TransformId,
+            origin.ProjectionOffsetX,
+            origin.ProjectionOffsetY,
+            origin.ProjectionPlane);
+        ref var camera = ref CollectionsMarshal.GetValueRefOrAddDefault(
+            scene.Cameras,
+            key,
+            out _);
+        camera = (camera.Count + weight, origin);
+    }
+
     void CountTransforms(
         in GteProjectionOrigin a,
         in GteProjectionOrigin b,
@@ -1854,7 +2483,8 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
 
     void CountTransform(in GteProjectionOrigin origin, int weight)
     {
-        if (!origin.Valid)
+        if (!origin.Valid ||
+            origin.Object.ScenePass == WorldScenePass.Auxiliary)
             return;
         if (origin.Object.Kind == WorldObjectKind.Track)
         {
@@ -1949,12 +2579,75 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         return allSelected;
     }
 
+#if !OPENGT_RELEASE_PACKAGE
+    static int ParseDiagnosticPoll(string name) =>
+        int.TryParse(Environment.GetEnvironmentVariable(name), out int poll)
+            ? Math.Max(0, poll)
+            : -1;
+
+    void TraceSceneGenerations(int inputPoll)
+    {
+        if (_scenePassTracePoll < 0 || inputPoll != _scenePassTracePoll)
+            return;
+        foreach (var entry in _sceneGenerationCounts)
+        {
+            Console.Error.WriteLine(
+                $"[GT2-Scene-Generation] poll={inputPoll} " +
+                $"kind={entry.Key.Kind} " +
+                $"generation={entry.Key.Generation} " +
+                $"projectionPlane={entry.Key.Plane} " +
+                $"triangles={entry.Value}");
+        }
+    }
+
+    void TraceCameraTransform(
+        int inputPoll,
+        in GteProjectionOrigin camera)
+    {
+        if (_cameraTraceStartPoll < 0)
+            return;
+        int endPoll = _cameraTraceEndPoll >= 0
+            ? Math.Max(_cameraTraceStartPoll, _cameraTraceEndPoll)
+            : _cameraTraceStartPoll;
+        if (inputPoll < _cameraTraceStartPoll || inputPoll > endPoll)
+            return;
+        Console.Error.WriteLine(
+            $"[GT2-Camera-Transform] poll={inputPoll} " +
+            $"object=0x{camera.Object.StableId:X8} " +
+            $"model=0x{camera.Object.ModelPointer:X8} " +
+            $"transform=0x{camera.TransformId:X16} " +
+            $"rotation={camera.R00},{camera.R01},{camera.R02}/" +
+            $"{camera.R10},{camera.R11},{camera.R12}/" +
+            $"{camera.R20},{camera.R21},{camera.R22} " +
+            $"translation={camera.TranslateX},{camera.TranslateY}," +
+            $"{camera.TranslateZ} " +
+            $"projection={camera.ProjectionOffsetX}," +
+            $"{camera.ProjectionOffsetY},{camera.ProjectionPlane}");
+    }
+#endif
+
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     void WriteVertex(
         Span<byte> destination,
         ref int offset,
         in HleVertex vertex,
         in GteProjectionOrigin origin)
+    {
+        WriteVertex(
+            destination,
+            ref offset,
+            in vertex,
+            in origin,
+            SourceIdentity(in origin));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    static void WriteVertex(
+        Span<byte> destination,
+        ref int offset,
+        in HleVertex vertex,
+        in GteProjectionOrigin origin,
+        uint sourceIdentity)
     {
         WriteSingle(destination, ref offset, vertex.X);
         WriteSingle(destination, ref offset, vertex.Y);
@@ -1978,7 +2671,7 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         WriteInt32(destination, ref offset, origin.ProjectionOffsetX);
         WriteInt32(destination, ref offset, origin.ProjectionOffsetY);
         WriteUInt32(destination, ref offset, origin.ProjectionPlane);
-        WriteUInt32(destination, ref offset, SourceIdentity(in origin));
+        WriteUInt32(destination, ref offset, sourceIdentity);
         WriteUInt64(destination, ref offset, origin.TransformId);
         WriteTransform(destination, ref offset, in origin);
     }
@@ -2140,18 +2833,53 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
 
     void ClearFrameState()
     {
+        PruneConsumedStaticScenes();
         _trackCameras.Clear();
         _allTransforms.Clear();
         _sourceVertices.Clear();
         _screenLineRecordIndices.Clear();
+        _vehicleGenerationCounts.Clear();
+#if !OPENGT_RELEASE_PACKAGE
+        _sceneGenerationCounts.Clear();
+#endif
         _geometryFrame = 0;
         _triangleCount = 0;
         _worldTriangleCount = 0;
+        _outputResidentTrackInstanceCount = 0;
+        _staticSceneInjected = false;
+        _staticSceneActivity = false;
         _truncated = false;
         _viewportX = _viewportY = 0;
         _viewportWidth = _viewportHeight = 0;
         _viewportArea = 0;
         _drawOffsetX = _drawOffsetY = 0;
+    }
+
+    void PruneConsumedStaticScenes()
+    {
+        if (_selectedStaticGeneration == 0)
+            return;
+        foreach (DeferredStaticScene scene in _staticScenes)
+        {
+            if (scene.Generation != 0 &&
+                scene.Generation < _selectedStaticGeneration)
+            {
+#if !OPENGT_RELEASE_PACKAGE
+                int poll = Host.InputManager.CurrentPoll;
+                if (_staticSceneTraceStartPoll >= 0 &&
+                    poll >= _staticSceneTraceStartPoll &&
+                    (_staticSceneTraceEndPoll < 0 ||
+                     poll <= _staticSceneTraceEndPoll))
+                {
+                    Console.Error.WriteLine(
+                        $"[GT2-Static-Scene] poll={poll} action=prune " +
+                        $"generation={scene.Generation} " +
+                        $"selected={_selectedStaticGeneration}");
+                }
+#endif
+                scene.Reset();
+            }
+        }
     }
 
     public void Dispose()

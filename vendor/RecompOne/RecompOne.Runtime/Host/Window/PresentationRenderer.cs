@@ -65,6 +65,7 @@ internal sealed class PresentationRenderer : IDisposable
     readonly GL _gl;
     uint _vao, _vbo, _upscaleProgram, _fxaaProgram;
     uint _upscaleTexture, _fxaaTexture, _upscaleFbo, _fxaaFbo;
+    uint _videoTexture, _videoFbo;
     int _width, _height;
     int _lastSourceWidth, _lastSourceHeight, _lastOutputWidth, _lastOutputHeight;
     bool _lastFxaa;
@@ -142,6 +143,21 @@ internal sealed class PresentationRenderer : IDisposable
 
         (_upscaleTexture, _upscaleFbo) = CreateTarget();
         (_fxaaTexture, _fxaaFbo) = CreateTarget();
+        if (!string.IsNullOrWhiteSpace(_videoCapturePath))
+        {
+            (_videoTexture, _videoFbo) = CreateTarget();
+            _gl.BindTexture(TextureTarget.Texture2D, _videoTexture);
+            _gl.TexImage2D(
+                TextureTarget.Texture2D,
+                0,
+                InternalFormat.Rgba8,
+                (uint)_videoOutputWidth,
+                (uint)_videoOutputHeight,
+                0,
+                PixelFormat.Rgba,
+                PixelType.UnsignedByte,
+                null);
+        }
         EnsureSize(1, 1);
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
         Ready = true;
@@ -288,14 +304,65 @@ internal sealed class PresentationRenderer : IDisposable
 
         try
         {
-            EnsureVideoEncoder(width, height);
-            int needed = width * height * 3;
+            EnsureVideoEncoder();
+            int needed = _videoOutputWidth * _videoOutputHeight * 3;
             if (_videoPixels.Length != needed)
                 _videoPixels = new byte[needed];
+
+            // The presentation target changes size during GT2 mode handoffs
+            // and when a native Hor+ output replaces a transition frame. A
+            // rawvideo pipe has one immutable frame size; writing those
+            // variable buffers into it shifts every later frame boundary and
+            // produces mosaics. Resolve each source into one fixed, letterboxed
+            // GPU target before readback, reducing both transfer cost and the
+            // encoder contract to exactly one byte count per frame.
+            double scale = Math.Min(
+                (double)_videoOutputWidth / width,
+                (double)_videoOutputHeight / height);
+            int destinationWidth = Math.Clamp(
+                (int)Math.Round(width * scale),
+                1,
+                _videoOutputWidth);
+            int destinationHeight = Math.Clamp(
+                (int)Math.Round(height * scale),
+                1,
+                _videoOutputHeight);
+            int destinationX = (_videoOutputWidth - destinationWidth) / 2;
+            int destinationY = (_videoOutputHeight - destinationHeight) / 2;
+
+            _gl.BindFramebuffer(FramebufferTarget.DrawFramebuffer, _videoFbo);
+            _gl.Viewport(
+                0,
+                0,
+                (uint)_videoOutputWidth,
+                (uint)_videoOutputHeight);
+            _gl.Disable(EnableCap.ScissorTest);
+            _gl.ClearColor(0f, 0f, 0f, 1f);
+            _gl.Clear(ClearBufferMask.ColorBufferBit);
             _gl.BindFramebuffer(FramebufferTarget.ReadFramebuffer, fbo);
+            _gl.BlitFramebuffer(
+                0,
+                0,
+                width,
+                height,
+                destinationX,
+                destinationY,
+                destinationX + destinationWidth,
+                destinationY + destinationHeight,
+                ClearBufferMask.ColorBufferBit,
+                BlitFramebufferFilter.Linear);
+            _gl.BindFramebuffer(
+                FramebufferTarget.ReadFramebuffer,
+                _videoFbo);
             _gl.PixelStore(PixelStoreParameter.PackAlignment, 1);
-            _gl.ReadPixels(0, 0, (uint)width, (uint)height,
-                PixelFormat.Rgb, PixelType.UnsignedByte, _videoPixels.AsSpan());
+            _gl.ReadPixels(
+                0,
+                0,
+                (uint)_videoOutputWidth,
+                (uint)_videoOutputHeight,
+                PixelFormat.Rgb,
+                PixelType.UnsignedByte,
+                _videoPixels.AsSpan());
             _videoInput!.Write(_videoPixels);
             _videoWrittenFrames++;
             if (_videoFrameLimit > 0 &&
@@ -309,7 +376,7 @@ internal sealed class PresentationRenderer : IDisposable
         }
     }
 
-    void EnsureVideoEncoder(int width, int height)
+    void EnsureVideoEncoder()
     {
         if (_videoProcess != null)
             return;
@@ -330,11 +397,9 @@ internal sealed class PresentationRenderer : IDisposable
         {
             "-y", "-loglevel", "error",
             "-f", "rawvideo", "-pix_fmt", "rgb24",
-            "-video_size", $"{width}x{height}", "-framerate", _videoFrameRate,
+            "-video_size", $"{_videoOutputWidth}x{_videoOutputHeight}",
+            "-framerate", _videoFrameRate,
             "-i", "pipe:0", "-an",
-            "-vf",
-            $"scale=w={_videoOutputWidth}:h={_videoOutputHeight}:force_original_aspect_ratio=decrease:flags=lanczos," +
-            $"pad={_videoOutputWidth}:{_videoOutputHeight}:(ow-iw)/2:(oh-ih)/2:black",
             "-c:v", "libx264", "-preset", "medium", "-crf", _videoCrf.ToString(),
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", path,
         })
@@ -345,7 +410,8 @@ internal sealed class PresentationRenderer : IDisposable
         _videoInput = _videoProcess.StandardInput.BaseStream;
         Console.Error.WriteLine(
             $"[Host] video capture started at input poll {InputManager.CurrentPoll}: " +
-            $"{width}x{height} source -> {_videoOutputWidth}x{_videoOutputHeight} {_videoFrameRate} fps, " +
+            $"fixed {_videoOutputWidth}x{_videoOutputHeight} GPU resolve " +
+            $"at {_videoFrameRate} fps, " +
             $"H.264 CRF {_videoCrf} without a bitrate ceiling -> {path}");
     }
 
@@ -388,7 +454,9 @@ internal sealed class PresentationRenderer : IDisposable
         if (_fxaaProgram != 0) _gl.DeleteProgram(_fxaaProgram);
         if (_upscaleTexture != 0) _gl.DeleteTexture(_upscaleTexture);
         if (_fxaaTexture != 0) _gl.DeleteTexture(_fxaaTexture);
+        if (_videoTexture != 0) _gl.DeleteTexture(_videoTexture);
         if (_upscaleFbo != 0) _gl.DeleteFramebuffer(_upscaleFbo);
         if (_fxaaFbo != 0) _gl.DeleteFramebuffer(_fxaaFbo);
+        if (_videoFbo != 0) _gl.DeleteFramebuffer(_videoFbo);
     }
 }

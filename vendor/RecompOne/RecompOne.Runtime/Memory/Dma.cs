@@ -5,6 +5,7 @@ namespace RecompOne.Runtime.Memory;
 public sealed class Dma
 {
     const uint Start = 0x01000000u;
+    const int OrderingTableHistoryLength = 8;
 
     readonly IMemory _mem;
     readonly PSMemory? _psMemory;
@@ -13,6 +14,9 @@ public sealed class Dma
     readonly Mdec _mdec;
     readonly Action _raiseIrq;
     CdController? _cd;
+    readonly uint[] _orderingTableHeads = new uint[OrderingTableHistoryLength];
+    readonly uint[] _orderingTableEntryCounts = new uint[OrderingTableHistoryLength];
+    int _orderingTableHistoryCursor;
 
     uint _dicr;
 
@@ -89,18 +93,79 @@ public sealed class Dma
                     ? MemoryMap.DevkitRamSize
                     : MemoryMap.RetailRamSize) - 4u;
             uint addr = madr & ramAddressMask;
-            for (int guard = 0; guard < 0x100000; guard++)
+            bool traceOrderingTable =
+                Host.InputManager.CurrentPoll == TraceOrderingTablePoll;
+            int visitedTags = 0;
+            int positiveLengthTags = 0;
+            int orderingTableEntryTags = 0;
+            int maximumOrderingTableIndex = 0;
+            int zeroLengthTags = 0;
+            uint minimumZeroLengthAddress = uint.MaxValue;
+            uint maximumZeroLengthAddress = 0u;
+            try
             {
-                uint header = ReadGpuRamWord(addr);
-                uint count = header >> 24;
-                for (uint i = 0; i < count; i++)
+                for (int guard = 0; guard < 0x100000; guard++)
                 {
-                    uint sourceAddress = addr + 4u + i * 4u;
-                    _gpu.WriteGp0(ReadGpuRamWord(sourceAddress), sourceAddress);
+                    visitedTags++;
+                    uint header = ReadGpuRamWord(addr);
+                    uint count = header >> 24;
+                    if (count == 0u)
+                    {
+                        zeroLengthTags++;
+                        minimumZeroLengthAddress = Math.Min(
+                            minimumZeroLengthAddress,
+                            addr);
+                        maximumZeroLengthAddress = Math.Max(
+                            maximumZeroLengthAddress,
+                            addr);
+                    }
+                    if (TryGetOrderingTableIndex(addr, out int orderingTableIndex))
+                    {
+                        _gpu.SetOrderingTableIndex(orderingTableIndex);
+                        orderingTableEntryTags++;
+                        maximumOrderingTableIndex = Math.Max(
+                            maximumOrderingTableIndex,
+                            orderingTableIndex);
+                    }
+                    if (count > 0u)
+                        positiveLengthTags++;
+                    for (uint i = 0; i < count; i++)
+                    {
+                        uint sourceAddress = addr + 4u + i * 4u;
+                        _gpu.WriteGp0(
+                            ReadGpuRamWord(sourceAddress),
+                            sourceAddress);
+                    }
+                    uint next = header & 0xFFFFFFu;
+                    if (next == 0xFFFFFFu || (next & 0x800000u) != 0)
+                        break;
+                    addr = next & ramAddressMask;
                 }
-                uint next = header & 0xFFFFFFu;
-                if (next == 0xFFFFFFu || (next & 0x800000u) != 0) break;
-                addr = next & ramAddressMask;
+            }
+            finally
+            {
+                if (zeroLengthTags >= 16 &&
+                    minimumZeroLengthAddress != uint.MaxValue &&
+                    maximumZeroLengthAddress >= minimumZeroLengthAddress)
+                {
+                    RememberOrderingTable(
+                        maximumZeroLengthAddress,
+                        (maximumZeroLengthAddress -
+                            minimumZeroLengthAddress) / 4u + 1u);
+                }
+                if (traceOrderingTable)
+                {
+                    Console.Error.WriteLine(
+                        $"[GT2-OT-DMA] poll={Host.InputManager.CurrentPoll} " +
+                        $"start=0x{(madr & ramAddressMask):X8} " +
+                        $"visited={visitedTags} positive={positiveLengthTags} " +
+                        $"zero={zeroLengthTags} " +
+                        $"zeroRange=0x{minimumZeroLengthAddress:X8}.." +
+                        $"0x{maximumZeroLengthAddress:X8} " +
+                        $"entries={orderingTableEntryTags} " +
+                        $"maxIndex={maximumOrderingTableIndex}");
+                }
+                _gpu.SetOrderingTableIndex(0);
             }
         }
         else if ((chcr & 1u) != 0)
@@ -149,6 +214,7 @@ public sealed class Dma
     {
         uint count = bcr & 0xFFFFu;
         if (count == 0) return;
+        RememberOrderingTable(madr, count);
         uint addr = madr;
         for (uint i = 0; i < count - 1; i++)
         {
@@ -157,6 +223,46 @@ public sealed class Dma
         }
         _mem.WriteU32(addr, 0x00FFFFFFu);
     }
+
+    void RememberOrderingTable(uint head, uint count)
+    {
+        for (int i = 0; i < OrderingTableHistoryLength; i++)
+        {
+            if (_orderingTableHeads[i] != head)
+                continue;
+            _orderingTableEntryCounts[i] = count;
+            return;
+        }
+        _orderingTableHeads[_orderingTableHistoryCursor] = head;
+        _orderingTableEntryCounts[_orderingTableHistoryCursor] = count;
+        _orderingTableHistoryCursor =
+            (_orderingTableHistoryCursor + 1) % OrderingTableHistoryLength;
+    }
+
+    bool TryGetOrderingTableIndex(uint address, out int index)
+    {
+        for (int i = 0; i < OrderingTableHistoryLength; i++)
+        {
+            uint head = _orderingTableHeads[i];
+            uint count = _orderingTableEntryCounts[i];
+            if (count == 0u || address > head)
+                continue;
+            uint distance = head - address;
+            if ((distance & 3u) != 0u || distance / 4u >= count)
+                continue;
+            index = checked((int)(distance / 4u));
+            return true;
+        }
+        index = 0;
+        return false;
+    }
+
+    static readonly int TraceOrderingTablePoll =
+        int.TryParse(
+            Environment.GetEnvironmentVariable("RECOMPONE_TRACE_GT2_OT_WALK_POLL"),
+            out int traceOrderingTablePoll)
+            ? traceOrderingTablePoll
+            : -1;
 
     void Complete(int channel)
     {

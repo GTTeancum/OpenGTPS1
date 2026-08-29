@@ -2,20 +2,45 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Archive,
     [Parameter(Mandatory = $true)]
-    [string]$ImagePath,
+    [string]$SimulationImagePath,
+    [Parameter(Mandatory = $true)]
+    [string]$ArcadeImagePath,
     [string]$ArtifactName = 'release-package-validation',
-    [ValidateRange(600, 10000)]
-    [int]$ExitPoll = 1200
+    [ValidateRange(600, 50000)]
+    [int]$ExitPoll = 17000,
+    [ValidateRange(180, 1200)]
+    [int]$TimeoutSeconds = 360
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $archivePath = (Resolve-Path -LiteralPath $Archive).Path
-$image = (Resolve-Path -LiteralPath $ImagePath).Path
+$simulationImage = (Resolve-Path -LiteralPath $SimulationImagePath).Path
+$arcadeImage = (Resolve-Path -LiteralPath $ArcadeImagePath).Path
 $artifact = Join-Path $repo "artifacts\$ArtifactName"
-$tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
-$scratch = Join-Path $tempRoot (
+$scratchRoot = Join-Path $repo 'work\release-audit-scratch'
+$scratchRootFull = [IO.Path]::GetFullPath($scratchRoot).TrimEnd('\')
+$scratch = Join-Path $scratchRootFull (
     'OpenGTPS1-release-audit-' + [guid]::NewGuid().ToString('N'))
+
+function Stop-InstalledProcesses([string]$InstallRoot) {
+    $prefix = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\') + '\'
+    $processIds = @(
+        Get-CimInstance Win32_Process -Filter "Name='GranTurismo2PC.exe'" |
+            Where-Object {
+                -not [string]::IsNullOrWhiteSpace($_.ExecutablePath) -and
+                $_.ExecutablePath.StartsWith(
+                    $prefix,
+                    [StringComparison]::OrdinalIgnoreCase)
+            } |
+            ForEach-Object { [int]$_.ProcessId })
+    foreach ($processId in $processIds) {
+        Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($processId in $processIds) {
+        Wait-Process -Id $processId -Timeout 10 -ErrorAction SilentlyContinue
+    }
+}
 
 if (Test-Path -LiteralPath $artifact) {
     throw "Refusing to overwrite existing validation artifact: $artifact"
@@ -25,6 +50,7 @@ if (Test-Path -LiteralPath $scratch) {
 }
 
 New-Item -ItemType Directory -Path $artifact | Out-Null
+New-Item -ItemType Directory -Path $scratchRootFull -Force | Out-Null
 New-Item -ItemType Directory -Path $scratch | Out-Null
 
 try {
@@ -39,46 +65,59 @@ try {
         Where-Object {
             $_.Name -in @('carda.sav', 'cardb.sav', 'settings.json') -or
             $_.Extension -match
-                '^\.(bin|cue|ccd|img|sub|iso|chd|pbp|dat|ovl|vol|psx|sav|mcr|ogg|pdb|ppm|log)$'
+                '^\.(bin|cue|ccd|img|sub|iso|chd|pbp|dat|dll|ovl|vol|psx|sav|mcr|ogg|pdb|ppm|log)$'
         })
     if ($forbiddenBeforeSetup.Count -ne 0) {
         throw (
-            "Unpacked public archive contains game, user, debug, or QA data: " +
+            "Unpacked public archive contains a loose dependency, game, " +
+            "user, debug, or QA file: " +
             ($forbiddenBeforeSetup.FullName -join ', ')
         )
     }
 
     $readme = Join-Path $install 'README.md'
-    $setup = Join-Path $install 'Setup-From-Simulation-Disc.ps1'
+    $setup = Join-Path $install 'Setup-From-GT2-Discs.ps1'
     if (-not (Test-Path -LiteralPath $readme) -or
         -not (Test-Path -LiteralPath $setup)) {
-        throw 'Release archive is missing its README or Simulation Disc setup utility'
+        throw 'Release archive is missing its README or unified GT2 setup utility'
     }
     $readmeText = Get-Content -LiteralPath $readme -Raw
     if ($readmeText -notmatch '0\.8beta' -or
-        $readmeText -notmatch 'Simulation Disc only' -or
-        $readmeText -notmatch 'SCUS-94488') {
-        throw 'Release README does not clearly identify version and supported disc'
+        $readmeText -notmatch 'Authoritative NTSC-U two-disc build' -or
+        $readmeText -notmatch 'SCUS-94488' -or
+        $readmeText -notmatch 'SCUS-94455') {
+        throw 'Release README does not clearly identify version and supported discs'
     }
 
     $setupOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-        -File $setup -ImagePath $image 2>&1
+        -File $setup `
+        -SimulationImagePath $simulationImage `
+        -ArcadeImagePath $arcadeImage 2>&1
     $setupExit = $LASTEXITCODE
     [IO.File]::WriteAllLines(
         (Join-Path $artifact 'setup.log'),
         [string[]]$setupOutput)
     if ($setupExit -ne 0) {
-        throw "Simulation Disc setup exited with code $setupExit"
+        throw "Unified GT2 setup exited with code $setupExit"
     }
     if (($setupOutput -join "`n") -notmatch 'Installation complete') {
-        throw 'Simulation Disc setup did not report completion'
+        throw 'Unified GT2 setup did not report completion'
+    }
+
+    $arcadeManifest = Get-Content -LiteralPath (
+        Join-Path $install 'manifests\arcade.json') -Raw | ConvertFrom-Json
+    $arcadeVolumes = @(
+        $arcadeManifest.files | Where-Object path -eq 'GT2.VOL')
+    if ($arcadeVolumes.Count -ne 1 -or [int]$arcadeVolumes[0].lba -ne 473) {
+        throw 'Installed Arcade GT2.VOL is not mapped at unified LBA 473'
     }
 
     $exe = Join-Path $install 'GranTurismo2PC.exe'
+    $bundleExtract = Join-Path $scratch 'bundle-extract'
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $exe
     $start.WorkingDirectory = $install
-    $start.Arguments = '--headless'
+    $start.Arguments = '--headless --arcade-replay seattle-circuit'
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
@@ -86,16 +125,25 @@ try {
     $start.EnvironmentVariables['RECOMPONE_DISABLE_LIVE_INPUT'] = '1'
     $start.EnvironmentVariables['RECOMPONE_SUPPRESS_RUMBLE'] = '1'
     $start.EnvironmentVariables['SDL_AUDIODRIVER'] = 'dummy'
+    $start.EnvironmentVariables['DOTNET_BUNDLE_EXTRACT_BASE_DIR'] =
+        $bundleExtract
     $start.EnvironmentVariables['RECOMPONE_EXIT_AFTER_INPUT_POLL'] =
         $ExitPoll.ToString()
 
     $process = [Diagnostics.Process]::Start($start)
     $stdout = $process.StandardOutput.ReadToEndAsync()
     $stderr = $process.StandardError.ReadToEndAsync()
-    if (-not $process.WaitForExit(180000)) {
-        $process.Kill($true)
-        $process.WaitForExit()
-        throw 'Installed release boot timed out'
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        try {
+            $process.Kill($true)
+            $process.WaitForExit()
+        } catch {
+            # The single-file host can re-exec after native extraction. The
+            # exact scratch-root sweep below owns any such descendant.
+        } finally {
+            Stop-InstalledProcesses -InstallRoot $install
+        }
+        throw "Installed release boot exceeded ${TimeoutSeconds}s"
     }
     $stdoutText = $stdout.Result
     $stderrText = $stderr.Result
@@ -106,8 +154,29 @@ try {
         throw "Installed release boot exited with code $($process.ExitCode)"
     }
     if ($stdoutText -notmatch
-        '\[CD\] standalone loose files=7 volume=GRANTURISMO2') {
-        throw 'Installed release did not boot through the seven-file loose layout'
+            '\[CD\] standalone loose files=7 volume=GRANTURISMO2' -or
+        $stdoutText -notmatch
+            '\[Host\] direct Arcade natural replay requested: seattle-circuit' -or
+        $stdoutText -notmatch
+            '\[Host\] native unified guest=arcade') {
+        throw 'Installed release did not boot the direct unified Seattle replay path'
+    }
+    $replayStage = [regex]::Match(
+        $stderrText,
+        "\[Input\] stage 'replay_1' at absolute poll (\d+)")
+    if (-not $replayStage.Success) {
+        throw 'Installed release exited before GT2 instantiated its natural replay'
+    }
+    $replayStageAbsolutePoll = [int64]$replayStage.Groups[1].Value
+    $replayProofPolls = [int64]$ExitPoll - $replayStageAbsolutePoll
+    if ($replayProofPolls -lt 300) {
+        throw (
+            'Installed release rendered only ' + $replayProofPolls +
+            ' replay-stage polls; at least 300 are required')
+    }
+    if ($stderrText -notmatch
+            '\[GT2-AI\] auto-drive engaged pass=2/2 phase=replay car=0') {
+        throw "Installed release did not enter GT2's native replay driver phase"
     }
     if ($stderrText -notmatch 'headless audio backend=dummy' -or
         $stderrText -notmatch 'SDL audio ready: driver=dummy') {
@@ -117,8 +186,125 @@ try {
         throw 'Installed release did not complete a clean shutdown'
     }
     if ("$stdoutText`n$stderrText" -match
-        '(?i)unmapped call:|unmapped address:|unhandled exception|access violation|fatal error') {
+        '(?i)unmapped call:|unmapped address:|unhandled exception|' +
+        'access violation|fatal error|\[Native-World\] disabled:|' +
+        'development compositor-only|compositor fallback|' +
+        'stock-sector fallback|first-output seed exceeded') {
         throw 'Installed release logged a crash signature'
+    }
+
+    $runtimeText = "$stdoutText`n$stderrText"
+    if ($runtimeText -notmatch
+            '\[Native-World\] enabled .*mode=authored-only ' +
+            'syntheticPath=absent' -or
+        $runtimeText -notmatch
+            '\[GT2-Raw-Track\] enabled mode=replace .*' +
+            'guestTrackFallback=disabled') {
+        throw 'Installed release did not activate the sole modern authored-world path'
+    }
+    $replayTextOffset = $stderrText.IndexOf(
+        $replayStage.Value,
+        [StringComparison]::Ordinal)
+    $replayText = $stderrText.Substring($replayTextOffset)
+    $replayWorldFrames = @([regex]::Matches(
+        $replayText,
+        '(?m)^\[Native-World\] frame=.* mode=authored .*' +
+        'triangles=[1-9]\d* commands=[1-9]\d* '))
+    if ($replayWorldFrames.Count -lt 3) {
+        throw (
+            'Installed release logged only ' + $replayWorldFrames.Count +
+            ' authored modern-renderer frames after entering natural replay')
+    }
+    if ($runtimeText -notmatch '\[Native-World\] first-output seed ready') {
+        throw 'Installed release did not synchronously seed initial world ownership'
+    }
+    if ($runtimeText -notmatch
+            '\[Native-World\] frame=.*mode=authored .*' +
+            'size=1708x960 ') {
+        throw 'Installed release did not prove 4x true Hor+ 16:9 world output'
+    }
+    if ($runtimeText -notmatch
+            '\[Render-UV\] commands=\d+ textured=\d+ ' +
+            'individualPerspective=\d+ islandPerspective=\d+ ' +
+            'worldFallback=0 trackFallback=0 vehicleFallback=0 ' +
+            'otherFallback=0 .*projection=fixed-modern') {
+        throw 'Installed release did not prove fixed perspective UVs for every world texture'
+    }
+    if ($runtimeText -notmatch
+            '\[Render-Batches\] background=\d+/\d+/\d+/max\d+ ' +
+            'track=\d+/\d+/\d+/max\d+ ' +
+            'vehicle=\d+/\d+/\d+/max\d+ ' +
+            'unclassified=\d+/\d+/\d+/max\d+ ' +
+            'screen=\d+/\d+/\d+/max\d+ .*' +
+            'depth=track\+vehicle ') {
+        throw 'Installed release did not prove explicit world/effect/depth layering'
+    }
+    if ($runtimeText -notmatch
+            '\[Render-HUD\] commands=\d+ components=\d+ ' +
+            'anchors=\d+/\d+/\d+ guest=320x240 ' +
+            'policy=relative-edge-groups') {
+        throw 'Installed release did not prove relative-margin Hor+ HUD placement'
+    }
+    if ($runtimeText -notmatch
+            '\[Native-World-Classification\] frames=[1-9]\d* ' +
+            'classifiedWorldCommands=[1-9]\d* ' +
+            'unclassifiedWorldCommands=0 framesWithUnclassifiedWorld=0 ' +
+            'maximumUnclassifiedWorld=0') {
+        throw 'Installed release retained ownerless 3D geometry'
+    }
+
+    $residency = [regex]::Match(
+        $runtimeText,
+        '\[GT2-Raw-Track-Summary\] frames=(\d+) coverageFrames=(\d+) ' +
+        'objectsPerFrame=(\d+)\.\.(\d+) ' +
+        'sourcePrimitivesPerFrame=(\d+)\.\.(\d+) ' +
+        'trianglesPerFrame=(\d+)\.\.(\d+) .*' +
+        'decodeFailures=(\d+) guestTrackFallbacks=(\d+)')
+    if (-not $residency.Success) {
+        throw 'Installed release did not report Seattle residency telemetry'
+    }
+    $residencyValues = for ($index = 1; $index -le 10; $index++) {
+        [int64]$residency.Groups[$index].Value
+    }
+    if ($residencyValues[0] -le 0 -or
+        $residencyValues[1] -ne $residencyValues[0] -or
+        $residencyValues[2] -le 0 -or
+        $residencyValues[3] -le $residencyValues[2] -or
+        $residencyValues[3] -ge 243 -or
+        $residencyValues[4] -le 0 -or
+        $residencyValues[5] -le $residencyValues[4] -or
+        $residencyValues[5] -ge 11191 -or
+        $residencyValues[6] -le 0 -or
+        $residencyValues[7] -lt $residencyValues[6] -or
+        $residencyValues[8] -ne 0 -or
+        $residencyValues[9] -ne 0) {
+        throw (
+            'Installed release did not preserve Seattle''s bounded, varying ' +
+            'authored course selector on every covered frame: ' +
+            $residency.Value)
+    }
+
+    $nativeShutdown = [regex]::Match(
+        $runtimeText,
+        '\[Native-World\] shutdown submitted=(\d+) rendered=(\d+) ' +
+        'actual=(\d+) synthetic=(\d+) repeated=(\d+) ' +
+        'syntheticPath=absent authoredNoOutput=(\d+) consumed=(\d+) ' +
+        'dropped=(\d+)')
+    if (-not $nativeShutdown.Success) {
+        throw 'Installed release did not report authored-world shutdown telemetry'
+    }
+    $shutdownValues = for ($index = 1; $index -le 8; $index++) {
+        [int64]$nativeShutdown.Groups[$index].Value
+    }
+    if ($shutdownValues[0] -le 0 -or
+        $shutdownValues[1] -le 0 -or
+        $shutdownValues[2] -ne $shutdownValues[1] -or
+        $shutdownValues[3] -ne 0 -or
+        $shutdownValues[4] -ne 0 -or
+        $shutdownValues[7] -ne 0) {
+        throw (
+            'Installed release did not remain authored-only and lossless: ' +
+            $nativeShutdown.Value)
     }
 
     $manifestLines = [Collections.Generic.List[string]]::new()
@@ -138,15 +324,27 @@ try {
 
     Write-Output "release-package=passed files=$($manifestLines.Count)"
     Write-Output "archive_sha256=$archiveHash"
-    Write-Output "disc=SCUS-94488-NTSC-U-revision-2 audio=dummy"
+    Write-Output (
+        'discs=SCUS-94488-NTSC-U-revision-2+' +
+        'SCUS-94455-NTSC-U audio=dummy direct=seattle-replay')
     Write-Output "evidence=$artifact"
 }
 finally {
+    if (Test-Path -LiteralPath $scratch -PathType Container) {
+        $installedRoots = @(Get-ChildItem -LiteralPath $scratch -Directory)
+        foreach ($installedRoot in $installedRoots) {
+            Stop-InstalledProcesses -InstallRoot $installedRoot.FullName
+        }
+    }
     $scratchFull = [IO.Path]::GetFullPath($scratch)
     if ($scratchFull.StartsWith(
-            $tempRoot + '\OpenGTPS1-release-audit-',
+            $scratchRootFull + '\OpenGTPS1-release-audit-',
             [StringComparison]::OrdinalIgnoreCase) -and
         (Test-Path -LiteralPath $scratchFull)) {
         [IO.Directory]::Delete($scratchFull, $true)
+    }
+    if ((Test-Path -LiteralPath $scratchRootFull) -and
+        @(Get-ChildItem -LiteralPath $scratchRootFull -Force).Count -eq 0) {
+        [IO.Directory]::Delete($scratchRootFull, $false)
     }
 }

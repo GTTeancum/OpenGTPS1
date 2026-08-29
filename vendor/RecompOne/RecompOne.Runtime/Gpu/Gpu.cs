@@ -152,6 +152,15 @@ public sealed partial class Gpu
         }
     }
 
+    // DrawOTag walks from the highest entry toward entry zero. Keep the
+    // current authored bucket attached to decoded primitives while the
+    // development guest-course oracle is active. Normal GP0 submissions use
+    // zero, and this metadata never changes compatibility rasterization.
+    internal int CurrentOrderingTableIndex { get; private set; }
+
+    internal void SetOrderingTableIndex(int index) =>
+        CurrentOrderingTableIndex = Math.Max(0, index);
+
     void ClearCommandFifo()
     {
         _fifo.Clear();
@@ -201,6 +210,7 @@ public sealed partial class Gpu
 
     void Reset()
     {
+        InvalidateRawTrackResidency();
         ClearCommandFifo();
         _polyline = _loadImage = _readImage = false;
         _displayDisabled = true;

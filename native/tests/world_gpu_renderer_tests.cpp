@@ -77,6 +77,11 @@ opengt::render::WorldDrawList draw_list(
     result.commands.push_back(command);
     result.track_commands = object_kind == 1U ? 1U : 0U;
     result.vehicle_commands = object_kind == 2U ? 1U : 0U;
+    result.background_commands = object_kind == 3U ? 1U : 0U;
+    result.unclassified_commands =
+        object_kind != 1U && object_kind != 2U && object_kind != 3U
+            ? 1U
+            : 0U;
     return result;
 }
 
@@ -206,7 +211,10 @@ bool horizontal_plus_reveals_world_outside_guest_edge() {
     return false;
 }
 
-bool horizontal_plus_anchors_hud_groups_to_margins() {
+bool horizontal_plus_anchors_hud_groups_to_margins(
+    std::uint32_t aspect_width,
+    std::uint32_t aspect_height
+) {
     using namespace opengt::render;
     constexpr std::int32_t guest_width = 16;
     constexpr std::int32_t guest_height = 16;
@@ -295,8 +303,8 @@ bool horizontal_plus_anchors_hud_groups_to_margins() {
         1,
         clear_rgba,
     };
-    options.target_aspect_width = 16;
-    options.target_aspect_height = 9;
+    options.target_aspect_width = aspect_width;
+    options.target_aspect_height = aspect_height;
     const std::uint32_t output_width =
         world_gpu_target_display_width(list, options);
     std::vector<std::uint16_t> vram(1024U * 512U);
@@ -315,10 +323,12 @@ bool horizontal_plus_anchors_hud_groups_to_margins() {
         !stats.output_valid)
         return false;
 
+    int green_minimum = static_cast<int>(output_width);
     int green_maximum = -1;
     int blue_minimum = static_cast<int>(output_width);
     int blue_maximum = -1;
     int white_minimum = static_cast<int>(output_width);
+    int white_maximum = -1;
     for (std::uint32_t y = 0; y < guest_height; ++y) {
         for (std::uint32_t x = 0; x < output_width; ++x) {
             const std::size_t offset =
@@ -326,24 +336,50 @@ bool horizontal_plus_anchors_hud_groups_to_margins() {
             const std::uint8_t red = output[offset];
             const std::uint8_t green = output[offset + 1];
             const std::uint8_t blue = output[offset + 2];
-            if (green > 240U && red < 16U && blue < 16U)
+            if (green > 240U && red < 16U && blue < 16U) {
+                green_minimum = (std::min)(
+                    green_minimum, static_cast<int>(x));
                 green_maximum = (std::max)(green_maximum, static_cast<int>(x));
+            }
             if (blue > 240U && red < 16U && green < 16U) {
                 blue_minimum = (std::min)(
                     blue_minimum, static_cast<int>(x));
                 blue_maximum = (std::max)(
                     blue_maximum, static_cast<int>(x));
             }
-            if (red > 240U && green > 240U && blue > 240U)
+            if (red > 240U && green > 240U && blue > 240U) {
                 white_minimum = (std::min)(
                     white_minimum, static_cast<int>(x));
+                white_maximum = (std::max)(
+                    white_maximum, static_cast<int>(x));
+            }
         }
     }
+    const float proportional_margin =
+        static_cast<float>(output_width) / guest_width;
+    const float expected_left_minimum = proportional_margin;
+    const float expected_left_maximum = proportional_margin + 7.0F;
+    const float expected_right_minimum =
+        static_cast<float>(output_width) - proportional_margin - 7.0F;
+    const float expected_right_maximum =
+        static_cast<float>(output_width) - proportional_margin;
+    const float blue_center =
+        static_cast<float>(blue_minimum + blue_maximum) * 0.5F;
     return
-        output_width == 29U &&
-        green_maximum >= 6 && green_maximum <= 8 &&
-        blue_minimum >= 12 && blue_maximum <= 17 &&
-        white_minimum >= 20;
+        output_width ==
+            (guest_height * aspect_width + aspect_height - 1U) /
+                aspect_height &&
+        std::fabs(green_minimum - expected_left_minimum) <= 2.0F &&
+        std::fabs(green_maximum - expected_left_maximum) <= 2.0F &&
+        std::fabs(white_minimum - expected_right_minimum) <= 2.0F &&
+        std::fabs(white_maximum - expected_right_maximum) <= 2.0F &&
+        std::fabs(blue_center - output_width * 0.5F) <= 1.5F &&
+        green_minimum <= green_maximum &&
+        green_maximum - green_minimum >= 5 &&
+        green_maximum - green_minimum <= 8 &&
+        white_minimum <= white_maximum &&
+        white_maximum - white_minimum >= 5 &&
+        white_maximum - white_minimum <= 8;
 }
 
 bool track_depth_survives_ordering_table_boundaries() {
@@ -383,9 +419,12 @@ bool track_depth_survives_ordering_table_boundaries() {
         list.commands.push_back(command);
     };
     // Submit the near green road first and a far blue road in another GT2 OT
-    // bucket second. A coherent modern depth surface must retain the near one.
-    append(0.25F, 0, 0, 128, 0);
-    append(0.75F, 1, 0, 0, 128);
+    // bucket second. These are the worst distinct view depths measured in the
+    // direct Seattle turn-one capture: conventional D24 maps both to the same
+    // value, while reversed D32 keeps them ordered. A coherent modern depth
+    // surface must retain the near one.
+    append(16.0F / 5465.502323639F, 0, 0, 128, 0);
+    append(16.0F / 5465.515567936F, 1, 0, 0, 128);
     list.track_commands = 2;
 
     std::vector<std::uint16_t> vram(1024U * 512U);
@@ -417,6 +456,268 @@ bool track_depth_survives_ordering_table_boundaries() {
         output[center + 1] > output[center + 2] * 4U;
 }
 
+std::array<std::uint8_t, 3> render_authored_track_overlay_depth_case(
+    bool add_nearer_occluder,
+    bool add_coplanar_road_sibling = false,
+    bool mark_support = true,
+    std::uint8_t overlay_red = 192,
+    std::uint8_t overlay_green = 160,
+    std::uint8_t overlay_blue = 0
+) {
+    using namespace opengt::render;
+    WorldDrawList list{};
+    list.display_width = 16;
+    list.display_height = 16;
+    WorldMaterial support_material{};
+    if (mark_support) {
+        support_material.primitive_flags =
+            world_primitive_track_overlay_support_flag;
+    }
+    list.materials.push_back(support_material);
+    WorldMaterial overlay_material{};
+    overlay_material.primitive_flags =
+        1U << world_primitive_track_overlay_layer_shift;
+    list.materials.push_back(overlay_material);
+    list.materials.push_back(WorldMaterial{});
+    const auto append = [&list](
+        std::uint32_t material_index,
+        float view_z,
+        std::uint8_t red,
+        std::uint8_t green,
+        std::uint8_t blue
+    ) {
+        WorldDrawCommand command{};
+        command.vertices[0] = vertex(-view_z, -view_z, 0, 0, 0);
+        command.vertices[1] = vertex(0.0F, view_z, 0, 1, 0);
+        command.vertices[2] = vertex(view_z, -view_z, 1, 0, 0);
+        for (auto& point : command.vertices) {
+            point.clip_z = 16.0F;
+            point.clip_w = view_z;
+            point.r = red;
+            point.g = green;
+            point.b = blue;
+        }
+        command.material_index = material_index;
+        command.clip_x0 = command.clip_y0 = 0;
+        command.clip_x1 = command.clip_y1 = 15;
+        command.object_kind = 1;
+        command.object_id = 1;
+        command.model_pointer = 0x80004000U;
+        command.channel = WorldViewChannel::main_view;
+        list.commands.push_back(command);
+    };
+    // The tunnel marking class can be two authored model/view units farther
+    // than its road support. Typed road-artwork composition must resolve the
+    // authored relationship without depending on physical depth separation.
+    append(0, 1000.0F, 0, 128, 0);
+    // GT2 can submit another road triangle at the same final depth after the
+    // exact support. It is still road, so it must not erase ownership and make
+    // the marking alternate with draw order.
+    if (add_coplanar_road_sibling)
+        append(2, 1000.0F, 0, 96, 0);
+    append(
+        1,
+        1002.0F,
+        overlay_red,
+        overlay_green,
+        overlay_blue);
+    // Real geometry at view Z=997 must still occlude it. This guards the
+    // priority pass against turning into an unbounded draw-order override.
+    if (add_nearer_occluder)
+        append(2, 997.0F, 0, 0, 192);
+    list.track_commands = list.commands.size();
+
+    std::vector<std::uint16_t> vram(1024U * 512U);
+    std::vector<std::uint8_t> output(16U * 16U * 4U);
+    WorldGpuRenderStats stats{};
+    reset_world_d3d11_readback(false);
+    const auto result = render_world_d3d11(
+        list,
+        vram.data(),
+        vram.size(),
+        output.data(),
+        output.size(),
+        WorldGpuRenderOptions{
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            1,
+            clear_rgba,
+        },
+        &stats);
+    if (result != WorldGpuRenderResult::success || !stats.output_valid)
+        return {};
+    const std::size_t center = (8U * 16U + 8U) * 4U;
+    return {
+        output[center],
+        output[center + 1],
+        output[center + 2],
+    };
+}
+
+bool authored_track_overlay_wins_coplanar_depth() {
+    const auto color = render_authored_track_overlay_depth_case(false);
+    return color[0] > 150U && color[1] > 120U && color[2] < 16U;
+}
+
+bool white_track_overlay_uses_same_priority_contract() {
+    const auto color = render_authored_track_overlay_depth_case(
+        false, false, true, 192, 192, 192);
+    return color[0] > 150U && color[1] > 150U && color[2] > 150U;
+}
+
+bool classified_track_overlay_does_not_require_exact_support_mask() {
+    const auto color = render_authored_track_overlay_depth_case(
+        false, false, false);
+    return color[0] > 150U && color[1] > 120U && color[2] < 16U;
+}
+
+bool authored_track_overlay_stays_behind_nearer_geometry() {
+    const auto color = render_authored_track_overlay_depth_case(true);
+    return color[0] < 16U && color[1] < 16U && color[2] > 150U;
+}
+
+bool coplanar_road_sibling_cannot_erase_overlay_ownership() {
+    const auto color = render_authored_track_overlay_depth_case(false, true);
+    return color[0] > 150U && color[1] > 120U && color[2] < 16U;
+}
+
+bool authored_track_overlay_stays_clipped_beyond_near_plane() {
+    using namespace opengt::render;
+    WorldDrawList list{};
+    list.display_width = 16;
+    list.display_height = 16;
+    WorldMaterial overlay_material{};
+    overlay_material.primitive_flags =
+        1U << world_primitive_track_overlay_layer_shift;
+    list.materials.push_back(overlay_material);
+
+    WorldDrawCommand command{};
+    command.vertices[0] = vertex(-1.0F, -1.0F, 0, 0, 0);
+    command.vertices[1] = vertex(0.0F, 1.0F, 0, 1, 0);
+    command.vertices[2] = vertex(1.0F, -1.0F, 1, 0, 0);
+    for (auto& point : command.vertices) {
+        point.clip_z = 2.0F;
+        point.clip_w = 1.0F;
+        point.r = 192;
+        point.g = 160;
+        point.b = 0;
+    }
+    command.material_index = 0;
+    command.clip_x0 = command.clip_y0 = 0;
+    command.clip_x1 = command.clip_y1 = 15;
+    command.object_kind = 1;
+    command.object_id = 1;
+    command.model_pointer = 0x80004000U;
+    command.channel = WorldViewChannel::main_view;
+    list.commands.push_back(command);
+    list.track_commands = 1;
+
+    std::vector<std::uint16_t> vram(1024U * 512U);
+    std::vector<std::uint8_t> output(16U * 16U * 4U);
+    WorldGpuRenderStats stats{};
+    reset_world_d3d11_readback(false);
+    const auto result = render_world_d3d11(
+        list,
+        vram.data(),
+        vram.size(),
+        output.data(),
+        output.size(),
+        WorldGpuRenderOptions{
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            1,
+            clear_rgba,
+        },
+        &stats);
+    if (result != WorldGpuRenderResult::success || !stats.output_valid)
+        return false;
+    const std::size_t center = (8U * 16U + 8U) * 4U;
+    return output[center] > 240U &&
+        output[center + 1] < 16U &&
+        output[center + 2] < 16U;
+}
+
+bool background_layer_does_not_occlude_world_depth() {
+    using namespace opengt::render;
+    WorldDrawList list{};
+    list.display_width = 16;
+    list.display_height = 16;
+    list.materials.push_back(WorldMaterial{});
+    const auto append = [&list](
+        std::uint32_t object_kind,
+        float depth,
+        std::uint8_t red,
+        std::uint8_t green,
+        std::uint8_t blue
+    ) {
+        WorldDrawCommand command{};
+        command.vertices[0] = vertex(-1.0F, -1.0F, 0, 0, 0);
+        command.vertices[1] = vertex(0.0F, 1.0F, 0, 1, 0);
+        command.vertices[2] = vertex(1.0F, -1.0F, 1, 0, 0);
+        for (auto& point : command.vertices) {
+            point.clip_z = depth;
+            point.clip_w = 1.0F;
+            point.r = red;
+            point.g = green;
+            point.b = blue;
+        }
+        command.material_index = 0;
+        command.clip_x0 = command.clip_y0 = 0;
+        command.clip_x1 = command.clip_y1 = 15;
+        command.object_kind = object_kind;
+        command.object_id = object_kind;
+        command.channel = WorldViewChannel::main_view;
+        list.commands.push_back(command);
+    };
+    // Reproduce Seattle's observed ordering: a visible vehicle is submitted,
+    // then the projected background paints color without physical depth, then
+    // a farther road surface is submitted. The background must be scheduled
+    // first; otherwise it erases the vehicle color while the invisible vehicle
+    // depth remains and rejects the road, leaving a background-colored hole.
+    append(2U, 0.75F, 0, 128, 0);
+    append(3U, 0.95F, 128, 0, 0);
+    append(1U, 0.25F, 0, 0, 128);
+    list.vehicle_commands = 1;
+    list.background_commands = 1;
+    list.track_commands = 1;
+
+    std::vector<std::uint16_t> vram(1024U * 512U);
+    std::vector<std::uint8_t> output(16U * 16U * 4U);
+    WorldGpuRenderStats stats{};
+    reset_world_d3d11_readback(false);
+    const auto result = render_world_d3d11(
+        list,
+        vram.data(),
+        vram.size(),
+        output.data(),
+        output.size(),
+        WorldGpuRenderOptions{
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            1,
+            clear_rgba,
+        },
+        &stats);
+    if (result != WorldGpuRenderResult::success || !stats.output_valid)
+        return false;
+    const std::size_t center = (8U * 16U + 8U) * 4U;
+    return output[center] < 16U &&
+        output[center + 1] > 100U &&
+        output[center + 1] > output[center] * 4U;
+}
+
 std::array<std::uint8_t, 4> render_fractional_uv_center() {
     using namespace opengt::render;
     std::vector<std::uint16_t> vram(1024U * 512U);
@@ -426,6 +727,95 @@ std::array<std::uint8_t, 4> render_fractional_uv_center() {
         point.u = 10.75F;
         point.v = 10.75F;
     }
+    std::vector<std::uint8_t> output(16U * 16U * 4U);
+    WorldGpuRenderStats stats{};
+    reset_world_d3d11_readback(false);
+    const auto result = render_world_d3d11(
+        list,
+        vram.data(),
+        vram.size(),
+        output.data(),
+        output.size(),
+        WorldGpuRenderOptions{
+            false,
+            true,
+            false,
+            true,
+            false,
+            false,
+            1,
+            clear_rgba,
+        },
+        &stats);
+    if (result != WorldGpuRenderResult::success || !stats.output_valid)
+        return {};
+    const std::size_t center = (8U * 16U + 8U) * 4U;
+    return {
+        output[center],
+        output[center + 1],
+        output[center + 2],
+        output[center + 3],
+    };
+}
+
+std::array<std::uint8_t, 4> render_minified_sparse_center(
+    bool visible_source_texel
+) {
+    using namespace opengt::render;
+    WorldDrawList list{};
+    list.display_width = 16;
+    list.display_height = 16;
+    list.materials.push_back(WorldMaterial{
+        1U | 4U,
+        2U << 7U,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    });
+    const auto point = [] (
+        float clip_x,
+        float clip_y,
+        float u,
+        std::int16_t model_x,
+        std::int16_t model_z
+    ) {
+        WorldDrawVertex result{};
+        result.clip_x = clip_x;
+        result.clip_y = clip_y;
+        result.clip_z = 0.5F;
+        result.clip_w = 1.0F;
+        result.u = u;
+        result.v = 10.0F;
+        result.r = result.g = result.b = 128;
+        result.model_x = model_x;
+        result.model_y = 0;
+        result.model_z = model_z;
+        return result;
+    };
+    WorldDrawCommand command{};
+    // One oversized triangle covers the target. U advances sixteen source
+    // texels per output pixel. At the center, the retired 3x3 filter sampled
+    // only U=130/136/141; the authored visible texel at U=132 lies inside the
+    // same pixel footprint and must be recovered by adaptive anisotropy.
+    command.vertices[0] = point(-1.0F, -1.0F, 0.0F, 0, 0);
+    command.vertices[1] = point(3.0F, -1.0F, 512.0F, 1, 0);
+    command.vertices[2] = point(-1.0F, 3.0F, 0.0F, 0, 1);
+    command.material_index = 0;
+    command.clip_x0 = command.clip_y0 = 0;
+    command.clip_x1 = command.clip_y1 = 15;
+    command.object_kind = 1;
+    command.object_id = 1;
+    command.model_pointer = 0x80001000U;
+    command.channel = WorldViewChannel::main_view;
+    list.commands.push_back(command);
+    list.track_commands = 1;
+
+    std::vector<std::uint16_t> vram(1024U * 512U);
+    if (visible_source_texel)
+        vram[10U * 1024U + 132U] = green_555;
     std::vector<std::uint8_t> output(16U * 16U * 4U);
     WorldGpuRenderStats stats{};
     reset_world_d3d11_readback(false);
@@ -957,6 +1347,18 @@ int main() {
         opengt::render::world_gpu_target_display_width(
             aspect_list, aspect_options) == 427,
         "derive a horizontal-plus width while preserving vertical resolution");
+    aspect_options.target_aspect_width = 21;
+    aspect_options.target_aspect_height = 9;
+    okay &= expect(
+        opengt::render::world_gpu_target_display_width(
+            aspect_list, aspect_options) == 560,
+        "derive a 21:9 Hor+ width without changing vertical resolution");
+    aspect_options.target_aspect_width = 32;
+    aspect_options.target_aspect_height = 9;
+    okay &= expect(
+        opengt::render::world_gpu_target_display_width(
+            aspect_list, aspect_options) == 854,
+        "derive a 32:9 Hor+ width without changing vertical resolution");
     constexpr std::uint64_t paint_key = 0x123456789ABCDEF0ULL;
     constexpr WorldTextureUpload paint_bank{
         paint_key, 448, 480, 64, 4};
@@ -992,14 +1394,47 @@ int main() {
         is_green(render_fractional_uv_center()),
         "use PS1 floor semantics for fractional world-texture visibility");
     okay &= expect(
+        is_green(render_minified_sparse_center(true)),
+        "recover visible indexed texels across an anisotropic road footprint");
+    okay &= expect(
+        is_clear(render_minified_sparse_center(false)),
+        "preserve an all-transparent anisotropic footprint");
+    okay &= expect(
         horizontal_plus_reveals_world_outside_guest_edge(),
         "reveal main-world geometry beyond the original horizontal plane");
     okay &= expect(
-        horizontal_plus_anchors_hud_groups_to_margins(),
-        "anchor connected HUD groups to widescreen margins without stretching");
+        horizontal_plus_anchors_hud_groups_to_margins(16, 9),
+        "anchor connected HUD groups to 16:9 margins without stretching");
+    okay &= expect(
+        horizontal_plus_anchors_hud_groups_to_margins(21, 9),
+        "anchor connected HUD groups to 21:9 margins without stretching");
+    okay &= expect(
+        horizontal_plus_anchors_hud_groups_to_margins(32, 9),
+        "anchor connected HUD groups to 32:9 margins without stretching");
     okay &= expect(
         track_depth_survives_ordering_table_boundaries(),
         "keep one track depth surface across GT2 ordering-table buckets");
+    okay &= expect(
+        authored_track_overlay_wins_coplanar_depth(),
+        "give classified yellow road artwork priority over its support");
+    okay &= expect(
+        white_track_overlay_uses_same_priority_contract(),
+        "give classified white road artwork the same support priority");
+    okay &= expect(
+        classified_track_overlay_does_not_require_exact_support_mask(),
+        "apply typed road-artwork priority without an exact support mask");
+    okay &= expect(
+        authored_track_overlay_stays_behind_nearer_geometry(),
+        "keep bounded road-overlay priority behind genuinely nearer geometry");
+    okay &= expect(
+        coplanar_road_sibling_cannot_erase_overlay_ownership(),
+        "keep road-artwork ownership through later coplanar road triangles");
+    okay &= expect(
+        authored_track_overlay_stays_clipped_beyond_near_plane(),
+        "leave near-plane clipping to homogeneous hardware clipping");
+    okay &= expect(
+        background_layer_does_not_occlude_world_depth(),
+        "schedule projected background before coherent physical world depth");
     okay &= expect(
         reset_isolates_async_readback_generation(),
         "isolate asynchronous pixels and queries across a temporal reset");
@@ -1027,29 +1462,32 @@ int main() {
     okay &= expect(
         unclipped[0] > clipped[0],
         "keep the full shell when the drawing area covers the display");
-    const auto deep_affine = render_uv_island(false, 1.0F);
-    const auto deep_perspective = render_uv_island(true, 1.0F);
+    const auto deep_legacy_request = render_uv_island(false, 1.0F);
+    const auto deep_modern_request = render_uv_island(true, 1.0F);
     okay &= expect(
-        !deep_affine.empty() && deep_affine == deep_perspective,
-        "keep a deep GT2 UV island on one affine interpolation contract");
+        !deep_legacy_request.empty() &&
+            deep_legacy_request == deep_modern_request,
+        "ignore legacy affine requests for deep 3D UV islands");
     const auto resident_deep_perspective =
         render_uv_island(true, 1.0F, true);
     okay &= expect(
         !resident_deep_perspective.empty() &&
-            resident_deep_perspective != deep_affine,
-        "perspective-correct a deep resident pre-projection UV island");
-    const auto crossing_affine = render_uv_island(false, -4.0F, true);
-    const auto crossing_perspective = render_uv_island(true, -4.0F, true);
+            resident_deep_perspective == deep_modern_request,
+        "use one perspective contract for reconstructed and resident 3D UVs");
+    const auto crossing_legacy_request =
+        render_uv_island(false, -4.0F, true);
+    const auto crossing_modern_request =
+        render_uv_island(true, -4.0F, true);
     okay &= expect(
-        !crossing_affine.empty() &&
-            crossing_affine != crossing_perspective,
-        "perspective-correct a resident course surface after near clipping");
-    const auto shallow_affine = render_uv_island(false, 4.0F);
-    const auto shallow_perspective = render_uv_island(true, 4.0F);
+        !crossing_legacy_request.empty() &&
+            crossing_legacy_request == crossing_modern_request,
+        "keep perspective correction fixed through homogeneous near clipping");
+    const auto shallow_legacy_request = render_uv_island(false, 4.0F);
+    const auto shallow_modern_request = render_uv_island(true, 4.0F);
     okay &= expect(
-        !shallow_affine.empty() &&
-            shallow_affine != shallow_perspective,
-        "retain perspective correction on a coherent shallow UV island");
+        !shallow_legacy_request.empty() &&
+            shallow_legacy_request == shallow_modern_request,
+        "ignore legacy affine requests for shallow 3D UV islands");
     if (!okay)
         return 1;
     std::puts("world GPU renderer tests passed");

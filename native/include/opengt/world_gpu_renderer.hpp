@@ -7,16 +7,27 @@
 
 namespace opengt::render {
 
-// Readback retains whole midpoint/actual pairs. Both the native staging ring
-// and the bridge's metadata FIFO derive their sizes from this one invariant.
+// The synchronous development path retains four chronological image slots.
+// The legacy name remains because development-only midpoint tooling also uses
+// the same even ring; the shipping authored-image path does not form pairs.
 constexpr std::size_t world_gpu_readback_pair_delay = 2;
-// The live renderer can continue submitting unique midpoint/actual pairs while
-// a prior staging copy is delayed by GPU scheduling. Eight pairs cover more
-// than a quarter second at the authored 30 Hz cadence without changing the
-// normal two-pair presentation latency.
+// The live authored renderer can queue sixteen immutable image/resource slots
+// while earlier GPU copies complete. Development-only pair tooling interprets
+// that same capacity as eight pairs; shipping drains individual images in
+// chronological order at the authored NTSC VBlank cadence.
 constexpr std::size_t world_gpu_async_readback_pair_capacity = 8;
 constexpr std::size_t world_gpu_async_readback_image_capacity =
     world_gpu_async_readback_pair_capacity * 2;
+// Live 60 Hz presentation keeps one completed copy in flight. On the next
+// authored image that copy has had a full NTSC interval to finish, avoiding
+// the synchronous GPU/CPU stall which cannot sustain Seattle's 60 Hz capture
+// workload. The larger ring remains available for diagnostics and reset
+// isolation; a future direct GPU presentation path can bypass readback.
+constexpr std::size_t world_gpu_realtime_readback_image_delay = 2;
+static_assert(
+    world_gpu_realtime_readback_image_delay >= 1 &&
+    world_gpu_realtime_readback_image_delay <=
+        world_gpu_async_readback_image_capacity);
 
 struct WorldGpuRenderOptions {
     bool use_software_adapter;
@@ -38,9 +49,9 @@ struct WorldGpuRenderOptions {
     // Cadence-gap reset recovery can re-prime the readback ring without
     // forcing the first staged copy to block the worker thread.
     bool defer_initial_readback = false;
-    // Submit this image to the live pair readback queue without synchronously
-    // waiting for an older staging resource. Completed pairs are drained by
-    // try_read_world_d3d11_pair in chronological order.
+    // Submit this image to the live readback queue without synchronously
+    // waiting for an older staging resource. Shipping drains complete images
+    // in chronological order; the pair API exists only in development builds.
     bool asynchronous_readback = false;
     // Horizontal-plus target aspect. Zero preserves the guest display width.
     // These are deliberately last so existing diagnostic aggregate

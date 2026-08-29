@@ -129,6 +129,11 @@ public sealed partial class Gpu
     readonly HashSet<string> _screenEffectBaselineSignatures = new();
     readonly HashSet<string> _screenEffectNewPacketSignatures = new();
     readonly HashSet<string> _screenEffectPrimitiveSignatures = new();
+    long _screenEffectTrianglesExamined;
+    long _screenEffectTrianglesMatched;
+    long _screenEffectRectanglesExamined;
+    long _screenEffectRectanglesMatched;
+    long _screenEffectTraceLines;
     readonly bool _traceMixedProjectionTriangles =
         string.Equals(
             Environment.GetEnvironmentVariable(
@@ -165,6 +170,7 @@ public sealed partial class Gpu
         WorldCaptureContext.LiveRenderingEnabled =
             _liveWorldRenderer.Enabled;
         RegisterRawTrackReplacement();
+        RegisterRawBackgroundReplacement();
     }
 
     static bool HleOn => GpuHle.Active && GpuHle.Backend is { Ready: true };
@@ -195,7 +201,9 @@ public sealed partial class Gpu
         System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     PrimFlags PrimOf(bool tex, bool semi, bool raw, int clut, bool gouraud = false) => new()
     {
-        Textured = tex, SemiTrans = semi, RawTexture = raw, Gouraud = gouraud, TPage = (ushort)CurTPage(), Clut = (ushort)clut,
+        Textured = tex, SemiTrans = semi, RawTexture = raw,
+        Gouraud = gouraud, TPage = (ushort)CurTPage(), Clut = (ushort)clut,
+        OtIndex = CurrentOrderingTableIndex,
     };
 
     void HleTri(in Vert a, in Vert b, in Vert c, bool tex, bool gouraud, bool semi, bool raw, int clut)
@@ -260,6 +268,12 @@ public sealed partial class Gpu
             (originA.Object.Kind == WorldObjectKind.Track ||
              originB.Object.Kind == WorldObjectKind.Track ||
              originC.Object.Kind == WorldObjectKind.Track);
+        bool rawBackgroundReplacement =
+            RawBackgroundReplacementActive &&
+            !derivedScreenAnchor &&
+            (originA.Object.Kind == WorldObjectKind.Background ||
+             originB.Object.Kind == WorldObjectKind.Background ||
+             originC.Object.Kind == WorldObjectKind.Background);
         if (_traceScreenEffectPrimitives &&
             (!string.Equals(
                  _traceScreenEffectTextureFilter,
@@ -301,7 +315,9 @@ public sealed partial class Gpu
                     in originC,
                     in flags);
             }
-            if (liveWorldCapture && !rawTrackReplacement)
+            if (liveWorldCapture &&
+                !rawTrackReplacement &&
+                !rawBackgroundReplacement)
             {
                 if (originA.Valid || originB.Valid || originC.Valid)
                 {
@@ -335,7 +351,9 @@ public sealed partial class Gpu
         // Return the classification even when the native worker has failed or
         // is stopping so neither the GL-HLE nor software compatibility
         // rasterizer can silently reappear as a world-renderer fallback.
-        return containsWorldProvenance || rawTrackReplacement;
+        return containsWorldProvenance ||
+            rawTrackReplacement ||
+            rawBackgroundReplacement;
     }
 
     void TraceMixedProjectionTriangle(
@@ -412,6 +430,7 @@ public sealed partial class Gpu
         if (Host.InputManager.CurrentPoll < _traceScreenEffectStartPoll ||
             Host.InputManager.CurrentPoll > _traceScreenEffectEndPoll)
             return;
+        _screenEffectTrianglesExamined++;
         if ((_traceScreenEffectTPage >= 0 &&
              flags.TPage != _traceScreenEffectTPage) ||
             (_traceScreenEffectClut >= 0 &&
@@ -461,12 +480,14 @@ public sealed partial class Gpu
         {
             return;
         }
+        _screenEffectTrianglesMatched++;
         string provenance = origin.Valid
             ? $"world={origin.Object.Kind}/0x{origin.Object.StableId:X8}/" +
                 $"0x{origin.Object.ModelPointer:X8}"
             : "world=none";
         string packetSignature =
-            $"tex={flags.Textured} uv={lowU},{lowV}-{highU},{highV} " +
+            $"kind=triangle tex={flags.Textured} " +
+            $"uv={lowU},{lowV}-{highU},{highV} " +
             $"tpage=0x{flags.TPage:X4} clut=0x{flags.Clut:X4} " +
             $"semi={flags.SemiTrans} raw={flags.RawTexture} " +
             $"gouraud={flags.Gouraud} rgb={a.R},{a.G},{a.B} " +
@@ -506,11 +527,144 @@ public sealed partial class Gpu
             $"xy={lowX:F2},{lowY:F2}-{highX:F2},{highY:F2} " +
             $"src=0x{sourceA:X8},0x{sourceB:X8},0x{sourceC:X8} " +
             signature);
+        _screenEffectTraceLines++;
+    }
+
+    void TraceScreenEffectRectangle(
+        int x,
+        int y,
+        int width,
+        int height,
+        int u,
+        int v,
+        int red,
+        int green,
+        int blue,
+        in PrimFlags flags,
+        uint commandSource,
+        uint coordinateSource)
+    {
+        int poll = Host.InputManager.CurrentPoll;
+        if (poll < _traceScreenEffectStartPoll ||
+            poll > _traceScreenEffectEndPoll)
+        {
+            return;
+        }
+        _screenEffectRectanglesExamined++;
+        if ((_traceScreenEffectTPage >= 0 &&
+             flags.TPage != _traceScreenEffectTPage) ||
+            (_traceScreenEffectClut >= 0 &&
+             flags.Clut != _traceScreenEffectClut) ||
+            (string.Equals(
+                 _traceScreenEffectTextureFilter,
+                 "untextured",
+                 StringComparison.OrdinalIgnoreCase) &&
+             flags.Textured) ||
+            (string.Equals(
+                 _traceScreenEffectTextureFilter,
+                 "textured",
+                 StringComparison.OrdinalIgnoreCase) &&
+             !flags.Textured))
+        {
+            return;
+        }
+        int highX = x + width;
+        int highY = y + height;
+        if (width < _traceScreenEffectMinWidth ||
+            height < _traceScreenEffectMinHeight ||
+            width > _traceScreenEffectMaxWidth ||
+            height > _traceScreenEffectMaxHeight ||
+            highX < 24 || x > 296 || highY < 36 || y > 218 ||
+            highX < _traceScreenEffectMinX ||
+            x > _traceScreenEffectMaxX ||
+            highY < _traceScreenEffectMinY ||
+            y > _traceScreenEffectMaxY ||
+            string.Equals(
+                _traceScreenEffectWorldFilter,
+                "vehicle",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        _screenEffectRectanglesMatched++;
+        int highU = u + width;
+        int highV = v + height;
+        string packetSignature =
+            $"kind=rectangle tex={flags.Textured} " +
+            $"uv={u},{v}-{highU},{highV} " +
+            $"tpage=0x{flags.TPage:X4} clut=0x{flags.Clut:X4} " +
+            $"semi={flags.SemiTrans} raw={flags.RawTexture} " +
+            $"rgb={red},{green},{blue} world=none";
+        if (_traceScreenEffectNewAfterBaseline)
+        {
+            if (poll < _traceScreenEffectStartPoll + 300)
+            {
+                _screenEffectBaselineSignatures.Add(packetSignature);
+                return;
+            }
+            if (_screenEffectBaselineSignatures.Contains(packetSignature) ||
+                !_screenEffectNewPacketSignatures.Add(packetSignature))
+            {
+                return;
+            }
+        }
+        string signature =
+            $"size={width}x{height} tex={flags.Textured} " +
+            $"uv={u},{v}-{highU},{highV} " +
+            $"tpage=0x{flags.TPage:X4} clut=0x{flags.Clut:X4} " +
+            $"semi={flags.SemiTrans} raw={flags.RawTexture} " +
+            $"rgb={red},{green},{blue} world=none" +
+            (_traceScreenEffectPositions
+                ? $" xy={x},{y}-{highX},{highY}"
+                : string.Empty);
+        int traceLimit = _traceScreenEffectPositions ? 65536 : 4096;
+        if (_screenEffectPrimitiveSignatures.Count >= traceLimit ||
+            !_screenEffectPrimitiveSignatures.Add(
+                $"rectangle src=0x{commandSource:X8}/" +
+                $"0x{coordinateSource:X8} {signature}"))
+        {
+            return;
+        }
+        Console.Error.WriteLine(
+            $"[Screen-Rect] poll={poll} xy={x},{y}-{highX},{highY} " +
+            $"src=0x{commandSource:X8},0x{coordinateSource:X8} " +
+            signature);
+        _screenEffectTraceLines++;
+    }
+
+    void ReportScreenEffectTraceSummary()
+    {
+        if (!_traceScreenEffectPrimitives)
+            return;
+        Console.Error.WriteLine(
+            "[Screen-Effect-Summary] " +
+            $"polls={_traceScreenEffectStartPoll}.." +
+            $"{_traceScreenEffectEndPoll} " +
+            $"triangles={_screenEffectTrianglesExamined}/" +
+            $"{_screenEffectTrianglesMatched} " +
+            $"rectangles={_screenEffectRectanglesExamined}/" +
+            $"{_screenEffectRectanglesMatched} " +
+            $"baseline={_screenEffectBaselineSignatures.Count} " +
+            $"newPackets={_screenEffectNewPacketSignatures.Count} " +
+            $"logged={_screenEffectTraceLines}");
     }
 
     internal static bool ShouldRasterizeCompatibilityTriangle(
-        bool containsWorldProvenance) =>
-        !LiveWorldRenderer.Requested || !containsWorldProvenance;
+        bool containsWorldProvenance)
+    {
+#if OPENGT_RELEASE_PACKAGE
+        // Public PC builds have one world renderer. If native world rendering
+        // cannot start or rejects a frame, leave that failure observable; do
+        // not silently route provenance-backed geometry through the PS1
+        // rasterizer. Provenance-free screen packets still compose the HUD,
+        // presentation effects, and videos around the native world image.
+        return !containsWorldProvenance;
+#else
+        // Non-release tooling may retain the compatibility rasterizer as an
+        // explicitly selected development oracle on unsupported hosts.
+        return !LiveWorldRenderer.Requested || !containsWorldProvenance;
+#endif
+    }
 
     void CaptureHleTri(
         in HleVertex a,
@@ -544,9 +698,27 @@ public sealed partial class Gpu
         int b,
         bool textured,
         bool semi,
-        bool raw)
+        bool raw,
+        uint commandSource,
+        uint coordinateSource)
     {
         var flags = PrimOf(textured, semi, raw, clut);
+        if (_traceScreenEffectPrimitives)
+        {
+            TraceScreenEffectRectangle(
+                x,
+                y,
+                w,
+                h,
+                u,
+                v,
+                r,
+                g,
+                b,
+                in flags,
+                commandSource,
+                coordinateSource);
+        }
         var a = new HleVertex
         {
             X = x, Y = y, U = (short)u, V = (short)v,
@@ -726,9 +898,12 @@ public sealed partial class Gpu
 
     internal void ShutdownLiveWorldRenderer()
     {
+        UnregisterRawBackgroundReplacement();
         UnregisterRawTrackReplacement();
         WorldCaptureContext.ReportTrackMeshTraceSummary();
         ReportRawTrackReplacement();
+        ReportRawBackgroundReplacement();
+        ReportScreenEffectTraceSummary();
         _liveWorldCapture.Dispose();
         _liveWorldRenderer.Dispose();
         WorldCaptureContext.LiveRenderingEnabled = false;

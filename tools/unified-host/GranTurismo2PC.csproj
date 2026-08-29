@@ -7,11 +7,13 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>GranTurismo2PC</AssemblyName>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DefineConstants Condition="'$(OpenGTReleasePackage)' == 'true'">$(DefineConstants);OPENGT_RELEASE_PACKAGE</DefineConstants>
     <!-- Prefer the bundled runtime in self-contained releases while retaining
          global-runtime fallback for ordinary framework-dependent builds. -->
     <AppHostDotNetSearch>AppLocal;Global</AppHostDotNetSearch>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <PublishReadyToRun Condition="'$(Configuration)' == 'Release' and '$(RuntimeIdentifier)' != ''">true</PublishReadyToRun>
+    <OpenGTNativeLibraryPath Condition="'$(OpenGTNativeLibraryPath)' == ''">..\..\build\native\Release\opengt_live_renderer.dll</OpenGTNativeLibraryPath>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
@@ -23,11 +25,25 @@
     <Compile Include="..\..\generated\arcade-recompiled\*.cs"
              Exclude="..\..\generated\arcade-recompiled\Program.cs" />
     <ProjectReference Include="..\..\vendor\RecompOne\RecompOne.Runtime\RecompOne.Runtime.csproj" />
-    <None Include="..\..\build\native\Release\opengt_live_renderer.dll"
-          Condition="Exists('..\..\build\native\Release\opengt_live_renderer.dll')"
+    <ProjectReference Include="..\..\vendor\RecompOne\RecompOne.GeneratedSupport\RecompOne.GeneratedSupport.csproj" />
+    <EmbeddedResource Include="..\seattle_arcade_hot_methods.txt"
+                      LogicalName="OpenGTPS1.SeattleArcadeHotMethods.txt" />
+    <EmbeddedResource Include="..\seattle_arcade_preload_methods.txt"
+                      LogicalName="OpenGTPS1.SeattleArcadePreloadMethods.txt" />
+    <None Include="$(OpenGTNativeLibraryPath)"
+          Condition="Exists('$(OpenGTNativeLibraryPath)')"
           Link="opengt_live_renderer.dll"
           CopyToOutputDirectory="PreserveNewest"
           CopyToPublishDirectory="PreserveNewest"
           ExcludeFromSingleFile="false" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(OpenGTDiagnosticExcludeRuntimeR2R)' == 'true'">
+    <PublishReadyToRunExclude Include="RecompOne.Runtime.dll" />
+  </ItemGroup>
+  <ItemGroup>
+    <PublishReadyToRunExclude Include="RecompOne.GeneratedSupport.dll" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(OpenGTReadyToRunProfile)' != ''">
+    <PublishReadyToRunPgoFiles Include="$(OpenGTReadyToRunProfile)" />
   </ItemGroup>
 </Project>
