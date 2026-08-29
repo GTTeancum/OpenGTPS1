@@ -1239,11 +1239,11 @@ def main() -> int:
             c.RA = 0x8001192Cu;
             GranTurismo2ArcadePC.func_8005D9AC(c, m);
             throw new InvalidOperationException(
-                "Direct Seattle overlay-3 handoff unexpectedly returned");
+                "Direct Arcade overlay-3 handoff unexpectedly returned");
         }
         c.V1 = c.V0 + 0u;
 """,
-        "Direct Seattle native Arcade async completion and race construction",
+        "Direct Arcade async completion and native race construction",
     )
     replace_once(
         OVERLAY2,
@@ -1258,7 +1258,7 @@ def main() -> int:
         RecompOne.Runtime.Sdk.GT2Compat.ResumeDirectArcadeRaceAfterSetup(c.T0, c, m);
         if (c.V0 == 0u) {
 """,
-        "Direct Seattle native Arcade frontend completion unwind",
+        "Direct Arcade frontend completion unwind",
     )
     replace_once(
         MAIN,

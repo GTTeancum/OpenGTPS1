@@ -44,15 +44,16 @@ for (int index = 0; index < args.Length; index++)
         if (++index >= args.Length)
             return StartupFailure(
                 $"{argument} requires a course name; supported courses are " +
-                "seattle-circuit and special-stage-route-5.",
+                "seattle-circuit, special-stage-route-5, and trial-mountain.",
                 headless);
         directArcadeRace = args[index].Trim().ToLowerInvariant();
         if (directArcadeRace is not
-                ("seattle-circuit" or "special-stage-route-5"))
+                ("seattle-circuit" or "special-stage-route-5" or
+                 "trial-mountain"))
             return StartupFailure(
                 $"Unsupported direct Arcade course: {args[index]}. " +
-                "Supported courses are seattle-circuit and " +
-                "special-stage-route-5.",
+                "Supported courses are seattle-circuit, " +
+                "special-stage-route-5, and trial-mountain.",
                 headless);
         directArcadeReplay = replay;
         startArcade = true;
@@ -183,7 +184,7 @@ try
     PreloadBundledNative("cimgui.dll");
     PreloadBundledNative("SDL2.dll");
     if (directArcadeRace != null)
-        PrepareDirectSeattleRenderer();
+        PrepareDirectArcadeRenderer();
     var memory = new PSMemory();
     UnifiedEntry.Run(
         memory,
@@ -339,7 +340,7 @@ static void PreloadBundledNative(string fileName)
     }
 }
 
-static void PrepareDirectSeattleRenderer()
+static void PrepareDirectArcadeRenderer()
 {
     string[] guestMethodNames = LoadSeattleArcadeMethodProfile(
             "OpenGTPS1.SeattleArcadeHotMethods.txt")
@@ -372,7 +373,7 @@ static void PrepareDirectSeattleRenderer()
         memoryMethodNames);
     timer.Stop();
     Console.WriteLine(
-        $"[Host] prepared Seattle runtime hot paths: " +
+        $"[Host] prepared direct Arcade runtime hot paths: " +
         $"methods={prepared} elapsedMs={timer.Elapsed.TotalMilliseconds:F3}");
 }
 

@@ -469,6 +469,8 @@ string motionCaptureHarness = ReadRepoFile(
     @"tools\capture_modern_renderer_final_motion.ps1");
 string ssr5VehicleBoundaryHarness = ReadRepoFile(
     @"tools\run_ssr5_vehicle_boundary_trace.ps1");
+string arcadeRendererAuditHarness = ReadRepoFile(
+    @"tools\run_arcade_renderer_audit.ps1");
 const string selfContainedDeploy =
     @"tools\unified-host\bin\Release\net10.0\win-x64\publish";
 Require(
@@ -1002,6 +1004,18 @@ string ssr5ClassCStateBase64 = (string)gt2CompatType.GetField(
 byte[] ssr5ClassCPre = Convert.FromBase64String(ssr5ClassCPreBase64);
 byte[] ssr5ClassCFinal = Convert.FromBase64String(ssr5ClassCFinalBase64);
 byte[] ssr5ClassCState = Convert.FromBase64String(ssr5ClassCStateBase64);
+MethodInfo replaceDirectArcadeCourseIdentity = gt2CompatType.GetMethod(
+    "ReplaceDirectArcadeCourseIdentity",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+byte[] trialMountainClassCPre = (byte[])ssr5ClassCPre.Clone();
+byte[] trialMountainClassCFinal = (byte[])ssr5ClassCFinal.Clone();
+byte[] trialMountainClassCState = (byte[])ssr5ClassCState.Clone();
+replaceDirectArcadeCourseIdentity.Invoke(
+    null, [trialMountainClassCPre, false]);
+replaceDirectArcadeCourseIdentity.Invoke(
+    null, [trialMountainClassCFinal, false]);
+replaceDirectArcadeCourseIdentity.Invoke(
+    null, [trialMountainClassCState, true]);
 int ssr5PlayerNameStart = 0x5C + 0x90;
 int ssr5PlayerNameLength = Array.IndexOf(
     ssr5ClassCState,
@@ -1029,6 +1043,45 @@ Require(
         System.Security.Cryptography.SHA256.HashData(ssr5ClassCState)) ==
         "D5EF736926371AB91A89F9E058399B3D95867BA18DAC4790040CE337C580AF08",
     "direct SSR5 launch no longer carries the native Class C Xsara fixture");
+string trialMountainCourseName = System.Text.Encoding.ASCII.GetString(
+    trialMountainClassCPre,
+    0xB8,
+    Array.IndexOf(
+        trialMountainClassCPre,
+        (byte)0,
+        0xB8) - 0xB8);
+Require(
+    trialMountainCourseName == "Trial Mountain Circuit" &&
+    BitConverter.ToUInt32(trialMountainClassCPre, 0x1B8) == 0xAFD7E5BBu &&
+    BitConverter.ToUInt32(trialMountainClassCFinal, 0x1B8) == 0xAFD7E5BBu &&
+    BitConverter.ToUInt32(trialMountainClassCState, 0x40) == 0xAFD7E5BBu &&
+    Convert.ToHexString(
+        System.Security.Cryptography.SHA256.HashData(
+            trialMountainClassCPre)) ==
+        "B8C0A7851D52B1EA6907B9E1ABCA45B29822BD0A256F0C0FE3C4047AF37E690F" &&
+    Convert.ToHexString(
+        System.Security.Cryptography.SHA256.HashData(
+            trialMountainClassCFinal)) ==
+        "0440EB081039BD92E68AF0D78E90840DEE0944028A850F3E66A3CF839B3389E9" &&
+    Convert.ToHexString(
+        System.Security.Cryptography.SHA256.HashData(
+            trialMountainClassCState)) ==
+        "CA4E3C635A36EA2A9948573BB6A54114B91A5ED46D3732A5B8279A0DC15C9D44",
+    "direct Trial Mountain launch lost its Class C native course identity");
+Require(
+    arcadeRendererAuditHarness.Contains(
+        "@('--arcade-race', 'trial-mountain', $data)",
+        StringComparison.Ordinal) &&
+    arcadeRendererAuditHarness.Contains(
+        "RECOMPONE_DISABLE_LIVE_INPUT = $null",
+        StringComparison.Ordinal) &&
+    arcadeRendererAuditHarness.Contains(
+        "RECOMPONE_DISABLE_DISPLAY_CAPTURE = '1'",
+        StringComparison.Ordinal) &&
+    arcadeRendererAuditHarness.Contains(
+        "RECOMPONE_GT2_ARCADE_UNLOCK_ALL_COURSES = $null",
+        StringComparison.Ordinal),
+    "Arcade renderer audit no longer launches direct Trial Mountain with live input and captures disabled");
 bool true60GuestFixed = (bool)gt2CompatType.GetField(
     "True60HzEnabled",
     BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;

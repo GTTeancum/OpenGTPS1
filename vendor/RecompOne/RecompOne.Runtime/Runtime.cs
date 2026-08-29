@@ -272,6 +272,11 @@ public static class Runtime
             return;
 
         const uint creditsAddress = 0x801D1568u;
+        // Arcade's course selector reads its transformed 21-byte completion
+        // array from this address (func_8001D120 uses base + course index).
+        // This is not the raw save-file offset in the shared GT2 data block.
+        const uint arcadeResultsAddress = 0x801C93F8u;
+        const int arcadeCourseCount = 21;
         const uint firstLicenseTest = 0x801CACF8u;
         const uint licenseTestStride = 0xA4u;
         int completed = 0;
@@ -294,11 +299,22 @@ public static class Runtime
             classes[license] = string.Join(
                 ',', results.Select(result => $"0x{result:X4}"));
         }
+        byte[] arcadeResults = new byte[arcadeCourseCount];
+        int arcadeDifficult = 0;
+        for (int course = 0; course < arcadeCourseCount; course++)
+        {
+            byte result = Mem.ReadU8(arcadeResultsAddress + (uint)course);
+            arcadeResults[course] = result;
+            if (result == 0x04)
+                arcadeDifficult++;
+        }
 
         _saveTraceReported = true;
         Console.Error.WriteLine(
             $"[GT2-Save] credits={Mem.ReadU32(creditsAddress)} " +
             $"licenseTestsCompleted={completed}/60 bronze={bronze}/60 " +
+            $"arcadeDifficult={arcadeDifficult}/{arcadeCourseCount} " +
+            $"arcade=[{string.Join(',', arcadeResults.Select(result => $"0x{result:X2}"))}] " +
             $"classes=[{string.Join('|', classes)}]");
     }
 

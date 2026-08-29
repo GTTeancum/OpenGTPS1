@@ -30,12 +30,13 @@ used by this repository:
 
 Renderer reconstruction is constrained as follows:
 
-- Seattle Circuit is the sole root-cause development course until its race and
-  every replay/attract camera are correct. Both manual driving and replay views
-  are required validation scenarios. Fixes must remain general renderer
-  invariants; no Seattle-specific rendering exceptions are permitted.
-- A direct command-line Seattle Arcade race entry must replace menu navigation
-  in the development loop. Only the in-race HUD is part of this vertical slice.
+- Seattle Circuit is the initial root-cause development course. After its race
+  and replay/attract cameras pass, audits expand to other courses to expose new
+  renderer failures. Both manual driving and replay views are required
+  validation scenarios. Fixes must remain general renderer invariants; no
+  course-specific rendering exceptions are permitted.
+- Direct command-line Arcade race entries replace menu navigation in the
+  development loop. Only the in-race HUD is part of this vertical slice.
 - Real-PS1 behavior is a development oracle for game state, transforms,
   visibility, materials, and timing. Affine texture warping and other
   rasterizer-era limitations are not fidelity targets.
@@ -76,17 +77,24 @@ Renderer reconstruction is constrained as follows:
   objects appear when and where intended, remain stable, do not clip at screen
   edges, and produce no geometry, projection, ordering, or road artifacts.
 
-The development host exposes two no-menu Seattle entry points:
+The development host exposes no-menu race and replay entry points for Seattle
+Circuit, Special Stage Route 5, and Trial Mountain Circuit:
 
 ```powershell
 GranTurismo2PC.exe --arcade-race seattle-circuit
 GranTurismo2PC.exe --arcade-replay seattle-circuit
+GranTurismo2PC.exe --arcade-race special-stage-route-5
+GranTurismo2PC.exe --arcade-replay special-stage-route-5
+GranTurismo2PC.exe --arcade-race trial-mountain
+GranTurismo2PC.exe --arcade-replay trial-mountain
 ```
 
 The race switch runs Arcade overlay 2's native asynchronous parameter-database
-setup, installs the byte-exact Seattle selection input captured before native
-finalization, and invokes the original race constructor. It verifies the
-resulting configuration and race-state invariants, copies the constructor's
+setup, installs a verified byte-exact native selection captured before
+finalization, and invokes the original race constructor. Trial Mountain reuses
+the verified native Class C selection and changes only the course identity
+before construction, yielding the Citroen Xsara player roster. The host verifies
+the resulting configuration and race-state invariants, copies the constructor's
 own finalized selection through the stock overlay-3 handoff, and resumes the
 original loader. It does not copy a downstream vehicle or race-state fixture.
 The skipped controller belongs only to the unconstructed menu fade scene.

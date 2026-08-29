@@ -785,14 +785,29 @@ public static class GT2Compat
             "special-stage-route-5",
             StringComparison.OrdinalIgnoreCase) == true;
 
+    static bool DirectTrialMountain =>
+        DirectArcadeRace?.Equals(
+            "trial-mountain",
+            StringComparison.OrdinalIgnoreCase) == true;
+
+    // Trial Mountain deliberately uses the verified Class C Xsara template.
+    // It gives renderer audits a slower, keyboard-manageable field while the
+    // native constructor still owns every vehicle and race-state record.
+    static bool DirectClassC =>
+        DirectSpecialStageRoute5 || DirectTrialMountain;
+
     static bool IsSupportedDirectArcadeRace() =>
         DirectArcadeRace?.Equals(
             "seattle-circuit",
             StringComparison.OrdinalIgnoreCase) == true ||
-        DirectSpecialStageRoute5;
+        DirectClassC;
 
     static string DirectArcadeRaceLabel =>
-        DirectSpecialStageRoute5 ? "Special Stage Route 5" : "Seattle Circuit";
+        DirectTrialMountain
+            ? "Trial Mountain Circuit"
+            : DirectSpecialStageRoute5
+                ? "Special Stage Route 5"
+                : "Seattle Circuit";
 
     /// <summary>
     /// A unified-menu handoff has already shown the Simulation-disc legal and
@@ -818,10 +833,11 @@ public static class GT2Compat
 
     /// <summary>
     /// Once overlay 2's own asynchronous setup has created the merged Arcade
-    /// parameter database, install the deterministic pre-finalization Seattle
-    /// selection record. The generated guest hook then calls the original race
+    /// parameter database, install a deterministic pre-finalization selection
+    /// record. The generated guest hook then calls the original race
     /// constructor; no vehicle, race-state, or post-construction data is
-    /// synthesized by the host.
+    /// synthesized by the host. Trial Mountain changes only the native course
+    /// identity in the verified Class C record.
     /// </summary>
     public static bool PrepareDirectArcadeRaceConfig(IMemory m)
     {
@@ -878,9 +894,9 @@ public static class GT2Compat
     }
 
     public static uint DirectArcadeRaceSelectionA =>
-        DirectSpecialStageRoute5 ? 0xB957B957u : 0x79977997u;
+        DirectClassC ? 0xB957B957u : 0x79977997u;
     public static uint DirectArcadeRaceSelectionB =>
-        DirectSpecialStageRoute5 ? 0x4EDA4EDAu : 0x131E131Eu;
+        DirectClassC ? 0x4EDA4EDAu : 0x131E131Eu;
 
     /// <summary>
     /// Copy overlay 2's verified finalized selection into the fixed handoff
@@ -905,7 +921,7 @@ public static class GT2Compat
 
     /// <summary>
     /// Fail closed unless the unmodified Arcade constructor reproduces the
-    /// exact finalized Seattle selection and all non-roster race state. GT2
+    /// exact finalized selection and all non-roster race state. GT2
     /// selects the five opponents from its live frontend RNG state, so each
     /// native vehicle record is validated structurally instead of requiring a
     /// particular menu-timing-dependent lineup.
@@ -927,16 +943,18 @@ public static class GT2Compat
         VerifyDirectArcadeRaceBytes(
             m,
             0x801C3010u,
-            DirectSpecialStageRoute5
-                ? DirectSpecialStageRoute5RaceConfigBase64
-                : DirectSeattleRaceConfigBase64,
+            BuildDirectArcadeTemplate(
+                DirectSeattleRaceConfigBase64,
+                DirectSpecialStageRoute5RaceConfigBase64,
+                raceState: false),
             0x2D4,
             "finalized config");
         VerifyDirectArcadeRaceState(
             m,
-            DirectSpecialStageRoute5
-                ? DirectSpecialStageRoute5RaceStateBase64
-                : DirectSeattleRaceStateBase64);
+            BuildDirectArcadeTemplate(
+                DirectSeattleRaceStateBase64,
+                DirectSpecialStageRoute5RaceStateBase64,
+                raceState: true));
         Console.WriteLine(
             $"[GT2-Direct] native {DirectArcadeRaceLabel} construction " +
             "verified; " +
@@ -1082,10 +1100,10 @@ public static class GT2Compat
     static void InstallDirectArcadePreFinalizeConfig(IMemory m, uint address)
     {
         const int expectedLength = 0x2D4;
-        byte[] config = Convert.FromBase64String(
-            DirectSpecialStageRoute5
-                ? DirectSpecialStageRoute5PreFinalizeConfigBase64
-                : DirectSeattlePreFinalizeConfigBase64);
+        byte[] config = BuildDirectArcadeTemplate(
+            DirectSeattlePreFinalizeConfigBase64,
+            DirectSpecialStageRoute5PreFinalizeConfigBase64,
+            raceState: false);
         if (config.Length != expectedLength)
             throw new InvalidDataException(
                 $"Direct {DirectArcadeRaceLabel} race config has " +
@@ -1100,14 +1118,52 @@ public static class GT2Compat
             "native-constructor=overlay-2");
     }
 
+    const string DirectTrialMountainCourseName = "Trial Mountain Circuit";
+    const uint DirectTrialMountainCourseHash = 0xAFD7E5BBu;
+
+    static byte[] BuildDirectArcadeTemplate(
+        string seattleBase64,
+        string classCBase64,
+        bool raceState)
+    {
+        byte[] template = Convert.FromBase64String(
+            DirectClassC ? classCBase64 : seattleBase64);
+        if (DirectTrialMountain)
+            ReplaceDirectArcadeCourseIdentity(template, raceState);
+        return template;
+    }
+
+    static void ReplaceDirectArcadeCourseIdentity(
+        byte[] template,
+        bool raceState)
+    {
+        int expectedLength = raceState ? 0x58C : 0x2D4;
+        int nameOffset = raceState ? 0x20 : 0xB8;
+        int nameCapacity = raceState ? 0x20 : 0x100;
+        int hashOffset = raceState ? 0x40 : 0x1B8;
+        if (template.Length != expectedLength)
+            throw new InvalidDataException(
+                $"Direct Trial Mountain template has {template.Length} " +
+                $"bytes; expected {expectedLength}");
+
+        byte[] name = System.Text.Encoding.ASCII.GetBytes(
+            DirectTrialMountainCourseName);
+        if (name.Length >= nameCapacity)
+            throw new InvalidDataException(
+                "Direct Trial Mountain course name exceeds its native field");
+        Array.Clear(template, nameOffset, nameCapacity);
+        name.CopyTo(template, nameOffset);
+        BitConverter.GetBytes(DirectTrialMountainCourseHash)
+            .CopyTo(template, hashOffset);
+    }
+
     static void VerifyDirectArcadeRaceBytes(
         IMemory m,
         uint address,
-        string expectedBase64,
+        byte[] expected,
         int expectedLength,
         string label)
     {
-        byte[] expected = Convert.FromBase64String(expectedBase64);
         if (expected.Length != expectedLength)
             throw new InvalidDataException(
                 $"Direct {DirectArcadeRaceLabel} expected {label} has " +
@@ -1126,7 +1182,7 @@ public static class GT2Compat
 
     static void VerifyDirectArcadeRaceState(
         IMemory m,
-        string expectedBase64)
+        byte[] expected)
     {
         const uint address = 0x801D52BCu;
         const int expectedLength = 0x58C;
@@ -1138,7 +1194,6 @@ public static class GT2Compat
         const int nameOffset = 0x90;
         const int nameCapacity = 0x40;
 
-        byte[] expected = Convert.FromBase64String(expectedBase64);
         if (expected.Length != expectedLength)
             throw new InvalidDataException(
                 $"Direct {DirectArcadeRaceLabel} reference race state has " +

@@ -1,0 +1,12 @@
+# Native Arcade title: Start Game -> Replay Theater -> Options -> Save Game.
+700+4=DOWN
+760+4=DOWN
+820+4=DOWN
+880+4=CROSS
+
+# Select memory-card slot 1 and accept the create/save prompts.
+1120+4=CROSS
+1440+4=LEFT
+1500+4=CROSS
+1840+4=CROSS
+2500+4=CROSS
