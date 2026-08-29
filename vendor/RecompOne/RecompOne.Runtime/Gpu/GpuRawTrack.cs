@@ -1644,13 +1644,13 @@ public sealed partial class Gpu
                         HleVertex b = RawTrackVertex(
                             in originB,
                             colors[1],
-                            packetUvs[2],
+                            packetUvs[1],
                             environment.DrawOffsetX,
                             environment.DrawOffsetY);
                         HleVertex c = RawTrackVertex(
                             in originC,
                             colors[2],
-                            packetUvs[1],
+                            packetUvs[2],
                             environment.DrawOffsetX,
                             environment.DrawOffsetY);
                         _liveWorldCapture.RecordResidentTrackTriangle(
@@ -3796,9 +3796,10 @@ public sealed partial class Gpu
 
     /// <summary>
     /// Reconstructs the unsigned coverage value GT2 compares with the U16 at
-    /// texture-record +0x0C. Triangles use NCLIP directly. Quads add the two
-    /// FIFO NCLIP results and take the two's-complement absolute value before
-    /// choosing the base or +0x10 material record.
+    /// texture-record +0x0C. GT2 deliberately swaps source corners 1 and 2
+    /// before triangle NCLIP. For quads, its FIFO evaluates the authored first
+    /// triangle followed by 2,0,3, then takes abs(second - first). These are
+    /// material-LOD orders; they are independent of the later packet split.
     /// </summary>
     static uint RawTrackMaterialCoverage(
         GteProjectionOrigin[] origins,
@@ -3806,28 +3807,24 @@ public sealed partial class Gpu
         bool quad,
         TrackMeshProjectionPath projectionPath)
     {
+        _ = projectionPath;
         if (!quad)
         {
             long triangle = RawTrackGteNclip(
                 in origins[indices[0]],
-                in origins[indices[1]],
-                in origins[indices[2]]);
+                in origins[indices[2]],
+                in origins[indices[1]]);
             return RawTrackMaterialCoverageFromNclips(
                 unchecked((int)triangle),
                 0,
                 false);
         }
 
-        bool primary = projectionPath == TrackMeshProjectionPath.Primary;
         GteProjectionOrigin firstA = origins[indices[0]];
         GteProjectionOrigin firstB = origins[indices[1]];
         GteProjectionOrigin firstC = origins[indices[2]];
-        GteProjectionOrigin secondA = primary
-            ? origins[indices[1]]
-            : origins[indices[2]];
-        GteProjectionOrigin secondB = primary
-            ? origins[indices[2]]
-            : origins[indices[0]];
+        GteProjectionOrigin secondA = origins[indices[2]];
+        GteProjectionOrigin secondB = origins[indices[0]];
         GteProjectionOrigin secondC = origins[indices[3]];
         int first = unchecked((int)RawTrackGteNclip(
             in firstA,
@@ -3847,7 +3844,7 @@ public sealed partial class Gpu
     {
         if (!quad)
             return unchecked((uint)first);
-        uint combined = unchecked((uint)first + (uint)second);
+        uint combined = unchecked((uint)second - (uint)first);
         if ((int)combined < 0)
             combined = unchecked(0u - combined);
         return combined;
@@ -4770,13 +4767,18 @@ public sealed partial class Gpu
 
     static bool RawTrackMaterialEqual(
         PrimFlags left,
-        PrimFlags right) =>
-        left.Textured == right.Textured &&
-        left.SemiTrans == right.SemiTrans &&
-        left.RawTexture == right.RawTexture &&
-        left.Gouraud == right.Gouraud &&
-        left.TPage == right.TPage &&
-        left.Clut == right.Clut;
+        PrimFlags right)
+    {
+        if (left.Textured != right.Textured ||
+            left.SemiTrans != right.SemiTrans ||
+            left.RawTexture != right.RawTexture ||
+            left.Gouraud != right.Gouraud)
+        {
+            return false;
+        }
+        return !left.Textured ||
+            left.TPage == right.TPage && left.Clut == right.Clut;
+    }
 
     static string RawTrackUv(HleVertex vertex) =>
         $"{vertex.U},{vertex.V}";

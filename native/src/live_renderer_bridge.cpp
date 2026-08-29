@@ -283,7 +283,18 @@ std::uint64_t fingerprint_track_triangle(
     constexpr std::uint64_t offset = 14695981039346656037ULL;
     std::uint64_t hash = offset;
     if (include_material) {
-        fingerprint_add(&hash, triangle.primitive_flags, 4);
+        // Resident decoding adds renderer-only relationship annotations after
+        // reproducing the guest packet. They intentionally differ from the
+        // managed diagnostic expansion and are not PS1 material state. Keep
+        // every captured material bit in the equivalence oracle while
+        // excluding only those typed road-overlay annotations.
+        constexpr std::uint32_t resident_annotation_mask =
+            opengt::render::world_primitive_track_overlay_layer_mask |
+            opengt::render::world_primitive_track_overlay_support_flag;
+        fingerprint_add(
+            &hash,
+            triangle.primitive_flags & ~resident_annotation_mask,
+            4);
         fingerprint_add(&hash, triangle.texture_page, 2);
         fingerprint_add(&hash, triangle.clut, 2);
         fingerprint_add(
@@ -1301,7 +1312,6 @@ struct LiveContext {
     std::uint64_t resident_lod_textured_evaluations{};
     std::uint64_t resident_lod_authored_near{};
     std::uint64_t resident_lod_authored_distant{};
-    std::uint64_t resident_lod_suppressed_distant{};
     std::uint64_t resident_lod_authored_switches{};
     std::uint32_t resident_lod_switch_traces{};
     std::unordered_map<std::uint64_t, bool> resident_lod_previous;
@@ -1617,24 +1627,18 @@ std::uint32_t resident_material_coverage(
     const auto& i = primitive.indices;
     if ((primitive.flags & resident_primitive_quad) == 0) {
         return static_cast<std::uint32_t>(resident_nclip(
-            view[i[0]], view[i[1]], view[i[2]], instance));
+            view[i[0]], view[i[2]], view[i[1]], instance));
     }
-    // Material LOD is evaluated from GT2's authored index order, not from the
-    // packet-corner order used by the later facing/split branches.  Conflating
-    // those two orders selected the wrong near/far texture record for roughly
-    // 900 visible Seattle triangles per frame.
+    // Match the guest GTE FIFO exactly. The first NCLIP is cyclically
+    // equivalent to authored 0,1,2. Pushing corner 3 produces 2,0,3 for the
+    // second NCLIP; GT2 compares abs(second - first) with the LOD threshold.
     const std::int32_t first = static_cast<std::int32_t>(resident_nclip(
         view[i[0]], view[i[1]], view[i[2]], instance));
-    const bool primary =
-        (primitive.flags & resident_primitive_primary_path) != 0;
-    const std::int32_t second = primary
-        ? static_cast<std::int32_t>(resident_nclip(
-            view[i[1]], view[i[2]], view[i[3]], instance))
-        : static_cast<std::int32_t>(resident_nclip(
-            view[i[2]], view[i[0]], view[i[3]], instance));
+    const std::int32_t second = static_cast<std::int32_t>(resident_nclip(
+        view[i[2]], view[i[0]], view[i[3]], instance));
     std::uint32_t combined =
-        static_cast<std::uint32_t>(first) +
-        static_cast<std::uint32_t>(second);
+        static_cast<std::uint32_t>(second) -
+        static_cast<std::uint32_t>(first);
     if (static_cast<std::int32_t>(combined) < 0)
         combined = 0U - combined;
     return combined;
@@ -1920,18 +1924,9 @@ std::uint32_t append_resident_course(
                 ++context->resident_lod_textured_evaluations;
                 if (authored_distant) {
                     ++context->resident_lod_authored_distant;
-                    ++context->resident_lod_suppressed_distant;
                 } else {
                     ++context->resident_lod_authored_near;
                 }
-
-                // GT2's distant record is a separately-authored texture/UV
-                // substitution, not a mip level.  Re-evaluating its abrupt
-                // NCLIP threshold at modern resolution makes roads blur,
-                // decals flicker, and directional art flip as the threshold
-                // oscillates.  Keep the high-detail authored material stable;
-                // the modern pixel-footprint filter handles minification.
-                material = primitive.near_material;
 
                 if (resident_lod_diagnostics_enabled()) {
                     const std::uint64_t key =
@@ -1948,7 +1943,7 @@ std::uint32_t append_resident_course(
                                 "[Native-Resident-LOD-Switch] frame=%llu "
                                 "poll=%d object=%u primitive=%08x "
                                 "threshold=%u coverage=%u authored=%s "
-                                "rendered=near\n",
+                                "rendered=%s\n",
                                 static_cast<unsigned long long>(
                                     header.frame_index),
                                 header.input_poll,
@@ -1957,6 +1952,7 @@ std::uint32_t append_resident_course(
                                 static_cast<unsigned>(
                                     primitive.lod_threshold),
                                 coverage,
+                                authored_distant ? "far" : "near",
                                 authored_distant ? "far" : "near");
                             ++context->resident_lod_switch_traces;
                         }
@@ -1993,7 +1989,7 @@ std::uint32_t append_resident_course(
                     static_cast<unsigned>(primitive.lod_threshold),
                     coverage,
                     authored_distant ? "far" : "near",
-                    textured ? "near" : authored_distant ? "far" : "near",
+                    authored_distant ? "far" : "near",
                     instance.depth_scale_exponent,
                     view[i[0]].x, view[i[0]].y, view[i[0]].z,
                     view[i[1]].x, view[i[1]].y, view[i[1]].z,
@@ -2023,7 +2019,7 @@ std::uint32_t append_resident_course(
                     primitive, material, instance,
                     view[i[0]], view[i[1]], view[i[2]],
                     0, 1, 2,
-                    0, 2, 1,
+                    0, 1, 2,
                     &context->triangles);
                 traced_flare_triangles += traced_flare ? 1U : 0U;
                 continue;
@@ -2392,11 +2388,10 @@ std::uint32_t build_frame(
             ordered,
             order_mismatched,
             material_order_mismatched);
-        // The PC renderer deliberately replaces GT2's abrupt distant texture
-        // records with stable near materials.  Material differences are thus
-        // expected here; geometry identity and authored insertion order remain
-        // mandatory and are the equivalence contract this audit enforces.
-        if (order_mismatched != 0)
+        // Renderer-only road-overlay annotations are normalized by the
+        // fingerprint. Everything else -- geometry, order, material, UV, and
+        // color -- must be byte-equivalent to the managed packet expansion.
+        if (order_mismatched != 0 || material_order_mismatched != 0)
             return 183U;
         context->triangles.resize(expanded_triangle_count);
     } else if (!interleave_resident_course(
@@ -2862,8 +2857,7 @@ void opengt_live_destroy(void* handle) {
                 stderr,
                 "[Native-Resident-LOD-Summary] frames=%llu "
                 "texturedEvaluations=%llu authoredNear=%llu "
-                "authoredFar=%llu suppressedFar=%llu "
-                "authoredSwitches=%llu renderedFar=0\n",
+                "authoredFar=%llu authoredSwitches=%llu renderedFar=%llu\n",
                 static_cast<unsigned long long>(
                     context->resident_lod_frames),
                 static_cast<unsigned long long>(
@@ -2873,9 +2867,9 @@ void opengt_live_destroy(void* handle) {
                 static_cast<unsigned long long>(
                     context->resident_lod_authored_distant),
                 static_cast<unsigned long long>(
-                    context->resident_lod_suppressed_distant),
+                    context->resident_lod_authored_switches),
                 static_cast<unsigned long long>(
-                    context->resident_lod_authored_switches));
+                    context->resident_lod_authored_distant));
         }
     }
     delete context;

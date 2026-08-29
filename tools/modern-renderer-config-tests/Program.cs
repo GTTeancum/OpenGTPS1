@@ -465,6 +465,10 @@ string arcadeEnhancements = ReadRepoFile(
     @"tools\apply_gt2_arcade_enhancements.py");
 string presentationRendererSource = ReadRepoFile(
     @"vendor\RecompOne\RecompOne.Runtime\Host\Window\PresentationRenderer.cs");
+string oggMusicSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Hardware\OggMusic.cs");
+string libCdSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\sdk\LibCd.cs");
 string motionCaptureHarness = ReadRepoFile(
     @"tools\capture_modern_renderer_final_motion.ps1");
 string ssr5VehicleBoundaryHarness = ReadRepoFile(
@@ -1414,9 +1418,29 @@ MethodInfo materialCoverage = gpuType.GetMethod(
 Require(
     (uint)materialCoverage.Invoke(null, [500, 0, false])! == 500u &&
     (uint)materialCoverage.Invoke(null, [-1, 0, false])! == uint.MaxValue &&
-    (uint)materialCoverage.Invoke(null, [300, -500, true])! == 200u &&
-    (uint)materialCoverage.Invoke(null, [-700, 200, true])! == 500u,
-    "authored course material LOD no longer matches GT2's NCLIP arithmetic");
+    (uint)materialCoverage.Invoke(null, [300, -500, true])! == 800u &&
+    (uint)materialCoverage.Invoke(null, [-700, 200, true])! == 900u &&
+    (uint)materialCoverage.Invoke(null, [400, 250, true])! == 150u,
+    "authored course material LOD no longer matches GT2's FIFO NCLIP arithmetic");
+Require(
+    liveBridgeSource.Contains(
+        "static_cast<std::uint32_t>(second) -",
+        StringComparison.Ordinal) &&
+    liveBridgeSource.Contains(
+        "static_cast<std::uint32_t>(first);",
+        StringComparison.Ordinal) &&
+    liveBridgeSource.Contains("renderedFar=%llu", StringComparison.Ordinal) &&
+    !liveBridgeSource.Contains(
+        "material = primitive.near_material;",
+        StringComparison.Ordinal),
+    "native resident course rendering no longer preserves GT2's authored material selection");
+Require(
+    oggMusicSource.Contains("public static void PauseMusicStream()", StringComparison.Ordinal) &&
+    oggMusicSource.Contains("public static void PrepareForCdPlay()", StringComparison.Ordinal) &&
+    libCdSource.Contains("case Pause:", StringComparison.Ordinal) &&
+    libCdSource.Contains("case Stop: case Init:", StringComparison.Ordinal) &&
+    !libCdSource.Contains("case Pause: case Stop", StringComparison.Ordinal),
+    "CD Pause no longer preserves the external music decoder for resume");
 MethodInfo clippedTriangleArea = gpuType.GetMethod(
     "RawTrackClippedTriangleArea",
     BindingFlags.NonPublic | BindingFlags.Static)!;

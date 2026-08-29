@@ -1480,9 +1480,10 @@ Draw distance and LOD are scene-selection policies, not shader tricks.
   14-bit object index, and clears competing LOD selector bits. GT2's auxiliary
   visibility mask is preserved because it selects mutually exclusive camera-
   region alternatives; model zero supplies maximum detail for admitted objects.
-- Stock race and replay radial distance gates are permanently removed and the
-  highest course/vehicle material detail is fixed. Public settings and process
-  environment cannot restore stock distance or LOD behavior.
+- Stock race and replay radial distance gates are permanently removed, and the
+  highest course and vehicle geometry is fixed. Course texture records remain
+  selected by GT2's authored per-primitive material rule; public settings and
+  process environment cannot restore stock distance or geometry LOD behavior.
 - Invalid stock pointers or failure to locate the authoritative sector are
   fatal in a release build. They cannot silently fall back to current-sector
   packets and reintroduce pop-in.
@@ -1513,6 +1514,25 @@ former single false owner. Native grouping independently reports object IDs
 0 through 5 across 36 body/part/wheel transform groups. This identity is used
 by live draw ordering, wheel grouping, and perspective-UV edge continuity; it
 is not diagnostic-only metadata.
+
+Course material selection reproduces the guest GTE FIFO rather than treating
+the secondary texture record as an ordinary modern mip. A triangle evaluates
+`NCLIP(0,2,1)`. A quad evaluates `NCLIP(0,1,2)` and then the FIFO state after
+corner 3 is pushed, `NCLIP(2,0,3)`; the threshold input is the unsigned absolute
+value of `second - first`. The selected record supplies the texture page,
+palette, and all authored UV corners. The geometry and packet UV order remain
+the source order `0,1,2`, independent of the GTE's material-selection order.
+This distinction is global: it fixes directional billboards, alpha-edged
+foliage and cliffs, road shading, and kerbs without recognizing a track,
+object, texture, or color.
+
+The retained Trial Mountain guest-packet correlation closed 389,231 matched
+triangles with zero UV, material, or color mismatches. An AI-driven moving
+camera run through poll 9,000 then compared 13,546,490 native resident
+triangles against the managed expansion with zero geometry, order, material,
+or UV mismatches while rendering 8,522,966 authored secondary-material
+selections. Bounded Seattle and Special Stage Route 5 runs independently close
+715,164/715,164 and 663,957/663,957 resident triangles with zero mismatches.
 
 A clean direct replay bounded vehicle diagnostics to polls 1400 through 1440.
 At poll 1420 the frame contained 23 exact transform groups and 2,417 vehicle

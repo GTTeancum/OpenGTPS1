@@ -847,6 +847,7 @@ public static class LibCd
         _cddaLastReportSecond = -1;
         CddaAudio.Reset();
         XaAudio.Reset();
+        OggMusic.SetMusicStreamActive(false);
         _filterFile = _filterChannel = 0;
         _cdMixLl = _cdMixRr = 0x80;
         _cdMixLr = _cdMixRl = 0;
@@ -994,7 +995,24 @@ public static class LibCd
                 for (int i = 4; i < _lastResult.Length; i++) _lastResult[i] = 0;
                 if (result != 0) WriteResult(m, result);
                 return CompleteImmediateCommand(com, result, notify);
-            case Pause: case Stop: case Init:
+            case Pause:
+                _status = (byte)((_status | StatMotor) &
+                    ~(StatRead | StatSeek | StatPlay));
+                LibCdStream.OnStopStream();
+                _readActive = false;
+                _xaActive = false;
+                _readSSectorPhase = 0;
+                _readSFileEndLba = int.MaxValue;
+                _xaReportLba = -1;
+                _xaPendingReportLba = -1;
+                _xaLastTraceSecond = -1;
+                _cddaActive = false;
+                CddaAudio.Reset();
+                XaAudio.Reset();
+                OggMusic.PauseMusicStream();
+                Dispatcher.ClearPending();
+                break;
+            case Stop: case Init:
                 _status = (byte)((_status | StatMotor) &
                     ~(StatRead | StatSeek | StatPlay));
                 LibCdStream.OnStopStream();
@@ -1027,7 +1045,7 @@ public static class LibCd
                 _cddaLastReportSecond = -1;
                 XaAudio.Reset();
                 CddaAudio.Reset();
-                OggMusic.SetMusicStreamActive(false);
+                OggMusic.PrepareForCdPlay();
                 EnsureXaThread();
                 Console.Error.WriteLine($"[CDDA] play LBA={_cddaLba} mode=0x{_mode:X2}");
                 break;

@@ -25,6 +25,7 @@ public static class OggMusic
     private static double _phase;
     private static float _s0L, _s0R, _s1L, _s1R;
     private static bool _streamActive;
+    private static bool _streamPaused;
     private static string _currentTrackLabel = "";
     private static int _currentTrackNumber;
     private static int _completedTracks;
@@ -55,6 +56,10 @@ public static class OggMusic
             lock (Gate)
             {
                 if (Tracks.Count == 0) return "empty";
+                if (_streamPaused)
+                    return
+                        $"paused={_currentTrackNumber}/{Tracks.Count} " +
+                        $"label=\"{_currentTrackLabel}\" outputFrames={_outputFrames}";
                 if (!_streamActive) return $"idle queue={Tracks.Count}";
                 return
                     $"playing={_currentTrackNumber}/{Tracks.Count} " +
@@ -72,6 +77,7 @@ public static class OggMusic
             Tracks.Clear();
             _nextTrack = 0;
             _streamActive = false;
+            _streamPaused = false;
             _currentTrackLabel = "";
             _currentTrackNumber = 0;
             _completedTracks = 0;
@@ -122,24 +128,65 @@ public static class OggMusic
         lock (Gate)
         {
             active &= Tracks.Count > 0;
-            if (_streamActive == active) return;
-            _streamActive = active;
             if (active)
             {
+                if (_streamActive) return;
+                if (_streamPaused && _reader != null)
+                {
+                    _streamPaused = false;
+                    _streamActive = true;
+                    Console.WriteLine(
+                        $"[Music] stream resumed; " +
+                        $"label=\"{_currentTrackLabel}\" " +
+                        $"outputFrames={_outputFrames}");
+                    return;
+                }
+                _streamPaused = false;
+                _streamActive = true;
                 Console.WriteLine($"[Music] stream active; queue={Tracks.Count}");
                 if (!OpenNextTrack())
                     _streamActive = false;
             }
             else
             {
-                if (_currentTrackLabel.Length > 0)
-                    Console.WriteLine(
-                        $"[Music] stream inactive; completed={_completedTracks} " +
-                        $"loops={_queueLoops} outputFrames={_outputFrames}");
-                DisposeReader();
-                _currentTrackLabel = "";
-                _currentTrackNumber = 0;
+                if (!_streamActive && !_streamPaused && _reader == null)
+                    return;
+                StopMusicStream();
             }
+        }
+    }
+
+    public static void PauseMusicStream()
+    {
+        lock (Gate)
+        {
+            if (!_streamActive)
+                return;
+            _streamActive = false;
+            _streamPaused = _reader != null;
+            if (_streamPaused)
+            {
+                Console.WriteLine(
+                    $"[Music] stream paused; " +
+                    $"label=\"{_currentTrackLabel}\" " +
+                    $"outputFrames={_outputFrames}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// A fresh CD Play command replaces an existing OGG stream. The Play used
+    /// to leave the pause screen must retain a paused decoder so the following
+    /// music-sector activation resumes at the same sample.
+    /// </summary>
+    public static void PrepareForCdPlay()
+    {
+        lock (Gate)
+        {
+            if (_streamPaused)
+                return;
+            if (_streamActive || _reader != null)
+                StopMusicStream();
         }
     }
 
@@ -155,6 +202,7 @@ public static class OggMusic
             if (_reader == null && !OpenNextTrack())
             {
                 _streamActive = false;
+                _streamPaused = false;
                 left = right = 0;
                 return false;
             }
@@ -194,6 +242,7 @@ public static class OggMusic
                     if (!OpenNextTrack())
                     {
                         _streamActive = false;
+                        _streamPaused = false;
                         left = right = 0;
                         return false;
                     }
@@ -237,6 +286,7 @@ public static class OggMusic
                 }
                 _currentTrackLabel = track.QueueLabel;
                 _currentTrackNumber = trackIndex + 1;
+                _streamPaused = false;
                 Console.WriteLine(
                     $"[Music] now playing: {track.QueueLabel} " +
                     $"queue={_currentTrackNumber}/{Tracks.Count} " +
@@ -316,5 +366,20 @@ public static class OggMusic
         _decodeOffset = _decodeCount = 0;
         _phase = 0;
         _s0L = _s0R = _s1L = _s1R = 0;
+    }
+
+    private static void StopMusicStream()
+    {
+        if (_currentTrackLabel.Length > 0)
+        {
+            Console.WriteLine(
+                $"[Music] stream inactive; completed={_completedTracks} " +
+                $"loops={_queueLoops} outputFrames={_outputFrames}");
+        }
+        _streamActive = false;
+        _streamPaused = false;
+        DisposeReader();
+        _currentTrackLabel = "";
+        _currentTrackNumber = 0;
     }
 }
