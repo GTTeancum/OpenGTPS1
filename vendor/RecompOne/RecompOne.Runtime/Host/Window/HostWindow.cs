@@ -577,8 +577,34 @@ internal static class HostWindow
                 ProbeHleDisplay(
                     _glBackend, gpu, gpu.DisplayWidth, gpu.DisplayHeight);
 
-            bool nativePresented = PresentNativeWorld(gl, gpu);
-            if (nativePresented)
+            bool transitionCoverPresented = false;
+            if (Sdk.GT2Compat.UnifiedArcadeTransitionCoverActive &&
+                Hle.GpuHle.Active &&
+                _glBackend is { Ready: true })
+            {
+                const int coverWidth = 512;
+                const int coverHeight = 480;
+                var wf = _window!.FramebufferSize;
+                var (tex, tw, th, aspect) = _glBackend.PresentDisplay(
+                    0, 0, coverWidth, coverHeight, false,
+                    outW: wf.X, outH: wf.Y);
+                if (tex != 0)
+                {
+                    PresentTexture(gl, tex, tw, th, aspect);
+                    transitionCoverPresented = true;
+                }
+                gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+                gl.Viewport(0, 0, (uint)wf.X, (uint)wf.Y);
+            }
+
+            bool nativePresented =
+                !transitionCoverPresented && PresentNativeWorld(gl, gpu);
+            if (transitionCoverPresented)
+            {
+                // Preserve the unified title image until Arcade overlay 1 has
+                // completed its first frontend update.
+            }
+            else if (nativePresented)
             {
                 // PresentNativeWorld already submitted the completed texture
                 // to the output panel.

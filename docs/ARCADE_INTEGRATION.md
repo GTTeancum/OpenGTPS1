@@ -84,6 +84,13 @@ disc-visible `GT2.VOL` at LBA 473. The Arcade executable, overlays, raw
 - `0x80018574` and `0x800186D0` are explicit Simulation overlay-1 function
   roots. They are original callback entries required by the retail Option path
   but were not discovered by the previous linear sweep.
+- The unified renderer holds the already-selected Arcade title panel across
+  guest-image and display initialization, then releases it only after Arcade
+  overlay 1 completes its first frontend update. The player therefore sees a
+  direct menu-to-menu transition rather than the intermediate disc-reset
+  states. While that frontend is idle, its own counter at `0x800B0F20` is kept
+  below the retail 901-update attract threshold so it cannot force the default
+  Seattle demo; normal menu input and explicitly requested races are unchanged.
 - One `GranTurismo2PC` host assembly contains both original programs and all
   twelve overlays. There are no public mode-selection switches or substitute
   host menus.

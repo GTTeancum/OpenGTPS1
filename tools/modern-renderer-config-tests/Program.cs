@@ -463,6 +463,10 @@ string simulationEnhancements = ReadRepoFile(
     @"tools\apply_gt2_enhancements.py");
 string arcadeEnhancements = ReadRepoFile(
     @"tools\apply_gt2_arcade_enhancements.py");
+string unifiedModeHarness = ReadRepoFile(
+    @"tools\test_unified_modes.ps1");
+string hostWindowSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Host\Window\HostWindow.cs");
 string presentationRendererSource = ReadRepoFile(
     @"vendor\RecompOne\RecompOne.Runtime\Host\Window\PresentationRenderer.cs");
 string oggMusicSource = ReadRepoFile(
@@ -644,6 +648,29 @@ Require(
         "$(DefineConstants);OPENGT_RELEASE_PACKAGE",
         StringComparison.Ordinal),
     "track-face oracle no longer records exact GT2 branches or is present in release guest code");
+Require(
+    gt2CompatSource.Contains("0x800B0F20u", StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "_unifiedArcadeFrontendPending", StringComparison.Ordinal) &&
+    gt2CompatSource.Contains("coverArcadeHandoff", StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "UnifiedArcadeTransitionCoverActive", StringComparison.Ordinal) &&
+    hostWindowSource.Contains(
+        "Sdk.GT2Compat.UnifiedArcadeTransitionCoverActive",
+        StringComparison.Ordinal) &&
+    hostWindowSource.Contains(
+        "0, 0, coverWidth, coverHeight, false",
+        StringComparison.Ordinal) &&
+    arcadeEnhancements.Contains(
+        "BeginUnifiedArcadeFrontendFrame", StringComparison.Ordinal) &&
+    arcadeEnhancements.Contains(
+        "CompleteUnifiedArcadeFrontendFrame", StringComparison.Ordinal) &&
+    arcadeEnhancements.Contains("func_800175F0", StringComparison.Ordinal) &&
+    unifiedModeHarness.Contains("ExitPoll = 3200", StringComparison.Ordinal) &&
+    unifiedModeHarness.Contains(
+        "Idle unified Arcade frontend launched the Seattle attract race",
+        StringComparison.Ordinal),
+    "unified Arcade menu can expose its guest reset or launch Seattle while idle");
 Require(
     nativeRendererSource.Contains(
         "OPENGT_RENDER_TEXTURE_COVERAGE_DIAGNOSTICS",

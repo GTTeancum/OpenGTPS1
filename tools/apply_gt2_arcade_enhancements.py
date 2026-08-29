@@ -21,6 +21,12 @@ OVERLAY0 = (
     / "arcade-recompiled"
     / "gt2_arcade_overlay_0.cs"
 )
+OVERLAY1 = (
+    REPO
+    / "generated"
+    / "arcade-recompiled"
+    / "gt2_arcade_overlay_1.cs"
+)
 OVERLAY2 = (
     REPO
     / "generated"
@@ -1211,6 +1217,32 @@ def main() -> int:
         c.RA = 0x8005D678u;
 """,
         "Unified-menu direct native Arcade frontend entry",
+    )
+    replace_in_function_once(
+        OVERLAY1,
+        "func_800175F0",
+        """    {
+        c.SP = c.SP - 0x28u;
+""",
+        """    {
+        RecompOne.Runtime.Sdk.GT2Compat.BeginUnifiedArcadeFrontendFrame(m);
+        c.SP = c.SP - 0x28u;
+""",
+        "Unified Arcade frontend idle-policy entry hook",
+    )
+    replace_in_function_once(
+        OVERLAY1,
+        "func_800175F0",
+        """        c.S0 = MemoryAccess.ReadU32(m, (c.SP + 0x10u));
+        c.SP = c.SP + 0x28u;
+        return;
+""",
+        """        c.S0 = MemoryAccess.ReadU32(m, (c.SP + 0x10u));
+        c.SP = c.SP + 0x28u;
+        RecompOne.Runtime.Sdk.GT2Compat.CompleteUnifiedArcadeFrontendFrame();
+        return;
+""",
+        "Unified Arcade frontend transition-ready exit hook",
     )
     replace_once(
         OVERLAY2,

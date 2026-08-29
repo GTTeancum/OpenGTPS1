@@ -515,6 +515,7 @@ public static class GT2Compat
     static string _overlayPrefix = "gt2_overlay";
     static bool _unifiedTitleInstalled;
     static bool _unifiedArcadeTransition;
+    static bool _unifiedArcadeFrontendPending;
     static readonly object LiveryTableLock = new();
     static Dictionary<ulong, LiverySelection>? _liveriesByPalette;
     static Dictionary<ulong, LiverySelection>? _liveriesByColorId;
@@ -711,6 +712,8 @@ public static class GT2Compat
     const int UnifiedTitleHeight = 480;
 
     public static bool UnifiedTitleMenuActive => _unifiedTitleMenuActive;
+    public static bool UnifiedArcadeTransitionCoverActive =>
+        _unifiedArcadeFrontendPending;
 
     public static void ConfigureUnifiedTitlePanels(string path)
     {
@@ -739,14 +742,22 @@ public static class GT2Compat
         global::RecompOne.Runtime.Gpu gpu, IMemory m)
     {
         ushort[]? panels = _unifiedTitlePanels;
-        if (!_unifiedTitleMenuActive || panels == null)
+        bool coverArcadeHandoff = _unifiedArcadeFrontendPending;
+        if ((!_unifiedTitleMenuActive && !coverArcadeHandoff) || panels == null)
             return;
-        EnableExactTitleDisplay();
-        // Retail overlay 1 starts an attract-mode race after 901 idle ticks.
-        // The unified frontend is a persistent PC main menu, so keep that
-        // private idle counter at zero while preserving ordinary pad input.
-        m.WriteU32(0x800B1228u, 0u);
-        int selected = m.ReadU16(UnifiedTitleList + 6u);
+        // The live title owns the guest display registers. During the Arcade
+        // handoff, HostWindow presents this VRAM panel explicitly so the cover
+        // cannot alter the Arcade frontend's newly initialized GPU state.
+        if (_unifiedTitleMenuActive)
+            EnableExactTitleDisplay();
+        // Simulation overlay 1 starts an attract-mode race after 901 idle
+        // ticks. The unified frontend is a persistent PC main menu, so keep
+        // that private counter at zero while preserving ordinary pad input.
+        if (_unifiedTitleMenuActive)
+            m.WriteU32(0x800B1228u, 0u);
+        int selected = coverArcadeHandoff
+            ? 1
+            : m.ReadU16(UnifiedTitleList + 6u);
         if (selected is < 1 or > 4)
             selected = 1;
         int panelPixels = UnifiedTitleWidth * UnifiedTitleHeight;
@@ -763,6 +774,32 @@ public static class GT2Compat
 
     public static bool SuppressUnifiedTitleListDecorations(uint list) =>
         _unifiedTitleMenuActive && list == UnifiedTitleList;
+
+    /// <summary>
+    /// Keep the PC Arcade frontend resident until the player selects an item.
+    /// Retail overlay 1 otherwise starts its Seattle attract-mode race after
+    /// 901 idle updates. This is the Arcade counter; the Simulation title uses
+    /// a different address.
+    /// </summary>
+    public static void BeginUnifiedArcadeFrontendFrame(IMemory m)
+    {
+        if (_unifiedArcadeTransition)
+            m.WriteU32(0x800B0F20u, 0u);
+    }
+
+    /// <summary>
+    /// Remove the unified-title transition cover only after Arcade overlay 1
+    /// has completed a real frontend update. This prevents the guest-image and
+    /// display initializers from exposing a disc-style reboot between menus.
+    /// </summary>
+    public static void CompleteUnifiedArcadeFrontendFrame()
+    {
+        if (!_unifiedArcadeFrontendPending)
+            return;
+        _unifiedArcadeFrontendPending = false;
+        Console.WriteLine(
+            "[GT2] seamless Arcade frontend ready; transition cover released");
+    }
 
     public static bool ArcadeVariant =>
         _overlayPrefix.Equals(
@@ -1483,6 +1520,7 @@ public static class GT2Compat
         _unifiedTitleMenuActive = false;
         if (index == 1u)
         {
+            _unifiedArcadeFrontendPending = true;
             Console.WriteLine("[GT2] title selection: Arcade Mode");
             throw new GT2VariantSwitch("arcade");
         }

@@ -43,7 +43,10 @@ $cases = @(
             '600+8=CROSS,START;' +
             '900+1=CAPTURE;' +
             '1400+1=CAPTURE')
-        ExitPoll = 1800
+        # Remain idle well past Arcade overlay 1's stock 901-update attract
+        # threshold. A unified PC menu must stay in the frontend instead of
+        # silently launching the default Seattle demo.
+        ExitPoll = 3200
         Expected = '[GT2] title selection: Arcade Mode'
     },
     @{
@@ -128,6 +131,16 @@ foreach ($case in $cases) {
     if ($case.Name -eq 'arcade' -and
         $stdout -notmatch 'loaded overlay: gt2_arcade_overlay_1') {
         throw "Unified title did not load the first Arcade frontend overlay:`n$stdout"
+    }
+    if ($case.Name -eq 'arcade' -and
+        $stdout -notmatch (
+            '\[GT2\] seamless Arcade frontend ready; ' +
+            'transition cover released')) {
+        throw "Unified title exposed an incomplete Arcade transition:`n$stdout"
+    }
+    if ($case.Name -eq 'arcade' -and
+        $stdout -match 'loaded overlay: gt2_arcade_overlay_0') {
+        throw "Idle unified Arcade frontend launched the Seattle attract race:`n$stdout"
     }
     if ($stdout -notmatch '\[GPU\] display=True') {
         throw "Unified $($case.Name) did not enable its original display:`n$stdout"
