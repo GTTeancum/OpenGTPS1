@@ -16,6 +16,12 @@ extracts the required loose files from the user's own matching raw IMG.
 - Early unified-title input is buffered through native initialization. Arcade
   handoff omits redundant hidden boot-panel waits and lets the confirmation
   voice and queued tail finish before switching guests.
+- The already-final unified title no longer waits through the stock 16-update
+  reveal countdown; required list finalization completes on its first input
+  update, and a first-poll confirmation is committed one poll later.
+- The original GT2 opening now plays from the Arcade disc's intact `STREAM.DAT`
+  before the normal Simulation bootstrap. Native Start skipping is retained;
+  duplicate Simulation legal panels are omitted after the movie.
 - Filtered foliage fringes no longer write opaque depth; solid foliage retains
   depth ownership over farther terrain.
 - Resident foliage uses normalized camera depth, fixing distant Midfield trees

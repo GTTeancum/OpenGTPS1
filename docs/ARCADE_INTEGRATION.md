@@ -157,14 +157,41 @@ to `TITLE_EXACT.DAT` in BGR555 space and rejects any differing pixel. The
 title-to-Route-11 race proof is under
 `artifacts/retail-arc-topmenu-usa-ssr11-final`.
 
-## September 2026 handoff latency investigation
+## September 2026 opening playback and handoff latency
 
-The unified path now omits `func_80010CEC`, the two timed Arcade boot panels
-called from `func_80010E14`. They were hidden behind the unified title but
-still consumed 310 display ticks. Standalone Arcade boot retains them; the
-surrounding native GPU, audio, filesystem, and frontend setup is unchanged.
-The title also buffers early input across its original 16-update initialization
-instead of losing the player's first press or forcing the native state machine.
+The Simulation disc's extracted `FAULTY.PSX` movie file is entirely zero-filled,
+while the Arcade disc retains the original opening in `STREAM.DAT`. A normal
+unified launch therefore runs the Arcade program's original movie player first.
+When it naturally requests the Arcade title overlay, the host continues through
+the full Simulation bootstrap so memory-card loading and the unified title remain
+unchanged. The now-duplicate Simulation legal panels are omitted at that boundary.
+The original movie-player Start skip remains available.
+
+The restored stream path uses the manifest's actual Arcade `GT2.OVL` extent,
+reconciles `STREAM.DAT`'s absolute LBA before playback, returns the 2340-byte
+`CdlModeSize1` sector layout expected by PsyQ, and samples adjacent PS1 Timer 1
+registers without allowing a host tick between them. A native 360-frame capture
+from the installed executable produced 83 MDEC decodes and 21 distinct hashes,
+including the Sony, legal, and Polyphony sequences.
+
+The selector-driven Arcade handoff omits `func_80010CEC`, the two timed Arcade
+boot panels called from `func_80010E14`. They were hidden behind the unified
+title but still consumed 310 display ticks. Standalone Arcade boot retains them;
+the surrounding native GPU, audio, filesystem, and frontend setup is unchanged.
+The unified title completes the native list's required finalization on the first
+input update after the final title panel is presented. The stock 16-update reveal
+countdown served no visible purpose after the final panel replaced that animation
+and made an already-visible menu feel briefly unresponsive. The measured first
+Cross pulse is committed one input poll later (one 60 Hz interval). Input arriving
+still earlier in boot remains buffered as a safety net rather than being discarded.
+
+A shipping-path regression decoded the real opening, used its native Start skip,
+and reached the unified-title stage at absolute input poll 716. Cross was offered
+at poll 718 and the native selector committed Arcade Mode at poll 719: one input
+poll, or one 60 Hz interval. The Arcade frontend signaled ready at poll 735 after
+the original confirmation voice and queued audio tail completed. This separates
+intentional time spent presenting the skippable opening from responsiveness after
+the main menu is already visible.
 
 The measured no-audio diagnostic handoff entered the frontend in 752.538 ms
 and 15 input polls, versus 327 polls before this change. This measures entry
@@ -172,7 +199,7 @@ to native presentation, not completion of the original reveal animation.
 Audio-enabled handoff additionally waits for the real confirmation voice and
 queued tail; dummy-audio wall time is not a physical-device latency benchmark.
 
-Opening the prepared Arcade disc view took 2.746 ms in that run. It indexes
+Opening the prepared Arcade disc view took 2.607 ms in the audio-enabled run. It indexes
 the manifest and reads bounded data lazily; it does not load another entire
 volume into memory. Both programs are already in the host assembly and both
 original volumes already share the physical file. A small Arcade patch volume

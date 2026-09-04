@@ -18,10 +18,22 @@ internal static class UnifiedEntry
         RecompOne.Runtime.OggMusic.Initialize(looseRoot);
         RecompOne.Runtime.Modding.ModLoader.LoadAll();
 
-        string variant = initialVariant.Equals(
-            "arcade", StringComparison.OrdinalIgnoreCase)
+        bool initialArcade = initialVariant.Equals(
+            "arcade", StringComparison.OrdinalIgnoreCase);
+        bool skipOpeningPrelude = string.Equals(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_GT2_SKIP_OPENING_PRELUDE"),
+            "1",
+            StringComparison.Ordinal);
+        bool unifiedOpeningPrelude = !initialArcade && !skipOpeningPrelude;
+        // The normal unified launch begins with Arcade's intact original
+        // opening. --start-arcade uses the same guest without the handoff.
+        // Automated menu-only regressions may explicitly bypass the prelude
+        // without changing the shipping path.
+        string variant = unifiedOpeningPrelude || initialArcade
             ? "arcade"
             : "simulation";
+        GT2Compat.SetUnifiedOpeningPrelude(unifiedOpeningPrelude);
         bool seamlessArcadeHandoff = false;
         bool seamlessSimulationHandoff = false;
         while (true)
@@ -116,6 +128,16 @@ internal static class UnifiedEntry
             catch (GT2VariantSwitch requested)
             {
                 if (requested.Variant.Equals(
+                        "simulation-opening-complete",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    variant = "simulation";
+                    seamlessArcadeHandoff = false;
+                    seamlessSimulationHandoff = false;
+                    Console.WriteLine(
+                        "[Host] original Arcade opening -> Simulation bootstrap");
+                }
+                else if (requested.Variant.Equals(
                         "arcade", StringComparison.OrdinalIgnoreCase))
                 {
                     GT2Compat.CompleteUnifiedTitleConfirmationAudio();

@@ -53,6 +53,22 @@ try {
         }
         $manifest = Get-Content -LiteralPath $manifestPath -Raw |
             ConvertFrom-Json
+        $overlayEntries = @($manifest.files | Where-Object path -eq 'GT2.OVL')
+        if ($overlayEntries.Count -ne 1) {
+            throw "Unified $variant manifest does not contain one GT2.OVL entry"
+        }
+        $overlaySource = Join-Path $install $overlayEntries[0].source
+        if (-not (Test-Path -LiteralPath $overlaySource -PathType Leaf)) {
+            throw "Unified $variant GT2.OVL source is missing: $overlaySource"
+        }
+        $overlayBytes = (Get-Item -LiteralPath $overlaySource).Length
+        if ([long]$overlayEntries[0].size -ne $overlayBytes) {
+            throw (
+                "Unified $variant GT2.OVL manifest is stale: " +
+                "$($overlayEntries[0].size) != $overlayBytes. " +
+                'Re-run tools\prepare_unified_install.py before publishing.'
+            )
+        }
         $volumeEntries = @($manifest.files | Where-Object path -eq 'GT2.VOL')
         if ($volumeEntries.Count -ne 1) {
             throw "Unified $variant manifest does not contain one GT2.VOL entry"

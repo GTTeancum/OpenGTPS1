@@ -15,11 +15,13 @@ foreach ($card in @('carda.sav', 'cardb.sav')) {
 }
 $env:RECOMPONE_CARD_A_PATH = Join-Path $evidence 'carda.sav'
 $env:RECOMPONE_CARD_B_PATH = Join-Path $evidence 'cardb.sav'
-$env:RECOMPONE_INPUT_SCRIPT = "[unified_title];1+1=CAPTURE;$ConfirmPoll+8=CROSS;[arcade_frontend];120+1=CAPTURE"
-$env:RECOMPONE_EXIT_AFTER_INPUT_POLL = '1600'
+$env:RECOMPONE_INPUT_SCRIPT = "[gt2_opening];360+8=START;480+8=CROSS,START;[unified_title];1+1=CAPTURE;$ConfirmPoll+8=CROSS;[arcade_frontend];120+1=CAPTURE"
+$env:RECOMPONE_EXIT_AFTER_INPUT_POLL = '10000'
 $env:RECOMPONE_TEST_EXIT_INPUT_STAGE = 'arcade_frontend'
 $env:RECOMPONE_TEST_EXIT_INPUT_STAGE_POLL = '150'
 $env:RECOMPONE_DISABLE_LIVE_INPUT = '1'
+$env:RECOMPONE_TRACE_INPUT = '1'
+$env:RECOMPONE_TRACE_MDEC = '1'
 $env:RECOMPONE_SUPPRESS_RUMBLE = '1'
 $env:RECOMPONE_UNTHROTTLED = '1'
 $env:RECOMPONE_CAPTURE_AUTOMATIC_STAGE = '0'
@@ -43,14 +45,31 @@ if (-not $process.WaitForExit(120000)) {
 $process.Refresh()
 if ($process.ExitCode -ne 0) { throw "Packaged handoff exited $($process.ExitCode)" }
 $stdout = Get-Content -LiteralPath $stdoutPath -Raw
+$stderr = Get-Content -LiteralPath $stderrPath -Raw
 foreach ($marker in @(
+    '[MDEC] decode',
+    'original Arcade opening complete',
+    'Simulation boot: omitted duplicate timed panels',
     'voiceCompleted=True tailCompleted=True',
     'omitted duplicate timed boot panels',
     'seamless Arcade frontend entered')) {
     if (-not $stdout.Contains($marker)) { throw "Missing handoff proof: $marker" }
 }
-if ($ConfirmPoll -lt 16 -and $stdout -notmatch 'buffered unified-title input accepted') {
-    throw 'Early X press was not buffered'
+if ($ConfirmPoll -lt 16) {
+    $stageMatch = [regex]::Match(
+        $stderr,
+        "stage 'unified_title' at absolute poll (\d+)")
+    $selectionMatch = [regex]::Match(
+        $stdout,
+        'title selection: Arcade Mode inputPoll=(\d+)')
+    if (-not $stageMatch.Success -or -not $selectionMatch.Success) {
+        throw 'Early X press is missing title-stage response timing'
+    }
+    $offeredPoll = [int]$stageMatch.Groups[1].Value + $ConfirmPoll
+    $acceptedPoll = [int]$selectionMatch.Groups[1].Value
+    if ($acceptedPoll - $offeredPoll -gt 1) {
+        throw "Early X press response took $($acceptedPoll - $offeredPoll) polls"
+    }
 }
 if ($stdout -notmatch 'selectionToFrontendPolls=(\d+)' -or [int]$Matches[1] -gt 60) {
     throw 'Packaged Arcade handoff exceeded its frontend-entry poll budget'

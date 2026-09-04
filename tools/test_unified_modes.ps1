@@ -104,6 +104,7 @@ foreach ($case in $cases) {
     # reject the inherited environment before the child can start.
     $env:RECOMPONE_INPUT_SCRIPT = $case.Script
     $env:RECOMPONE_EXIT_AFTER_INPUT_POLL = $case.ExitPoll.ToString()
+    $env:RECOMPONE_GT2_SKIP_OPENING_PRELUDE = '1'
     $env:RECOMPONE_DISABLE_LIVE_INPUT = '1'
     $env:RECOMPONE_SUPPRESS_RUMBLE = '1'
     $env:RECOMPONE_UNTHROTTLED = '1'
@@ -256,6 +257,7 @@ foreach ($case in $cases) {
 foreach ($name in @(
         'RECOMPONE_INPUT_SCRIPT',
         'RECOMPONE_EXIT_AFTER_INPUT_POLL',
+        'RECOMPONE_GT2_SKIP_OPENING_PRELUDE',
         'RECOMPONE_DISABLE_LIVE_INPUT',
         'RECOMPONE_SUPPRESS_RUMBLE',
         'RECOMPONE_CAPTURE_AUTOMATIC_STAGE',

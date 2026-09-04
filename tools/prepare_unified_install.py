@@ -232,6 +232,15 @@ def write_volume_manifest(
 ) -> None:
     template = REPO / "tools" / f"recompone.{mode}.unified.json"
     data = json.loads(template.read_text(encoding="utf-8"))
+    overlay_matches = [
+        item for item in data["files"] if item["path"] == "GT2.OVL"
+    ]
+    if len(overlay_matches) != 1:
+        raise ValueError(
+            f"{mode.title()} unified manifest has no unique GT2.OVL entry"
+        )
+    overlay_size = (INSTALL / mode / "GT2.OVL").stat().st_size
+    overlay_matches[0]["size"] = overlay_size
     matches = [item for item in data["files"] if item["path"] == "GT2.VOL"]
     if len(matches) != 1:
         raise ValueError(
@@ -253,7 +262,7 @@ def write_volume_manifest(
     )
     print(
         f"wrote {mode.title()} manifest: "
-        f"GT2.VOL@{source_offset}+{volume_size}"
+        f"GT2.OVL={overlay_size} GT2.VOL@{source_offset}+{volume_size}"
     )
 
 
@@ -427,6 +436,12 @@ def main() -> int:
         source = arcade_overlay if name == "GT2.OVL" else ARCADE_ROOT / name
         copy_if_needed(source, INSTALL / "arcade" / name)
     for mode in ("simulation", "arcade"):
+        relocate_iso_file(
+            INSTALL / mode / "DISC_META.DAT",
+            b"GT2.OVL;1",
+            331,
+            (INSTALL / mode / "GT2.OVL").stat().st_size,
+        )
         relocate_iso_file(
             INSTALL / mode / "DISC_META.DAT",
             b"GT2.VOL;1",

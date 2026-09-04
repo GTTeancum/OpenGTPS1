@@ -595,6 +595,9 @@ public static class GT2Compat
     static string _overlayPrefix = "gt2_overlay";
     static bool _unifiedTitleInstalled;
     static bool _unifiedArcadeTransition;
+    static bool _unifiedOpeningPrelude;
+    static bool _unifiedOpeningCompleted;
+    static bool _reportedSimulationBootPanelOmission;
     static bool _unifiedArcadeFrontendPending;
     static bool _unifiedSimulationFrontendPending;
     static long _unifiedTitleConfirmationMixFrame;
@@ -815,6 +818,33 @@ public static class GT2Compat
             return true;
         Console.WriteLine(
             "[GT2] Arcade handoff: omitted duplicate timed boot panels");
+        return false;
+    }
+
+    /// <summary>
+    /// The retail Arcade disc owns GT2's intact opening STR data. A normal
+    /// unified launch runs that original opening before booting Simulation,
+    /// whose native bootstrap still loads the memory card and enters the
+    /// unified title. Standalone Arcade diagnostics retain their own title.
+    /// </summary>
+    public static void SetUnifiedOpeningPrelude(bool enabled)
+    {
+        _unifiedOpeningPrelude = enabled;
+        _unifiedOpeningCompleted = false;
+        _reportedSimulationBootPanelOmission = false;
+    }
+
+    public static bool ShouldPresentSimulationBootPanels()
+    {
+        if (!_unifiedOpeningCompleted)
+            return true;
+        if (!_reportedSimulationBootPanelOmission)
+        {
+            _reportedSimulationBootPanelOmission = true;
+            Console.WriteLine(
+                "[GT2] Simulation boot: omitted duplicate timed panels after " +
+                "the original Arcade opening");
+        }
         return false;
     }
 
@@ -1316,6 +1346,8 @@ public static class GT2Compat
     {
         if (_unifiedArcadeTransition)
             RestoreUnifiedArcadeProgress(m);
+        else
+            ReconcileArcadeOpeningMovieExtent(m);
         if (!string.IsNullOrWhiteSpace(DirectArcadeRace))
         {
             if (!IsSupportedDirectArcadeRace())
@@ -1332,6 +1364,34 @@ public static class GT2Compat
         // ARCADE MODE menu (Single Player / 2 Player Battle / Bonus Items /
         // Load Guest Garage); overlay 1 is the redundant disc title screen.
         return _unifiedArcadeTransition ? 2u : 5u;
+    }
+
+    /// <summary>
+    /// Reconcile the opening-movie extent with the loose-disc manifest before
+    /// the retail Arcade movie player turns its file-relative sector table
+    /// into absolute CD positions. The guest's compact ISO cache can retain
+    /// the metadata-sector-relative value in standalone loose mode; the
+    /// manifest is the authoritative equivalent of the disc directory record.
+    /// </summary>
+    public static void ReconcileArcadeOpeningMovieExtent(IMemory m)
+    {
+        if (Runtime.Cd == null ||
+            !Runtime.Cd.Fs.Locate("STREAM.DAT", out int lba, out uint size))
+        {
+            if (TraceBoot)
+                Console.Error.WriteLine(
+                    "[GT2Compat] opening movie extent unavailable in active disc");
+            return;
+        }
+
+        const uint streamBaseAddress = 0x801C8E2Cu;
+        uint guestBase = m.ReadU32(streamBaseAddress);
+        if (guestBase == (uint)lba)
+            return;
+        m.WriteU32(streamBaseAddress, (uint)lba);
+        Console.WriteLine(
+            "[GT2] Arcade opening movie extent reconciled: " +
+            $"guestLba={guestBase} manifestLba={lba} bytes={size}");
     }
 
     // Both NTSC-U guests use the same progress-record layout, at different
@@ -2066,7 +2126,9 @@ public static class GT2Compat
             _unifiedArcadeSelectionTimestamp = Stopwatch.GetTimestamp();
             _unifiedArcadeSelectionInputPoll = Host.InputManager.CurrentPoll;
             Dispatch.Dispatcher.BeginMethodProfile("arcade-menu-handoff");
-            Console.WriteLine("[GT2] title selection: Arcade Mode");
+            Console.WriteLine(
+                "[GT2] title selection: Arcade Mode " +
+                $"inputPoll={Host.InputManager.CurrentPoll}");
             throw new GT2VariantSwitch("arcade");
         }
 
@@ -2075,11 +2137,17 @@ public static class GT2Compat
         if (value < 0)
             return;
         if (index == 2u)
-            Console.WriteLine("[GT2] title selection: Gran Turismo Mode");
+            Console.WriteLine(
+                "[GT2] title selection: Gran Turismo Mode " +
+                $"inputPoll={Host.InputManager.CurrentPoll}");
         else if (index == 3u)
-            Console.WriteLine("[GT2] title selection: Replay Theater");
+            Console.WriteLine(
+                "[GT2] title selection: Replay Theater " +
+                $"inputPoll={Host.InputManager.CurrentPoll}");
         else if (index == 4u)
-            Console.WriteLine("[GT2] title selection: Option");
+            Console.WriteLine(
+                "[GT2] title selection: Option " +
+                $"inputPoll={Host.InputManager.CurrentPoll}");
         m.WriteU8(titleState + 3u, (byte)value);
     }
 
@@ -2154,6 +2222,13 @@ public static class GT2Compat
     {
         _unifiedTitleBufferedPressed = 0;
         _unifiedTitleBufferedRepeated = 0;
+        // State 0 is the retail title list's sixteen-update reveal, but its last
+        // update also performs required native list finalization. The unified
+        // screen is already composited in its final form, so reduce the reveal
+        // countdown to one update rather than bypassing state 0. The first
+        // advertised input poll then finalizes the list and consumes input in
+        // that same update. Keep the buffer for input arriving earlier in boot.
+        m.WriteU16(0x800B122Eu, 1);
         Host.InputManager.SignalScriptStage("unified_title");
     }
 
@@ -4258,6 +4333,19 @@ public static class GT2Compat
     {
         uint index = c.A0;
         _overlayIndex = index;
+        if (_unifiedOpeningPrelude && ArcadeVariant && index == 5u)
+            Host.InputManager.SignalScriptStage("gt2_opening");
+        if (_unifiedOpeningPrelude && ArcadeVariant && index == 1u)
+        {
+            _unifiedOpeningPrelude = false;
+            _unifiedOpeningCompleted = true;
+            Console.WriteLine(
+                "[GT2] original Arcade opening complete; continuing into " +
+                "the Simulation bootstrap and unified title");
+            throw new GT2VariantSwitch("simulation-opening-complete");
+        }
+        if (index == 5u)
+            ReconcileArcadeOpeningMovieExtent(m);
         TraceArcadeRaceConfig(index, m);
         TraceArcadeRaceState(index, m);
         TraceArcadeRaceMemory(index, m);

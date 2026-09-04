@@ -59,7 +59,12 @@ public static class LibCd
     static bool _readActive;
     static bool _xaActive;
     static int _readSSectorPhase;
-    static readonly byte[] _readSSectorBuffer = new byte[2336];
+    // GT2 enables CdlModeSize1 before its XA/STR ReadS path. PsyQ therefore
+    // exposes 2340 bytes to CdGetSector: the four-byte absolute sector header
+    // followed by the 2336-byte Mode 2 sector. Keeping only the raw 2336 bytes
+    // makes the guest mistake file/channel/submode bytes for an MSF address
+    // when it records the current stream location.
+    static readonly byte[] _readSSectorBuffer = new byte[2340];
     static int _readSSectorBufferLba = -1;
     static int _readSFileEndLba = int.MaxValue;
     static int _xaReportLba = -1;
@@ -669,16 +674,24 @@ public static class LibCd
             _performanceSectorAllocatedBytes +=
                 GC.GetAllocatedBytesForCurrentThread() - allocatedBeforeSector;
 
+        const int mode2HeaderSize = 4;
         if (!replaceMusic &&
-            (sector[2] & 0x04) != 0 &&
-            AcceptXaSector(sector[0], sector[1]) &&
+            (sector[mode2HeaderSize + 2] & 0x04) != 0 &&
+            AcceptXaSector(
+                sector[mode2HeaderSize],
+                sector[mode2HeaderSize + 1]) &&
             XaAudio.BufferedSamples < 8192)
         {
             long allocatedBeforeDecode = TracePerformance
                 ? GC.GetAllocatedBytesForCurrentThread()
                 : 0;
             XaAudio.DecodeSector(
-                sector, 8, sector[3], lba, sector[0], sector[1]);
+                sector,
+                mode2HeaderSize + 8,
+                sector[mode2HeaderSize + 3],
+                lba,
+                sector[mode2HeaderSize],
+                sector[mode2HeaderSize + 1]);
             if (TracePerformance)
                 _performanceDecodeAllocatedBytes +=
                     GC.GetAllocatedBytesForCurrentThread() -
@@ -939,6 +952,12 @@ public static class LibCd
                 EnsureXaThread();
                 break;
             case ReadS:
+                if (TraceCd)
+                    Console.Error.WriteLine(
+                        $"[LibCd] ReadS start LBA={CurrentLba} " +
+                        $"msf={_pos[0]:X2}:{_pos[1]:X2}:{_pos[2]:X2} " +
+                        $"ready=0x{_cbReady:X8} sync=0x{_cbSync:X8} " +
+                        $"callerRA=0x{c.RA:X8}");
                 _status = (byte)((_status | StatMotor | StatRead) &
                     ~(StatSeek | StatPlay));
                 _cddaActive = false;

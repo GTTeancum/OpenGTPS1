@@ -1100,6 +1100,21 @@ def apply_car_preview_camera_limit() -> None:
 def main() -> int:
     include_livery_preview_helper()
 
+    replace_in_function_once(
+        MAIN,
+        "func_80081C74",
+        """        c.V0 = MemoryAccess.ReadU16(m, c.A1);
+        c.V1 = MemoryAccess.ReadU16(m, c.A1);
+""",
+        """        c.V0 = MemoryAccess.ReadU16(m, c.A1);
+        // A real PS1 completes these adjacent counter loads before Timer 1 can
+        // advance. Reuse the first sample so host wall-clock timer reads cannot
+        // starve the guest's stable-sample loop during opening-movie startup.
+        c.V1 = c.V0;
+""",
+        "Arcade stable Timer 1 sample for opening-movie startup",
+    )
+
     replace_once(
         OVERLAY2,
         """    public static void func_80010C84(CpuContext c, IMemory m)
@@ -1603,6 +1618,32 @@ def main() -> int:
 """,
             f"stock-or-expanded Arcade {label} table lookup",
         )
+    replace_once(
+        OVERLAY5,
+        """    public static void func_800100A4(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x18u;
+""",
+        """    public static void func_800100A4(CpuContext c, IMemory m)
+    {
+        RecompOne.Runtime.Sdk.GT2Compat.ReconcileArcadeOpeningMovieExtent(m);
+        c.SP = c.SP - 0x18u;
+""",
+        "Arcade per-movie absolute stream extent",
+    )
+    replace_once(
+        OVERLAY5,
+        """    public static void func_800114B8(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x18u;
+""",
+        """    public static void func_800114B8(CpuContext c, IMemory m)
+    {
+        RecompOne.Runtime.Sdk.GT2Compat.ReconcileArcadeOpeningMovieExtent(m);
+        c.SP = c.SP - 0x18u;
+""",
+        "Arcade opening-movie absolute stream extent",
+    )
     replace_once(
         OVERLAY5,
         """    public static void func_800101B4(CpuContext c, IMemory m)

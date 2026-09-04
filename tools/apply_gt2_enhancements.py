@@ -358,6 +358,34 @@ def main() -> int:
     use_windows_gui_subsystem()
 
     replace_in_function_once(
+        main_executable,
+        "func_80081D64",
+        """        c.V0 = MemoryAccess.ReadU16(m, c.A1);
+        c.V1 = MemoryAccess.ReadU16(m, c.A1);
+""",
+        """        c.V0 = MemoryAccess.ReadU16(m, c.A1);
+        // A real PS1 completes these adjacent counter loads before Timer 1 can
+        // advance. Reuse the first sample so host wall-clock timer reads cannot
+        // starve the guest's stable-sample loop during opening-movie startup.
+        c.V1 = c.V0;
+""",
+        "Simulation stable Timer 1 sample for opening-movie startup",
+    )
+
+    replace_in_function_once(
+        main_executable,
+        "func_80010E14",
+        """        c.RA = 0x80010E84u;
+        GranTurismo2PC.func_80010CEC(c, m);
+""",
+        """        c.RA = 0x80010E84u;
+        if (RecompOne.Runtime.Sdk.GT2Compat.ShouldPresentSimulationBootPanels())
+            GranTurismo2PC.func_80010CEC(c, m);
+""",
+        "Unified boot omits duplicate Simulation panels after original opening",
+    )
+
+    replace_in_function_once(
         showroom,
         "func_80013EEC",
         """    {
