@@ -19,10 +19,31 @@ public static class Dispatcher
     [ThreadStatic]
     static bool _allocationScope;
     static int _allocationScopeSamples;
+    static HashSet<string>? _methodProfile;
+    static string? _methodProfileLabel;
     static readonly Dictionary<uint, (long Calls, long Bytes)>
         _allocationScopeByAddress = [];
 
     internal static void BeginAllocationScope() => _allocationScope = true;
+
+    public static void BeginMethodProfile(string label)
+    {
+        if (Environment.GetEnvironmentVariable(
+                "RECOMPONE_TRACE_HANDOFF_METHODS") != "1")
+            return;
+        _methodProfileLabel = label;
+        _methodProfile = new HashSet<string>(StringComparer.Ordinal);
+    }
+
+    public static string[] EndMethodProfile(string label)
+    {
+        if (_methodProfile == null || _methodProfileLabel != label)
+            return [];
+        string[] result = _methodProfile.Order(StringComparer.Ordinal).ToArray();
+        _methodProfile = null;
+        _methodProfileLabel = null;
+        return result;
+    }
 
     internal static void EndAllocationScope()
     {
@@ -369,6 +390,7 @@ public static class Dispatcher
             throw new InvalidOperationException(
                 $"unmapped call: 0x{addr:X8}; {DescribeCallContext(c, m)}; " +
                 $"overlay images: {DescribeOverlayImages(m, addr)}");
+        _methodProfile?.Add(fn.Method.Name);
         IMemory callMemory = m;
         if (_relocatedFunctions.TryGetValue(addr, out var relocation) && relocation.Delta != 0)
         {

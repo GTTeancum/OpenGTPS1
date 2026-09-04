@@ -26,6 +26,9 @@ internal static unsafe class Audio
     static volatile bool _firstAudibleBufferReported;
     internal static bool HasProducedAudibleOutput =>
         _firstAudibleBufferReported;
+    internal static bool MixerActive => _running;
+    internal static long MixedFrameCount =>
+        Interlocked.Read(ref _mixedFrames);
     static readonly bool _traceAudio =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_AUDIO") == "1";
     static long _traceSamples;
@@ -144,6 +147,22 @@ internal static unsafe class Audio
     public static void SetMasterVolume(float volume)
     {
         _masterVolume = Math.Clamp(volume, 0f, 1f);
+    }
+
+    internal static bool WaitForMixAdvance(
+        long baselineFrames, long additionalFrames, int timeoutMilliseconds)
+    {
+        if (!_running)
+            return true;
+        long target = baselineFrames + Math.Max(0, additionalFrames);
+        long deadline = Environment.TickCount64 + Math.Max(0, timeoutMilliseconds);
+        while (_running && MixedFrameCount < target)
+        {
+            if (Environment.TickCount64 >= deadline)
+                return false;
+            Thread.Sleep(1);
+        }
+        return MixedFrameCount >= target;
     }
 
     static void MixerLoop()

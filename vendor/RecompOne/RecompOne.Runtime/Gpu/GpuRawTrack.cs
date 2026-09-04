@@ -2731,7 +2731,8 @@ public sealed partial class Gpu
         // the indexed-mesh hook runs, after the guest restores its GTE matrix.
         short cameraAxisX = unchecked((short)memory.ReadU16(0x1F8003F2u));
         short cameraAxisY = unchecked((short)memory.ReadU16(0x1F8003F0u));
-
+        ushort commonDepthShift = memory.ReadU16(0x1F800098u);
+        ushort normalizationAdjustment = memory.ReadU16(0x1F80009Au);
         for (int item = 0; item < primitiveCount; item++)
         {
             uint primitive = primitivePointer +
@@ -2802,6 +2803,27 @@ public sealed partial class Gpu
                 quad.X2, quad.Y2, quad.Z2);
             GteProjectionOrigin origin3 = Gte.SnapshotProjectionOrigin(
                 quad.X3, quad.Y3, quad.Z3);
+            int billboardBucket = RawTrackBillboardOrderingTableIndex(
+                auxiliaryFormat,
+                commonDepthShift,
+                normalizationAdjustment,
+                origin0.ViewZ,
+                origin1.ViewZ,
+                origin2.ViewZ,
+                origin3.ViewZ);
+            uint orderingTableBase = memory.ReadU32(0x1F800064u);
+            uint orderingTableEntry = unchecked(
+                orderingTableBase + (uint)billboardBucket * 4u);
+            if (memory is not PSMemory psMemory ||
+                !psMemory.TryGetOrderingTableIndex(
+                    orderingTableEntry,
+                    out int billboardOt))
+            {
+                throw RawTrackFailure(
+                    meshPointer,
+                    $"billboard OT entry 0x{orderingTableEntry:X8} " +
+                    "is outside the active DMA ordering table");
+            }
             uint color = _rawTrackFlatDebugRequested
                 ? RawTrackDebugColor(RawTrackBillboardStream)
                 : commandColor;
@@ -2836,9 +2858,16 @@ public sealed partial class Gpu
                 RawTexture = (command & 0x01) != 0,
                 Gouraud = false,
                 ResidentCourse = true,
+                AuthoredTrackBillboardDepth =
+                    RawTrackBillboardUsesAuthoredDepth(
+                        billboardOt,
+                        origin0.ViewZFixed,
+                        origin1.ViewZFixed,
+                        origin2.ViewZFixed,
+                        origin3.ViewZFixed),
                 TPage = texturePage,
                 Clut = clut,
-                OtIndex = 0,
+                OtIndex = billboardOt,
             };
 
             bool faceDiagnostics =
@@ -3105,6 +3134,62 @@ public sealed partial class Gpu
             secondX, topY, secondZ,
             firstX, centerY, firstZ,
             secondX, centerY, secondZ);
+    }
+
+    internal static int RawTrackBillboardOrderingTableIndex(
+        bool auxiliaryFormat,
+        ushort commonDepthShift,
+        ushort normalizationAdjustment,
+        int firstZ,
+        int secondZ,
+        int thirdZ,
+        int fourthZ)
+    {
+        static uint SaturatedSz(int value) =>
+            (uint)Math.Clamp(value, 0, ushort.MaxValue);
+
+        uint sum = SaturatedSz(firstZ) + SaturatedSz(secondZ) +
+            SaturatedSz(thirdZ) + SaturatedSz(fourthZ);
+        ulong bucket;
+        if (auxiliaryFormat)
+        {
+            // GT2 averages the four GTE SZ values, applies the shared
+            // auxiliary normalization shift, then converts common Z to the
+            // 4,096-entry ordering table. Keep the intermediate wide so a
+            // malformed shift cannot wrap a valid resident primitive near.
+            uint average = sum >> 2;
+            bucket = commonDepthShift >= 64
+                ? ulong.MaxValue
+                : ((ulong)average << commonDepthShift) >> 13;
+        }
+        else
+        {
+            // The primary course path performs the equivalent operation as
+            // sum(SZ0..SZ3) >> (normalizationAdjustment + 5).
+            int shift = normalizationAdjustment + 5;
+            bucket = shift >= 32 ? 0U : sum >> shift;
+        }
+        return (int)Math.Min(bucket, 4095UL);
+    }
+
+    internal static bool RawTrackBillboardUsesAuthoredDepth(
+        int orderingTableIndex,
+        long firstZ,
+        long secondZ,
+        long thirdZ,
+        long fourthZ)
+    {
+        // A flat OT depth is faithful only after the guest has accepted the
+        // whole billboard in front of its near plane. Applying it earlier
+        // replaces four signed homogeneous depths with one saturated average;
+        // a quad crossing the camera then survives D3D clipping as a giant
+        // screen-spanning panel. Fully in-front billboards retain GT2's exact
+        // painter-order bias, including deliberately occluded light flares.
+        return orderingTableIndex > 0 &&
+            firstZ >= RawTrackNearFixed &&
+            secondZ >= RawTrackNearFixed &&
+            thirdZ >= RawTrackNearFixed &&
+            fourthZ >= RawTrackNearFixed;
     }
 
     void CountRawTrackVisibility(
@@ -4017,6 +4102,34 @@ public sealed partial class Gpu
             _rawTrackCorrelationGuestPrimitiveMissing++;
             return;
         }
+        int tracePoll = Host.InputManager.CurrentPoll;
+        int traceEndPoll = _rawTrackCorrelationTraceEndPoll >= 0
+            ? Math.Max(
+                _rawTrackCorrelationTraceStartPoll,
+                _rawTrackCorrelationTraceEndPoll)
+            : _rawTrackCorrelationTraceStartPoll;
+        if (_rawTrackCorrelationTraceModel != 0 &&
+            key.ModelPointer == _rawTrackCorrelationTraceModel &&
+            _rawTrackCorrelationTraceStartPoll >= 0 &&
+            tracePoll >= _rawTrackCorrelationTraceStartPoll &&
+            tracePoll <= traceEndPoll)
+        {
+            Console.Error.WriteLine(
+                $"[GT2-Raw-Track-Primitive-Decision-Target] " +
+                $"poll={tracePoll} object=0x{key.StableId:X8} " +
+                $"model=0x{key.ModelPointer:X8} " +
+                $"primitive=0x{primitivePointer:X8} " +
+                $"path={(int)projectionPath} stream={stream} " +
+                $"item={resident.Item} resident={resident.Accepted} " +
+                $"guest={guestAccepted} packed=0x{packedIndices:X8} " +
+                $"gteProjectionSaturated={resident.GteProjectionSaturated} " +
+                $"guestNclip={firstNclip}/{secondNclip} " +
+                $"continuous={resident.FirstDeterminant:R}/" +
+                $"{resident.SecondDeterminant:R} " +
+                $"modeledNclip={resident.FirstNclip}/" +
+                $"{resident.SecondNclip} modeledAccept=" +
+                $"{resident.GteSaturatedAccepted}");
+        }
         if (resident.GteSaturatedAccepted == guestAccepted)
             _rawTrackCorrelationGuestPrimitiveModeledMatches++;
         else if (resident.GteSaturatedAccepted)
@@ -4370,6 +4483,30 @@ public sealed partial class Gpu
             return;
         }
         _rawTrackGuestTriangles++;
+        int tracePoll = Host.InputManager.CurrentPoll;
+        int traceEndPoll = _rawTrackCorrelationTraceEndPoll >= 0
+            ? Math.Max(
+                _rawTrackCorrelationTraceStartPoll,
+                _rawTrackCorrelationTraceEndPoll)
+            : _rawTrackCorrelationTraceStartPoll;
+        if (_rawTrackCorrelationTraceModel != 0 &&
+            originA.Object.ModelPointer == _rawTrackCorrelationTraceModel &&
+            _rawTrackCorrelationTraceStartPoll >= 0 &&
+            tracePoll >= _rawTrackCorrelationTraceStartPoll &&
+            tracePoll <= traceEndPoll)
+        {
+            Console.Error.WriteLine(
+                $"[GT2-Raw-Track-Guest-Triangle-Target] " +
+                $"poll={tracePoll} object=0x{originA.Object.StableId:X8} " +
+                $"model=0x{originA.Object.ModelPointer:X8} " +
+                $"modelVertices={originA.ModelX},{originA.ModelY},{originA.ModelZ}/" +
+                $"{originB.ModelX},{originB.ModelY},{originB.ModelZ}/" +
+                $"{originC.ModelX},{originC.ModelY},{originC.ModelZ} " +
+                $"screen={a.X:F3},{a.Y:F3}/{b.X:F3},{b.Y:F3}/" +
+                $"{c.X:F3},{c.Y:F3} z={a.Z:F3}/{b.Z:F3}/{c.Z:F3} " +
+                $"uv={RawTrackUv(a)}/{RawTrackUv(b)}/{RawTrackUv(c)} " +
+                $"page=0x{flags.TPage:X4}/0x{flags.Clut:X4}");
+        }
         RawTrackTriangleKey key = RawTrackKey(
             in originA,
             in originB,
@@ -4434,43 +4571,52 @@ public sealed partial class Gpu
         HleVertex expectedB = expected.B;
         HleVertex expectedC = expected.C;
         int permutation = -1;
+        bool exactCandidateFound = false;
         foreach (RawTrackExpectedTriangle candidate in candidates)
         {
-            if (!TryAlignRawTrackExpected(
-                    in candidate,
-                    in originA,
-                    in originB,
-                    in originC,
-                    out HleVertex candidateA,
-                    out HleVertex candidateB,
-                    out HleVertex candidateC,
-                    out int candidatePermutation))
+            for (int candidatePermutation = 0;
+                 candidatePermutation < 6;
+                 candidatePermutation++)
             {
-                continue;
+                if (!TryAlignRawTrackExpected(
+                        in candidate,
+                        in originA,
+                        in originB,
+                        in originC,
+                        candidatePermutation,
+                        out HleVertex candidateA,
+                        out HleVertex candidateB,
+                        out HleVertex candidateC))
+                {
+                    continue;
+                }
+                if (permutation < 0)
+                {
+                    expected = candidate;
+                    expectedA = candidateA;
+                    expectedB = candidateB;
+                    expectedC = candidateC;
+                    permutation = candidatePermutation;
+                }
+                if (RawTrackUvEqual(candidateA, a) &&
+                    RawTrackUvEqual(candidateB, b) &&
+                    RawTrackUvEqual(candidateC, c) &&
+                    RawTrackMaterialEqual(candidate.Flags, flags) &&
+                    RawTrackColorEqual(candidateA, a) &&
+                    RawTrackColorEqual(candidateB, b) &&
+                    RawTrackColorEqual(candidateC, c))
+                {
+                    expected = candidate;
+                    expectedA = candidateA;
+                    expectedB = candidateB;
+                    expectedC = candidateC;
+                    permutation = candidatePermutation;
+                    exactCandidateFound = true;
+                    break;
+                }
             }
-            if (permutation < 0)
-            {
-                expected = candidate;
-                expectedA = candidateA;
-                expectedB = candidateB;
-                expectedC = candidateC;
-                permutation = candidatePermutation;
-            }
-            if (RawTrackUvEqual(candidateA, a) &&
-                RawTrackUvEqual(candidateB, b) &&
-                RawTrackUvEqual(candidateC, c) &&
-                RawTrackMaterialEqual(candidate.Flags, flags) &&
-                RawTrackColorEqual(candidateA, a) &&
-                RawTrackColorEqual(candidateB, b) &&
-                RawTrackColorEqual(candidateC, c))
-            {
-                expected = candidate;
-                expectedA = candidateA;
-                expectedB = candidateB;
-                expectedC = candidateC;
-                permutation = candidatePermutation;
+            if (exactCandidateFound)
                 break;
-            }
         }
         if (permutation < 0)
             return;
@@ -4556,7 +4702,8 @@ public sealed partial class Gpu
         {
             Console.Error.WriteLine(
                 $"[GT2-Raw-Track-Correlation] primitive=0x{expected.PrimitiveAddress:X8} " +
-                $"stream={expected.Stream} item={expected.Item} " +
+                $"path={(int)expected.ProjectionPath} stream={expected.Stream} " +
+                $"item={expected.Item} triangle={expected.PrimitiveTriangle} " +
                 $"permutation={permutation} " +
                 $"uv={uvEqual} material={materialEqual} color={colorEqual} " +
                 $"expectedUv={RawTrackUv(expectedA)}/" +
@@ -4684,79 +4831,73 @@ public sealed partial class Gpu
         in GteProjectionOrigin guestA,
         in GteProjectionOrigin guestB,
         in GteProjectionOrigin guestC,
+        int permutation,
         out HleVertex expectedA,
         out HleVertex expectedB,
-        out HleVertex expectedC,
-        out int permutation)
+        out HleVertex expectedC)
     {
         expectedA = default;
         expectedB = default;
         expectedC = default;
-        permutation = -1;
-        GteProjectionOrigin originA = expected.OriginA;
-        GteProjectionOrigin originB = expected.OriginB;
-        GteProjectionOrigin originC = expected.OriginC;
-        if (RawTrackModelVertexEqual(in guestA, in originA))
+        GteProjectionOrigin originA;
+        GteProjectionOrigin originB;
+        GteProjectionOrigin originC;
+        switch (permutation)
         {
-            expectedA = expected.A;
-            if (RawTrackModelVertexEqual(in guestB, in originB) &&
-                RawTrackModelVertexEqual(in guestC, in originC))
-            {
+            case 0:
+                originA = expected.OriginA;
+                originB = expected.OriginB;
+                originC = expected.OriginC;
+                expectedA = expected.A;
                 expectedB = expected.B;
                 expectedC = expected.C;
-                permutation = 0;
-                return true;
-            }
-            if (RawTrackModelVertexEqual(in guestB, in originC) &&
-                RawTrackModelVertexEqual(in guestC, in originB))
-            {
+                break;
+            case 1:
+                originA = expected.OriginA;
+                originB = expected.OriginC;
+                originC = expected.OriginB;
+                expectedA = expected.A;
                 expectedB = expected.C;
                 expectedC = expected.B;
-                permutation = 1;
-                return true;
-            }
-        }
-        if (RawTrackModelVertexEqual(in guestA, in originB))
-        {
-            expectedA = expected.B;
-            if (RawTrackModelVertexEqual(in guestB, in originA) &&
-                RawTrackModelVertexEqual(in guestC, in originC))
-            {
+                break;
+            case 2:
+                originA = expected.OriginB;
+                originB = expected.OriginA;
+                originC = expected.OriginC;
+                expectedA = expected.B;
                 expectedB = expected.A;
                 expectedC = expected.C;
-                permutation = 2;
-                return true;
-            }
-            if (RawTrackModelVertexEqual(in guestB, in originC) &&
-                RawTrackModelVertexEqual(in guestC, in originA))
-            {
+                break;
+            case 3:
+                originA = expected.OriginB;
+                originB = expected.OriginC;
+                originC = expected.OriginA;
+                expectedA = expected.B;
                 expectedB = expected.C;
                 expectedC = expected.A;
-                permutation = 3;
-                return true;
-            }
-        }
-        if (RawTrackModelVertexEqual(in guestA, in originC))
-        {
-            expectedA = expected.C;
-            if (RawTrackModelVertexEqual(in guestB, in originA) &&
-                RawTrackModelVertexEqual(in guestC, in originB))
-            {
+                break;
+            case 4:
+                originA = expected.OriginC;
+                originB = expected.OriginA;
+                originC = expected.OriginB;
+                expectedA = expected.C;
                 expectedB = expected.A;
                 expectedC = expected.B;
-                permutation = 4;
-                return true;
-            }
-            if (RawTrackModelVertexEqual(in guestB, in originB) &&
-                RawTrackModelVertexEqual(in guestC, in originA))
-            {
+                break;
+            case 5:
+                originA = expected.OriginC;
+                originB = expected.OriginB;
+                originC = expected.OriginA;
+                expectedA = expected.C;
                 expectedB = expected.B;
                 expectedC = expected.A;
-                permutation = 5;
-                return true;
-            }
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(permutation));
         }
-        return false;
+        return RawTrackModelVertexEqual(in guestA, in originA) &&
+            RawTrackModelVertexEqual(in guestB, in originB) &&
+            RawTrackModelVertexEqual(in guestC, in originC);
     }
 
     static bool RawTrackUvEqual(HleVertex left, HleVertex right) =>

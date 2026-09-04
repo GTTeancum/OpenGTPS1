@@ -215,7 +215,9 @@ internal sealed class LiveWorldRenderer : IDisposable
     long _authoredNoOutput;
     long _dropped;
     long _droppedPendingCaptures;
-    long _droppedOutputPool;
+    // Retained in shutdown telemetry as an explicit invariant. Output-buffer
+    // exhaustion now back-pressures only this worker, so it must remain zero.
+    long _droppedOutputPool = 0;
     long _droppedPublished;
     long _consumed;
     long _outputWaitCount;
@@ -536,6 +538,11 @@ internal sealed class LiveWorldRenderer : IDisposable
             }
             _consumed++;
             output = _published.Dequeue();
+            // A completed fourth frame may be waiting for the host to consume
+            // one member of the three-frame presentation reserve. Wake only
+            // the renderer worker; the emulation/presentation thread never
+            // waits on a full output queue.
+            Monitor.PulseAll(_gate);
             return true;
         }
     }
@@ -564,12 +571,16 @@ internal sealed class LiveWorldRenderer : IDisposable
     {
         lock (_gate)
         {
+            bool discardedAny = false;
             while (_published.Count != 0)
             {
                 ReturnOutput(_published.Dequeue().Pixels);
                 _dropped++;
                 _droppedPublished++;
+                discardedAny = true;
             }
+            if (discardedAny)
+                Monitor.PulseAll(_gate);
         }
     }
 
@@ -591,6 +602,8 @@ internal sealed class LiveWorldRenderer : IDisposable
                 else
                     _published.Enqueue(output);
             }
+            if (discarded.Count != 0)
+                Monitor.PulseAll(_gate);
         }
         foreach (byte[] pixels in discarded)
             ReturnOutput(pixels);
@@ -598,8 +611,11 @@ internal sealed class LiveWorldRenderer : IDisposable
 
     public void ReturnOutput(byte[] pixels)
     {
-        if (pixels.Length == MaxOutputBytes)
-            _outputPool.Enqueue(pixels);
+        if (pixels.Length != MaxOutputBytes)
+            return;
+        _outputPool.Enqueue(pixels);
+        lock (_gate)
+            Monitor.PulseAll(_gate);
     }
 
     void WorkerMain()
@@ -681,15 +697,24 @@ internal sealed class LiveWorldRenderer : IDisposable
                             $"result={uploadResult}");
                     boundTextureUploads = pending.TextureUploads;
                 }
-                if (!_outputPool.TryDequeue(out byte[]? firstOutput))
+                byte[]? firstOutput = null;
+                lock (_gate)
+                {
+                    // All four fixed buffers can briefly be owned by three
+                    // published frames plus the host upload. Wait for that
+                    // upload to return its buffer instead of dropping the next
+                    // authored capture. This blocks only the renderer worker.
+                    while (
+                        !_outputPool.TryDequeue(out firstOutput) &&
+                        !_stopping)
+                    {
+                        Monitor.Wait(_gate);
+                    }
+                }
+                if (firstOutput is null)
                 {
                     ReturnCaptureBuffer(capture);
-                    lock (_gate)
-                    {
-                        _dropped++;
-                        _droppedOutputPool++;
-                    }
-                    continue;
+                    break;
                 }
                 bool firstPublished = false;
                 try
@@ -784,8 +809,9 @@ internal sealed class LiveWorldRenderer : IDisposable
                         (firstStats.Reserved & NoOutputStatsFlag) == 0;
                     if (hasOutput)
                     {
-                        PublishRenderedOutput(firstOutput, in firstStats);
-                        firstPublished = true;
+                        firstPublished = PublishRenderedOutput(
+                            firstOutput,
+                            in firstStats);
                     }
                     else
                         _authoredNoOutput++;
@@ -904,12 +930,13 @@ internal sealed class LiveWorldRenderer : IDisposable
         }
     }
 
-    void PublishRenderedOutput(
+    bool PublishRenderedOutput(
         byte[] pixels,
         in LiveNativeStats stats)
     {
         DumpRenderedOutput(pixels, in stats);
-        PublishOutput(pixels, in stats);
+        if (!PublishOutput(pixels, in stats))
+            return false;
         _rendered++;
         if ((stats.Reserved & 2u) != 0)
             _renderedRepeated++;
@@ -917,6 +944,7 @@ internal sealed class LiveWorldRenderer : IDisposable
             _renderedSynthetic++;
         else
             _renderedActual++;
+        return true;
     }
 
     void DumpRenderedOutput(
@@ -983,21 +1011,25 @@ internal sealed class LiveWorldRenderer : IDisposable
             $"outputHash=0x{stats.OutputFingerprint:X16} path={path}");
     }
 
-    void PublishOutput(byte[] pixels, in LiveNativeStats stats)
+    bool PublishOutput(byte[] pixels, in LiveNativeStats stats)
     {
-        LiveWorldOutput? discarded = null;
         lock (_gate)
         {
             // The three-frame limit mirrors the complete bounded capture work
             // window. It absorbs catch-up after one active render plus two
             // pending captures without expanding the two-output steady-state
             // prebuffer or returning to the retired eight-frame latency queue.
-            if (_published.Count >= PublishedOutputCapacity)
+            // A renderer completion that races the next vblank waits here for
+            // one reserve slot; discarding the oldest completed authored image
+            // creates a visible temporal skip at world startup.
+            while (
+                _published.Count >= PublishedOutputCapacity &&
+                !_stopping)
             {
-                discarded = _published.Dequeue();
-                _dropped++;
-                _droppedPublished++;
+                Monitor.Wait(_gate);
             }
+            if (_stopping)
+                return false;
             _published.Enqueue(new LiveWorldOutput(
                 pixels,
                 checked((int)stats.OutputWidth),
@@ -1007,9 +1039,8 @@ internal sealed class LiveWorldRenderer : IDisposable
                 stats));
             Monitor.PulseAll(_gate);
         }
-        if (discarded is { } stale)
-            ReturnOutput(stale.Pixels);
         _firstOutputReady.Set();
+        return true;
     }
 
     void RecordProfileDurations(
@@ -1355,13 +1386,25 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
                 oldest = scene;
         }
         DeferredStaticScene selected = empty ?? oldest!;
+#if !OPENGT_RELEASE_PACKAGE
         if (selected.Generation != 0 &&
             selected.Generation > _selectedStaticGeneration)
         {
-            throw new InvalidOperationException(
-                "The GT2 static-scene generation queue overflowed before " +
-                $"generation {selected.Generation} was consumed.");
+            int evictionPoll = Host.InputManager.CurrentPoll;
+            if (_staticSceneTraceStartPoll >= 0 &&
+                evictionPoll >= _staticSceneTraceStartPoll &&
+                (_staticSceneTraceEndPoll < 0 ||
+                 evictionPoll <= _staticSceneTraceEndPoll))
+            {
+                Console.Error.WriteLine(
+                    $"[GT2-Static-Scene] poll={evictionPoll} " +
+                    "action=evict-unconsumed " +
+                    $"generation={selected.Generation} incoming={generation} " +
+                    $"selected={_selectedStaticGeneration} " +
+                    $"captureBuffer={(_buffer != null ? "available" : "unavailable")}");
+            }
         }
+#endif
 #if !OPENGT_RELEASE_PACKAGE
         int poll = Host.InputManager.CurrentPoll;
         if (_staticSceneTraceStartPoll >= 0 &&
@@ -1685,6 +1728,8 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         if (flags.RawTexture) primitiveFlags |= 1U << 2;
         if (flags.Gouraud) primitiveFlags |= 1U << 3;
         if (flags.ResidentCourse) primitiveFlags |= 1U << 4;
+        if (flags.AuthoredTrackBillboardDepth)
+            primitiveFlags |= 1U << 8;
         if (identity.Object.ScenePass == WorldScenePass.Auxiliary)
             primitiveFlags |= 1U << 5;
         uint environmentFlags = 0;
@@ -2244,6 +2289,7 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         }
 #endif
     }
+
 
     static void RetargetTriangleRecord(
         ReadOnlySpan<byte> source,

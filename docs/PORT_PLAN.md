@@ -173,11 +173,12 @@
 
 ## GT2 graphics enhancements
 
-- The shipping target has one modern 3D renderer. PS1 Quality, Custom, runtime
-  downgrade values, and legacy-world fallback have been removed from shipping
-  presentation. GT2's authored 2D GPU command compositor remains responsible
-  for menus, loading, Results, HUD, MDEC video, and world-free transitions; it
-  is not an alternate world renderer.
+- The Windows shipping target has one D3D11 device and DXGI presentation path.
+  The native world backend and GT2's authored 2D GPU command compositor share
+  that device; the latter remains responsible for menus, loading, Results,
+  HUD, MDEC video, and world-free transitions rather than acting as an
+  alternate world renderer. PS1 Quality, Custom, runtime downgrade values,
+  OpenGL presentation, and legacy-world fallback are absent from shipping.
 
 - Texture projection correction uses recovered per-vertex GTE view/projection
   state in the native backend and is mandatory in the shipping path. Affine

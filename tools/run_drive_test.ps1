@@ -28,8 +28,8 @@ foreach ($required in @(
 }
 $environment = [ordered]@{
     # Interactive drive tests never attach fixture or AI input. Starting the
-    # Arcade guest at overlay 1 skips its duplicate disc boot presentation but
-    # leaves every native frontend and race choice under player control.
+    # Arcade guest at overlay 2 skips its duplicate disc title presentation but
+    # leaves every native Arcade Mode menu and race choice under player control.
     'RECOMPONE_INPUT_FILE' = $null
     'RECOMPONE_INPUT_END_POLL' = $null
     'RECOMPONE_LIVE_INPUT_START_POLL' = $null

@@ -239,7 +239,7 @@ public sealed class Dma
             (_orderingTableHistoryCursor + 1) % OrderingTableHistoryLength;
     }
 
-    bool TryGetOrderingTableIndex(uint address, out int index)
+    internal bool TryGetOrderingTableIndex(uint address, out int index)
     {
         for (int i = 0; i < OrderingTableHistoryLength; i++)
         {

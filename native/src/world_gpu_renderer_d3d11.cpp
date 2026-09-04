@@ -3290,7 +3290,11 @@ bool batch_compatible(
     const WorldDrawCommand& left,
     const WorldMaterial& left_material,
     const WorldDrawCommand& right,
-    const WorldMaterial& right_material
+    const WorldMaterial& right_material,
+    bool left_alpha_tested_cutout,
+    bool right_alpha_tested_cutout,
+    bool left_road_support,
+    bool right_road_support
 ) {
     const bool left_screen_space =
         (left_material.primitive_flags &
@@ -3313,6 +3317,10 @@ bool batch_compatible(
             world_primitive_track_overlay_support_flag) ==
             (right_material.primitive_flags &
                 world_primitive_track_overlay_support_flag) &&
+        (left_material.primitive_flags &
+            world_primitive_track_replacement_flag) ==
+            (right_material.primitive_flags &
+                world_primitive_track_replacement_flag) &&
         left_transparent == right_transparent &&
         (!left_transparent ||
             (left_textured == right_textured &&
@@ -3330,6 +3338,8 @@ bool batch_compatible(
         left_screen_space == right_screen_space &&
         left.object_kind == right.object_kind &&
         left.ordering_table_index == right.ordering_table_index &&
+        left_alpha_tested_cutout == right_alpha_tested_cutout &&
+        left_road_support == right_road_support &&
         ((!left_transparent &&
                 (left.object_kind == 1U ||
                     (left.object_kind == 2U &&
@@ -3351,34 +3361,281 @@ constexpr std::uint32_t replacement_mode_rgb = 0;
 constexpr std::uint32_t replacement_mode_palette_detail = 1;
 constexpr std::uint32_t perspective_uv_eligible_flag = 1U << 3U;
 
-bool is_opaque_track_surface(
-    const WorldDrawCommand& command,
-    const WorldMaterial& material
+std::array<double, 3> track_surface_face_normal(
+    const WorldDrawCommand& command
 ) noexcept {
     const auto& a = command.vertices[0];
     const auto& b = command.vertices[1];
     const auto& c = command.vertices[2];
-    const std::int64_t ab_x =
-        static_cast<std::int64_t>(b.model_x) - a.model_x;
-    const std::int64_t ab_y =
-        static_cast<std::int64_t>(b.model_y) - a.model_y;
-    const std::int64_t ab_z =
-        static_cast<std::int64_t>(b.model_z) - a.model_z;
-    const std::int64_t ac_x =
-        static_cast<std::int64_t>(c.model_x) - a.model_x;
-    const std::int64_t ac_y =
-        static_cast<std::int64_t>(c.model_y) - a.model_y;
-    const std::int64_t ac_z =
-        static_cast<std::int64_t>(c.model_z) - a.model_z;
-    const std::int64_t normal_x = ab_y * ac_z - ab_z * ac_y;
-    const std::int64_t normal_y = ab_z * ac_x - ab_x * ac_z;
-    const std::int64_t normal_z = ab_x * ac_y - ab_y * ac_x;
+    const auto face_normal = [] (
+        double ax,
+        double ay,
+        double az,
+        double bx,
+        double by,
+        double bz,
+        double cx,
+        double cy,
+        double cz
+    ) noexcept {
+        const double ab_x = bx - ax;
+        const double ab_y = by - ay;
+        const double ab_z = bz - az;
+        const double ac_x = cx - ax;
+        const double ac_y = cy - ay;
+        const double ac_z = cz - az;
+        return std::array<double, 3>{
+            ab_y * ac_z - ab_z * ac_y,
+            ab_z * ac_x - ab_x * ac_z,
+            ab_x * ac_y - ab_y * ac_x,
+        };
+    };
+    auto normal = face_normal(
+        a.world_x, a.world_y, a.world_z,
+        b.world_x, b.world_y, b.world_z,
+        c.world_x, c.world_y, c.world_z);
+    const bool finite_world_normal =
+        std::isfinite(normal[0]) &&
+        std::isfinite(normal[1]) &&
+        std::isfinite(normal[2]);
+    const double world_normal_extent = finite_world_normal
+        ? (std::max)({
+            std::abs(normal[0]),
+            std::abs(normal[1]),
+            std::abs(normal[2])})
+        : 0.0;
+    if (world_normal_extent <= 1.0e-9) {
+        // Unit tests and deliberately synthetic draw lists may supply only
+        // authored model coordinates. Real course commands carry transformed
+        // world coordinates and must never be classified in local object
+        // space: scenery models can rotate a locally horizontal primitive
+        // into an upright treeline or fence.
+        normal = face_normal(
+            a.model_x, a.model_y, a.model_z,
+            b.model_x, b.model_y, b.model_z,
+            c.model_x, c.model_y, c.model_z);
+    }
+    return normal;
+}
+
+bool opaque_track_material_candidate(
+    const WorldDrawCommand& command,
+    const WorldMaterial& material
+) noexcept {
     return command.object_kind == 1U &&
         (material.primitive_flags & textured_flag) != 0 &&
         (material.primitive_flags & semi_transparent_flag) == 0 &&
-        (material.primitive_flags & world_primitive_screen_space_flag) == 0 &&
-        std::llabs(normal_y) >= std::llabs(normal_x) &&
-        std::llabs(normal_y) >= std::llabs(normal_z);
+        (material.primitive_flags & world_primitive_screen_space_flag) == 0;
+}
+
+bool is_opaque_track_surface(
+    const WorldDrawCommand& command,
+    const WorldMaterial& material
+) noexcept {
+    const auto normal = track_surface_face_normal(command);
+    // GT2's transformed course coordinates are Z-up. An XY ground plane has
+    // a +/-Z world normal. World-space classification keeps rotated foliage
+    // and fences in the keyed-cutout path while ordinary asphalt remains a
+    // solid recovery surface.
+    return opaque_track_material_candidate(command, material) &&
+        std::abs(normal[2]) >= std::abs(normal[0]) &&
+        std::abs(normal[2]) >= std::abs(normal[1]);
+}
+
+struct TrackSurfaceVertexKey {
+    std::int16_t x{};
+    std::int16_t y{};
+    std::int16_t z{};
+
+    bool operator==(const TrackSurfaceVertexKey& other) const noexcept {
+        return x == other.x && y == other.y && z == other.z;
+    }
+
+    bool operator<(const TrackSurfaceVertexKey& other) const noexcept {
+        if (x != other.x) return x < other.x;
+        if (y != other.y) return y < other.y;
+        return z < other.z;
+    }
+};
+
+struct TrackSurfaceEdgeKey {
+    std::uint32_t object_id{};
+    std::uint32_t model_pointer{};
+    std::uint64_t transform_id{};
+    WorldViewChannel channel{};
+    TrackSurfaceVertexKey first{};
+    TrackSurfaceVertexKey second{};
+
+    bool operator==(const TrackSurfaceEdgeKey& other) const noexcept {
+        return object_id == other.object_id &&
+            model_pointer == other.model_pointer &&
+            transform_id == other.transform_id &&
+            channel == other.channel &&
+            first == other.first && second == other.second;
+    }
+};
+
+struct TrackSurfaceEdgeHash {
+    std::size_t operator()(const TrackSurfaceEdgeKey& key) const noexcept {
+        std::size_t result = 1469598103934665603ULL;
+        const auto mix = [&result](std::uint64_t value) {
+            result ^= static_cast<std::size_t>(value);
+            result *= 1099511628211ULL;
+        };
+        mix(key.object_id);
+        mix(key.model_pointer);
+        mix(key.transform_id);
+        mix(static_cast<std::uint8_t>(key.channel));
+        for (const auto& vertex : {key.first, key.second}) {
+            mix(static_cast<std::uint16_t>(vertex.x));
+            mix(static_cast<std::uint16_t>(vertex.y));
+            mix(static_cast<std::uint16_t>(vertex.z));
+        }
+        return result;
+    }
+};
+
+bool smoothly_connected_track_surfaces(
+    const WorldDrawCommand& left,
+    const WorldDrawCommand& right
+) noexcept {
+    const auto left_normal = track_surface_face_normal(left);
+    const auto right_normal = track_surface_face_normal(right);
+    const double left_length_squared =
+        left_normal[0] * left_normal[0] +
+        left_normal[1] * left_normal[1] +
+        left_normal[2] * left_normal[2];
+    const double right_length_squared =
+        right_normal[0] * right_normal[0] +
+        right_normal[1] * right_normal[1] +
+        right_normal[2] * right_normal[2];
+    if (left_length_squared <= 1.0e-18 ||
+        right_length_squared <= 1.0e-18)
+        return false;
+    const double dot =
+        left_normal[0] * right_normal[0] +
+        left_normal[1] * right_normal[1] +
+        left_normal[2] * right_normal[2];
+    // Winding can reverse between neighboring GT2 packets.  Treat faces as
+    // one continuous authored surface when their unsigned dihedral angle is
+    // at most sixty degrees.  Hard folds remain independent, so a fence or
+    // foliage card attached to terrain cannot inherit solid-ground behavior.
+    return dot * dot >=
+        0.25 * left_length_squared * right_length_squared;
+}
+
+std::vector<std::uint8_t> opaque_track_surface_eligibility(
+    const WorldDrawList& draw_list
+) {
+    const std::size_t count = draw_list.commands.size();
+    std::vector<std::size_t> parent(count);
+    std::vector<std::uint8_t> rank(count, 0U);
+    std::vector<std::uint8_t> eligible(count, 0U);
+    std::vector<std::uint8_t> resident_candidate(count, 0U);
+    for (std::size_t index = 0; index < count; ++index) {
+        parent[index] = index;
+        const auto& command = draw_list.commands[index];
+        if (command.material_index >= draw_list.materials.size())
+            continue;
+        const auto& material = draw_list.materials[command.material_index];
+        eligible[index] = is_opaque_track_surface(command, material)
+            ? 1U
+            : 0U;
+        resident_candidate[index] =
+            opaque_track_material_candidate(command, material) &&
+            (material.primitive_flags &
+                world_primitive_resident_course_flag) != 0
+            ? 1U
+            : 0U;
+    }
+    const auto find_root = [&parent](std::size_t value) {
+        std::size_t root = value;
+        while (parent[root] != root)
+            root = parent[root];
+        while (parent[value] != value) {
+            const std::size_t next = parent[value];
+            parent[value] = root;
+            value = next;
+        }
+        return root;
+    };
+    const auto unite = [&parent, &rank, &find_root](
+        std::size_t left,
+        std::size_t right
+    ) {
+        left = find_root(left);
+        right = find_root(right);
+        if (left == right)
+            return;
+        if (rank[left] < rank[right])
+            std::swap(left, right);
+        parent[right] = left;
+        if (rank[left] == rank[right])
+            ++rank[left];
+    };
+    const auto vertex_key = [](const WorldDrawVertex& vertex) {
+        return TrackSurfaceVertexKey{
+            vertex.model_x,
+            vertex.model_y,
+            vertex.model_z,
+        };
+    };
+    std::unordered_multimap<
+        TrackSurfaceEdgeKey,
+        std::size_t,
+        TrackSurfaceEdgeHash> edges;
+    edges.reserve(count * 2U);
+    for (std::size_t command_index = 0;
+         command_index < count;
+         ++command_index) {
+        if (resident_candidate[command_index] == 0)
+            continue;
+        const auto& command = draw_list.commands[command_index];
+        for (int edge_index = 0; edge_index < 3; ++edge_index) {
+            auto first = vertex_key(command.vertices[edge_index]);
+            auto second = vertex_key(
+                command.vertices[(edge_index + 1) % 3]);
+            if (second < first)
+                std::swap(first, second);
+            const TrackSurfaceEdgeKey key{
+                command.object_id,
+                command.model_pointer,
+                command.transform_id,
+                command.channel,
+                first,
+                second,
+            };
+            const auto matching = edges.equal_range(key);
+            for (auto found = matching.first;
+                 found != matching.second;
+                 ++found) {
+                if (smoothly_connected_track_surfaces(
+                        draw_list.commands[found->second], command))
+                    unite(found->second, command_index);
+            }
+            edges.emplace(key, command_index);
+        }
+    }
+    std::vector<std::uint8_t> component_has_ground(count, 0U);
+    for (std::size_t index = 0; index < count; ++index) {
+        if (eligible[index] != 0)
+            component_has_ground[find_root(index)] = 1U;
+    }
+    for (std::size_t index = 0; index < count; ++index) {
+        if (resident_candidate[index] != 0 &&
+            component_has_ground[find_root(index)] != 0)
+            eligible[index] = 1U;
+    }
+    return eligible;
+}
+
+bool alpha_tested_track_cutout_candidate(
+    const WorldDrawCommand& command,
+    const WorldMaterial& material,
+    bool opaque_track_surface
+) noexcept {
+    return opaque_track_material_candidate(command, material) &&
+        !opaque_track_surface;
 }
 
 bool perspective_uv_eligible(
@@ -3386,17 +3643,13 @@ bool perspective_uv_eligible(
     const WorldMaterial& material
 ) {
     if ((material.primitive_flags & textured_flag) == 0 ||
-        (material.primitive_flags &
-            world_primitive_screen_space_flag) != 0)
+        (material.primitive_flags & world_primitive_screen_space_flag) != 0)
         return false;
 
-    // Every textured 3D command entering this renderer carries either GT2's
-    // authored pre-projection course surface or reconstructed model/view/clip
-    // state. Hardware interpolation is therefore the sole world-texture
-    // contract, including homogeneous near-plane clipping. A depth-ratio or
-    // temporal-seam escape to screen-linear UVs reintroduces the affine swim
-    // this renderer exists to remove. Explicit screen-space sprites and HUD
-    // were rejected above because screen-linear UVs are correct for them.
+    // Every remaining textured 3D command carries either GT2's authored
+    // pre-projection course surface or reconstructed model/view/clip state.
+    // Hardware interpolation is therefore the sole normal world-texture
+    // contract.
     (void)command;
     return true;
 }
@@ -3733,6 +3986,26 @@ struct DrawConstants {
     std::uint32_t replacement_atlas_height;
 };
 
+constexpr std::size_t maximum_screen_arcs = 32;
+
+struct alignas(16) GpuScreenArc {
+    float center_x;
+    float center_y;
+    float radius_x;
+    float radius_y;
+    std::uint32_t orientation;
+    float padding[3];
+};
+
+struct alignas(16) ScreenArcConstants {
+    std::uint32_t count;
+    float padding[3];
+    GpuScreenArc arcs[maximum_screen_arcs];
+};
+
+static_assert(sizeof(GpuScreenArc) == 32);
+static_assert(sizeof(ScreenArcConstants) % 16 == 0);
+
 const char shader_source[] = R"(
 Texture2D<uint> Vram : register(t0);
 Texture2D<float4> ReplacementAtlas : register(t2);
@@ -3798,12 +4071,6 @@ struct PsOutput {
     float4 blendFactors : SV_Target1;
 };
 
-struct PsPriorityOutput {
-    float4 color : SV_Target0;
-    float4 blendFactors : SV_Target1;
-    float depth : SV_Depth;
-};
-
 VsOutput VSMain(VsInput input) {
     VsOutput output;
     output.position = input.position;
@@ -3860,6 +4127,7 @@ float3 TextureColor(uint word) {
 
 struct FootprintSample {
     float3 color;
+    float coverage;
     uint word;
     bool any;
 };
@@ -3887,6 +4155,7 @@ FootprintSample SampleFootprint(
 ) {
     FootprintSample result;
     result.color = 0.0;
+    result.coverage = 0.0;
     result.word = 0;
     result.any = false;
     float coverage = 0.0;
@@ -3942,10 +4211,13 @@ FootprintSample SampleFootprint(
     }
     if (coverage > 0.0) {
         result.color /= coverage;
+        result.coverage = coverage / (majorTaps * minorTaps);
         result.any = true;
     }
     return result;
 }
+
+)" R"(
 
 float3 FilteredTextureColor(
     float2 uv,
@@ -4036,7 +4308,7 @@ float3 Quantize(float3 color, int2 pixel) {
     return ((five << 3) | (five >> 2)) / 255.0;
 }
 
-PsOutput ShadePixel(VsOutput input) {
+PsOutput ShadePixel(VsOutput input, bool preserveCutoutCoverage) {
     MaterialData material = Materials[input.commandIndex];
     bool textured = (material.primitiveFlags & 1) != 0;
     bool semitransparent = (material.primitiveFlags & 2) != 0;
@@ -4050,6 +4322,7 @@ PsOutput ShadePixel(VsOutput input) {
         : input.affineUv;
     float3 color = saturate(input.color.rgb);
     bool textureStp = false;
+    float cutoutCoverage = 1.0;
     if (textured) {
         // PS1 UV interpolation assigns the complete [N,N+1) interval to
         // texel N. Keep the world alpha/STP and footprint decisions aligned
@@ -4078,13 +4351,32 @@ PsOutput ShadePixel(VsOutput input) {
                 uv, uvDx, uvDy, material);
             if (!covered.any)
                 discard;
+            // Blend continuously out of the ordinary point-visibility result
+            // over the first minification octave.  This applies to both the
+            // recovered color and keyed-alpha coverage, so crossing a one-
+            // texel footprint cannot make a fence or leaf suddenly appear.
+            float areaWeight = saturate(footprint - 1.0);
+            // Horizontal opaque course surfaces use the coverage sampler to
+            // recover thin road artwork and must remain solid.  Other opaque
+            // world materials with keyed transparency are cutouts: preserve
+            // their fractional footprint coverage instead of promoting a
+            // visible source texel to a fully opaque distant fence or tree.
+            // Returning continuous alpha avoids the detached full-opacity
+            // pixels created by the retired ordered screen-door test.
+            [branch]
+            if (
+                preserveCutoutCoverage &&
+                !semitransparent &&
+                (material.coverageFlags & 1) == 0
+            ) {
+                float pointCoverage = centerWord != 0 ? 1.0 : 0.0;
+                cutoutCoverage = lerp(
+                    pointCoverage, covered.coverage, areaWeight);
+                if (cutoutCoverage <= 0.0001)
+                    discard;
+            }
             word = covered.word;
             recoveredColor = covered.color;
-            // Blend continuously out of the ordinary bilinear result over
-            // the first minification octave. There is no filter-mode step at
-            // footprint 1.0, while footprints of two texels or more use the
-            // complete oriented area estimate.
-            float areaWeight = saturate(footprint - 1.0);
             if (centerWord != 0 && areaWeight < 1.0) {
                 recoveredColor = lerp(
                     FilteredTextureColor(uv, centerWord, material),
@@ -4182,7 +4474,9 @@ PsOutput ShadePixel(VsOutput input) {
     else if (vehicleWheelTread)
         discard;
     PsOutput output;
-    output.color = float4(color, vehicleShadow ? input.color.a : 1.0);
+    output.color = float4(
+        color,
+        vehicleShadow ? input.color.a : cutoutCoverage);
     float sourceFactor = 1.0;
     float destinationFactor = 0.0;
     if (PassKind == 2 && semitransparent && textureStp) {
@@ -4200,40 +4494,41 @@ PsOutput ShadePixel(VsOutput input) {
 }
 
 PsOutput PSMain(VsOutput input) {
-    return ShadePixel(input);
+    return ShadePixel(input, false);
 }
 
-PsPriorityOutput PSMainRoadOverlay(VsOutput input) {
-    PsOutput shaded = ShadePixel(input);
-    PsPriorityOutput output;
-    output.color = shaded.color;
-    output.blendFactors = shaded.blendFactors;
-    // GT2 authors road paint as separate geometry on, or a few model units
-    // above, the road. Give that typed artwork a four-view-unit priority in
-    // the pixel depth result. Doing this after rasterization cannot move or
-    // near-clip the polygon, unlike modifying homogeneous Z in the vertex
-    // shader. Ordinary depth testing remains enabled, so a genuinely nearer
-    // wall or vehicle still wins.
-    // Reversed infinite depth is near/viewZ with near=16, so reducing viewZ
-    // by four units is depth/(1 - depth*4/16). Deriving the priority from the
-    // rasterized depth avoids relying on API-specific SV_Position.w meaning.
-    float priorityScale = max(1.0 - 0.25 * input.position.z, 0.75);
-    output.depth = saturate(input.position.z / priorityScale);
+PsOutput PSMainCutoutDepth(VsOutput input) {
+    PsOutput output = ShadePixel(input, true);
+    if (output.color.a < 0.5)
+        discard;
     return output;
 }
 
-PsPriorityOutput PSMainRoadOverlayTint(VsOutput input) {
-    PsOutput shaded = ShadePixel(input);
-    PsPriorityOutput output;
+PsOutput PSMainCutoutFringe(VsOutput input) {
+    PsOutput output = ShadePixel(input, true);
+    if (output.color.a >= 0.5)
+        discard;
+    return output;
+}
+
+PsOutput PSMainRoadOverlay(VsOutput input) {
+    // GT2 authors road paint as separate geometry. Its priority is resolved
+    // by the typed road-owner stencil contract, not a numeric depth bias:
+    // resident model units are transformed at track-dependent scales, so a
+    // fixed view-space offset cannot guarantee the authored relationship.
+    return ShadePixel(input, false);
+}
+
+PsOutput PSMainRoadOverlayTint(VsOutput input) {
+    PsOutput shaded = ShadePixel(input, false);
+    PsOutput output;
     output.color = float4(0.0, 1.0, 1.0, 1.0);
     output.blendFactors = shaded.blendFactors;
-    float priorityScale = max(1.0 - 0.25 * input.position.z, 0.75);
-    output.depth = saturate(input.position.z / priorityScale);
     return output;
 }
 
 PsOutput PSMainCommandId(VsOutput input) {
-    PsOutput output = ShadePixel(input);
+    PsOutput output = ShadePixel(input, false);
     uint encoded = input.commandIndex + 1;
     output.color = float4(
         float(encoded & 255) / 255.0,
@@ -4242,18 +4537,148 @@ PsOutput PSMainCommandId(VsOutput input) {
         1.0);
     return output;
 }
+
+float4 PSMainScreenGridMask(VsOutput input) : SV_Target0 {
+    MaterialData material = Materials[input.commandIndex];
+    if ((material.primitiveFlags & 1) != 0) {
+        bool perspectiveEligible = (material.coverageFlags & 8) != 0;
+        float2 uv = perspectiveEligible
+            ? input.perspectiveUv
+            : input.affineUv;
+        int sampleU = (int)floor(uv.x + 0.0001);
+        int sampleV = (int)floor(uv.y + 0.0001);
+        if (TextureWord(sampleU, sampleV, material) == 0)
+            discard;
+    }
+    return 1.0;
+}
+
 )";
 
-bool compile_shader(
+const char screen_grid_shader_source[] = R"(
+Texture2D<float4> ScreenGridSource : register(t3);
+Texture2D<float> ScreenGridMask : register(t4);
+Texture2D<float4> ScreenGridWorld : register(t5);
+
+struct ScreenArc {
+    float2 center;
+    float2 radius;
+    uint orientation;
+    float3 padding;
+};
+
+cbuffer ScreenArcs : register(b1) {
+    uint ScreenArcCount;
+    float3 ScreenArcPadding;
+    ScreenArc ScreenArcData[32];
+};
+
+struct ScreenGridVertex {
+    float4 position : SV_Position;
+};
+
+ScreenGridVertex VSMainScreenGrid(uint vertexId : SV_VertexID) {
+    float2 positions[3] = {
+        float2(-1.0, -1.0),
+        float2(-1.0,  3.0),
+        float2( 3.0, -1.0)
+    };
+    ScreenGridVertex output;
+    output.position = float4(positions[vertexId], 0.0, 1.0);
+    return output;
+}
+
+float4 PSMainScreenGrid(ScreenGridVertex input) : SV_Target0 {
+    uint outputWidth;
+    uint outputHeight;
+    uint maskWidth;
+    uint maskHeight;
+    ScreenGridSource.GetDimensions(outputWidth, outputHeight);
+    ScreenGridMask.GetDimensions(maskWidth, maskHeight);
+    int2 outputPixel = int2(input.position.xy);
+    int scale = max(1, (int)(outputHeight / max(maskHeight, 1U)));
+    float2 nativePosition =
+        (float2(outputPixel) + 0.5) / (float)scale - 0.5;
+    int2 nativeBase = int2(floor(nativePosition));
+    float2 nativeBlend = frac(nativePosition);
+    int2 maximumNative = int2((int)maskWidth - 1, (int)maskHeight - 1);
+    int2 nativePixels[4] = {
+        clamp(nativeBase, int2(0, 0), maximumNative),
+        clamp(nativeBase + int2(1, 0), int2(0, 0), maximumNative),
+        clamp(nativeBase + int2(0, 1), int2(0, 0), maximumNative),
+        clamp(nativeBase + int2(1, 1), int2(0, 0), maximumNative)
+    };
+    float weights[4] = {
+        (1.0 - nativeBlend.x) * (1.0 - nativeBlend.y),
+        nativeBlend.x * (1.0 - nativeBlend.y),
+        (1.0 - nativeBlend.x) * nativeBlend.y,
+        nativeBlend.x * nativeBlend.y
+    };
+    float coverage = 0.0;
+    float4 authored = 0.0;
+    int2 maximumOutput = int2((int)outputWidth - 1, (int)outputHeight - 1);
+    [unroll]
+    for (int index = 0; index < 4; ++index) {
+        coverage += ScreenGridMask.Load(
+            int3(nativePixels[index], 0)) * weights[index];
+        int2 nativeSample = min(
+            nativePixels[index] * scale + scale / 2,
+            maximumOutput);
+        authored += ScreenGridSource.Load(
+            int3(nativeSample, 0)) * weights[index];
+    }
+    float2 pixelCenter = float2(outputPixel) + 0.5;
+    bool analyticArc = false;
+    [loop]
+    for (uint index = 0; index < ScreenArcCount; ++index) {
+        ScreenArc arc = ScreenArcData[index];
+        float2 delta = pixelCenter - arc.center;
+        bool inHalf = arc.orientation == 0 ? delta.x <= 0.0 :
+            arc.orientation == 1 ? delta.x >= 0.0 :
+            arc.orientation == 2 ? delta.y <= 0.0 : delta.y >= 0.0;
+        bool inBounds = arc.orientation < 2
+            ? abs(delta.y) <= arc.radius.y + 1.5 &&
+                abs(delta.x) <= arc.radius.x + 1.5
+            : abs(delta.x) <= arc.radius.x + 1.5 &&
+                abs(delta.y) <= arc.radius.y + 1.5;
+        if (inHalf && inBounds) {
+            analyticArc = true;
+            float normalizedRadius = length(delta / arc.radius);
+            float signedPixels = (1.0 - normalizedRadius) *
+                min(arc.radius.x, arc.radius.y);
+            coverage = saturate(signedPixels + 0.5);
+            float inwardScale = min(
+                1.0,
+                0.80 / max(normalizedRadius, 0.001));
+            int2 inwardPixel = clamp(
+                int2(arc.center + delta * inwardScale),
+                int2(0, 0),
+                maximumOutput);
+            authored = ScreenGridSource.Load(int3(inwardPixel, 0));
+        }
+    }
+    float4 world = ScreenGridWorld.Load(int3(outputPixel, 0));
+    if (coverage >= 0.999)
+        return analyticArc
+            ? authored
+            : ScreenGridSource.Load(int3(outputPixel, 0));
+    return lerp(world, authored, saturate(coverage));
+}
+)";
+
+bool compile_shader_source(
+    const char* source,
+    std::size_t source_size,
+    const char* source_name,
     const char* entry,
     const char* target,
     ComPtr<ID3DBlob>* blob
 ) {
     ComPtr<ID3DBlob> errors;
     const HRESULT result = D3DCompile(
-        shader_source,
-        sizeof(shader_source) - 1,
-        "OpenGT world shader",
+        source,
+        source_size,
+        source_name,
         nullptr,
         nullptr,
         entry,
@@ -4272,6 +4697,34 @@ bool compile_shader(
             static_cast<const char*>(errors->GetBufferPointer()));
     }
     return SUCCEEDED(result);
+}
+
+bool compile_shader(
+    const char* entry,
+    const char* target,
+    ComPtr<ID3DBlob>* blob
+) {
+    return compile_shader_source(
+        shader_source,
+        sizeof(shader_source) - 1,
+        "OpenGT world shader",
+        entry,
+        target,
+        blob);
+}
+
+bool compile_screen_grid_shader(
+    const char* entry,
+    const char* target,
+    ComPtr<ID3DBlob>* blob
+) {
+    return compile_shader_source(
+        screen_grid_shader_source,
+        sizeof(screen_grid_shader_source) - 1,
+        "OpenGT screen-grid shader",
+        entry,
+        target,
+        blob);
 }
 
 ComPtr<ID3D11BlendState> blend_state(
@@ -4329,9 +4782,7 @@ ComPtr<ID3D11DepthStencilState> depth_state(
     description.StencilEnable = check_mask || set_mask || writes_depth_owner;
     description.StencilReadMask = 1;
     // Bit zero retains the PS1 mask-bit contract. Bit one records whether the
-    // nearest opaque pixel came from a road primitive that supports typed
-    // course artwork. Every depth-writing draw replaces bit one, so a nearer
-    // vehicle, wall, or other non-support surface clears road ownership.
+    // nearest opaque world pixel belongs to a classified road support.
     description.StencilWriteMask =
         (set_mask ? 1 : 0) | (writes_depth_owner ? 2 : 0);
     description.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
@@ -4356,13 +4807,12 @@ ComPtr<ID3D11DepthStencilState> road_overlay_depth_state(
     bool check_mask
 ) {
     D3D11_DEPTH_STENCIL_DESC description{};
-    // Typed road artwork is composited wherever the nearest opaque pixel is
-    // one of its classified road supports. It therefore cannot fight that
-    // road's physical depth, while nearer vehicles and walls reject it by
-    // clearing the road-owner stencil bit during the opaque pass.
-    description.DepthEnable = FALSE;
+    // Typed artwork may replace only a visible road-support pixel at the same
+    // or a nearer physical depth. The depth bound prevents a misclassified
+    // distant polygon from punching through nearer scenery or vehicles.
+    description.DepthEnable = TRUE;
     description.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
-    description.DepthFunc = D3D11_COMPARISON_ALWAYS;
+    description.DepthFunc = D3D11_COMPARISON_GREATER_EQUAL;
     description.StencilEnable = TRUE;
     description.StencilReadMask = check_mask ? 3 : 2;
     description.StencilWriteMask = 0;
@@ -4662,6 +5112,194 @@ std::vector<HudHorizontalPlacement> build_hud_horizontal_placements(
     return placements;
 }
 
+struct AuthoredScreenArc {
+    float center_x{};
+    float center_y{};
+    float radius_x{};
+    float radius_y{};
+    std::uint32_t orientation{};
+    std::size_t command_index{};
+};
+
+std::vector<AuthoredScreenArc> detect_authored_screen_arcs(
+    const WorldDrawList& draw_list
+) {
+    struct FanGroup {
+        float center_x{};
+        float center_y{};
+        std::size_t command_index{};
+        std::vector<std::array<float, 2>> contour_points;
+    };
+    std::unordered_map<std::uint64_t, FanGroup> fan_groups;
+    const auto center_key = [] (float x, float y) {
+        const std::int32_t quantized_x = static_cast<std::int32_t>(
+            std::lround(x * 16.0F));
+        const std::int32_t quantized_y = static_cast<std::int32_t>(
+            std::lround(y * 16.0F));
+        return
+            static_cast<std::uint64_t>(
+                static_cast<std::uint32_t>(quantized_x)) << 32 |
+            static_cast<std::uint32_t>(quantized_y);
+    };
+    for (std::size_t command_index = 0;
+         command_index < draw_list.commands.size();
+         ++command_index) {
+        const auto& command = draw_list.commands[command_index];
+        if (command.material_index >= draw_list.materials.size())
+            continue;
+        const auto& material = draw_list.materials[command.material_index];
+        if (
+            command.channel != WorldViewChannel::main_view ||
+            (material.primitive_flags &
+                world_primitive_screen_space_flag) == 0 ||
+            (material.primitive_flags & textured_flag) != 0
+        )
+            continue;
+        for (int center_index = 0; center_index < 3; ++center_index) {
+            const int first_index = (center_index + 1) % 3;
+            const int second_index = (center_index + 2) % 3;
+            const auto& center = command.vertices[center_index];
+            const auto& first = command.vertices[first_index];
+            const auto& second = command.vertices[second_index];
+            const float first_x = first.screen_x - center.screen_x;
+            const float first_y = first.screen_y - center.screen_y;
+            const float second_x = second.screen_x - center.screen_x;
+            const float second_y = second.screen_y - center.screen_y;
+            const float first_radius = std::hypot(first_x, first_y);
+            const float second_radius = std::hypot(second_x, second_y);
+            const float chord = std::hypot(
+                first.screen_x - second.screen_x,
+                first.screen_y - second.screen_y);
+            if (
+                !std::isfinite(first_radius) ||
+                !std::isfinite(second_radius) ||
+                first_radius < 3.0F ||
+                second_radius < 3.0F ||
+                first_radius > 64.0F ||
+                second_radius > 64.0F ||
+                (std::max)(first_radius, second_radius) >
+                    (std::min)(first_radius, second_radius) * 1.20F ||
+                chord >= (std::min)(first_radius, second_radius) * 0.85F
+            )
+                continue;
+            const float radial_cosine =
+                (first_x * second_x + first_y * second_y) /
+                (first_radius * second_radius);
+            if (radial_cosine < 0.45F)
+                continue;
+            const std::uint64_t key = center_key(
+                center.screen_x, center.screen_y);
+            auto [iterator, inserted] = fan_groups.try_emplace(key);
+            auto& group = iterator->second;
+            if (inserted) {
+                group.center_x = center.screen_x;
+                group.center_y = center.screen_y;
+                group.command_index = command_index;
+            }
+            group.contour_points.push_back(
+                {first.screen_x, first.screen_y});
+            group.contour_points.push_back(
+                {second.screen_x, second.screen_y});
+        }
+    }
+
+    std::vector<AuthoredScreenArc> arcs;
+    arcs.reserve((std::min)(fan_groups.size(), maximum_screen_arcs));
+    for (auto& [_, group] : fan_groups) {
+        std::vector<std::array<float, 2>> unique_points;
+        for (const auto& point : group.contour_points) {
+            const bool duplicate = std::any_of(
+                unique_points.begin(),
+                unique_points.end(),
+                [&point] (const std::array<float, 2>& existing) {
+                    return
+                        std::abs(point[0] - existing[0]) <= 0.125F &&
+                        std::abs(point[1] - existing[1]) <= 0.125F;
+                });
+            if (!duplicate)
+                unique_points.push_back(point);
+        }
+        if (unique_points.size() < 5)
+            continue;
+        float minimum_x = 0.0F;
+        float maximum_x = 0.0F;
+        float minimum_y = 0.0F;
+        float maximum_y = 0.0F;
+        for (const auto& point : unique_points) {
+            const float x = point[0] - group.center_x;
+            const float y = point[1] - group.center_y;
+            minimum_x = (std::min)(minimum_x, x);
+            maximum_x = (std::max)(maximum_x, x);
+            minimum_y = (std::min)(minimum_y, y);
+            maximum_y = (std::max)(maximum_y, y);
+        }
+        const float radius_x = (std::max)(-minimum_x, maximum_x);
+        const float radius_y = (std::max)(-minimum_y, maximum_y);
+        if (
+            radius_x < 3.0F || radius_y < 3.0F ||
+            radius_x > 64.0F || radius_y > 64.0F ||
+            radius_x > radius_y * 4.0F ||
+            radius_y > radius_x * 4.0F
+        )
+            continue;
+        float radial_error = 0.0F;
+        float worst_radial_error = 0.0F;
+        for (const auto& point : unique_points) {
+            const float normalized_x =
+                (point[0] - group.center_x) / radius_x;
+            const float normalized_y =
+                (point[1] - group.center_y) / radius_y;
+            const float error = std::abs(
+                std::hypot(normalized_x, normalized_y) - 1.0F);
+            radial_error += error;
+            worst_radial_error = (std::max)(worst_radial_error, error);
+        }
+        radial_error /= static_cast<float>(unique_points.size());
+        if (radial_error > 0.14F || worst_radial_error > 0.30F)
+            continue;
+        const bool spans_x =
+            minimum_x <= -radius_x * 0.65F &&
+            maximum_x >= radius_x * 0.65F;
+        const bool spans_y =
+            minimum_y <= -radius_y * 0.65F &&
+            maximum_y >= radius_y * 0.65F;
+        const float x_seam_tolerance = radius_x * 0.20F + 0.25F;
+        const float y_seam_tolerance = radius_y * 0.20F + 0.25F;
+        std::optional<std::uint32_t> orientation;
+        if (spans_y && maximum_x <= x_seam_tolerance)
+            orientation = 0U;
+        else if (spans_y && minimum_x >= -x_seam_tolerance)
+            orientation = 1U;
+        else if (spans_x && maximum_y <= y_seam_tolerance)
+            orientation = 2U;
+        else if (spans_x && minimum_y >= -y_seam_tolerance)
+            orientation = 3U;
+        if (!orientation.has_value())
+            continue;
+        arcs.push_back(AuthoredScreenArc{
+            group.center_x,
+            group.center_y,
+            radius_x,
+            radius_y,
+            *orientation,
+            group.command_index,
+        });
+        if (arcs.size() == maximum_screen_arcs)
+            break;
+    }
+    std::sort(
+        arcs.begin(),
+        arcs.end(),
+        [] (const AuthoredScreenArc& left, const AuthoredScreenArc& right) {
+            if (left.center_y != right.center_y)
+                return left.center_y < right.center_y;
+            if (left.center_x != right.center_x)
+                return left.center_x < right.center_x;
+            return left.orientation < right.orientation;
+        });
+    return arcs;
+}
+
 struct FrameInputResources {
     ComPtr<ID3D11Buffer> vertex_buffer;
     UINT vertex_buffer_bytes{};
@@ -4669,6 +5307,7 @@ struct FrameInputResources {
     ComPtr<ID3D11ShaderResourceView> material_view;
     UINT material_buffer_bytes{};
     std::array<ComPtr<ID3D11Buffer>, 3> constant_buffers;
+    ComPtr<ID3D11Buffer> screen_arc_buffer;
     ComPtr<ID3D11Texture2D> vram_texture;
     ComPtr<ID3D11ShaderResourceView> vram_view;
 };
@@ -4680,9 +5319,14 @@ struct BaseResources {
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<ID3D11VertexShader> vertex_shader;
     ComPtr<ID3D11PixelShader> pixel_shader;
+    ComPtr<ID3D11PixelShader> cutout_depth_pixel_shader;
+    ComPtr<ID3D11PixelShader> cutout_fringe_pixel_shader;
     ComPtr<ID3D11PixelShader> road_overlay_pixel_shader;
     ComPtr<ID3D11PixelShader> road_overlay_tint_pixel_shader;
     ComPtr<ID3D11PixelShader> command_id_pixel_shader;
+    ComPtr<ID3D11PixelShader> screen_grid_mask_pixel_shader;
+    ComPtr<ID3D11VertexShader> screen_grid_vertex_shader;
+    ComPtr<ID3D11PixelShader> screen_grid_pixel_shader;
     ComPtr<ID3D11InputLayout> input_layout;
     ComPtr<ID3D11RasterizerState> rasterizer;
     std::array<ComPtr<ID3D11BlendState>, 7> blend_states;
@@ -4697,6 +5341,14 @@ struct BaseResources {
         world_gpu_async_readback_image_capacity> frame_inputs;
     ComPtr<ID3D11Texture2D> color_texture;
     ComPtr<ID3D11RenderTargetView> color_view;
+    ComPtr<ID3D11ShaderResourceView> color_shader_view;
+    ComPtr<ID3D11Texture2D> screen_grid_texture;
+    ComPtr<ID3D11RenderTargetView> screen_grid_view;
+    ComPtr<ID3D11Texture2D> screen_grid_world_texture;
+    ComPtr<ID3D11ShaderResourceView> screen_grid_world_shader_view;
+    ComPtr<ID3D11Texture2D> screen_grid_mask_texture;
+    ComPtr<ID3D11RenderTargetView> screen_grid_mask_view;
+    ComPtr<ID3D11ShaderResourceView> screen_grid_mask_shader_view;
     ComPtr<ID3D11Texture2D> depth_texture;
     ComPtr<ID3D11DepthStencilView> depth_view;
     // Four slots retain four chronological development images, allowing a GPU
@@ -4750,6 +5402,8 @@ struct BaseResources {
     std::size_t replacement_entry_count;
     std::uint32_t output_width;
     std::uint32_t output_height;
+    std::uint32_t screen_grid_width;
+    std::uint32_t screen_grid_height;
 };
 
 struct LooseReplacementImage {
@@ -5368,7 +6022,8 @@ void emit_texture_coverage_diagnostics(
     const WorldDrawList& draw_list,
     const std::uint16_t* vram,
     std::size_t vram_word_count,
-    const WorldGpuRenderOptions& options
+    const WorldGpuRenderOptions& options,
+    const std::vector<std::uint8_t>& opaque_track_surfaces
 ) {
     if (std::getenv("OPENGT_RENDER_TEXTURE_COVERAGE_DIAGNOSTICS") == nullptr ||
         vram == nullptr || vram_word_count < 1024U * 512U ||
@@ -5429,7 +6084,8 @@ void emit_texture_coverage_diagnostics(
         if (command.material_index >= draw_list.materials.size())
             continue;
         const auto& material = draw_list.materials[command.material_index];
-        if (!is_opaque_track_surface(command, material))
+        if (command_index >= opaque_track_surfaces.size() ||
+            opaque_track_surfaces[command_index] == 0)
             continue;
         bool in_front = true;
         std::array<double, 3> screen_x{};
@@ -5978,7 +6634,8 @@ void emit_pixel_provenance_diagnostics(
     const WorldDrawList& draw_list,
     const std::uint16_t* vram,
     std::size_t vram_word_count,
-    const WorldGpuRenderOptions& options
+    const WorldGpuRenderOptions& options,
+    const std::vector<std::uint8_t>& opaque_track_surfaces
 ) {
     const char* configured_points = std::getenv(
         "OPENGT_RENDER_PIXEL_PROVENANCE_POINTS");
@@ -6428,7 +7085,9 @@ void emit_pixel_provenance_diagnostics(
                             (sampled_word >> 10U) & 31U);
                         ++visible_neighbors;
                     }
-                    discarded = !is_opaque_track_surface(command, material) ||
+                    discarded =
+                        command_index >= opaque_track_surfaces.size() ||
+                        opaque_track_surfaces[command_index] == 0 ||
                         visible_neighbors < 3;
                     if (visible_neighbors != 0) {
                         sample_r /= visible_neighbors;
@@ -6612,6 +7271,7 @@ void emit_pixel_provenance_diagnostics(
                 "word=%04x zero=%zu/%zu uv=%.3f,%.3f footprint=%.3f,%.3f "
                 "color=%.1f,%.1f,%.1f sample=%.1f,%.1f,%.1f "
                 "output=%.1f,%.1f,%.1f raw=%u flags=%08x env=%08x "
+                "surface=%u cutout=%u face=%.4f,%.4f,%.4f "
                 "screen=%.1f,%.1f..%.1f,%.1f tpage=%04x clut=%04x "
                 "window=%d,%d/%d,%d "
                 "transform=%016llx exact=%u t=%d,%d,%d "
@@ -6659,6 +7319,19 @@ void emit_pixel_provenance_diagnostics(
                 (material.primitive_flags & 4U) != 0 ? 1U : 0U,
                 material.primitive_flags,
                 material.environment_flags,
+                candidate.command_index < opaque_track_surfaces.size() &&
+                    opaque_track_surfaces[candidate.command_index] != 0
+                    ? 1U
+                    : 0U,
+                alpha_tested_track_cutout_candidate(
+                    command,
+                    material,
+                    candidate.command_index < opaque_track_surfaces.size() &&
+                        opaque_track_surfaces[candidate.command_index] != 0)
+                    ? 1U : 0U,
+                command.face_normal_x,
+                command.face_normal_y,
+                command.face_normal_z,
                 candidate.minimum_x,
                 candidate.minimum_y,
                 candidate.maximum_x,
@@ -7142,12 +7815,23 @@ bool initialize_base(
         return false;
     ComPtr<ID3DBlob> vertex_blob;
     ComPtr<ID3DBlob> pixel_blob;
+    ComPtr<ID3DBlob> cutout_depth_pixel_blob;
+    ComPtr<ID3DBlob> cutout_fringe_pixel_blob;
     ComPtr<ID3DBlob> road_overlay_pixel_blob;
     ComPtr<ID3DBlob> road_overlay_tint_pixel_blob;
     ComPtr<ID3DBlob> command_id_pixel_blob;
+    ComPtr<ID3DBlob> screen_grid_mask_pixel_blob;
+    ComPtr<ID3DBlob> screen_grid_vertex_blob;
+    ComPtr<ID3DBlob> screen_grid_pixel_blob;
     if (
         !compile_shader("VSMain", "vs_4_0", &vertex_blob) ||
         !compile_shader("PSMain", "ps_4_0", &pixel_blob) ||
+        !compile_shader(
+            "PSMainCutoutDepth", "ps_4_0",
+            &cutout_depth_pixel_blob) ||
+        !compile_shader(
+            "PSMainCutoutFringe", "ps_4_0",
+            &cutout_fringe_pixel_blob) ||
         !compile_shader(
             "PSMainRoadOverlay", "ps_4_0", &road_overlay_pixel_blob) ||
         !compile_shader(
@@ -7155,6 +7839,13 @@ bool initialize_base(
             &road_overlay_tint_pixel_blob) ||
         !compile_shader(
             "PSMainCommandId", "ps_4_0", &command_id_pixel_blob)
+        || !compile_shader(
+            "PSMainScreenGridMask", "ps_4_0",
+            &screen_grid_mask_pixel_blob)
+        || !compile_screen_grid_shader(
+            "VSMainScreenGrid", "vs_4_0", &screen_grid_vertex_blob)
+        || !compile_screen_grid_shader(
+            "PSMainScreenGrid", "ps_4_0", &screen_grid_pixel_blob)
     )
         return false;
     if (
@@ -7169,6 +7860,16 @@ bool initialize_base(
             nullptr,
             resources->pixel_shader.GetAddressOf())) ||
         FAILED(resources->device->CreatePixelShader(
+            cutout_depth_pixel_blob->GetBufferPointer(),
+            cutout_depth_pixel_blob->GetBufferSize(),
+            nullptr,
+            resources->cutout_depth_pixel_shader.GetAddressOf())) ||
+        FAILED(resources->device->CreatePixelShader(
+            cutout_fringe_pixel_blob->GetBufferPointer(),
+            cutout_fringe_pixel_blob->GetBufferSize(),
+            nullptr,
+            resources->cutout_fringe_pixel_shader.GetAddressOf())) ||
+        FAILED(resources->device->CreatePixelShader(
             road_overlay_pixel_blob->GetBufferPointer(),
             road_overlay_pixel_blob->GetBufferSize(),
             nullptr,
@@ -7182,7 +7883,22 @@ bool initialize_base(
             command_id_pixel_blob->GetBufferPointer(),
             command_id_pixel_blob->GetBufferSize(),
             nullptr,
-            resources->command_id_pixel_shader.GetAddressOf()))
+            resources->command_id_pixel_shader.GetAddressOf())) ||
+        FAILED(resources->device->CreatePixelShader(
+            screen_grid_mask_pixel_blob->GetBufferPointer(),
+            screen_grid_mask_pixel_blob->GetBufferSize(),
+            nullptr,
+            resources->screen_grid_mask_pixel_shader.GetAddressOf())) ||
+        FAILED(resources->device->CreateVertexShader(
+            screen_grid_vertex_blob->GetBufferPointer(),
+            screen_grid_vertex_blob->GetBufferSize(),
+            nullptr,
+            resources->screen_grid_vertex_shader.GetAddressOf())) ||
+        FAILED(resources->device->CreatePixelShader(
+            screen_grid_pixel_blob->GetBufferPointer(),
+            screen_grid_pixel_blob->GetBufferSize(),
+            nullptr,
+            resources->screen_grid_pixel_shader.GetAddressOf()))
     )
         return false;
     const D3D11_INPUT_ELEMENT_DESC elements[] = {
@@ -7267,7 +7983,15 @@ BaseResources& base_resources(bool software_adapter) {
 
 void release_readback_resources(BaseResources* resources) {
     resources->color_view.Reset();
+    resources->color_shader_view.Reset();
     resources->color_texture.Reset();
+    resources->screen_grid_view.Reset();
+    resources->screen_grid_texture.Reset();
+    resources->screen_grid_world_shader_view.Reset();
+    resources->screen_grid_world_texture.Reset();
+    resources->screen_grid_mask_shader_view.Reset();
+    resources->screen_grid_mask_view.Reset();
+    resources->screen_grid_mask_texture.Reset();
     resources->depth_view.Reset();
     resources->depth_texture.Reset();
     for (auto& staging : resources->staging_textures)
@@ -7286,6 +8010,8 @@ void release_readback_resources(BaseResources* resources) {
     resources->staging_warmup_output.clear();
     resources->output_width = 0;
     resources->output_height = 0;
+    resources->screen_grid_width = 0;
+    resources->screen_grid_height = 0;
 }
 
 void release_mutable_frame_resources(FrameInputResources* frame) {
@@ -7296,6 +8022,7 @@ void release_mutable_frame_resources(FrameInputResources* frame) {
     frame->material_buffer_bytes = 0;
     for (auto& constant_buffer : frame->constant_buffers)
         constant_buffer.Reset();
+    frame->screen_arc_buffer.Reset();
     frame->vram_view.Reset();
     frame->vram_texture.Reset();
 }
@@ -7419,6 +8146,17 @@ bool ensure_mutable_frame_resources(
                 return false;
         }
     }
+    if (!frame->screen_arc_buffer) {
+        D3D11_BUFFER_DESC description{};
+        description.ByteWidth = sizeof(ScreenArcConstants);
+        description.Usage = D3D11_USAGE_DEFAULT;
+        description.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        if (FAILED(device->CreateBuffer(
+                &description,
+                nullptr,
+                frame->screen_arc_buffer.GetAddressOf())))
+            return false;
+    }
     if (!frame->vram_texture) {
         D3D11_TEXTURE2D_DESC description{};
         description.Width = 1024;
@@ -7447,13 +8185,17 @@ bool ensure_mutable_frame_resources(
 bool ensure_output_resources(
     BaseResources* resources,
     std::uint32_t output_width,
-    std::uint32_t output_height
+    std::uint32_t output_height,
+    std::uint32_t screen_grid_width,
+    std::uint32_t screen_grid_height
 ) {
     ID3D11Device* device = resources->device.Get();
     if (
         resources->color_texture &&
         resources->output_width == output_width &&
-        resources->output_height == output_height
+        resources->output_height == output_height &&
+        resources->screen_grid_width == screen_grid_width &&
+        resources->screen_grid_height == screen_grid_height
     )
         return true;
 
@@ -7469,7 +8211,8 @@ bool ensure_output_resources(
     color_description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     color_description.SampleDesc.Count = 1;
     color_description.Usage = D3D11_USAGE_DEFAULT;
-    color_description.BindFlags = D3D11_BIND_RENDER_TARGET;
+    color_description.BindFlags =
+        D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
     if (
         FAILED(device->CreateTexture2D(
             &color_description,
@@ -7478,7 +8221,61 @@ bool ensure_output_resources(
         FAILED(device->CreateRenderTargetView(
             resources->color_texture.Get(),
             nullptr,
-            resources->color_view.GetAddressOf()))
+            resources->color_view.GetAddressOf())) ||
+        FAILED(device->CreateShaderResourceView(
+            resources->color_texture.Get(),
+            nullptr,
+            resources->color_shader_view.GetAddressOf()))
+    )
+        return false;
+
+    if (
+        FAILED(device->CreateTexture2D(
+            &color_description,
+            nullptr,
+            resources->screen_grid_texture.GetAddressOf())) ||
+        FAILED(device->CreateRenderTargetView(
+            resources->screen_grid_texture.Get(),
+            nullptr,
+            resources->screen_grid_view.GetAddressOf()))
+    )
+        return false;
+
+    if (
+        FAILED(device->CreateTexture2D(
+            &color_description,
+            nullptr,
+            resources->screen_grid_world_texture.GetAddressOf())) ||
+        FAILED(device->CreateShaderResourceView(
+            resources->screen_grid_world_texture.Get(),
+            nullptr,
+            resources->screen_grid_world_shader_view.GetAddressOf()))
+    )
+        return false;
+
+    D3D11_TEXTURE2D_DESC mask_description{};
+    mask_description.Width = screen_grid_width;
+    mask_description.Height = screen_grid_height;
+    mask_description.MipLevels = 1;
+    mask_description.ArraySize = 1;
+    mask_description.Format = DXGI_FORMAT_R8_UNORM;
+    mask_description.SampleDesc.Count = 1;
+    mask_description.Usage = D3D11_USAGE_DEFAULT;
+    mask_description.BindFlags =
+        D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    if (
+        FAILED(device->CreateTexture2D(
+            &mask_description,
+            nullptr,
+            resources->screen_grid_mask_texture.GetAddressOf())) ||
+        FAILED(device->CreateRenderTargetView(
+            resources->screen_grid_mask_texture.Get(),
+            nullptr,
+            resources->screen_grid_mask_view.GetAddressOf())) ||
+        FAILED(device->CreateShaderResourceView(
+            resources->screen_grid_mask_texture.Get(),
+            nullptr,
+            resources->screen_grid_mask_shader_view.GetAddressOf()))
     )
         return false;
 
@@ -7537,6 +8334,8 @@ bool ensure_output_resources(
     }
     resources->output_width = output_width;
     resources->output_height = output_height;
+    resources->screen_grid_width = screen_grid_width;
+    resources->screen_grid_height = screen_grid_height;
     return true;
 }
 
@@ -7625,6 +8424,8 @@ WorldGpuRenderResult render_world_d3d11(
     // authored wheel mesh in normal builds.
     std::vector<SmoothWheel> smooth_wheels;
     std::vector<HudHorizontalPlacement> hud_horizontal_placements;
+    std::vector<AuthoredScreenArc> authored_screen_arcs;
+    std::vector<std::uint8_t> opaque_track_surfaces;
     if (const char* enabled = std::getenv("OPENGT_RENDER_SMOOTH_WHEELS");
         enabled != nullptr && std::strcmp(enabled, "1") == 0) {
         try {
@@ -7634,8 +8435,11 @@ WorldGpuRenderResult render_world_d3d11(
         }
     }
     try {
+        opaque_track_surfaces =
+            opaque_track_surface_eligibility(draw_list);
         hud_horizontal_placements =
             build_hud_horizontal_placements(draw_list);
+        authored_screen_arcs = detect_authored_screen_arcs(draw_list);
         emit_vehicle_diagnostics(
             draw_list, smooth_wheels, options.synthetic_midpoint);
         emit_clip_rect_diagnostics(draw_list);
@@ -7643,11 +8447,19 @@ WorldGpuRenderResult render_world_d3d11(
         emit_resident_edge_diagnostics(draw_list, options);
         emit_scene_diagnostics(draw_list, options);
         emit_texture_coverage_diagnostics(
-            draw_list, vram, vram_word_count, options);
+            draw_list,
+            vram,
+            vram_word_count,
+            options,
+            opaque_track_surfaces);
         emit_texture_instance_diagnostics(
             draw_list, vram, vram_word_count, options);
         emit_pixel_provenance_diagnostics(
-            draw_list, vram, vram_word_count, options);
+            draw_list,
+            vram,
+            vram_word_count,
+            options,
+            opaque_track_surfaces);
     } catch (const std::bad_alloc&) {
         return WorldGpuRenderResult::resource_failed;
     }
@@ -7813,7 +8625,12 @@ WorldGpuRenderResult render_world_d3d11(
         3,
         authored_vertex_count +
             smooth_wheels.size() * smooth_wheel_vertices);
-    if (!ensure_output_resources(&base, output_width, output_height))
+    if (!ensure_output_resources(
+            &base,
+            output_width,
+            output_height,
+            target_display_width,
+            static_cast<std::uint32_t>(draw_list.display_height)))
         return WorldGpuRenderResult::resource_failed;
     const UINT staging_write = base.staging_write_index;
     const UINT staging_fill_count = base.staging_fill_count;
@@ -8210,7 +9027,8 @@ WorldGpuRenderResult render_world_d3d11(
             const auto& material =
                 draw_list.materials[command.material_index];
             const bool opaque_track_surface =
-                is_opaque_track_surface(command, material);
+                command_index < opaque_track_surfaces.size() &&
+                opaque_track_surfaces[command_index] != 0;
             const bool vehicle_shadow =
                 soft_vehicle_shadow(command, material);
             const bool wheel_tread =
@@ -8330,6 +9148,41 @@ WorldGpuRenderResult render_world_d3d11(
             0,
             0);
     }
+    ScreenArcConstants screen_arc_constants{};
+    screen_arc_constants.count = static_cast<std::uint32_t>(
+        (std::min)(authored_screen_arcs.size(), maximum_screen_arcs));
+    for (std::size_t index = 0;
+         index < screen_arc_constants.count;
+         ++index) {
+        const auto& source = authored_screen_arcs[index];
+        const auto& placement =
+            hud_horizontal_placements[source.command_index];
+        auto& destination = screen_arc_constants.arcs[index];
+        destination.center_x =
+            (source.center_x - draw_list.display_x) * output_scale +
+            hud_output_offset(placement);
+        destination.center_y =
+            (source.center_y - draw_list.display_y) * output_scale;
+        destination.radius_x = source.radius_x * output_scale;
+        destination.radius_y = source.radius_y * output_scale;
+        destination.orientation = source.orientation;
+    }
+    context->UpdateSubresource(
+        frame.screen_arc_buffer.Get(),
+        0,
+        nullptr,
+        &screen_arc_constants,
+        0,
+        0);
+    static thread_local std::size_t reported_screen_arc_count =
+        (std::numeric_limits<std::size_t>::max)();
+    if (reported_screen_arc_count != authored_screen_arcs.size()) {
+        reported_screen_arc_count = authored_screen_arcs.size();
+        std::fprintf(
+            stderr,
+            "[Render-Screen-Arcs] count=%zu policy=authored-radial-fan\n",
+            authored_screen_arcs.size());
+    }
 
     WorldViewChannel depth_channel = WorldViewChannel::main_view;
     bool depth_channel_initialized = false;
@@ -8372,12 +9225,10 @@ WorldGpuRenderResult render_world_d3d11(
     // ordering table. Because it intentionally paints color without owning
     // physical depth, drawing it late overwrites a vehicle's color while
     // leaving that vehicle's invisible depth behind to reject later road.
-    // Road artwork is composited explicitly after opaque world depth. Typed
-    // overlay primitives receive a bounded post-clip depth priority over their
-    // road support; ordinary depth testing still leaves genuinely nearer walls
-    // and vehicles in front. Transparent world effects follow so they retain
-    // ordinary foreground ownership.
-    const auto command_in_render_phase = [] (
+    // Road artwork is composited explicitly after opaque world depth while
+    // retaining that physical depth test. Transparent effects follow so they
+    // retain ordinary foreground ownership.
+    const auto command_in_render_phase = [horizontal_projection_scale] (
         const WorldDrawCommand& command,
         const WorldMaterial& material,
         int phase
@@ -8385,8 +9236,62 @@ WorldGpuRenderResult render_world_d3d11(
         if ((material.primitive_flags &
                 world_primitive_screen_space_flag) != 0)
             return phase == 4;
+        // The resident course can retain GTE packets after projection has
+        // saturated their authored SXY values. D3D clips ordinary intersecting
+        // triangles correctly, but submitting a primitive whose three
+        // vertices are outside the same homogeneous clip plane can produce a
+        // thin reflected raster when W changes sign. Reject only the standard
+        // mathematically empty cases before batching. Hor+ scales clip X in
+        // the vertex buffer, so use that exact transformed coordinate here.
+        const bool invalid = std::any_of(
+            command.vertices,
+            command.vertices + 3,
+            [] (const WorldDrawVertex& vertex) {
+                return !std::isfinite(vertex.clip_x) ||
+                    !std::isfinite(vertex.clip_y) ||
+                    !std::isfinite(vertex.clip_z) ||
+                    !std::isfinite(vertex.clip_w);
+            });
+        const auto all_outside = [&] (const auto& outside) {
+            return std::all_of(
+                command.vertices,
+                command.vertices + 3,
+                outside);
+        };
+        const bool empty_homogeneous_intersection =
+            all_outside([&] (const WorldDrawVertex& vertex) {
+                return vertex.clip_x * horizontal_projection_scale <
+                    -vertex.clip_w;
+            }) ||
+            all_outside([&] (const WorldDrawVertex& vertex) {
+                return vertex.clip_x * horizontal_projection_scale >
+                    vertex.clip_w;
+            }) ||
+            all_outside([] (const WorldDrawVertex& vertex) {
+                return vertex.clip_y < -vertex.clip_w;
+            }) ||
+            all_outside([] (const WorldDrawVertex& vertex) {
+                return vertex.clip_y > vertex.clip_w;
+            }) ||
+            all_outside([] (const WorldDrawVertex& vertex) {
+                return vertex.clip_z < 0.0F;
+            }) ||
+            all_outside([] (const WorldDrawVertex& vertex) {
+                return vertex.clip_z > vertex.clip_w;
+            });
+        if (invalid || empty_homogeneous_intersection)
+            return false;
         if (command.object_kind == 3U)
             return phase == 0;
+        const bool replacement = command.object_kind == 1U &&
+            (material.primitive_flags &
+                world_primitive_track_replacement_flag) != 0;
+        if (replacement) {
+            // A detailed replacement is still the ordinary road everywhere
+            // outside its coarse support. Draw it once with physical depth,
+            // then redraw only the typed overlap in the priority phase.
+            return phase == 1 || phase == 2;
+        }
         const bool overlay = command.object_kind == 1U &&
             track_overlay_layer(material.primitive_flags) != 0;
         if (overlay)
@@ -8436,8 +9341,6 @@ WorldGpuRenderResult render_world_d3d11(
         "OPENGT_DEBUG_TRACK_OVERLAYS_ONLY") != nullptr;
     const bool debug_road_overlay_tint = std::getenv(
         "OPENGT_DEBUG_ROAD_OVERLAY_TINT") != nullptr;
-    const bool debug_road_overlay_use_depth = std::getenv(
-        "OPENGT_DEBUG_ROAD_OVERLAY_USE_DEPTH") != nullptr;
     const bool debug_road_overlay_no_depth = std::getenv(
         "OPENGT_DEBUG_ROAD_OVERLAY_NO_DEPTH") != nullptr;
     const bool debug_command_id = std::getenv(
@@ -8511,7 +9414,8 @@ WorldGpuRenderResult render_world_d3d11(
             if (command.material_index >= draw_list.materials.size())
                 continue;
             const auto& material = draw_list.materials[command.material_index];
-            if (!debug_identity_selected(command) ||
+            if (!debug_command_selected(command_index) ||
+                !debug_identity_selected(command) ||
                 !debug_layer_selected(world_render_layer(command, material)) ||
                 !debug_track_source_selected(command, material))
                 continue;
@@ -8519,7 +9423,8 @@ WorldGpuRenderResult render_world_d3d11(
                 stderr,
                 "[Render-Command-Id] frame=%llu poll=%d command=%zu "
                 "source=%u kind=%u object=%08x model=%08x flags=%08x "
-                "env=%08x tpage=%04x clut=%04x\n",
+                "env=%08x tpage=%04x clut=%04x transform=%016llx "
+                "channel=%u ot=%d clip=%d,%d..%d,%d\n",
                 static_cast<unsigned long long>(draw_list.frame_index),
                 draw_list.input_poll,
                 command_index,
@@ -8530,7 +9435,89 @@ WorldGpuRenderResult render_world_d3d11(
                 material.primitive_flags,
                 material.environment_flags,
                 material.texture_page,
-                material.clut);
+                material.clut,
+                static_cast<unsigned long long>(command.transform_id),
+                static_cast<unsigned>(command.channel),
+                command.ordering_table_index,
+                command.clip_x0,
+                command.clip_y0,
+                command.clip_x1,
+                command.clip_y1);
+            for (std::size_t vertex_index = 0;
+                 vertex_index < 3U;
+                 ++vertex_index) {
+                const auto& vertex = command.vertices[vertex_index];
+                std::fprintf(
+                    stderr,
+                    "[Render-Command-Vertex] command=%zu vertex=%zu "
+                    "screen=(%.9f,%.9f) authored=(%d,%d) "
+                    "model=(%d,%d,%d) world=(%.9f,%.9f,%.9f) "
+                    "view=(%.9f,%.9f,%.9f) exactView=(%d,%d,%d) "
+                    "clip=(%.9f,%.9f,%.9f,%.9f)\n",
+                    command_index,
+                    vertex_index,
+                    vertex.screen_x,
+                    vertex.screen_y,
+                    vertex.authored_screen_x,
+                    vertex.authored_screen_y,
+                    vertex.model_x,
+                    vertex.model_y,
+                    vertex.model_z,
+                    vertex.world_x,
+                    vertex.world_y,
+                    vertex.world_z,
+                    vertex.view_x,
+                    vertex.view_y,
+                    vertex.view_z,
+                    vertex.exact_view_x,
+                    vertex.exact_view_y,
+                    vertex.exact_view_z,
+                    vertex.clip_x,
+                    vertex.clip_y,
+                    vertex.clip_z,
+                    vertex.clip_w);
+            }
+            const auto post_clip = diagnostic_homogeneous_clip(
+                command,
+                horizontal_projection_scale);
+            std::fprintf(
+                stderr,
+                "[Render-Command-PostClip] command=%zu finite=%d "
+                "bounded=%d clipped=%d vertices=%zu target=%ux%u "
+                "hscale=%.9f\n",
+                command_index,
+                post_clip.finite ? 1 : 0,
+                post_clip.bounded ? 1 : 0,
+                post_clip.clipped ? 1 : 0,
+                post_clip.vertex_count,
+                output_width,
+                output_height,
+                horizontal_projection_scale);
+            for (std::size_t vertex_index = 0;
+                 vertex_index < post_clip.vertex_count;
+                 ++vertex_index) {
+                const auto& vertex = post_clip.vertices[vertex_index];
+                const double reciprocal_w = 1.0 / vertex.w;
+                const double output_x =
+                    (vertex.x * reciprocal_w * 0.5 + 0.5) *
+                    output_width;
+                const double output_y =
+                    (-vertex.y * reciprocal_w * 0.5 + 0.5) *
+                    output_height;
+                std::fprintf(
+                    stderr,
+                    "[Render-Command-PostClip-Vertex] command=%zu "
+                    "vertex=%zu clip=(%.9f,%.9f,%.9f,%.9f) "
+                    "output=(%.9f,%.9f)\n",
+                    command_index,
+                    vertex_index,
+                    vertex.x,
+                    vertex.y,
+                    vertex.z,
+                    vertex.w,
+                    output_x,
+                    output_y);
+            }
         }
     }
     if (debug_render_layer_filter != DebugRenderLayerFilter::all) {
@@ -8555,6 +9542,12 @@ WorldGpuRenderResult render_world_d3d11(
         }
     }
     for (int render_phase = 0; render_phase < 5; ++render_phase) {
+    if (render_phase == 4 && output_scale > 1) {
+        context->OMSetRenderTargets(0, nullptr, nullptr);
+        context->CopyResource(
+            base.screen_grid_world_texture.Get(),
+            base.color_texture.Get());
+    }
     ID3D11RenderTargetView* phase_target = base.color_view.Get();
     context->OMSetRenderTargets(1, &phase_target, base.depth_view.Get());
     ID3D11PixelShader* phase_pixel_shader =
@@ -8662,6 +9655,19 @@ WorldGpuRenderResult render_world_d3d11(
         const bool screen_space =
             (material.primitive_flags &
                 world_primitive_screen_space_flag) != 0;
+        const bool command_opaque_track_surface =
+            command_index < opaque_track_surfaces.size() &&
+            opaque_track_surfaces[command_index] != 0;
+        const bool command_alpha_tested_cutout =
+            alpha_tested_track_cutout_candidate(
+                command,
+                material,
+                command_opaque_track_surface);
+        const bool command_road_support =
+            command.object_kind == 1U &&
+            ((material.primitive_flags &
+                world_primitive_track_overlay_support_flag) != 0 ||
+                command_opaque_track_surface);
         if (
             !debug_command_selected(command_index) ||
             !debug_identity_selected(command) ||
@@ -8683,8 +9689,15 @@ WorldGpuRenderResult render_world_d3d11(
             soft_vehicle_shadow(command, material);
         const bool combined_semitransparent =
             textured && semitransparent && blend_mode != 2;
-        const int pass_count =
-            textured && semitransparent && !combined_semitransparent ? 2 : 1;
+        const bool alpha_tested_cutout_coverage =
+            !debug_command_id &&
+                render_phase == 1 &&
+                command_alpha_tested_cutout;
+        const int pass_count = alpha_tested_cutout_coverage
+            ? 2
+            : textured && semitransparent && !combined_semitransparent
+            ? 2
+            : 1;
         std::size_t batch_commands = 1;
         while (
             command_index + batch_commands <
@@ -8713,6 +9726,9 @@ WorldGpuRenderResult render_world_d3d11(
                 return WorldGpuRenderResult::render_failed;
             const auto& next_material = draw_list.materials[
                 next_command.material_index];
+            const bool next_opaque_track_surface =
+                next_index < opaque_track_surfaces.size() &&
+                opaque_track_surfaces[next_index] != 0;
             if (
                 !debug_command_selected(command_index + batch_commands) ||
                 !debug_identity_selected(next_command) ||
@@ -8730,7 +9746,17 @@ WorldGpuRenderResult render_world_d3d11(
                     command,
                     material,
                     next_command,
-                    next_material))
+                    next_material,
+                    command_alpha_tested_cutout,
+                    alpha_tested_track_cutout_candidate(
+                        next_command,
+                        next_material,
+                        next_opaque_track_surface),
+                    command_road_support,
+                    next_command.object_kind == 1U &&
+                        ((next_material.primitive_flags &
+                            world_primitive_track_overlay_support_flag) != 0 ||
+                            next_opaque_track_surface)))
                 break;
             ++batch_commands;
         }
@@ -8839,10 +9865,21 @@ WorldGpuRenderResult render_world_d3d11(
             depth_channel_initialized = true;
         }
         for (int pass = 0; pass < pass_count; ++pass) {
-            const int shader_pass =
-                combined_semitransparent ? 2 : pass;
+            const int shader_pass = alpha_tested_cutout_coverage
+                ? 0
+                : combined_semitransparent ? 2 : pass;
             const bool blended = semitransparent &&
                 (combined_semitransparent || !textured || pass == 1);
+            ID3D11PixelShader* batch_pixel_shader =
+                alpha_tested_cutout_coverage
+                ? pass == 0
+                    ? base.cutout_depth_pixel_shader.Get()
+                    : base.cutout_fringe_pixel_shader.Get()
+                : phase_pixel_shader;
+            if (batch_pixel_shader != bound_pixel_shader) {
+                context->PSSetShader(batch_pixel_shader, nullptr, 0);
+                bound_pixel_shader = batch_pixel_shader;
+            }
             if (bound_pass != shader_pass) {
                 ID3D11Buffer* raw_constant_buffer =
                     frame.constant_buffers[shader_pass].Get();
@@ -8861,6 +9898,8 @@ WorldGpuRenderResult render_world_d3d11(
                 effective_factor,
             };
             ID3D11BlendState* blend_state = vehicle_shadow
+                ? base.blend_states[6].Get()
+                : alpha_tested_cutout_coverage
                 ? base.blend_states[6].Get()
                 : combined_semitransparent
                 ? base.blend_states[5].Get()
@@ -8889,32 +9928,38 @@ WorldGpuRenderResult render_world_d3d11(
             // pixels from that later course submission.
             // Road paint, lane markers, arrows, grids, and other typed course
             // artwork are separate polygons in GT2, not baked road texture.
-            // Their priority must therefore be a property of the artwork
-            // class itself, not contingent on an exact support triangle
-            // retaining a stencil tag.  A later coplanar road triangle can
-            // legitimately replace that tag even though it is still the same
-            // road surface.  Keep ordinary depth testing enabled here and let
-            // PSMainRoadOverlay apply its bounded four-view-unit depth
-            // priority.  This makes the rule work on every course while a
-            // genuinely nearer wall or vehicle continues to occlude it.
+            // Their priority is therefore a class relationship: the opaque
+            // pass records the nearest road owner, then the dedicated overlay
+            // phase requires that owner and a passing physical depth test.
             const bool use_depth =
-                (render_phase != 2 ||
-                    ((!debug_road_overlay_tint ||
-                        debug_road_overlay_use_depth) &&
-                        !debug_road_overlay_no_depth)) &&
+                !debug_road_overlay_no_depth &&
                 options.depth_buffer && uses_modern_depth;
             const bool road_support =
-                render_phase == 1 && command.object_kind == 1U &&
-                (material.primitive_flags &
-                    world_primitive_track_overlay_support_flag) != 0;
-            ID3D11DepthStencilState* depth_state =
-                base.depth_states[use_depth ? 1 : 0]
-                    [blended && !combined_semitransparent ? 1 : 0]
+                render_phase == 1 && command_road_support;
+            const bool track_overlay =
+                render_phase == 2 && command.object_kind == 1U &&
+                track_overlay_layer(material.primitive_flags) != 0;
+            ID3D11DepthStencilState* depth_state = nullptr;
+            UINT stencil_reference = 0;
+            if (track_overlay && use_depth) {
+                depth_state = base.road_overlay_depth_states
+                    [check_mask ? 1 : 0].Get();
+                // Road overlays require an owned road pixel (bit 1 set). A
+                // check-mask command also requires the PS1 mask bit (bit 0)
+                // to stay clear, so both cases compare against 0b10.
+                stencil_reference = 2U;
+            } else {
+                depth_state = base.depth_states[use_depth ? 1 : 0]
+                    [(blended && !combined_semitransparent) ||
+                        (alpha_tested_cutout_coverage && pass == 1)
+                        ? 1
+                        : 0]
                     [check_mask ? 1 : 0]
                     [set_mask ? 1 : 0].Get();
-            const UINT stencil_reference =
-                ((check_mask || set_mask) ? 1U : 0U) |
-                (road_support ? 2U : 0U);
+                stencil_reference =
+                    ((check_mask || set_mask) ? 1U : 0U) |
+                    (road_support ? 2U : 0U);
+            }
             if (depth_state != bound_depth_state ||
                 stencil_reference != bound_stencil_reference) {
                 context->OMSetDepthStencilState(
@@ -8926,11 +9971,151 @@ WorldGpuRenderResult render_world_d3d11(
                 static_cast<UINT>(batch_commands * 3),
                 static_cast<UINT>(command_index * 3));
             ++stats->draw_calls;
-            if (blended)
+            if (blended || alpha_tested_cutout_coverage)
                 ++stats->transparent_draw_calls;
         }
         command_index += batch_commands;
     }
+    }
+
+    ID3D11Texture2D* resolved_color_texture = base.color_texture.Get();
+    const bool has_screen_commands = std::any_of(
+        draw_list.commands.begin(),
+        draw_list.commands.end(),
+        [&draw_list] (const WorldDrawCommand& command) {
+            return command.material_index < draw_list.materials.size() &&
+                (draw_list.materials[command.material_index].primitive_flags &
+                    world_primitive_screen_space_flag) != 0;
+        });
+    if (output_scale > 1 && has_screen_commands && !debug_command_id) {
+        // GT2 authored its HUD and menus on the 320x240 GPU coverage grid.
+        // Rasterizing those same polygon vertices directly at 4x exposes the
+        // low-sided construction of shapes that were rounded by the original
+        // pixel coverage. Build a one-bit coverage layer at the authored grid,
+        // then resolve only covered output blocks from their native-pixel
+        // centre. This preserves every submitted vertex, primitive, ordering
+        // decision, and component offset; it does not recognize or rebuild a
+        // particular menu shape.
+        const float mask_clear[] = {0.0F, 0.0F, 0.0F, 0.0F};
+        context->ClearRenderTargetView(
+            base.screen_grid_mask_view.Get(), mask_clear);
+        ID3D11RenderTargetView* mask_target =
+            base.screen_grid_mask_view.Get();
+        context->OMSetRenderTargets(1, &mask_target, nullptr);
+        const D3D11_VIEWPORT mask_viewport{
+            0.0F,
+            0.0F,
+            static_cast<float>(target_display_width),
+            static_cast<float>(draw_list.display_height),
+            0.0F,
+            1.0F,
+        };
+        context->RSSetViewports(1, &mask_viewport);
+        context->RSSetState(base.rasterizer.Get());
+        context->IASetInputLayout(base.input_layout.Get());
+        context->IASetPrimitiveTopology(
+            D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->IASetVertexBuffers(
+            0, 1, &raw_vertex_buffer, &stride, &offset);
+        context->VSSetShader(base.vertex_shader.Get(), nullptr, 0);
+        context->PSSetShader(
+            base.screen_grid_mask_pixel_shader.Get(), nullptr, 0);
+        context->OMSetBlendState(
+            base.blend_states[0].Get(), nullptr, 0xFFFFFFFFU);
+        context->OMSetDepthStencilState(
+            base.depth_states[0][0][0][0].Get(), 0);
+        for (std::size_t command_index = 0;
+             command_index < draw_list.commands.size();
+             ++command_index) {
+            const auto& command = draw_list.commands[command_index];
+            if (command.material_index >= draw_list.materials.size())
+                continue;
+            const auto& material =
+                draw_list.materials[command.material_index];
+            if ((material.primitive_flags &
+                    world_primitive_screen_space_flag) == 0 ||
+                !debug_command_selected(command_index) ||
+                !debug_identity_selected(command) ||
+                !debug_layer_selected(
+                    world_render_layer(command, material)) ||
+                !debug_track_source_selected(command, material))
+                continue;
+            const std::int32_t native_horizontal_offset =
+                static_cast<std::int32_t>(std::lround(
+                    hud_output_offset(
+                        hud_horizontal_placements[command_index]) /
+                    static_cast<float>(output_scale)));
+            const D3D11_RECT mask_scissor{
+                std::clamp(
+                    static_cast<LONG>(
+                        command.clip_x0 - draw_list.display_x +
+                        native_horizontal_offset),
+                    0L,
+                    static_cast<LONG>(target_display_width)),
+                std::clamp(
+                    static_cast<LONG>(
+                        command.clip_y0 - draw_list.display_y),
+                    0L,
+                    static_cast<LONG>(draw_list.display_height)),
+                std::clamp(
+                    static_cast<LONG>(
+                        command.clip_x1 - draw_list.display_x + 1 +
+                        native_horizontal_offset),
+                    0L,
+                    static_cast<LONG>(target_display_width)),
+                std::clamp(
+                    static_cast<LONG>(
+                        command.clip_y1 - draw_list.display_y + 1),
+                    0L,
+                    static_cast<LONG>(draw_list.display_height)),
+            };
+            context->RSSetScissorRects(1, &mask_scissor);
+            context->Draw(
+                3,
+                static_cast<UINT>(command_index * 3));
+        }
+
+        ID3D11RenderTargetView* grid_target =
+            base.screen_grid_view.Get();
+        context->OMSetRenderTargets(1, &grid_target, nullptr);
+        context->RSSetViewports(1, &viewport);
+        const D3D11_RECT full_scissor{
+            0L,
+            0L,
+            static_cast<LONG>(output_width),
+            static_cast<LONG>(output_height),
+        };
+        context->RSSetScissorRects(1, &full_scissor);
+        context->IASetInputLayout(nullptr);
+        ID3D11Buffer* no_vertex_buffer = nullptr;
+        const UINT no_stride = 0;
+        const UINT no_offset = 0;
+        context->IASetVertexBuffers(
+            0, 1, &no_vertex_buffer, &no_stride, &no_offset);
+        context->VSSetShader(
+            base.screen_grid_vertex_shader.Get(), nullptr, 0);
+        context->PSSetShader(
+            base.screen_grid_pixel_shader.Get(), nullptr, 0);
+        ID3D11Buffer* screen_arc_buffer = frame.screen_arc_buffer.Get();
+        context->PSSetConstantBuffers(1, 1, &screen_arc_buffer);
+        ID3D11ShaderResourceView* grid_views[] = {
+            base.color_shader_view.Get(),
+            base.screen_grid_mask_shader_view.Get(),
+            base.screen_grid_world_shader_view.Get(),
+        };
+        context->PSSetShaderResources(3, 3, grid_views);
+        context->OMSetBlendState(
+            base.blend_states[0].Get(), nullptr, 0xFFFFFFFFU);
+        context->OMSetDepthStencilState(
+            base.depth_states[0][0][0][0].Get(), 0);
+        context->Draw(3, 0);
+        ID3D11ShaderResourceView* empty_grid_views[] = {
+            nullptr,
+            nullptr,
+            nullptr,
+        };
+        context->PSSetShaderResources(3, 3, empty_grid_views);
+        resolved_color_texture = base.screen_grid_texture.Get();
     }
 
     if (diagnose_batches) {
@@ -8984,7 +10169,7 @@ WorldGpuRenderResult render_world_d3d11(
     if (options.asynchronous_readback) {
         context->CopyResource(
             base.async_staging_textures[async_staging_write].Get(),
-            base.color_texture.Get());
+            resolved_color_texture);
         context->End(
             base.async_completion_queries[async_staging_write].Get());
         base.async_staging_write_index =
@@ -8997,7 +10182,7 @@ WorldGpuRenderResult render_world_d3d11(
         // copies time to complete.
         context->CopyResource(
             base.staging_textures[staging_write].Get(),
-            base.color_texture.Get());
+            resolved_color_texture);
         context->End(base.staging_completion_queries[staging_write].Get());
     }
     // The immediate context may otherwise retain several CopyResource calls

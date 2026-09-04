@@ -290,7 +290,8 @@ std::uint64_t fingerprint_track_triangle(
         // excluding only those typed road-overlay annotations.
         constexpr std::uint32_t resident_annotation_mask =
             opengt::render::world_primitive_track_overlay_layer_mask |
-            opengt::render::world_primitive_track_overlay_support_flag;
+            opengt::render::world_primitive_track_overlay_support_flag |
+            opengt::render::world_primitive_track_replacement_flag;
         fingerprint_add(
             &hash,
             triangle.primitive_flags & ~resident_annotation_mask,
@@ -340,6 +341,11 @@ std::uint64_t fingerprint_track_triangle(
             4);
     }
     fingerprint_add(&hash, triangle.exact_transform_valid ? 1U : 0U, 1);
+    fingerprint_add(
+        &hash,
+        static_cast<std::uint32_t>(triangle.depth_scale_exponent),
+        4);
+    fingerprint_add(&hash, triangle.depth_scale_valid ? 1U : 0U, 1);
     for (const auto& vertex : triangle.vertices) {
         if (include_material) {
             fingerprint_add(
@@ -452,6 +458,7 @@ struct ResidentPrimitive {
     ResidentMaterial distant_material{};
     std::uint8_t overlay_layer{};
     bool overlay_support{};
+    bool replacement_surface{};
 };
 
 struct ResidentMesh {
@@ -461,6 +468,7 @@ struct ResidentMesh {
     std::uint32_t overlay_pairs{};
     std::uint32_t overlay_primitives{};
     std::uint32_t untextured_overlay_primitives{};
+    std::uint32_t replacement_primitives{};
     std::uint8_t maximum_overlay_layer{};
 };
 
@@ -629,15 +637,15 @@ ResidentPlaneKey resident_normalized_plane(
     return key;
 }
 
-ResidentOverlayCandidate resident_overlay_candidate(
+ResidentOverlayCandidate resident_overlay_candidate_from_plane(
     const ResidentMesh& mesh,
-    const ResidentPrimitive& primitive
+    const ResidentPrimitive& primitive,
+    const ResidentPlane& plane,
+    const int* corners,
+    int corner_count
 ) noexcept {
     ResidentOverlayCandidate result{};
-    if (!resident_opaque(primitive))
-        return result;
-    ResidentPlane plane{};
-    if (!resident_primitive_plane(mesh, primitive, &plane))
+    if (!resident_opaque(primitive) || corners == nullptr || corner_count < 3)
         return result;
     result.plane = resident_normalized_plane(plane);
     const double normal_length = std::sqrt(
@@ -660,13 +668,13 @@ ResidentOverlayCandidate resident_overlay_candidate(
         result.normal_z * plane.origin.z);
     result.dropped_axis = plane.dropped_axis;
     const auto first = resident_project(
-        mesh.vertices[primitive.indices[0]], plane.dropped_axis);
+        mesh.vertices[primitive.indices[corners[0]]], plane.dropped_axis);
     result.minimum_x = result.maximum_x = static_cast<std::int32_t>(first.x);
     result.minimum_y = result.maximum_y = static_cast<std::int32_t>(first.y);
-    const int count = resident_primitive_vertex_count(primitive);
-    for (int corner = 1; corner < count; ++corner) {
+    for (int corner = 1; corner < corner_count; ++corner) {
         const auto point = resident_project(
-            mesh.vertices[primitive.indices[corner]], plane.dropped_axis);
+            mesh.vertices[primitive.indices[corners[corner]]],
+            plane.dropped_axis);
         const auto x = static_cast<std::int32_t>(point.x);
         const auto y = static_cast<std::int32_t>(point.y);
         result.minimum_x = (std::min)(result.minimum_x, x);
@@ -676,6 +684,39 @@ ResidentOverlayCandidate resident_overlay_candidate(
     }
     result.valid = true;
     return result;
+}
+
+ResidentOverlayCandidate resident_overlay_candidate(
+    const ResidentMesh& mesh,
+    const ResidentPrimitive& primitive
+) noexcept {
+    if (!resident_opaque(primitive))
+        return {};
+    ResidentPlane plane{};
+    if (!resident_primitive_plane(mesh, primitive, &plane))
+        return {};
+    constexpr int corners[] = {0, 1, 2, 3};
+    return resident_overlay_candidate_from_plane(
+        mesh,
+        primitive,
+        plane,
+        corners,
+        resident_primitive_vertex_count(primitive));
+}
+
+bool resident_road_overlay_candidate(
+    const ResidentOverlayCandidate& candidate
+) noexcept {
+    // The priority relationship is specifically between artwork and its
+    // drivable road support.  Coplanar scenery uses the same authored data
+    // pattern (small fence, billboard, cliff, and treeline pieces over a
+    // larger vertical surface), but promoting those pieces into the road
+    // stencil lets them punch through asphalt wherever their projections
+    // overlap.  GT2 course model space is Z-up; requiring Z to be the
+    // dominant plane normal admits banked and sloped ground while excluding
+    // upright scenery without relying on a track, address, stream, material,
+    // or texture exception.
+    return candidate.valid && candidate.dropped_axis == 2;
 }
 
 bool resident_overlay_bounds_positive_overlap(
@@ -722,7 +763,7 @@ double resident_area_twice(
     return area;
 }
 
-bool resident_triangles_positive_overlap(
+std::vector<ResidentPoint2> resident_triangle_overlap_polygon(
     std::array<ResidentPoint2, 3> subject,
     std::array<ResidentPoint2, 3> clip
 ) {
@@ -763,8 +804,17 @@ bool resident_triangles_positive_overlap(
         }
         polygon = std::move(output);
     }
-    return polygon.size() >= 3 &&
-        std::abs(resident_area_twice(polygon)) > 1.0e-6;
+    if (polygon.size() < 3 ||
+        std::abs(resident_area_twice(polygon)) <= 1.0e-6)
+        polygon.clear();
+    return polygon;
+}
+
+bool resident_triangles_positive_overlap(
+    std::array<ResidentPoint2, 3> subject,
+    std::array<ResidentPoint2, 3> clip
+) {
+    return !resident_triangle_overlap_polygon(subject, clip).empty();
 }
 
 std::array<int, 3> resident_primitive_triangle_corners(
@@ -776,6 +826,52 @@ std::array<int, 3> resident_primitive_triangle_corners(
     return resident_quad_packet_corners(
         (primitive.flags & resident_primitive_primary_path) != 0,
         triangle);
+}
+
+ResidentOverlayCandidate resident_triangle_overlay_candidate(
+    const ResidentMesh& mesh,
+    const ResidentPrimitive& primitive,
+    int triangle
+) noexcept {
+    if (!resident_opaque(primitive))
+        return {};
+    const auto corners = resident_primitive_triangle_corners(
+        primitive, triangle);
+    const auto& origin = mesh.vertices[primitive.indices[corners[0]]];
+    const auto& second = mesh.vertices[primitive.indices[corners[1]]];
+    const auto& third = mesh.vertices[primitive.indices[corners[2]]];
+    const std::int64_t ab_x =
+        static_cast<std::int64_t>(second.x) - origin.x;
+    const std::int64_t ab_y =
+        static_cast<std::int64_t>(second.y) - origin.y;
+    const std::int64_t ab_z =
+        static_cast<std::int64_t>(second.z) - origin.z;
+    const std::int64_t ac_x =
+        static_cast<std::int64_t>(third.x) - origin.x;
+    const std::int64_t ac_y =
+        static_cast<std::int64_t>(third.y) - origin.y;
+    const std::int64_t ac_z =
+        static_cast<std::int64_t>(third.z) - origin.z;
+    ResidentPlane plane{};
+    plane.x = ab_y * ac_z - ab_z * ac_y;
+    plane.y = ab_z * ac_x - ab_x * ac_z;
+    plane.z = ab_x * ac_y - ab_y * ac_x;
+    if (plane.x == 0 && plane.y == 0 && plane.z == 0)
+        return {};
+    plane.origin = origin;
+    const std::int64_t abs_x = std::llabs(plane.x);
+    const std::int64_t abs_y = std::llabs(plane.y);
+    const std::int64_t abs_z = std::llabs(plane.z);
+    plane.dropped_axis =
+        abs_x >= abs_y && abs_x >= abs_z
+            ? 0
+            : abs_y >= abs_z ? 1 : 2;
+    return resident_overlay_candidate_from_plane(
+        mesh,
+        primitive,
+        plane,
+        corners.data(),
+        static_cast<int>(corners.size()));
 }
 
 double resident_primitive_projected_area_twice(
@@ -834,6 +930,105 @@ bool resident_elevated_overlay_relation(
     return separation > 0.0 && separation <= 2.01;
 }
 
+bool resident_authored_replacement_relation(
+    const ResidentMesh& mesh,
+    const ResidentPrimitive& earlier,
+    double earlier_area_twice,
+    const ResidentPrimitive& later,
+    double later_area_twice
+) {
+    // This is the complementary authored-course relationship to road paint.
+    // Some sectors first submit small untextured Gouraud pieces of a coarse
+    // ground plane, four model units above the detailed textured road that is
+    // submitted later.  The PS1's painter ordering makes the detailed road
+    // own their overlap; a modern depth buffer otherwise exposes the coarse
+    // pieces until the camera passes them.
+    //
+    // Keep the rule typed and bounded: later textured over earlier untextured,
+    // locally parallel and 3-6 model units apart, with the later primitive at
+    // least four times the projected area. GT2's road quads are commonly a
+    // few fixed-point units non-planar, so compare the exact triangles that
+    // the renderer emits and measure separation at their actual overlap.
+    // Exact/1-2-unit small surfaces remain in the order-independent
+    // road-artwork classifier above.
+    if (
+        (earlier.flags & resident_primitive_textured) != 0 ||
+        (later.flags & resident_primitive_textured) == 0 ||
+        earlier_area_twice <= 0.0 || later_area_twice <= 0.0 ||
+        later_area_twice < earlier_area_twice * 4.0
+    ) return false;
+    const int earlier_triangles =
+        (earlier.flags & resident_primitive_quad) != 0 ? 2 : 1;
+    const int later_triangles =
+        (later.flags & resident_primitive_quad) != 0 ? 2 : 1;
+    for (int earlier_triangle = 0;
+         earlier_triangle < earlier_triangles;
+         ++earlier_triangle) {
+        const auto earlier_candidate = resident_triangle_overlay_candidate(
+            mesh, earlier, earlier_triangle);
+        if (!earlier_candidate.valid || earlier_candidate.dropped_axis != 2 ||
+            std::abs(earlier_candidate.normal_z) < 0.95)
+            continue;
+        const auto earlier_corners = resident_primitive_triangle_corners(
+            earlier, earlier_triangle);
+        std::array<ResidentPoint2, 3> earlier_points{};
+        for (int corner = 0; corner < 3; ++corner) {
+            earlier_points[corner] = resident_project(
+                mesh.vertices[earlier.indices[earlier_corners[corner]]], 2);
+        }
+        for (int later_triangle = 0;
+             later_triangle < later_triangles;
+             ++later_triangle) {
+            const auto later_candidate = resident_triangle_overlay_candidate(
+                mesh, later, later_triangle);
+            if (!later_candidate.valid || later_candidate.dropped_axis != 2 ||
+                std::abs(later_candidate.normal_z) < 0.95 ||
+                !resident_overlay_bounds_positive_overlap(
+                    earlier_candidate, later_candidate))
+                continue;
+            const double parallel =
+                earlier_candidate.normal_x * later_candidate.normal_x +
+                earlier_candidate.normal_y * later_candidate.normal_y +
+                earlier_candidate.normal_z * later_candidate.normal_z;
+            if (parallel < 0.9995)
+                continue;
+            const auto later_corners = resident_primitive_triangle_corners(
+                later, later_triangle);
+            std::array<ResidentPoint2, 3> later_points{};
+            for (int corner = 0; corner < 3; ++corner) {
+                later_points[corner] = resident_project(
+                    mesh.vertices[later.indices[later_corners[corner]]], 2);
+            }
+            const auto overlap = resident_triangle_overlap_polygon(
+                earlier_points, later_points);
+            if (overlap.empty())
+                continue;
+            ResidentPoint2 overlap_center{};
+            for (const auto& point : overlap) {
+                overlap_center.x += point.x;
+                overlap_center.y += point.y;
+            }
+            overlap_center.x /= static_cast<double>(overlap.size());
+            overlap_center.y /= static_cast<double>(overlap.size());
+            const double earlier_height = -(
+                earlier_candidate.normal_x * overlap_center.x +
+                earlier_candidate.normal_y * overlap_center.y +
+                earlier_candidate.plane_offset) /
+                earlier_candidate.normal_z;
+            const double later_height = -(
+                later_candidate.normal_x * overlap_center.x +
+                later_candidate.normal_y * overlap_center.y +
+                later_candidate.plane_offset) /
+                later_candidate.normal_z;
+            const double separation = std::abs(
+                earlier_height - later_height);
+            if (separation > 2.01 && separation <= 6.01)
+                return true;
+        }
+    }
+    return false;
+}
+
 bool resident_primitives_positive_overlap(
     const ResidentMesh& mesh,
     const ResidentPrimitive& left,
@@ -880,15 +1075,22 @@ void classify_resident_track_overlays(ResidentMesh* mesh) {
     mesh->overlay_pairs = 0;
     mesh->overlay_primitives = 0;
     mesh->untextured_overlay_primitives = 0;
+    mesh->replacement_primitives = 0;
     mesh->maximum_overlay_layer = 0;
     for (auto& primitive : mesh->primitives) {
         primitive.overlay_layer = 0;
         primitive.overlay_support = false;
+        primitive.replacement_surface = false;
     }
     std::vector<ResidentOverlayCandidate> candidates;
     candidates.reserve(mesh->primitives.size());
-    for (const auto& primitive : mesh->primitives)
-        candidates.push_back(resident_overlay_candidate(*mesh, primitive));
+    for (const auto& primitive : mesh->primitives) {
+        ResidentOverlayCandidate candidate =
+            resident_overlay_candidate(*mesh, primitive);
+        if (!resident_road_overlay_candidate(candidate))
+            candidate.valid = false;
+        candidates.push_back(candidate);
+    }
     std::vector<double> projected_areas_twice;
     projected_areas_twice.reserve(mesh->primitives.size());
     for (std::size_t index = 0; index < mesh->primitives.size(); ++index) {
@@ -899,6 +1101,12 @@ void classify_resident_track_overlays(ResidentMesh* mesh) {
                 candidates[index].dropped_axis)
             : 0.0);
     }
+    std::vector<double> ground_projected_areas_twice;
+    ground_projected_areas_twice.reserve(mesh->primitives.size());
+    for (const auto& primitive : mesh->primitives) {
+        ground_projected_areas_twice.push_back(
+            resident_primitive_projected_area_twice(*mesh, primitive, 2));
+    }
     // Road artwork is identified by its geometric relationship to a larger
     // road surface, not by packet stream or source order. Seattle contains
     // both conventions: textured detail is commonly authored after its road,
@@ -907,13 +1115,44 @@ void classify_resident_track_overlays(ResidentMesh* mesh) {
     // smaller member as the overlay in either ordering.
     std::vector<std::vector<std::size_t>> supports_by_overlay(
         mesh->primitives.size());
+    std::vector<std::vector<std::size_t>> supports_by_replacement(
+        mesh->primitives.size());
     for (std::size_t left = 0; left < mesh->primitives.size(); ++left) {
-        if (!candidates[left].valid)
-            continue;
         for (std::size_t right = left + 1;
              right < mesh->primitives.size();
              ++right) {
-            if (!candidates[right].valid)
+            // Authored replacement is intentionally directional: the later
+            // detailed primitive replaces the earlier coarse course plane.
+            // It is evaluated from the renderer's actual triangles before
+            // the exact-quad road-artwork path below, because fixed-point
+            // road quads are often slightly non-planar.
+            if (resident_authored_replacement_relation(
+                    *mesh,
+                    mesh->primitives[left],
+                    ground_projected_areas_twice[left],
+                    mesh->primitives[right],
+                    ground_projected_areas_twice[right])) {
+                mesh->primitives[left].overlay_support = true;
+                supports_by_replacement[right].push_back(left);
+                ++mesh->overlay_pairs;
+                continue;
+            }
+
+            if (!candidates[left].valid || !candidates[right].valid)
+                continue;
+
+            const bool bounds_overlap =
+                resident_overlay_bounds_positive_overlap(
+                    candidates[left], candidates[right]);
+            if (!bounds_overlap)
+                continue;
+            const bool positive_overlap =
+                resident_primitives_positive_overlap(
+                    *mesh,
+                    mesh->primitives[left],
+                    mesh->primitives[right],
+                    candidates[right].dropped_axis);
+            if (!positive_overlap)
                 continue;
 
             std::size_t overlay = left;
@@ -936,15 +1175,6 @@ void classify_resident_track_overlays(ResidentMesh* mesh) {
             if (!coplanar && !resident_elevated_overlay_relation(
                     support_candidate, overlay_candidate))
                 continue;
-            if (!resident_overlay_bounds_positive_overlap(
-                    support_candidate, overlay_candidate) ||
-                !resident_primitives_positive_overlap(
-                    *mesh,
-                    mesh->primitives[support],
-                    mesh->primitives[overlay],
-                    overlay_candidate.dropped_axis))
-                continue;
-
             mesh->primitives[support].overlay_support = true;
             supports_by_overlay[overlay].push_back(support);
             ++mesh->overlay_pairs;
@@ -974,19 +1204,56 @@ void classify_resident_track_overlays(ResidentMesh* mesh) {
         }
         if (layer == 0)
             continue;
-        auto& primitive = mesh->primitives[overlay];
-        primitive.overlay_layer = layer;
+        mesh->primitives[overlay].overlay_layer = layer;
+    }
+
+    // Replacement edges always point from an earlier primitive to a later
+    // one, so authored order is a deterministic topological order even when
+    // a later detailed surface itself supports a subsequent replacement.
+    for (std::size_t replacement = 0;
+         replacement < mesh->primitives.size();
+         ++replacement) {
+        std::uint8_t layer = 0;
+        for (const std::size_t support :
+             supports_by_replacement[replacement]) {
+            layer = (std::max)(
+                layer,
+                static_cast<std::uint8_t>((std::min)(
+                    static_cast<unsigned>(
+                        mesh->primitives[support].overlay_layer) + 1U,
+                    31U)));
+        }
+        if (layer == 0)
+            continue;
+        auto& primitive = mesh->primitives[replacement];
+        primitive.overlay_layer = (std::max)(
+            primitive.overlay_layer, layer);
+        primitive.replacement_surface = true;
+    }
+
+    for (const auto& primitive : mesh->primitives) {
+        if (primitive.overlay_layer == 0)
+            continue;
         ++mesh->overlay_primitives;
         if ((primitive.flags & resident_primitive_textured) == 0)
             ++mesh->untextured_overlay_primitives;
+        if (primitive.replacement_surface)
+            ++mesh->replacement_primitives;
         mesh->maximum_overlay_layer = (std::max)(
-            mesh->maximum_overlay_layer, layer);
+            mesh->maximum_overlay_layer, primitive.overlay_layer);
     }
 }
 
 void trace_resident_near_overlay_candidates(const ResidentMesh& mesh) {
     if (std::getenv("OPENGT_TRACE_RESIDENT_NEAR_OVERLAYS") == nullptr)
         return;
+    double minimum_parallel = 0.999999;
+    if (const char* configured = std::getenv(
+            "OPENGT_TRACE_RESIDENT_NEAR_OVERLAY_MIN_PARALLEL")) {
+        const double parsed = std::strtod(configured, nullptr);
+        if (std::isfinite(parsed) && parsed >= -1.0 && parsed <= 1.0)
+            minimum_parallel = parsed;
+    }
     double maximum_separation = 64.0;
     if (const char* configured = std::getenv(
             "OPENGT_TRACE_RESIDENT_NEAR_OVERLAY_MAX_SEPARATION")) {
@@ -1011,7 +1278,7 @@ void trace_resident_near_overlay_candidates(const ResidentMesh& mesh) {
                 earlier_candidate.normal_x * later_candidate.normal_x +
                 earlier_candidate.normal_y * later_candidate.normal_y +
                 earlier_candidate.normal_z * later_candidate.normal_z;
-            if (parallel < 0.999999)
+            if (parallel < minimum_parallel)
                 continue;
             const double separation = std::abs(
                 earlier_candidate.plane_offset -
@@ -1041,7 +1308,7 @@ void trace_resident_near_overlay_candidates(const ResidentMesh& mesh) {
                 stderr,
                 "[Native-Resident-Near-Overlay] mesh=%016llx "
                 "earlier=%zu/%08x later=%zu/%08x separation=%.6f "
-                "exact=%u area2=%.3f/%.3f ratio=%.6f "
+                "parallel=%.9f exact=%u area2=%.3f/%.3f ratio=%.6f "
                 "layers=%u/%u streams=%u/%u flags=%08x/%08x "
                 "nearMaterial=%04x,%04x/%04x,%04x\n",
                 static_cast<unsigned long long>(mesh.key),
@@ -1050,6 +1317,7 @@ void trace_resident_near_overlay_candidates(const ResidentMesh& mesh) {
                 later,
                 later_primitive.source_address,
                 separation,
+                parallel,
                 earlier_candidate.plane == later_candidate.plane ? 1U : 0U,
                 earlier_area,
                 later_area,
@@ -1071,10 +1339,67 @@ void trace_resident_near_overlay_candidates(const ResidentMesh& mesh) {
         std::fprintf(
             stderr,
             "[Native-Resident-Near-Overlay-Summary] mesh=%016llx "
-            "pairs=%zu maximumSeparation=%.3f\n",
+            "pairs=%zu minimumParallel=%.9f maximumSeparation=%.3f\n",
             static_cast<unsigned long long>(mesh.key),
             traced_pairs,
+            minimum_parallel,
             maximum_separation);
+    }
+}
+
+void trace_resident_primitive_address_range(const ResidentMesh& mesh) {
+    const char* configured_minimum = std::getenv(
+        "OPENGT_TRACE_RESIDENT_PRIMITIVE_ADDRESS_MIN");
+    const char* configured_maximum = std::getenv(
+        "OPENGT_TRACE_RESIDENT_PRIMITIVE_ADDRESS_MAX");
+    if (configured_minimum == nullptr || configured_maximum == nullptr)
+        return;
+    const auto minimum = static_cast<std::uint32_t>(
+        std::strtoul(configured_minimum, nullptr, 0));
+    const auto maximum = static_cast<std::uint32_t>(
+        std::strtoul(configured_maximum, nullptr, 0));
+    if (minimum > maximum)
+        return;
+    for (std::size_t index = 0; index < mesh.primitives.size(); ++index) {
+        const auto& primitive = mesh.primitives[index];
+        if (primitive.source_address < minimum ||
+            primitive.source_address > maximum)
+            continue;
+        const ResidentOverlayCandidate candidate =
+            resident_overlay_candidate(mesh, primitive);
+        std::fprintf(
+            stderr,
+            "[Native-Resident-Primitive-Geometry] mesh=%016llx "
+            "primitive=%zu source=%08x flags=%08x stream=%u "
+            "layer=%u support=%u replacement=%u validPlane=%u "
+            "normal=%.9f,%.9f,%.9f offset=%.9f dropped=%d "
+            "vertices=",
+            static_cast<unsigned long long>(mesh.key),
+            index,
+            primitive.source_address,
+            primitive.flags,
+            static_cast<unsigned>(primitive.stream),
+            static_cast<unsigned>(primitive.overlay_layer),
+            primitive.overlay_support ? 1U : 0U,
+            primitive.replacement_surface ? 1U : 0U,
+            candidate.valid ? 1U : 0U,
+            candidate.normal_x,
+            candidate.normal_y,
+            candidate.normal_z,
+            candidate.plane_offset,
+            candidate.dropped_axis);
+        const int vertex_count = resident_primitive_vertex_count(primitive);
+        for (int corner = 0; corner < vertex_count; ++corner) {
+            const auto& vertex = mesh.vertices[primitive.indices[corner]];
+            std::fprintf(
+                stderr,
+                "%s%d,%d,%d",
+                corner == 0 ? "" : ";",
+                static_cast<int>(vertex.x),
+                static_cast<int>(vertex.y),
+                static_cast<int>(vertex.z));
+        }
+        std::fprintf(stderr, "\n");
     }
 }
 
@@ -1716,19 +2041,13 @@ void resident_fill_vertex(
     destination->b = static_cast<std::uint8_t>(color >> 16);
 }
 
-void resident_emit_triangle(
+void resident_emit_capture_triangle(
     const ResidentPrimitive& primitive,
     const ResidentMaterial& material,
     const ResidentInstance& instance,
-    const ResidentViewVertex& a,
-    const ResidentViewVertex& b,
-    const ResidentViewVertex& c,
-    int material_a,
-    int material_b,
-    int material_c,
-    int uv_a,
-    int uv_b,
-    int uv_c,
+    const opengt::render::WorldCaptureVertex& a,
+    const opengt::render::WorldCaptureVertex& b,
+    const opengt::render::WorldCaptureVertex& c,
     std::vector<opengt::render::WorldCaptureTriangle>* triangles
 ) {
     using namespace opengt::render;
@@ -1741,6 +2060,9 @@ void resident_emit_triangle(
     if (primitive.overlay_support)
         triangle.primitive_flags |=
             world_primitive_track_overlay_support_flag;
+    if (primitive.replacement_surface)
+        triangle.primitive_flags |=
+            world_primitive_track_replacement_flag;
     if ((primitive.flags & resident_primitive_textured) != 0)
         triangle.primitive_flags |= 1U << 0;
     if ((primitive.flags & resident_primitive_semi_transparent) != 0)
@@ -1771,19 +2093,65 @@ void resident_emit_triangle(
         triangle.transform_rotation[index] = instance.rotation[index];
     for (int index = 0; index < 3; ++index)
         triangle.transform_translation[index] = instance.translation[index];
-    triangle.exact_transform_valid = true;
+    triangle.exact_transform_valid =
+        a.exact_transform_valid &&
+        b.exact_transform_valid &&
+        c.exact_transform_valid;
     triangle.depth_scale_exponent = instance.depth_scale_exponent;
     triangle.depth_scale_valid = instance.depth_scale_valid;
-    resident_fill_vertex(
-        a, material, material_a, uv_a,
-        &triangle.vertices[0]);
-    resident_fill_vertex(
-        b, material, material_b, uv_b,
-        &triangle.vertices[1]);
-    resident_fill_vertex(
-        c, material, material_c, uv_c,
-        &triangle.vertices[2]);
+    triangle.vertices[0] = a;
+    triangle.vertices[1] = b;
+    triangle.vertices[2] = c;
     triangles->push_back(triangle);
+}
+
+ResidentViewVertex resident_emission_vertex(
+    const ResidentViewVertex& view,
+    const ResidentMaterial& material,
+    int material_corner,
+    int uv_corner
+) noexcept {
+    ResidentViewVertex result = view;
+    resident_fill_vertex(
+        view,
+        material,
+        material_corner,
+        uv_corner,
+        &result.capture);
+    return result;
+}
+
+std::size_t resident_emit_triangle(
+    const opengt::render::WorldCaptureHeader& header,
+    const ResidentPrimitive& primitive,
+    const ResidentMaterial& material,
+    const ResidentInstance& instance,
+    const ResidentViewVertex& a,
+    const ResidentViewVertex& b,
+    const ResidentViewVertex& c,
+    int material_a,
+    int material_b,
+    int material_c,
+    int uv_a,
+    int uv_b,
+    int uv_c,
+    std::vector<opengt::render::WorldCaptureTriangle>* triangles
+) {
+    const ResidentViewVertex emission_a = resident_emission_vertex(
+        a, material, material_a, uv_a);
+    const ResidentViewVertex emission_b = resident_emission_vertex(
+        b, material, material_b, uv_b);
+    const ResidentViewVertex emission_c = resident_emission_vertex(
+        c, material, material_c, uv_c);
+    resident_emit_capture_triangle(
+        primitive,
+        material,
+        instance,
+        emission_a.capture,
+        emission_b.capture,
+        emission_c.capture,
+        triangles);
+    return 1;
 }
 
 std::uint32_t append_resident_course(
@@ -1802,6 +2170,11 @@ std::uint32_t append_resident_course(
         traced_model_poll = static_cast<std::int32_t>(
             std::strtol(configured, nullptr, 10));
     }
+    const bool trace_model_primitives = [] {
+        const char* configured = std::getenv(
+            "OPENGT_TRACE_RESIDENT_MODEL_PRIMITIVES");
+        return configured != nullptr && std::strcmp(configured, "1") == 0;
+    }();
     std::uint32_t traced_primitive = 0;
     if (const char* configured = std::getenv(
             "OPENGT_TRACE_RESIDENT_PRIMITIVE")) {
@@ -1846,7 +2219,7 @@ std::uint32_t append_resident_course(
                 stderr,
                 "[Native-Resident-Model] frame=%llu poll=%u object=%08x "
                 "model=%08x mesh=%016llx primitives=%zu overlays=%u "
-                "untexturedOverlays=%u clip=%d,%d..%d,%d "
+                "untexturedOverlays=%u replacements=%u clip=%d,%d..%d,%d "
                 "t=%d,%d,%d depthScale=%d/%u r=%d,%d,%d/%d,%d,%d/%d,%d,%d\n",
                 static_cast<unsigned long long>(header.frame_index),
                 header.input_poll,
@@ -1856,6 +2229,7 @@ std::uint32_t append_resident_course(
                 mesh.primitives.size(),
                 mesh.overlay_primitives,
                 mesh.untextured_overlay_primitives,
+                mesh.replacement_primitives,
                 instance.clip_x0,
                 instance.clip_y0,
                 instance.clip_x1,
@@ -1965,20 +2339,25 @@ std::uint32_t append_resident_course(
                 material.clut == 0x7F57U;
             traced_flare_primitives += traced_flare ? 1U : 0U;
             if (
-                traced_primitive != 0 &&
-                primitive.source_address == traced_primitive &&
-                (traced_poll < 0 || header.input_poll == traced_poll)
+                (trace_this_instance && trace_model_primitives) ||
+                (traced_primitive != 0 &&
+                    primitive.source_address == traced_primitive &&
+                    (traced_poll < 0 || header.input_poll == traced_poll))
             ) {
                 std::fprintf(
                     stderr,
                     "[Native-Resident-Primitive] frame=%llu poll=%d "
                     "object=%u model=%08x primitive=%08x stream=%u "
-                    "flags=%08x threshold=%u coverage=%u authored=%s "
+                    "flags=%08x indices=%u/%u/%u/%u "
+                    "overlay=%u/%u threshold=%u coverage=%u "
+                    "authored=%s "
                     "rendered=%s "
                     "depthExponent=%d view="
                     "%d,%d,%d/%d,%d,%d/%d,%d,%d/%d,%d,%d "
                     "near=page:%04x,clut:%04x,uv:%04x/%04x/%04x/%04x "
-                    "far=page:%04x,clut:%04x,uv:%04x/%04x/%04x/%04x\n",
+                    "far=page:%04x,clut:%04x,uv:%04x/%04x/%04x/%04x "
+                    "nearRgb=%08x/%08x/%08x/%08x "
+                    "farRgb=%08x/%08x/%08x/%08x\n",
                     static_cast<unsigned long long>(header.frame_index),
                     header.input_poll,
                     instance.object_id,
@@ -1986,6 +2365,12 @@ std::uint32_t append_resident_course(
                     primitive.source_address,
                     static_cast<unsigned>(primitive.stream),
                     primitive.flags,
+                    static_cast<unsigned>(i[0]),
+                    static_cast<unsigned>(i[1]),
+                    static_cast<unsigned>(i[2]),
+                    static_cast<unsigned>(i[3]),
+                    static_cast<unsigned>(primitive.overlay_layer),
+                    primitive.overlay_support ? 1U : 0U,
                     static_cast<unsigned>(primitive.lod_threshold),
                     coverage,
                     authored_distant ? "far" : "near",
@@ -2006,7 +2391,15 @@ std::uint32_t append_resident_course(
                     primitive.distant_material.uv[0],
                     primitive.distant_material.uv[1],
                     primitive.distant_material.uv[2],
-                    primitive.distant_material.uv[3]);
+                    primitive.distant_material.uv[3],
+                    primitive.near_material.color[0],
+                    primitive.near_material.color[1],
+                    primitive.near_material.color[2],
+                    primitive.near_material.color[3],
+                    primitive.distant_material.color[0],
+                    primitive.distant_material.color[1],
+                    primitive.distant_material.color[2],
+                    primitive.distant_material.color[3]);
             }
             if ((primitive.flags & resident_primitive_textured) == 0)
                 material.texture_page = instance.default_texture_page;
@@ -2016,7 +2409,7 @@ std::uint32_t append_resident_course(
                         one_sided, false))
                     continue;
                 resident_emit_triangle(
-                    primitive, material, instance,
+                    header, primitive, material, instance,
                     view[i[0]], view[i[1]], view[i[2]],
                     0, 1, 2,
                     0, 1, 2,
@@ -2050,7 +2443,7 @@ std::uint32_t append_resident_course(
             const bool quad_accepted = first_accepted || second_accepted;
             if (quad_accepted) {
                 resident_emit_triangle(
-                    primitive, material, instance,
+                    header, primitive, material, instance,
                     view[i[first_corners[0]]],
                     view[i[first_corners[1]]],
                     view[i[first_corners[2]]],
@@ -2061,7 +2454,7 @@ std::uint32_t append_resident_course(
             }
             if (quad_accepted) {
                 resident_emit_triangle(
-                    primitive, material, instance,
+                    header, primitive, material, instance,
                     view[i[second_corners[0]]],
                     view[i[second_corners[1]]],
                     view[i[second_corners[2]]],
@@ -2243,6 +2636,7 @@ std::uint32_t build_frame(
                             "object=%u model=%08X flags=%08X/%08X "
                             "page=%04X/%04X clut=%04X/%04X "
                             "env=%08X/%08X "
+                            "depthScale=%d/%u,%d/%u "
                             "uv=%d,%d;%d,%d;%d,%d/"
                             "%d,%d;%d,%d;%d,%d "
                             "rgb=%u,%u,%u;%u,%u,%u;%u,%u,%u/"
@@ -2260,6 +2654,10 @@ std::uint32_t build_frame(
                             expanded.clut,
                             resident.environment_flags,
                             expanded.environment_flags,
+                            resident.depth_scale_exponent,
+                            resident.depth_scale_valid ? 1U : 0U,
+                            expanded.depth_scale_exponent,
+                            expanded.depth_scale_valid ? 1U : 0U,
                             resident.vertices[0].u,
                             resident.vertices[0].v,
                             resident.vertices[1].u,
@@ -3403,6 +3801,7 @@ int32_t opengt_live_register_resident_mesh(
         if (!parse_resident_mesh(definition_bytes, definition_size, &mesh))
             return -2;
         trace_resident_near_overlay_candidates(mesh);
+        trace_resident_primitive_address_range(mesh);
         auto* context = static_cast<LiveContext*>(handle);
         const std::uint64_t key = mesh.key;
         if (
@@ -3419,12 +3818,13 @@ int32_t opengt_live_register_resident_mesh(
                 stderr,
                 "[Native-Resident-Overlays] mesh=%016llx "
                 "primitives=%zu overlapPairs=%u overlays=%u "
-                "untexturedOverlays=%u maxLayer=%u\n",
+                "untexturedOverlays=%u replacements=%u maxLayer=%u\n",
                 static_cast<unsigned long long>(mesh.key),
                 mesh.primitives.size(),
                 mesh.overlay_pairs,
                 mesh.overlay_primitives,
                 mesh.untextured_overlay_primitives,
+                mesh.replacement_primitives,
                 static_cast<unsigned>(mesh.maximum_overlay_layer));
             for (std::size_t primitive_index = 0;
                  primitive_index < mesh.primitives.size();
@@ -3438,7 +3838,8 @@ int32_t opengt_live_register_resident_mesh(
                     stderr,
                     "[Native-Resident-Overlay-Primitive] mesh=%016llx "
                     "primitive=%zu source=%08x flags=%08x stream=%u "
-                    "layer=%u color=%08x material=%04x,%04x area2=%.3f "
+                    "layer=%u replacement=%u color=%08x "
+                    "material=%04x,%04x area2=%.3f "
                     "vertices=",
                     static_cast<unsigned long long>(mesh.key),
                     primitive_index,
@@ -3446,6 +3847,7 @@ int32_t opengt_live_register_resident_mesh(
                     primitive.flags,
                     static_cast<unsigned>(primitive.stream),
                     static_cast<unsigned>(primitive.overlay_layer),
+                    primitive.replacement_surface ? 1U : 0U,
                     primitive.near_material.color[0],
                     primitive.near_material.texture_page,
                     primitive.near_material.clut,

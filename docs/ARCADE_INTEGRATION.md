@@ -21,6 +21,28 @@ the original title menu if it is incomplete, missing, or damaged. The source
 images remain read-only and are not required for later launches once the
 generated installation passes validation.
 
+## Loaded-card progress across the unified handoff
+
+The direct Simulation-title to Arcade-overlay-2 path skips Arcade's disc-title
+card load. Arcade also clears its BSS and constructs new-game defaults. Preserve
+the already-loaded Simulation progress before switching executables and restore
+it after Arcade's initializer, before choosing its first overlay. The shared
+NTSC-U record ranges are `+0xB8` (0x160 bytes of Arcade progress) and `+0x1418`
+(60 license records, stride 0xA4), relative to Simulation `0x801C98E0` and Arcade
+`0x801C9340`. Do not force course-table gates open: incomplete saves must retain
+their native locks. Restoration is one-shot, so later Arcade results are not
+overwritten by a stale snapshot.
+
+SSR11 availability separately requires the converted data set. Deploy
+`GT2.VOL`, `arcade/GT2.OVL`, `arcade/DISC_META.DAT`, and `manifests/arcade.json`
+together from the prepared unified install. Replacing that set with stock Arcade
+data removes SSR11 even when the EXE and memory card are unchanged.
+
+`tests/fixtures/unified-arcade-course-access.input` selects SSR11 (road-list item
+4) and SSR5 (item 18) through the ordinary loaded-card path. Run without the
+diagnostic unlock override. Public-release builds strip fixture controls;
+the local single-file test build retains them for native screenshot evidence.
+
 ## Disc findings
 
 - The Arcade `GT2.VOL` contains 10,618 named entries.
@@ -79,22 +101,34 @@ disc-visible `GT2.VOL` at LBA 473. The Arcade executable, overlays, raw
   not invoke the Arcade executable's top-level boot, legal/title sequence, or
   title overlay. The host recreates the exact Arcade prologue state, runs its
   native service initializer, and enters the post-bootstrap function at
-  `0x8005D650`; that function requests overlay 1, which is the same native
-  destination requested by `START GAME` on the stock US Arcade disc.
-- Arcade selection does not tear down the Simulation guest on the same update
-  that queues the original confirmation sample. The selected title remains
-  resident for twelve native title updates, allowing sound effect 3 to reach
-  the SPU mixer before the executable handoff begins.
+  `0x8005D650`; the unified overlay selector requests overlay 2, which is the
+  native `ARCADE MODE` menu reached after `START GAME` on the stock US Arcade
+  disc. The redundant Arcade-disc title (overlay 1) is never shown.
+- Arcade selection switches before Simulation's title state machine can
+  dispatch Gran Turismo overlay 4. To retain the original confirmation sound,
+  the host records the SPU key-on generation before effect 3, services the
+  original sequencer until its voices start, waits for those voices to finish,
+  and drains 6144 additional mixer frames for the queued audio and tail. It
+  holds the selected title without executing another Simulation overlay-1
+  update, so the sound finishes before guest replacement.
 - `0x80018574` and `0x800186D0` are explicit Simulation overlay-1 function
   roots. They are original callback entries required by the retail Option path
   but were not discovered by the previous linear sweep.
 - The unified renderer holds the already-selected Arcade title panel across
   guest-image and display initialization, then releases it only after Arcade
-  overlay 1 completes its first frontend update. The player therefore sees a
-  direct menu-to-menu transition rather than the intermediate disc-reset
-  states. While that frontend is idle, its own counter at `0x800B0F20` is kept
-  below the retail 901-update attract threshold so it cannot force the default
-  Seattle demo; normal menu input and explicitly requested races are unchanged.
+  overlay 2 enters its native presentation loop. Its original menu reveal
+  animation remains intact after this boundary. The player therefore sees
+  a direct menu-to-menu transition rather than the intermediate disc-reset
+  states. Overlay 2's original Back result normally requests Arcade overlay 1;
+  the unified hook maps that exact result to a post-bootstrap Simulation-title
+  handoff, so Back returns to the unified title without exposing the skipped
+  Arcade title or replaying either disc's legal/opening sequence.
+- `Triangle` is the unified root-level Back operation in both modes. Arcade
+  uses overlay 2's authored Back branch. Gran Turismo's disc-era world-map root
+  has no native parent, so the PC hook recognizes Triangle only while that
+  world-map controller is idle and returns to the post-bootstrap unified title;
+  nested dealerships, garages, and modal menus retain their original Back
+  behavior.
 - Arcade overlay 2 resolves each course list against the data actually loaded.
   A release install made from the two supported GT2 discs uses the five stock
   tables; a converted GT1-content overlay uses its five expanded tables. The
@@ -110,15 +144,40 @@ disc-visible `GT2.VOL` at LBA 473. The Arcade executable, overlays, raw
 `tools/test_unified_modes.ps1` selects all four entries through the original
 guest title selector and verifies Arcade Mode, Gran Turismo, Replay Theater,
 and Option from the same executable and shared loose install without an
-unmapped call or managed exception. Its Arcade case also requires the
-`0x8005D650` handoff and overlay 1, and rejects any load of overlay 5 so the
-Arcade boot/title path cannot silently regress. Accepted visual captures for
+unmapped call or managed exception. Its Arcade cases require the `0x8005D650`
+handoff directly into overlay 2, reject overlays 1 and 5, and exercise the
+reverse Triangle handoff into Simulation overlay 1. They also require Arcade
+Single Player to reach the exact native Game Selection framebuffer rather than
+the Simulation garage, and require Gran Turismo's world-map root to return to
+the same unified title through Triangle. Accepted visual captures for
 all four selection states and the packaged menu are under
 `artifacts/retail-arc-topmenu-usa/exact-live`. The
 `tools/verify_unified_title_exact.py` validator compares those live P6 frames
 to `TITLE_EXACT.DAT` in BGR555 space and rejects any differing pixel. The
 title-to-Route-11 race proof is under
 `artifacts/retail-arc-topmenu-usa-ssr11-final`.
+
+## September 2026 handoff latency investigation
+
+The unified path now omits `func_80010CEC`, the two timed Arcade boot panels
+called from `func_80010E14`. They were hidden behind the unified title but
+still consumed 310 display ticks. Standalone Arcade boot retains them; the
+surrounding native GPU, audio, filesystem, and frontend setup is unchanged.
+The title also buffers early input across its original 16-update initialization
+instead of losing the player's first press or forcing the native state machine.
+
+The measured no-audio diagnostic handoff entered the frontend in 752.538 ms
+and 15 input polls, versus 327 polls before this change. This measures entry
+to native presentation, not completion of the original reveal animation.
+Audio-enabled handoff additionally waits for the real confirmation voice and
+queued tail; dummy-audio wall time is not a physical-device latency benchmark.
+
+Opening the prepared Arcade disc view took 2.746 ms in that run. It indexes
+the manifest and reads bounded data lazily; it does not load another entire
+volume into memory. Both programs are already in the host assembly and both
+original volumes already share the physical file. A small Arcade patch volume
+would not remove the measured boot-panel wait, so no speculative volume or
+CD-sector scheduling change was introduced.
 
 ## Native Gran Turismo 1 content layer
 
@@ -148,6 +207,13 @@ race, showroom, and replay paths; default activation remains gated on
 rebuilt-host interactive smoke coverage.
 
 The current conversion includes:
+
+- a process-local renderer-certification launch inventory covering all 30
+  stock forward courses, all 22 stock Arcade reverse layouts, and converted
+  Route 11 in both directions. Dirt and reverse identities are read from the
+  native `.crsinfo` data and enter the same Arcade race constructor as the
+  tarmac forward layouts; the harness does not synthesize course geometry or
+  use host operating-system input;
 
 - forward, reverse, Arcade forward, Arcade reverse, two-player, and HiFi
   Route 11 course objects and maps;
@@ -216,13 +282,13 @@ Route 11 is inserted after each table's always-available prefix. This preserves
 GT2's original progression ordering while making the imported course
 immediately selectable. The deterministic
 `tests/fixtures/unified-arcade-ssr11-race.input` smoke enters Arcade Mode
-through the unified title and seamless `START GAME` destination, selects the
+through the unified title and direct `ARCADE MODE` destination, selects the
 fourth course, starts Route 11, engages the original AI racing-line controller
-for the player car, and captures live race frames. The accepted handoff run is
-stored in `artifacts/arcade-seamless-handoff-race`: it proves overlay 1 loaded,
-overlay 5 did not load, the native Route 11 course menu appeared, and a live
-race ran through the 9,000-poll bound without an unmapped call, managed
-exception, or software fault.
+for the player car, and captures live race frames. The current handoff contract
+requires overlay 2, rejects the skipped title overlays 1 and 5, and then
+requires the native Route 11 course menu and live race to run through the
+9,000-poll bound without an unmapped call, managed exception, or software
+fault.
 
 `tests/fixtures/unified-arcade-roadster-race.input` selects the appended
 Roadster through the same native frontend, verifies the first livery in car

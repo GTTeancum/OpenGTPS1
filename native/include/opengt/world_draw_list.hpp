@@ -21,10 +21,10 @@ constexpr std::uint32_t world_primitive_temporal_seam_flag = 1U << 30;
 // bounded layer to positive-area detail surfaces which are materially smaller
 // than their support (lane markings, arrows, grid boxes, and similar road
 // artwork). GT2 authors one class exactly coplanar and other classes one or two
-// model units from road support. Comparable or larger surfaces retain physical
-// depth because they are alternate road/LOD geometry, not decals. The modern
-// renderer composites this typed artwork over an exact visible-support mask;
-// it is not a texture/material heuristic and does not move screen geometry.
+// model units from road support. A separate typed replacement flag below marks
+// later-authored detailed course surfaces which supersede an earlier coarse
+// plane. The modern renderer resolves only these proven geometric relations;
+// it is not a track, texture, address, or screen-coordinate exception.
 constexpr std::uint32_t world_primitive_track_overlay_layer_shift = 24;
 constexpr std::uint32_t world_primitive_track_overlay_layer_mask =
     0x1FU << world_primitive_track_overlay_layer_shift;
@@ -33,6 +33,17 @@ constexpr std::uint32_t world_primitive_track_overlay_layer_mask =
 // those supports, allowing the overlay to win that typed relationship without
 // bypassing walls, vehicles, or other nearer geometry.
 constexpr std::uint32_t world_primitive_track_overlay_support_flag = 1U << 6;
+// GT2 has no depth buffer, so a later detailed road packet replaces an earlier
+// coarse opaque course plane wherever the two overlap. Modern depth can invert
+// that authored ownership when the coarse plane is a few model units nearer to
+// the camera. Resident decoding tags that relationship explicitly; the GPU
+// then lets the replacement win only pixels whose nearest opaque owner is one
+// of its classified supports, preserving walls and vehicles in front.
+constexpr std::uint32_t world_primitive_track_replacement_flag = 1U << 7;
+// Legacy capture tag identifying resident billboard quads. It is NOT a depth
+// override: their DMA traversal ordinal is not a metric distance. Keep the bit
+// readable for existing captures, but use normalized model-space corner depth.
+constexpr std::uint32_t world_primitive_track_billboard_depth_flag = 1U << 8;
 // Captured directly from GT2's authored pre-projection course data. Its
 // shared model vertices are already continuous; topology inference intended
 // for guest-projected packets must not rebuild or split it.

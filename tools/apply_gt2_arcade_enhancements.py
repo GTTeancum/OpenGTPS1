@@ -914,6 +914,35 @@ def apply_renderer_enhancements() -> None:
 """,
             f"Arcade auxiliary billboard projection end hook {label}",
         )
+    # The auxiliary effect stream projects one world anchor, then constructs
+    # each four-quadrant flare sprite with CPU-side 16-bit coordinate writes.
+    # Keep that construction inside a derived-projection scope so those packet
+    # words retain the owning track object and authored depth instead of being
+    # misclassified as depthless HUD geometry by the native renderer.
+    replace_once(
+        OVERLAY0,
+        """        c.A2 = RecompOne.Runtime.Gte.Read(24);
+        c.V0 = RecompOne.Runtime.Gte.Read(14);
+        c.A1 = c.A1 << (int)(c.A3 & 31u);
+""",
+        """        c.A2 = RecompOne.Runtime.Gte.Read(24);
+        c.V0 = RecompOne.Runtime.Gte.Read(14);
+        RecompOne.Runtime.Gte.BeginDerivedScreenProjection(c.V0);
+        c.A1 = c.A1 << (int)(c.A3 & 31u);
+""",
+        "Arcade auxiliary flare projection begin hook",
+    )
+    replace_once(
+        OVERLAY0,
+        """        L8001FF14: ;
+        c.S1 = c.S1 + 0x14u;
+""",
+        """        L8001FF14: ;
+        RecompOne.Runtime.Gte.EndDerivedScreenProjection();
+        c.S1 = c.S1 + 0x14u;
+""",
+        "Arcade auxiliary flare projection end hook",
+    )
     replace_once(
         OVERLAY2,
         """        L800203F8: ;
@@ -1047,6 +1076,24 @@ def apply_livery_preview_reload() -> None:
         L80021AEC: ;
 """,
         "Arcade two-player next-livery body reload",
+    )
+
+
+def apply_car_preview_camera_limit() -> None:
+    replace_in_function_once(
+        OVERLAY2,
+        "func_8001E5BC",
+        """        c.V0 = m.ReadU32((c.A0 + 0xA8u));
+        c.V0 = c.V0 + c.V1;
+        m.WriteU32((c.A0 + 0xA8u), c.V0);
+""",
+        """        c.V0 = m.ReadU32((c.A0 + 0xA8u));
+        c.V0 = c.V0 + c.V1;
+        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.
+            LimitCarPreviewCameraDistance(c.A0, c.V0);
+        m.WriteU32((c.A0 + 0xA8u), c.V0);
+""",
+        "Arcade car-preview camera distance ceiling",
     )
 
 
@@ -1246,6 +1293,18 @@ def main() -> int:
         "Unified-menu direct native Arcade frontend entry",
     )
     replace_in_function_once(
+        MAIN,
+        "func_80010E14",
+        """        c.RA = 0x80010E84u;
+        GranTurismo2ArcadePC.func_80010CEC(c, m);
+""",
+        """        c.RA = 0x80010E84u;
+        if (RecompOne.Runtime.Sdk.GT2Compat.ShouldPresentArcadeBootPanels())
+            GranTurismo2ArcadePC.func_80010CEC(c, m);
+""",
+        "Unified Arcade handoff omits duplicate timed boot panels only",
+    )
+    replace_in_function_once(
         OVERLAY1,
         "func_800175F0",
         """    {
@@ -1270,6 +1329,32 @@ def main() -> int:
         return;
 """,
         "Unified Arcade frontend transition-ready exit hook",
+    )
+    replace_in_function_once(
+        OVERLAY2,
+        "func_80011750",
+        """        c.RA = 0x80011780u;
+        GranTurismo2ArcadePC.func_800832F8(c, m);
+        c.V1 = c.V0 + 0u;
+""",
+        """        c.RA = 0x80011780u;
+        RecompOne.Runtime.Sdk.GT2Compat.CompleteUnifiedArcadeFrontendFrame();
+        GranTurismo2ArcadePC.func_800832F8(c, m);
+        c.V1 = c.V0 + 0u;
+""",
+        "Unified Arcade Mode menu transition-ready update hook",
+    )
+    replace_in_function_once(
+        OVERLAY2,
+        "func_80011750",
+        """        L800117E4: ;
+        c.A0 = 0x00000001u;
+""",
+        """        L800117E4: ;
+        RecompOne.Runtime.Sdk.GT2Compat.ReturnFromUnifiedArcade();
+        c.A0 = 0x00000001u;
+""",
+        "Unified Arcade Mode reverse title handoff",
     )
     replace_once(
         OVERLAY2,
@@ -1468,6 +1553,7 @@ def main() -> int:
     )
     apply_frontend_arena()
     apply_renderer_enhancements()
+    apply_car_preview_camera_limit()
     replace_once(
         OVERLAY2,
         """        L800266F4: ;

@@ -479,6 +479,12 @@ int main() {
         vertex(520, 884, 1855, 0xE228),
         0x800C0304,
         43);
+    // Screen/view values above reproduce the captured Red Rock seam.  Model
+    // coordinates identify its authored course plane, which is Z-up in GT2.
+    for (auto& point : scanline_lod_edge.vertices)
+        point.model_z = 0;
+    for (auto& point : scanline_lod_point.vertices)
+        point.model_z = 0;
     scanline_lod_edge.object_id = 21;
     scanline_lod_point.object_id = 21;
     scanline_lod_edge.transform_id = 0x5678;
@@ -525,14 +531,14 @@ int main() {
     auto overlap_outer = triangle(
         vertex(0, 0, 0, 0xF000),
         vertex(100, 0, 0, 0xF014),
-        vertex(0, 0, 100, 0xF028),
+        vertex(0, 100, 0, 0xF028),
         0x800C0304,
         50,
         0);
     auto overlap_inner = triangle(
-        vertex(40, 0, 200, 0x10000),
-        vertex(60, 0, 200, 0x10014),
-        vertex(40, 0, 300, 0x10028),
+        vertex(40, 200, 0, 0x10000),
+        vertex(60, 200, 0, 0x10014),
+        vertex(40, 300, 0, 0x10028),
         0x800C0304,
         51,
         1);
@@ -653,6 +659,204 @@ int main() {
         resident_course.commands[0].vertices[0].clip_x ==
             resident_before.vertices[0].clip_x,
         "leave authoritative resident-course topology untouched");
+
+    // Different resident objects can be power-of-two LOD copies which meet
+    // at the same authored PS1 raster edge outside the 4:3 viewport. Preserve
+    // their primitive topology, but align the farther edge's continuous
+    // projection so Hor+ cannot expose the independent rounding residual.
+    const auto resident_lod_fixture = [] () {
+        WorldDrawList result{};
+        result.display_x = 0;
+        result.display_y = 0;
+        result.display_width = 320;
+        result.display_height = 240;
+        result.continuous_projection = true;
+        result.materials.resize(2);
+        result.materials[0].primitive_flags =
+            1U | world_primitive_resident_course_flag;
+        result.materials[1] = result.materials[0];
+        result.materials[1].clut = 1;
+        const auto projected_vertex = [] (
+            std::int16_t model_x,
+            std::int16_t model_y,
+            std::int16_t model_z,
+            std::uint32_t identity,
+            std::int32_t exact_x,
+            std::int32_t exact_y,
+            std::int32_t exact_z,
+            float screen_x,
+            float screen_y,
+            std::int32_t authored_x,
+            std::int32_t authored_y
+        ) {
+            auto result = vertex(
+                model_x, model_y, model_z, identity);
+            result.exact_view_x = exact_x;
+            result.exact_view_y = exact_y;
+            result.exact_view_z = exact_z;
+            result.view_x = static_cast<float>(exact_x);
+            result.view_y = static_cast<float>(exact_y);
+            result.view_z = static_cast<float>(exact_z);
+            result.screen_x = screen_x;
+            result.screen_y = screen_y;
+            result.authored_screen_x = authored_x;
+            result.authored_screen_y = authored_y;
+            result.clip_w = static_cast<float>(exact_z);
+            result.clip_x =
+                (screen_x / 320.0F * 2.0F - 1.0F) * result.clip_w;
+            result.clip_y =
+                (1.0F - screen_y / 240.0F * 2.0F) * result.clip_w;
+            result.exact_transform_valid = true;
+            return result;
+        };
+        const auto near_first = projected_vertex(
+            -100, 10, 20, 0x12000,
+            100, -40, 120,
+            330.0F, 50.0F, 330, 50);
+        const auto near_second = projected_vertex(
+            -80, 30, 40, 0x12014,
+            90, -45, 100,
+            350.0F, 25.0F, 350, 25);
+        const auto near_third = projected_vertex(
+            -120, -20, 0, 0x12028,
+            80, -20, 140,
+            325.0F, 80.0F, 325, 80);
+        const auto far_first = projected_vertex(
+            500, 100, 200, 0x13000,
+            202, -79, 240,
+            330.35F, 50.2F, 330, 50);
+        const auto far_second = projected_vertex(
+            520, 140, 240, 0x13014,
+            183, -88, 201,
+            350.15F, 25.15F, 350, 25);
+        const auto far_third = projected_vertex(
+            470, 80, 180, 0x13028,
+            160, -40, 280,
+            370.2F, -20.1F, 370, -20);
+        auto near_command = triangle(
+            near_first,
+            near_third,
+            near_second,
+            0x80120000,
+            70);
+        near_command.object_id = 0x800E0000;
+        near_command.transform_id = 0x11110000;
+        near_command.exact_transform_valid = true;
+        auto far_command = triangle(
+            far_first,
+            far_third,
+            far_second,
+            0x80130000,
+            71);
+        far_command.object_id = 0x800E0100;
+        far_command.transform_id = 0x22220000;
+        far_command.exact_transform_valid = true;
+        // A sibling face shares the first far vertex. The correction must
+        // propagate to it instead of opening a new crack inside the far mesh.
+        auto far_sibling = triangle(
+            far_first,
+            projected_vertex(
+                540, 80, 180, 0x1303C,
+                220, -20, 260,
+                355.0F, 70.0F, 355, 70),
+            far_third,
+            0x80130000,
+            72);
+        far_sibling.object_id = far_command.object_id;
+        far_sibling.transform_id = far_command.transform_id;
+        far_sibling.exact_transform_valid = true;
+        result.commands = {near_command, far_command, far_sibling};
+        result.track_commands = 3;
+        return result;
+    };
+    auto resident_lod = resident_lod_fixture();
+    WorldTopologyStats resident_lod_stats{};
+    okay &= expect(
+        apply_world_topology(
+            &resident_lod,
+            WorldTopologyOptions{true, false, false},
+            &resident_lod_stats) == WorldTopologyResult::success &&
+        resident_lod_stats.resident_lod_edge_groups == 1 &&
+        resident_lod_stats.adjusted_resident_lod_instances == 3 &&
+        resident_lod.commands[1].vertices[0].screen_x >
+            resident_lod.commands[0].vertices[0].screen_x &&
+        resident_lod.commands[1].vertices[2].screen_x >
+            resident_lod.commands[0].vertices[2].screen_x &&
+        resident_lod.commands[2].vertices[0].screen_x ==
+            resident_lod.commands[1].vertices[0].screen_x,
+        "overlap a topology-proven resident cross-object LOD edge");
+
+    auto resident_lod_neighboring_sxy = resident_lod_fixture();
+    // Independent GTE rounding can move one authored SXY endpoint to the
+    // neighboring integer while both continuous projections remain inside
+    // the same source raster cell. The geometric scale/side/material proofs
+    // must still join this time-varying boundary.
+    resident_lod_neighboring_sxy.commands[1]
+        .vertices[2].authored_screen_y = 26;
+    WorldTopologyStats resident_lod_neighboring_sxy_stats{};
+    okay &= expect(
+        apply_world_topology(
+            &resident_lod_neighboring_sxy,
+            WorldTopologyOptions{true, false, false},
+            &resident_lod_neighboring_sxy_stats) ==
+                WorldTopologyResult::success &&
+        resident_lod_neighboring_sxy_stats.resident_lod_edge_groups == 1 &&
+        resident_lod_neighboring_sxy.commands[1].vertices[2].screen_x >
+            resident_lod_neighboring_sxy.commands[0].vertices[2].screen_x,
+        "join a proven resident LOD edge across neighboring authored SXY");
+
+    auto resident_lod_wrong_scale = resident_lod_fixture();
+    resident_lod_wrong_scale.commands[1].vertices[0].exact_view_x += 8;
+    resident_lod_wrong_scale.commands[2].vertices[0].exact_view_x += 8;
+    WorldTopologyStats resident_lod_wrong_scale_stats{};
+    okay &= expect(
+        apply_world_topology(
+            &resident_lod_wrong_scale,
+            WorldTopologyOptions{true, false, false},
+            &resident_lod_wrong_scale_stats) == WorldTopologyResult::success &&
+        resident_lod_wrong_scale_stats.resident_lod_edge_groups == 0 &&
+        resident_lod_wrong_scale.commands[1].vertices[0].screen_x == 330.35F,
+        "reject a projected resident edge without power-of-two LOD proof");
+
+    auto resident_lod_same_side = resident_lod_fixture();
+    resident_lod_same_side.commands[1].vertices[1].screen_y = 80.1F;
+    resident_lod_same_side.commands[2].vertices[2].screen_y = 80.1F;
+    WorldTopologyStats resident_lod_same_side_stats{};
+    okay &= expect(
+        apply_world_topology(
+            &resident_lod_same_side,
+            WorldTopologyOptions{true, false, false},
+            &resident_lod_same_side_stats) == WorldTopologyResult::success &&
+        resident_lod_same_side_stats.resident_lod_edge_groups == 0,
+        "reject coincident resident LOD edges with same-side interiors");
+
+    auto resident_lod_material_seam = resident_lod_fixture();
+    resident_lod_material_seam.commands[1].material_index = 1;
+    resident_lod_material_seam.commands[2].material_index = 1;
+    WorldTopologyStats resident_lod_material_stats{};
+    okay &= expect(
+        apply_world_topology(
+            &resident_lod_material_seam,
+            WorldTopologyOptions{true, false, false},
+            &resident_lod_material_stats) == WorldTopologyResult::success &&
+        resident_lod_material_stats.resident_lod_edge_groups == 0,
+        "preserve a resident material boundary");
+
+    auto resident_lod_inside_source = resident_lod_fixture();
+    for (auto& command : resident_lod_inside_source.commands) {
+        for (auto& point : command.vertices) {
+            point.screen_x -= 60.0F;
+            point.authored_screen_x -= 60;
+        }
+    }
+    WorldTopologyStats resident_lod_inside_stats{};
+    okay &= expect(
+        apply_world_topology(
+            &resident_lod_inside_source,
+            WorldTopologyOptions{true, false, false},
+            &resident_lod_inside_stats) == WorldTopologyResult::success &&
+        resident_lod_inside_stats.resident_lod_edge_groups == 0,
+        "leave the authored 4:3 resident image unchanged");
 
     if (!okay)
         return 1;

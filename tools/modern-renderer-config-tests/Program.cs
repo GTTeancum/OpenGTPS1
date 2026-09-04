@@ -26,6 +26,15 @@ static string ReadRepoFile(string relativePath)
     throw new FileNotFoundException($"Could not locate repository file: {relativePath}");
 }
 
+static bool RepoFileExists(string relativePath)
+{
+    foreach (string start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
+        for (DirectoryInfo? directory = new(start); directory != null; directory = directory.Parent)
+            if (File.Exists(Path.Combine(directory.FullName, relativePath)))
+                return true;
+    return false;
+}
+
 static int Occurrences(string text, string value) =>
     text.Split(value, StringSplitOptions.None).Length - 1;
 
@@ -125,14 +134,11 @@ static PSMemory VerifyArcadeFrontendContracts()
         "converted Arcade overlay did not retain its expanded course table");
 
     RecompOne.Runtime.Sdk.GT2Compat.InstallUnifiedTitleMenu(memory);
-    RecompOne.Runtime.Sdk.GT2Compat.CommitUnifiedTitleSelection(
-        memory, 1u, 0x80010000u);
-    for (int update = 0; update < 11; update++)
-        RecompOne.Runtime.Sdk.GT2Compat.InstallUnifiedTitleMenu(memory);
     bool switched = false;
     try
     {
-        RecompOne.Runtime.Sdk.GT2Compat.InstallUnifiedTitleMenu(memory);
+        RecompOne.Runtime.Sdk.GT2Compat.CommitUnifiedTitleSelection(
+            memory, 1u, 0x80010000u);
     }
     catch (RecompOne.Runtime.Sdk.GT2VariantSwitch requested)
     {
@@ -140,18 +146,109 @@ static PSMemory VerifyArcadeFrontendContracts()
     }
     Require(
         switched,
-        "Arcade title handoff did not preserve twelve authored sound updates");
+        "Arcade title handoff was not immediate and can race Simulation overlay 4");
+
+    RecompOne.Runtime.Sdk.GT2Compat.SetUnifiedArcadeTransition(true);
+    // Eligibility follows the loaded save through the BSS reset. Test mixed
+    // locked/unlocked results, full license records, and one-shot restoration.
+    memory.WriteU8(0x801C9998u, 4);
+    memory.WriteU8(0x801C9999u, 0);
+    memory.WriteU8(0x801CACF9u, 4);
+    memory.WriteU8(0x801CAD9Du, 0);
+    memory.WriteU32(0x801CACFCu, 12345u);
+    RecompOne.Runtime.Sdk.GT2Compat.PreserveUnifiedArcadeProgress(memory);
+    var arcadeContext = new CpuContext { SP = 0x801FFF00u };
+    RecompOne.Runtime.Sdk.GT2Compat.PrepareArcadeFrontendHandoff(arcadeContext, memory);
+    Require(memory.ReadU8(0x801CA759u) == 0, "Arcade BSS was not reset");
+    Require(
+        !RecompOne.Runtime.Sdk.GT2Compat.ShouldPresentArcadeBootPanels(),
+        "unified handoff still waits for duplicate timed Arcade boot panels");
+    Require(
+        RecompOne.Runtime.Sdk.GT2Compat.InitialArcadeOverlayIndex(memory) == 2u,
+        "unified Arcade handoff did not skip the redundant disc title");
+    Require(memory.ReadU8(0x801C93F8u) == 4 && memory.ReadU8(0x801C93F9u) == 0 &&
+        memory.ReadU8(0x801CA759u) == 4 && memory.ReadU8(0x801CA7FDu) == 0 &&
+        memory.ReadU32(0x801CA75Cu) == 12345u,
+        "loaded course/license progress did not survive the handoff exactly");
+    memory.WriteU8(0x801C93F8u, 1);
+    RecompOne.Runtime.Sdk.GT2Compat.InitialArcadeOverlayIndex(memory);
+    Require(memory.ReadU8(0x801C93F8u) == 1, "stale handoff overwrote new Arcade progress");
+    bool returnedToSimulation = false;
+    try
+    {
+        RecompOne.Runtime.Sdk.GT2Compat.ReturnFromUnifiedArcade();
+    }
+    catch (RecompOne.Runtime.Sdk.GT2VariantSwitch requested)
+    {
+        returnedToSimulation = requested.Variant == "simulation";
+    }
+    Require(
+        returnedToSimulation,
+        "Arcade Mode Back did not return to the unified Simulation title");
+    RecompOne.Runtime.Sdk.GT2Compat.SetUnifiedArcadeTransition(false);
+    Require(
+        RecompOne.Runtime.Sdk.GT2Compat.ShouldPresentArcadeBootPanels(),
+        "standalone Arcade boot lost its original timed panels");
+    Require(
+        RecompOne.Runtime.Sdk.GT2Compat.InitialArcadeOverlayIndex(memory) == 5u,
+        "standalone Arcade boot no longer retains its stock title path");
+    RecompOne.Runtime.Sdk.GT2Compat.ReturnFromUnifiedArcade();
+    var simulationContext = new CpuContext
+    {
+        A0 = 0x11111111u,
+        A1 = 0x22222222u,
+        SP = 0x801FFF00u,
+        RA = 0x33333333u,
+    };
+    memory.WriteU32(0x801C93B0u, 0xAAAAAAAAu);
+    memory.WriteU32(0x801F0D5Cu, 0xBBBBBBBBu);
+    RecompOne.Runtime.Sdk.GT2Compat.PrepareSimulationTitleHandoff(
+        simulationContext, memory);
+    Require(
+        memory.ReadU32(0x801C93B0u) == 0u &&
+        memory.ReadU32(0x801F0D5Cu) == 0u &&
+        memory.ReadU32(0x8009113Cu) == 0x11111111u &&
+        memory.ReadU32(0x80091140u) == 0x22222222u &&
+        simulationContext.SP == 0x801FFEE8u,
+        "Simulation title reverse handoff does not match SCUS-94488 BSS/ABI");
+    RecompOne.Runtime.Sdk.GT2Compat.InstallUnifiedTitleMenu(memory);
     return memory;
 }
 
 PSMemory testMemory = VerifyArcadeFrontendContracts();
 
+// A prior looping music voice must not hold the newly keyed confirmation
+// effect open, and an active effect must not be reported as completed.
+{
+    var spu = new Spu();
+    const uint registers = 0x1F801C00u;
+    spu.Ram[1] = 3; // loop/end, used by the pre-existing music voice
+    spu.Ram[17] = 1; // non-looping end block for the confirmation voice
+    spu.WriteReg16(registers + 4, 0x1000);
+    spu.WriteReg16(registers + 0x188, 1);
+    uint beforeEffect = spu.LatestKeyOnSerial;
+    spu.WriteReg16(registers + 0x14, 0x1000);
+    spu.WriteReg16(registers + 0x16, 2); // address units are eight bytes
+    spu.WriteReg16(registers + 0x188, 2);
+    uint effectMask = spu.CaptureVoiceMaskKeyedAfter(beforeEffect);
+    Require(effectMask == 2, "confirmation voice mask includes older music");
+    Require(!spu.WaitForVoicesToStop(effectMask, beforeEffect, 0),
+        "active confirmation voice was reported as stopped");
+    spu.Mix(new short[256], 128);
+    Require(spu.WaitForVoicesToStop(effectMask, beforeEffect, 0),
+        "finished confirmation voice did not release transition");
+    Require(!spu.WaitForVoicesToStop(1, 0, 0),
+        "test music voice must remain active independently of confirmation");
+}
+
 VerifyCpuProjectionFastPath();
 
-static void VerifyProjectionOriginHandleFlow()
+static void VerifyProjectionOriginHandleFlow(PSMemory memory)
 {
     const uint directAddress = 0x00001000u;
     const uint cpuAddress = directAddress + 4;
+    const uint derivedAddress = directAddress + 8;
+    const uint untrackedAddress = directAddress + 12;
     const uint modelPointer = 0x00123456u;
     var cpu = new CpuContext();
     WorldCaptureContext.LiveRenderingEnabled = true;
@@ -175,7 +272,11 @@ static void VerifyProjectionOriginHandleFlow()
         {
             Gte.Write(0, (ushort)x | ((uint)(ushort)y << 16));
             Gte.Write(1, (ushort)z);
-            Gte.Execute(0x01u);
+            // RTPS with sf=1 keeps the identity-matrix fixture in the
+            // ordinary on-screen range. Without the shift, both axes
+            // saturate at +1023 and the packed Y value is invalid for the
+            // PS1 GPU's signed 10-bit vertical coordinate range.
+            Gte.Execute(0x00080001u);
         }
 
         static GteProjectionOrigin Resolve(uint address, uint packed)
@@ -207,6 +308,36 @@ static void VerifyProjectionOriginHandleFlow()
         GteProjectionOrigin transferred = Resolve(
             cpuAddress, transferredPacked);
 
+        Project(12, 22, 32);
+        uint derivedAnchor = Gte.Read(14);
+        int anchorX = (short)derivedAnchor;
+        int anchorY = (short)(derivedAnchor >> 16);
+        const int offsetX = -3;
+        const int offsetY = -2;
+        uint derivedPacked =
+            (uint)((ushort)(short)(anchorX + offsetX) |
+                ((uint)(ushort)(short)(anchorY + offsetY) << 16));
+        Gte.BeginDerivedScreenProjection(derivedAnchor);
+        memory.WriteU16(
+            derivedAddress,
+            (ushort)(short)(anchorX + offsetX));
+        memory.WriteU16(
+            derivedAddress + 2u,
+            (ushort)(short)(anchorY + offsetY));
+        Gte.EndDerivedScreenProjection();
+        GteProjectionOrigin derived = Resolve(
+            derivedAddress, derivedPacked);
+
+        memory.WriteU16(untrackedAddress, (ushort)(short)anchorX);
+        memory.WriteU16(untrackedAddress + 2u, (ushort)(short)anchorY);
+        Require(
+            !Gte.TryGetPacketOrigin(
+                untrackedAddress,
+                anchorX,
+                anchorY,
+                out _),
+            "derived projection scope leaked into later screen primitives");
+
         Require(
             direct.ModelX == 10 && direct.ModelY == 20 &&
             direct.ModelZ == 30 && transferred.ModelX == 11 &&
@@ -217,7 +348,14 @@ static void VerifyProjectionOriginHandleFlow()
             direct.ProjectionOffsetY == 120 << 16 &&
             direct.ProjectionPlane == 256 &&
             direct.Object.Kind == WorldObjectKind.Track &&
-            direct.Object.ModelPointer == modelPointer,
+            direct.Object.ModelPointer == modelPointer &&
+            derived.ModelX == 12 && derived.ModelY == 22 &&
+            derived.ModelZ == 32 &&
+            derived.Object.Kind == WorldObjectKind.Track &&
+            derived.Object.ModelPointer == modelPointer &&
+            derived.ScreenOffsetX == offsetX &&
+            derived.ScreenOffsetY == offsetY &&
+            (derived.Flags & GteProjectionOriginFlags.ScreenOffsetAnchor) != 0,
             "projection origin handle changed captured provenance");
     }
     finally
@@ -279,7 +417,7 @@ if (args.Contains("--verify-release-policy", StringComparer.OrdinalIgnoreCase))
     return;
 }
 
-VerifyProjectionOriginHandleFlow();
+VerifyProjectionOriginHandleFlow(testMemory);
 
 static void VerifyBackgroundOwnership()
 {
@@ -303,6 +441,65 @@ static void VerifyBackgroundOwnership()
 }
 
 VerifyBackgroundOwnership();
+
+static void VerifyFrontendVehicleOwnership()
+{
+    const uint carState = 0x800F0000u;
+    const uint modelPointer = 0x80027B84u;
+    WorldCaptureContext.LiveRenderingEnabled = true;
+    try
+    {
+        WorldCaptureContext.BeginVehicle(carState, modelPointer);
+        Require(
+            WorldCaptureContext.Current.Kind == WorldObjectKind.Vehicle &&
+            WorldCaptureContext.Current.SceneGeneration == 0,
+            "frontend car preview inherited race-scene ownership");
+        WorldCaptureContext.EndObject();
+
+        WorldCaptureContext.BeginScenePass(WorldScenePass.Main);
+        WorldCaptureContext.BeginVehicle(carState, modelPointer);
+        Require(
+            WorldCaptureContext.Current.SceneGeneration != 0,
+            "race vehicle lost authored scene-generation ownership");
+        WorldCaptureContext.EndObject();
+        WorldCaptureContext.EndScenePass();
+
+        WorldCaptureContext.BeginVehicle(carState, modelPointer);
+        Require(
+            WorldCaptureContext.Current.SceneGeneration == 0,
+            "post-race frontend car preview retained stale scene ownership");
+    }
+    finally
+    {
+        WorldCaptureContext.EndObject();
+        WorldCaptureContext.EndScenePass();
+        WorldCaptureContext.LiveRenderingEnabled = false;
+    }
+}
+
+VerifyFrontendVehicleOwnership();
+
+static void VerifyCarPreviewCameraDistance()
+{
+    const uint selectorCamera = 0x800F04E0u;
+    const uint entryDistance = 0x00094CCCu;
+    const uint finalDistance = 0x000F4CCCu;
+    Require(
+        RecompOne.Runtime.Sdk.GT2Compat.LimitCarPreviewCameraDistance(
+            selectorCamera, entryDistance) == entryDistance,
+        "car preview entry distance was changed");
+    Require(
+        RecompOne.Runtime.Sdk.GT2Compat.LimitCarPreviewCameraDistance(
+            selectorCamera, finalDistance + 0x8000u) == finalDistance,
+        "car preview camera did not stop at its authored distance");
+    Require(
+        RecompOne.Runtime.Sdk.GT2Compat.LimitCarPreviewCameraDistance(
+            selectorCamera + 4u, finalDistance + 0x8000u) ==
+                finalDistance + 0x8000u,
+        "car preview ceiling leaked into another GT2 camera");
+}
+
+VerifyCarPreviewCameraDistance();
 
 static void VerifyTrue60ReplaySegmentReset(PSMemory memory)
 {
@@ -362,6 +559,8 @@ string unifiedHostProject = ReadRepoFile(
     @"tools\unified-host\GranTurismo2PC.csproj");
 string unifiedHostProgram = ReadRepoFile(
     @"tools\unified-host\Program.cs");
+string unifiedHostEntry = ReadRepoFile(
+    @"tools\unified-host\UnifiedEntry.cs");
 string inputManager = ReadRepoFile(
     @"vendor\RecompOne\RecompOne.Runtime\Host\InputManager.cs");
 string runtimeProject = ReadRepoFile(
@@ -375,6 +574,17 @@ string releaseReadme = ReadRepoFile(@"release\README.md");
 string releasePackageTest = ReadRepoFile(@"tools\test_release_package.ps1");
 string seattleReleaseSmoke = ReadRepoFile(
     @"tools\test_seattle_release_smoke.ps1");
+Require(
+    inputManager.Contains(
+        "RECOMPONE_CAPTURE_INPUT_STAGE_INTERVAL_POLLS",
+        StringComparison.Ordinal) &&
+    inputManager.Contains(
+        "RECOMPONE_CAPTURE_INPUT_STAGE_END_POLL",
+        StringComparison.Ordinal) &&
+    inputManager.Contains(
+        "AdvanceStageCaptureSchedule(",
+        StringComparison.Ordinal),
+    "stage-relative three-second track capture scheduling is missing");
 Require(
     unifiedHostProject.Contains(
         "<AppHostDotNetSearch>AppLocal;Global</AppHostDotNetSearch>",
@@ -535,6 +745,8 @@ string visibleReviewHarness = ReadRepoFile(
     @"tools\run_visible_modern_renderer_review.ps1");
 string frameClockSource = ReadRepoFile(
     @"vendor\RecompOne\RecompOne.Runtime\Host\FrameClock.cs");
+string hostWindowSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Host\Window\HostWindow.cs");
 string liveRendererSource = ReadRepoFile(
     @"vendor\RecompOne\RecompOne.Runtime\Gpu\Hle\LiveWorldRenderer.cs");
 string gt2CompatSource = ReadRepoFile(
@@ -563,12 +775,24 @@ string arcadeEnhancements = ReadRepoFile(
     @"tools\apply_gt2_arcade_enhancements.py");
 string generatedArcadeFrontend = ReadRepoFile(
     @"generated\arcade-recompiled\gt2_arcade_overlay_2.cs");
+string generatedSimulationTitle = ReadRepoFile(
+    @"generated\recompiled\gt2_overlay_1.cs");
 string unifiedModeHarness = ReadRepoFile(
     @"tools\test_unified_modes.ps1");
-string hostWindowSource = ReadRepoFile(
-    @"vendor\RecompOne\RecompOne.Runtime\Host\Window\HostWindow.cs");
+string hostAudioSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Host\Audio.cs");
+string spuSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Hardware\Spu.cs");
 string presentationRendererSource = ReadRepoFile(
     @"vendor\RecompOne\RecompOne.Runtime\Host\Window\PresentationRenderer.cs");
+string d3dRendererSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Host\Window\D3D11Renderer.cs");
+string d3dImGuiSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Host\Window\D3D11ImGuiController.cs");
+string d3dCompositorSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Gpu\Hle\D3D11GpuBackend.cs");
+string ssr11SelectorFixture = ReadRepoFile(
+    @"tests\fixtures\unified-arcade-ssr11-selector.input");
 string oggMusicSource = ReadRepoFile(
     @"vendor\RecompOne\RecompOne.Runtime\Hardware\OggMusic.cs");
 string libCdSource = ReadRepoFile(
@@ -581,6 +805,29 @@ string arcadeRendererAuditHarness = ReadRepoFile(
     @"tools\run_arcade_renderer_audit.ps1");
 string arcadeRendererAuditLauncher = ReadRepoFile(
     @"tools\run_arcade_renderer_audit.cmd");
+Require(
+    runtimeProject.Contains("Vortice.Direct3D11", StringComparison.Ordinal) &&
+    runtimeProject.Contains("Vortice.DXGI", StringComparison.Ordinal) &&
+    runtimeProject.Contains("ImGui.NET", StringComparison.Ordinal) &&
+    !runtimeProject.Contains("Silk.NET.OpenGL", StringComparison.Ordinal) &&
+    hostWindowSource.Contains("GraphicsAPI.None", StringComparison.Ordinal) &&
+    hostWindowSource.Contains("new D3D11Renderer", StringComparison.Ordinal) &&
+    hostWindowSource.Contains("new Hle.D3D11GpuBackend", StringComparison.Ordinal) &&
+    hostWindowSource.Contains("new D3D11ImGuiController", StringComparison.Ordinal) &&
+    d3dRendererSource.Contains("CreateSwapChainForHwnd", StringComparison.Ordinal) &&
+    d3dImGuiSource.Contains("ImGui.GetDrawData()", StringComparison.Ordinal) &&
+    d3dCompositorSource.Contains("WritebackFeedbackRegion", StringComparison.Ordinal) &&
+    d3dCompositorSource.Contains(
+        "ReferenceEquals(_batchTarget, old) && _vertexCount > 0",
+        StringComparison.Ordinal) &&
+    d3dCompositorSource.Contains("BlendOperation.ReverseSubtract", StringComparison.Ordinal) &&
+    presentationRendererSource.Contains("api=D3D11", StringComparison.Ordinal) &&
+    ssr11SelectorFixture.Contains("10000+1=CAPTURE", StringComparison.Ordinal) &&
+    !RepoFileExists(@"vendor\RecompOne\RecompOne.Runtime\Gpu\Hle\Gl\GlBackend.cs") &&
+    !RepoFileExists(@"vendor\RecompOne\RecompOne.Runtime\Gpu\Hle\Gl\GlVram.cs") &&
+    !RepoFileExists(@"vendor\RecompOne\RecompOne.Runtime\Gpu\Hle\Gl\GlDisplayRt.cs") &&
+    !RepoFileExists(@"vendor\RecompOne\RecompOne.Runtime\Gpu\Hle\Gl\GlShaders.cs"),
+    "Windows shipping presentation is no longer wholly D3D11/DXGI");
 Require(
     arcadeEnhancements.Contains(
         "ResolveArcadeCourseTable(", StringComparison.Ordinal) &&
@@ -788,9 +1035,36 @@ Require(
     gt2CompatSource.Contains("0x800B0F20u", StringComparison.Ordinal) &&
     gt2CompatSource.Contains(
         "_unifiedArcadeFrontendPending", StringComparison.Ordinal) &&
-    gt2CompatSource.Contains("coverArcadeHandoff", StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "_unifiedSimulationFrontendPending", StringComparison.Ordinal) &&
+    gt2CompatSource.Contains("coverGuestHandoff", StringComparison.Ordinal) &&
     gt2CompatSource.Contains(
         "UnifiedArcadeTransitionCoverActive", StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "return _unifiedArcadeTransition ? 2u : 5u;",
+        StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "public static void ReturnFromUnifiedArcade()",
+        StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "public static void ReturnFromUnifiedGranTurismoRoot(",
+        StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "CompleteUnifiedTitleConfirmationAudio", StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "BeginUnifiedTitleConfirmationAudio", StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "WaitForVoicesToStop", StringComparison.Ordinal) &&
+    spuSource.Contains(
+        "CaptureVoiceMaskKeyedAfter", StringComparison.Ordinal) &&
+    generatedSimulationTitle.Contains(
+        "BeginUnifiedTitleConfirmationAudio(",
+        StringComparison.Ordinal) &&
+    hostAudioSource.Contains("WaitForMixAdvance(", StringComparison.Ordinal) &&
+    arcadeEnhancements.Contains(
+        "ShouldPresentArcadeBootPanels", StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "if (!_unifiedArcadeTransition)", StringComparison.Ordinal) &&
     hostWindowSource.Contains(
         "Sdk.GT2Compat.UnifiedArcadeTransitionCoverActive",
         StringComparison.Ordinal) &&
@@ -801,12 +1075,43 @@ Require(
         "BeginUnifiedArcadeFrontendFrame", StringComparison.Ordinal) &&
     arcadeEnhancements.Contains(
         "CompleteUnifiedArcadeFrontendFrame", StringComparison.Ordinal) &&
-    arcadeEnhancements.Contains("func_800175F0", StringComparison.Ordinal) &&
+    arcadeEnhancements.Contains(
+        "ReturnFromUnifiedArcade", StringComparison.Ordinal) &&
+    simulationEnhancements.Contains(
+        "ReturnFromUnifiedGranTurismoRoot", StringComparison.Ordinal) &&
+    arcadeEnhancements.Contains("func_80011750", StringComparison.Ordinal) &&
+    generatedArcadeFrontend.Contains(
+        "GT2Compat.CompleteUnifiedArcadeFrontendFrame();",
+        StringComparison.Ordinal) &&
+    generatedArcadeFrontend.Contains(
+        "GT2Compat.ReturnFromUnifiedArcade();",
+        StringComparison.Ordinal) &&
+    unifiedHostEntry.Contains(
+        "PrepareSimulationTitleHandoff", StringComparison.Ordinal) &&
+    unifiedHostEntry.Contains(
+        "RunSimulationTitleHandoff", StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "CompleteUnifiedTitleMenuInitialization", StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "SignalScriptStage(\"arcade_frontend\")",
+        StringComparison.Ordinal) &&
+    generatedSimulationTitle.Contains(
+        "CompleteUnifiedTitleMenuInitialization(m);",
+        StringComparison.Ordinal) &&
+    generatedSimulationTitle.Contains(
+        "BufferUnifiedTitleInput(c.S3, m);",
+        StringComparison.Ordinal) &&
+    unifiedHostEntry.Contains(
+        "CompleteUnifiedTitleConfirmationAudio", StringComparison.Ordinal) &&
+    unifiedHostEntry.Contains("simulation-title", StringComparison.Ordinal) &&
     unifiedModeHarness.Contains("ExitPoll = 3200", StringComparison.Ordinal) &&
     unifiedModeHarness.Contains(
-        "Idle unified Arcade frontend launched the Seattle attract race",
+        "Arcade Mode Back did not return to the unified title",
+        StringComparison.Ordinal) &&
+    unifiedModeHarness.Contains(
+        "Gran Turismo Mode Back did not return to the unified title",
         StringComparison.Ordinal),
-    "unified Arcade menu can expose its guest reset or launch Seattle while idle");
+    "unified Arcade/Gran Turismo round trips no longer bypass both disc titles");
 Require(
     nativeRendererSource.Contains(
         "OPENGT_RENDER_TEXTURE_COVERAGE_DIAGNOSTICS",
@@ -908,13 +1213,32 @@ Require(
         "PSMainRoadOverlay(",
         StringComparison.Ordinal) &&
     nativeRendererSource.Contains(
-        "bounded four-view-unit depth",
+        "PSMainCutoutDepth(", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "PSMainCutoutFringe(", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "alpha_tested_cutout_coverage && pass == 1",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "road_overlay_depth_state(",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "description.DepthEnable = TRUE",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "description.DepthFunc = D3D11_COMPARISON_GREATER_EQUAL",
         StringComparison.Ordinal) &&
     nativeRendererSource.Contains(
         "const bool use_depth =",
         StringComparison.Ordinal) &&
     nativeRendererSource.Contains(
-        "render_phase == 2",
+        "const bool road_support =",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "const bool track_overlay =",
+        StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "depth_state = base.road_overlay_depth_states",
         StringComparison.Ordinal) &&
     !nativeRendererSource.Contains(
         "const bool use_road_support_mask",
@@ -1180,11 +1504,32 @@ byte[] trialMountainClassCPre = (byte[])ssr5ClassCPre.Clone();
 byte[] trialMountainClassCFinal = (byte[])ssr5ClassCFinal.Clone();
 byte[] trialMountainClassCState = (byte[])ssr5ClassCState.Clone();
 replaceDirectArcadeCourseIdentity.Invoke(
-    null, [trialMountainClassCPre, false]);
+    null,
+    [
+        trialMountainClassCPre,
+        false,
+        "Trial Mountain Circuit",
+        "Trial Mountain Circuit",
+        0xAFD7E5BBu,
+    ]);
 replaceDirectArcadeCourseIdentity.Invoke(
-    null, [trialMountainClassCFinal, false]);
+    null,
+    [
+        trialMountainClassCFinal,
+        false,
+        "Trial Mountain Circuit",
+        "Trial Mountain Circuit",
+        0xAFD7E5BBu,
+    ]);
 replaceDirectArcadeCourseIdentity.Invoke(
-    null, [trialMountainClassCState, true]);
+    null,
+    [
+        trialMountainClassCState,
+        true,
+        "Trial Mountain Circuit",
+        "Trial Mountain Circuit",
+        0xAFD7E5BBu,
+    ]);
 int ssr5PlayerNameStart = 0x5C + 0x90;
 int ssr5PlayerNameLength = Array.IndexOf(
     ssr5ClassCState,
@@ -1237,6 +1582,92 @@ Require(
             trialMountainClassCState)) ==
         "CA4E3C635A36EA2A9948573BB6A54114B91A5ED46D3732A5B8279A0DC15C9D44",
     "direct Trial Mountain launch lost its Class C native course identity");
+var supportedDirectArcadeCourses =
+    (IReadOnlyList<string>)gt2CompatType.GetProperty(
+        "SupportedDirectArcadeCourses",
+        BindingFlags.Public | BindingFlags.Static)!.GetValue(null)!;
+Require(
+    supportedDirectArcadeCourses.Count == 54 &&
+    supportedDirectArcadeCourses.Distinct(
+        StringComparer.OrdinalIgnoreCase).Count() == 54 &&
+    supportedDirectArcadeCourses.Contains(
+        "high-speed-ring", StringComparer.OrdinalIgnoreCase) &&
+    supportedDirectArcadeCourses.Contains(
+        "green-forest-roadway", StringComparer.OrdinalIgnoreCase) &&
+    supportedDirectArcadeCourses.Contains(
+        "grand-valley-speedway-reverse", StringComparer.OrdinalIgnoreCase) &&
+    supportedDirectArcadeCourses[^2] == "special-stage-route-11" &&
+    supportedDirectArcadeCourses[^1] == "special-stage-route-11-reverse",
+    "direct Arcade inventory is incomplete or no longer keeps Route 11 last");
+MethodInfo buildDirectArcadeTemplate = gt2CompatType.GetMethod(
+    "BuildDirectArcadeTemplate",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+string? originalDirectArcadeRace = Environment.GetEnvironmentVariable(
+    "RECOMPONE_GT2_DIRECT_ARCADE_RACE");
+try
+{
+    Environment.SetEnvironmentVariable(
+        "RECOMPONE_GT2_DIRECT_ARCADE_RACE",
+        "green-forest-roadway");
+    byte[] greenForestState = (byte[])buildDirectArcadeTemplate.Invoke(
+        null,
+        [ssr5ClassCStateBase64, ssr5ClassCStateBase64, true])!;
+    string greenForestStateName = System.Text.Encoding.ASCII.GetString(
+        greenForestState,
+        0x20,
+        Array.IndexOf(greenForestState, (byte)0, 0x20) - 0x20);
+    Require(
+        greenForestStateName == "Green Forest Roadway" &&
+        BitConverter.ToUInt32(greenForestState, 0x40) == 0x6B3F15FCu,
+        "direct dirt-course launch lost its native course identity");
+
+    Environment.SetEnvironmentVariable(
+        "RECOMPONE_GT2_DIRECT_ARCADE_RACE",
+        "grand-valley-speedway-reverse");
+    byte[] grandValleyReverseState =
+        (byte[])buildDirectArcadeTemplate.Invoke(
+            null,
+            [ssr5ClassCStateBase64, ssr5ClassCStateBase64, true])!;
+    string grandValleyReverseStateName =
+        System.Text.Encoding.ASCII.GetString(
+            grandValleyReverseState,
+            0x20,
+            Array.IndexOf(
+                grandValleyReverseState,
+                (byte)0,
+                0x20) - 0x20);
+    Require(
+        grandValleyReverseStateName == "Grand Valley Speedway" &&
+        BitConverter.ToUInt32(grandValleyReverseState, 0x40) == 0xED4AED05u,
+        "direct reverse-course launch lost its native course identity");
+}
+finally
+{
+    Environment.SetEnvironmentVariable(
+        "RECOMPONE_GT2_DIRECT_ARCADE_RACE",
+        originalDirectArcadeRace);
+}
+byte[] highSpeedRingClassCState = (byte[])ssr5ClassCState.Clone();
+replaceDirectArcadeCourseIdentity.Invoke(
+    null,
+    [
+        highSpeedRingClassCState,
+        true,
+        "High Speed Ring",
+        "High Speed Ring",
+        0x35B88252u,
+    ]);
+string highSpeedRingStateName = System.Text.Encoding.ASCII.GetString(
+    highSpeedRingClassCState,
+    0x20,
+    Array.IndexOf(
+        highSpeedRingClassCState,
+        (byte)0,
+        0x20) - 0x20);
+Require(
+    highSpeedRingStateName == "High Speed Ring" &&
+    BitConverter.ToUInt32(highSpeedRingClassCState, 0x40) == 0x35B88252u,
+    "direct High Speed Ring launch lost its native course identity");
 Require(
     arcadeRendererAuditHarness.Contains(
         "@('--arcade-race', 'trial-mountain', $data)",
@@ -1313,9 +1744,12 @@ foreach (string generatedOverlay in new[]
 {
     string source = ReadRepoFile(generatedOverlay);
     Require(
-        Occurrences(source, "Gte.BeginDerivedScreenProjection(") == 2 &&
+        Occurrences(source, "Gte.BeginDerivedScreenProjection(") == 3 &&
         Occurrences(source, "0x31525353u") == 2 &&
-        Occurrences(source, "Gte.EndDerivedScreenProjection();") == 2,
+        Occurrences(source, "Gte.EndDerivedScreenProjection();") == 3 &&
+        Occurrences(
+            source,
+            "Gte.BeginDerivedScreenProjection(c.V0);") == 1,
         $"{generatedOverlay}: auxiliary billboard projection scopes are not balanced");
 }
 int outputReadyWaitMilliseconds = (int)rendererType.GetField(
@@ -1339,6 +1773,42 @@ int publishedOutputCapacity = (int)rendererType.GetField(
 Require(
     outputBufferCount == 4 && publishedOutputCapacity == 3,
     "native output ring no longer covers the bounded capture work window");
+Require(
+    hostWindowSource.Contains(
+        "deferCaptureToNativeWorld",
+        StringComparison.Ordinal) &&
+    hostWindowSource.Contains(
+        "_gpu?.LiveWorldExpected == true ||",
+        StringComparison.Ordinal) &&
+    hostWindowSource.Contains(
+        "_gpu?.LiveWorldRecentlySeen == true",
+        StringComparison.Ordinal),
+    "race-stage presentation capture can still consume a worldless ownership gap");
+Require(
+    liveRendererSource.Contains(
+        "action=evict-unconsumed",
+        StringComparison.Ordinal) &&
+    !liveRendererSource.Contains(
+        "static-scene generation queue overflowed",
+        StringComparison.Ordinal),
+    "deferred static-scene overflow still aborts instead of evicting stale work");
+Require(
+    liveRendererSource.Contains(
+        "_published.Count >= PublishedOutputCapacity &&",
+        StringComparison.Ordinal) &&
+    liveRendererSource.Contains(
+        "!_stopping)",
+        StringComparison.Ordinal) &&
+    liveRendererSource.Contains(
+        "Monitor.Wait(_gate);",
+        StringComparison.Ordinal) &&
+    liveRendererSource.Contains(
+        "Monitor.PulseAll(_gate);",
+        StringComparison.Ordinal) &&
+    !liveRendererSource.Contains(
+        "discarded = _published.Dequeue();",
+        StringComparison.Ordinal),
+    "full native presentation reserve still evicts a completed authored frame");
 
 Type recorderType = rendererType.Assembly.GetType(
     "RecompOne.Runtime.Hle.LiveWorldFrameRecorder",
@@ -1392,6 +1862,24 @@ Type gpuType = rendererType.Assembly.GetType(
 MethodInfo billboardCoordinates = gpuType.GetMethod(
     "RawTrackBillboardCoordinates",
     BindingFlags.NonPublic | BindingFlags.Static)!;
+MethodInfo billboardUsesAuthoredDepth = gpuType.GetMethod(
+    "RawTrackBillboardUsesAuthoredDepth",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+const long billboardNearFixed = 16L * 4096L;
+Require(
+    (bool)billboardUsesAuthoredDepth.Invoke(
+        null,
+        [3390, billboardNearFixed, billboardNearFixed + 1,
+            billboardNearFixed + 2, billboardNearFixed + 3])! &&
+    !(bool)billboardUsesAuthoredDepth.Invoke(
+        null,
+        [3390, billboardNearFixed, billboardNearFixed - 1,
+            billboardNearFixed + 2, billboardNearFixed + 3])! &&
+    !(bool)billboardUsesAuthoredDepth.Invoke(
+        null,
+        [0, billboardNearFixed, billboardNearFixed + 1,
+            billboardNearFixed + 2, billboardNearFixed + 3])!,
+    "track billboard flat depth no longer preserves near-plane clipping");
 object[] billboardInputs =
 [
     false,
@@ -1637,6 +2125,46 @@ Require(
 Require(
     rasterizesScreen,
     "authored screen-space command composition was disabled");
+MethodInfo liveTriangleCaptureDecision = gpuType.GetMethod(
+    "ClassifyLiveTriangleCapture",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+string liveWorldTriangle = liveTriangleCaptureDecision.Invoke(
+    null,
+    [true, true, true, false, false])!.ToString()!;
+string provenanceFreeScreenTriangle = liveTriangleCaptureDecision.Invoke(
+    null,
+    [true, false, false, false, false])!.ToString()!;
+string unselectedWorldTriangle = liveTriangleCaptureDecision.Invoke(
+    null,
+    [true, true, false, false, false])!.ToString()!;
+string replacedTrackTriangle = liveTriangleCaptureDecision.Invoke(
+    null,
+    [true, true, true, true, false])!.ToString()!;
+Require(
+    liveWorldTriangle == "World" &&
+    provenanceFreeScreenTriangle == "Screen" &&
+    unselectedWorldTriangle == "None" &&
+    replacedTrackTriangle == "None",
+    "live capture no longer distinguishes provenance-free screen polygons " +
+    "from native and unselected world geometry");
+Require(
+    nativeRendererSource.Contains(
+        "PSMainScreenGridMask", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "screen_grid_world_texture", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "detect_authored_screen_arcs", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "ScreenArcData", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "policy=authored-radial-fan", StringComparison.Ordinal) &&
+    nativeRendererSource.Contains(
+        "resolved_color_texture = base.screen_grid_texture.Get()",
+        StringComparison.Ordinal) &&
+    !nativeRendererSource.Contains(
+        "rounded_pause", StringComparison.OrdinalIgnoreCase),
+    "authored screen primitives no longer resolve through the generic " +
+    "PS1 coverage grid");
 Require(
     liveRendererSource.Contains(
         "the release build has no compatibility fallback.",
@@ -1903,7 +2431,9 @@ Console.WriteLine(
     "modern_renderer_config=pass legacy_migration=pass " +
     "custom_migration=pass runtime_downgrade_removed=pass " +
     "native_disable_removed=pass legacy_world_rasterization_removed=pass " +
-    "screen_compositor_retained=pass stale_world_transition_blocked=pass " +
+    "screen_compositor_retained=pass screen_polygon_capture=pass " +
+    "screen_native_grid=pass screen_analytic_arcs=pass " +
+    "stale_world_transition_blocked=pass " +
     "bounded_output_wait=pass authored_output_prebuffer=pass " +
     "native_output_ring=pass capture_stream_reservation=pass " +
     "native_capture_v6=pass " +

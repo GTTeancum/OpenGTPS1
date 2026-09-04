@@ -93,6 +93,7 @@ public sealed class Spu
         public short AdsrVol;
         public ushort VolL, VolR, Pitch, StartAddr, RepeatAddr;
         public uint CurAddr;
+        public uint KeyOnSerial;
         public bool EndX, Noise, Pmod, Reverb;
     }
 
@@ -122,6 +123,7 @@ public sealed class Spu
         public bool HasBlock;
         public bool EndLogged;
         public bool LoopLogged;
+        public uint KeyOnSerial;
 
         public int Old, Older;
 
@@ -154,6 +156,7 @@ public sealed class Spu
     int _noiseLevel = 1;
     int _noiseTimer;
     int _traceEvents;
+    uint _keyOnSerial;
 
     public Spu()
     {
@@ -290,6 +293,7 @@ public sealed class Spu
             v.EndX = false;
             v.EndLogged = false;
             v.LoopLogged = false;
+            v.KeyOnSerial = ++_keyOnSerial;
             _endx &= ~(1u << (b + i));
             TraceEvent(
                 $"key-on voice={b + i} start=0x{v.StartAddr:X4} repeat=0x{v.RepeatAddr:X4} " +
@@ -315,6 +319,58 @@ public sealed class Spu
 
     public uint TransferAddrBytes() => (uint)_transferAddr << 3;
 
+    public uint LatestKeyOnSerial
+    {
+        get
+        {
+            lock (_sync) return _keyOnSerial;
+        }
+    }
+
+    public uint CaptureVoiceMaskKeyedAfter(uint serial)
+    {
+        lock (_sync)
+        {
+            uint mask = 0;
+            for (int i = 0; i < _v.Length; i++)
+            {
+                if (_v[i].KeyOnSerial > serial)
+                    mask |= 1u << i;
+            }
+            return mask;
+        }
+    }
+
+    public bool WaitForVoicesToStop(
+        uint voiceMask, uint keyedAfterSerial, int timeoutMilliseconds)
+    {
+        long deadline = Environment.TickCount64 +
+            Math.Max(0, timeoutMilliseconds);
+        while (true)
+        {
+            bool active = false;
+            lock (_sync)
+            {
+                for (int i = 0; i < _v.Length; i++)
+                {
+                    Voice voice = _v[i];
+                    if ((voiceMask & (1u << i)) != 0 &&
+                        voice.KeyOnSerial > keyedAfterSerial &&
+                        voice.Phase != AdsrPhase.Off)
+                    {
+                        active = true;
+                        break;
+                    }
+                }
+            }
+            if (!active)
+                return true;
+            if (Environment.TickCount64 >= deadline)
+                return false;
+            Thread.Sleep(1);
+        }
+    }
+
     public void CaptureDebug(VoiceDebug[] voices, out SpuDebug state)
     {
         lock (_sync)
@@ -336,6 +392,7 @@ public sealed class Spu
                     StartAddr = v.StartAddr,
                     RepeatAddr = v.RepeatAddr,
                     CurAddr = v.CurAddr,
+                    KeyOnSerial = v.KeyOnSerial,
                     EndX = v.EndX,
                     Noise = (nonMask & (1u << i)) != 0,
                     Pmod = (pmonMask & (1u << i)) != 0,

@@ -1,12 +1,15 @@
 param(
-    [string]$LoosePath = 'work\gt2-unified'
+    [string]$LoosePath = 'work\gt2-unified',
+    [string]$DeployPath = 'tools\unified-host\bin\Release\net10.0',
+    [string]$CaseFilter = '*'
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$exe = Join-Path $repo (
-    'tools\unified-host\bin\Release\net10.0\GranTurismo2PC.exe')
+$exe = Join-Path (Join-Path $repo $DeployPath) 'GranTurismo2PC.exe'
 $runtimeDirectory = Split-Path -Parent $exe
+$evidenceRoot = Join-Path $repo 'artifacts\arcade-handoff-final\menu-smoke'
+New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
 $looseRoot = if ([IO.Path]::IsPathRooted($LoosePath)) {
     [IO.Path]::GetFullPath($LoosePath)
 } else {
@@ -26,53 +29,75 @@ foreach ($required in @(
 
 $cases = @(
     @{
-        Name = 'simulation'
+        Name = 'simulation-return'
         Script = (
-            '560+1=CAPTURE;' +
-            '600+4=DOWN;' +
-            '640+8=CROSS,START;' +
-            '1400+1=CAPTURE;' +
-            '2000+1=CAPTURE')
-        ExitPoll = 2500
+            '860+1=CAPTURE;' +
+            '900+4=DOWN;' +
+            '980+8=CROSS,START;' +
+            '1500+1=CAPTURE;' +
+            '1900+8=TRIANGLE;' +
+            '2700+1=CAPTURE')
+        ExitPoll = 3100
         Expected = '[GT2] title selection: Gran Turismo Mode'
     },
     @{
         Name = 'arcade'
         Script = (
-            '560+1=CAPTURE;' +
-            '600+8=CROSS,START;' +
-            '900+1=CAPTURE;' +
+            '860+1=CAPTURE;' +
+            '900+8=CROSS,START;' +
+            '1200+1=CAPTURE;' +
             '1400+1=CAPTURE')
-        # Remain idle well past Arcade overlay 1's stock 901-update attract
-        # threshold. A unified PC menu must stay in the frontend instead of
-        # silently launching the default Seattle demo.
+        # Remain idle in the requested Arcade Mode menu to prove that the
+        # skipped disc title never appears later as an attract transition.
         ExitPoll = 3200
         Expected = '[GT2] title selection: Arcade Mode'
     },
     @{
+        Name = 'arcade-single-player'
+        Script = (
+            '900+8=CROSS,START;' +
+            '1600+1=CAPTURE;' +
+            '2000+8=CROSS,START;' +
+            '3000+1=CAPTURE')
+        ExitPoll = 3400
+        Expected = '[GT2] title selection: Arcade Mode'
+    },
+    @{
+        Name = 'arcade-return'
+        Script = (
+            '860+1=CAPTURE;' +
+            '900+8=CROSS,START;' +
+            '1600+1=CAPTURE;' +
+            '2000+8=TRIANGLE;' +
+            '2800+1=CAPTURE')
+        ExitPoll = 3200
+        Expected = '[GT2] Arcade Mode Back: returning to unified title'
+    },
+    @{
         Name = 'replay-theater'
         Script = (
-            '600+4=DOWN;' +
-            '680+4=DOWN;' +
-            '760+8=CROSS,START;' +
-            '1300+1=CAPTURE')
-        ExitPoll = 1500
+            '900+4=DOWN;' +
+            '980+4=DOWN;' +
+            '1060+8=CROSS,START;' +
+            '1600+1=CAPTURE')
+        ExitPoll = 1800
         Expected = '[GT2] title selection: Replay Theater'
     },
     @{
         Name = 'option'
         Script = (
-            '600+4=DOWN;' +
-            '680+4=DOWN;' +
-            '760+4=DOWN;' +
-            '840+8=CROSS,START;' +
-            '1400+1=CAPTURE')
-        ExitPoll = 1600
+            '900+4=DOWN;' +
+            '980+4=DOWN;' +
+            '1060+4=DOWN;' +
+            '1140+8=CROSS,START;' +
+            '1700+1=CAPTURE')
+        ExitPoll = 1900
         Expected = '[GT2] title selection: Option'
     }
 )
 
 foreach ($case in $cases) {
+    if ($case.Name -notlike $CaseFilter) { continue }
     # Set the child-only controls on this short-lived PowerShell process.
     # Avoid ProcessStartInfo.EnvironmentVariables: some Windows launchers
     # provide both Path and PATH, which makes the .NET Framework dictionary
@@ -82,6 +107,10 @@ foreach ($case in $cases) {
     $env:RECOMPONE_DISABLE_LIVE_INPUT = '1'
     $env:RECOMPONE_SUPPRESS_RUMBLE = '1'
     $env:RECOMPONE_UNTHROTTLED = '1'
+    $env:RECOMPONE_CAPTURE_AUTOMATIC_STAGE = '0'
+    $env:RECOMPONE_PRESENTATION_CAPTURE = '1'
+    $env:RECOMPONE_OUTPUT_RESOLUTION = '1280x960'
+    $env:RECOMPONE_PRESENTATION_RESOLUTION = '1280x960'
 
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $exe
@@ -102,45 +131,115 @@ foreach ($case in $cases) {
     }
     $stdout = $stdoutTask.Result
     $stderr = $stderrTask.Result
+    $caseEvidence = Join-Path $evidenceRoot $case.Name
+    New-Item -ItemType Directory -Path $caseEvidence -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $caseEvidence 'stdout.log'), $stdout)
+    [IO.File]::WriteAllText((Join-Path $caseEvidence 'stderr.log'), $stderr)
+    foreach ($captureMatch in [regex]::Matches(
+            $stdout, 'to (recompone_present_[^\r\n]+\.ppm)')) {
+        $capturePath = Join-Path $runtimeDirectory $captureMatch.Groups[1].Value
+        if ((Get-Item -LiteralPath $capturePath).LastWriteTime -lt $process.StartTime) {
+            throw "Stale smoke capture: $capturePath"
+        }
+        $pngPath = Join-Path $caseEvidence ([IO.Path]::ChangeExtension(
+            $captureMatch.Groups[1].Value, '.png'))
+        & ffmpeg -hide_banner -loglevel error -y -i $capturePath $pngPath
+        if ($LASTEXITCODE -ne 0) { throw "Capture conversion failed: $capturePath" }
+        Remove-Item -LiteralPath $capturePath
+    }
     if ($process.ExitCode -ne 0) {
         throw "Unified $($case.Name) exited $($process.ExitCode):`n$stderr"
     }
     if (-not $stdout.Contains($case.Expected)) {
         throw "Unified title did not select $($case.Name):`n$stdout"
     }
-    if ($case.Name -eq 'arcade' -and
+    $arcadeCase = $case.Name.StartsWith(
+        'arcade', [StringComparison]::Ordinal)
+    if ($arcadeCase -and
         $stdout -notmatch '\[Host\] native unified guest=arcade ') {
         throw "Unified title did not hand off to the Arcade guest:`n$stdout"
     }
-    if ($case.Name -eq 'arcade' -and
+    if ($arcadeCase -and
         $stdout -notmatch (
             '\[Host\] seamless guest handoff: Simulation title -> ' +
-            'Arcade START GAME destination')) {
+            'Arcade Mode menu')) {
         throw "Unified title did not use the seamless Arcade handoff:`n$stdout"
     }
-    if ($case.Name -eq 'arcade' -and
+    if ($arcadeCase -and
         $stdout -notmatch (
             '\[GT2\] Arcade frontend handoff: ' +
-            'entry=0x8005D650 START GAME overlay=1')) {
-        throw "Unified title did not enter Arcade at START GAME:`n$stdout"
+            'entry=0x8005D650 Arcade Mode menu overlay=2')) {
+        throw "Unified title did not enter the Arcade Mode menu:`n$stdout"
     }
-    if ($case.Name -eq 'arcade' -and
+    if ($arcadeCase -and
         $stdout -match 'loaded overlay: gt2_arcade_overlay_5') {
         throw "Unified title incorrectly replayed the Arcade boot/title overlay:`n$stdout"
     }
-    if ($case.Name -eq 'arcade' -and
-        $stdout -notmatch 'loaded overlay: gt2_arcade_overlay_1') {
-        throw "Unified title did not load the first Arcade frontend overlay:`n$stdout"
+    if ($arcadeCase -and
+        $stdout -match 'loaded overlay: gt2_arcade_overlay_1') {
+        throw "Unified title exposed the skipped Arcade disc title:`n$stdout"
     }
-    if ($case.Name -eq 'arcade' -and
+    if ($arcadeCase -and
+        $stdout -notmatch 'loaded overlay: gt2_arcade_overlay_2') {
+        throw "Unified title did not load the Arcade Mode menu overlay:`n$stdout"
+    }
+    if ($arcadeCase -and
+        $stdout -notmatch 'omitted duplicate timed boot panels') {
+        throw "Unified Arcade still executes the hidden 310-tick boot panels:`n$stdout"
+    }
+    if ($arcadeCase -and
+        ($stdout -notmatch 'selectionToFrontendPolls=(\d+)' -or
+         [int]$Matches[1] -gt 60)) {
+        throw "Unified Arcade frontend entry regressed to a long guest-frame wait:`n$stdout"
+    }
+    if ($arcadeCase -and
         $stdout -notmatch (
-            '\[GT2\] seamless Arcade frontend ready; ' +
+            '\[GT2\] seamless Arcade frontend entered; ' +
             'transition cover released')) {
         throw "Unified title exposed an incomplete Arcade transition:`n$stdout"
     }
-    if ($case.Name -eq 'arcade' -and
+    if ($arcadeCase -and
         $stdout -match 'loaded overlay: gt2_arcade_overlay_0') {
-        throw "Idle unified Arcade frontend launched the Seattle attract race:`n$stdout"
+        throw "Unified Arcade menu unexpectedly launched a race:`n$stdout"
+    }
+    if ($case.Name -eq 'arcade-return' -and
+        $stdout -notmatch (
+            '\[Host\] seamless guest handoff: ' +
+            'Arcade Mode Back -> unified title')) {
+        throw "Arcade Mode Back did not return to the unified title:`n$stdout"
+    }
+    if ($case.Name -eq 'arcade-return' -and
+        $stdout -notmatch (
+            '\[GT2\] Simulation title handoff: ' +
+            'entry=0x8005D6E0 unified title overlay=1')) {
+        throw "Arcade Mode Back replayed the Simulation boot path:`n$stdout"
+    }
+    if ($case.Name -eq 'arcade-single-player' -and
+        $stdout -match 'Arcade Mode Back|Gran Turismo Mode Back') {
+        throw "Arcade Single Player escaped to the unified title:`n$stdout"
+    }
+    # Capture the actual shipping presentation, not the retired compatibility
+    # framebuffer. The Game Selection image is reviewed with the batch proofs.
+    if ($case.Name -eq 'arcade-single-player' -and
+        [regex]::Matches($stdout, 'captured presentation').Count -lt 2) {
+        throw "Arcade Single Player is missing its Game Selection visual proof:`n$stdout"
+    }
+    if ($case.Name -eq 'simulation-return' -and
+        $stdout -notmatch (
+            '\[GT2\] Gran Turismo Mode Back: returning to unified title')) {
+        throw "Gran Turismo Mode Triangle did not request the unified title:`n$stdout"
+    }
+    if ($case.Name -eq 'simulation-return' -and
+        $stdout -notmatch (
+            '\[Host\] seamless guest handoff: ' +
+            'Gran Turismo Mode Back -> unified title')) {
+        throw "Gran Turismo Mode Back did not return to the unified title:`n$stdout"
+    }
+    if ($case.Name -eq 'simulation-return' -and
+        $stdout -notmatch (
+            '\[GT2\] Simulation title handoff: ' +
+            'entry=0x8005D6E0 unified title overlay=1')) {
+        throw "Gran Turismo Mode Back replayed the Simulation boot path:`n$stdout"
     }
     if ($stdout -notmatch '\[GPU\] display=True') {
         throw "Unified $($case.Name) did not enable its original display:`n$stdout"
@@ -159,6 +258,10 @@ foreach ($name in @(
         'RECOMPONE_EXIT_AFTER_INPUT_POLL',
         'RECOMPONE_DISABLE_LIVE_INPUT',
         'RECOMPONE_SUPPRESS_RUMBLE',
+        'RECOMPONE_CAPTURE_AUTOMATIC_STAGE',
+        'RECOMPONE_PRESENTATION_CAPTURE',
+        'RECOMPONE_OUTPUT_RESOLUTION',
+        'RECOMPONE_PRESENTATION_RESOLUTION',
         'RECOMPONE_UNTHROTTLED')) {
     Remove-Item "Env:$name" -ErrorAction SilentlyContinue
 }

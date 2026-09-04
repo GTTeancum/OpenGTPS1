@@ -42,6 +42,9 @@ public sealed class PSMemory : IMemory
     public ReadOnlySpan<byte> Ram => _ram;
     internal byte[] RamBuffer => _ram;
 
+    internal bool TryGetOrderingTableIndex(uint address, out int index) =>
+        _dma.TryGetOrderingTableIndex(address, out index);
+
     public PSMemory()
     {
         _ramMask = checked((uint)_ram.Length - 1u);

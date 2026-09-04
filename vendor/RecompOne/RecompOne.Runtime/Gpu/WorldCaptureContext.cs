@@ -84,6 +84,7 @@ public static class WorldCaptureContext
     static WorldObjectContext _current;
     static WorldScenePass _scenePass;
     static uint _sceneGeneration;
+    static bool _scenePassActive;
 #if !OPENGT_RELEASE_PACKAGE
     static readonly int TraceScenePassPoll =
         int.TryParse(
@@ -168,6 +169,7 @@ public static class WorldCaptureContext
     /// </summary>
     public static void BeginScenePass(WorldScenePass scenePass)
     {
+        _scenePassActive = true;
         _scenePass = scenePass;
         if (scenePass == WorldScenePass.Main)
             _sceneGeneration = unchecked(_sceneGeneration + 1u);
@@ -180,6 +182,7 @@ public static class WorldCaptureContext
 
     public static void EndScenePass()
     {
+        _scenePassActive = false;
         _scenePass = WorldScenePass.Main;
         if (CaptureEnabled)
             _current = default;
@@ -1173,7 +1176,10 @@ public static class WorldCaptureContext
             stableId,
             modelPointer,
             ScenePass: _scenePass,
-            SceneGeneration: _sceneGeneration);
+            // Preview/showroom cars are not part of a race scene even after
+            // returning from a previous race. Generation zero keeps their
+            // authored screen projection in the DirectX command compositor.
+            SceneGeneration: _scenePassActive ? _sceneGeneration : 0);
 #if !OPENGT_RELEASE_PACKAGE
         TraceScenePass("vehicle", modelPointer);
 #endif

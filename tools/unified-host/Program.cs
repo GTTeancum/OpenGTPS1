@@ -8,6 +8,7 @@ bool headless = false;
 bool mute = false;
 bool validateLiveries = false;
 bool verifyReplayCodec = false;
+bool verifyCarPreviewCamera = false;
 bool startArcade = false;
 string? directArcadeRace = null;
 bool directArcadeReplay = false;
@@ -27,6 +28,10 @@ for (int index = 0; index < args.Length; index++)
                  "--verify-replay-codec",
                  StringComparison.OrdinalIgnoreCase))
         verifyReplayCodec = true;
+    else if (argument.Equals(
+                 "--verify-car-preview-camera",
+                 StringComparison.OrdinalIgnoreCase))
+        verifyCarPreviewCamera = true;
     else if (argument.Equals(
                  "--start-arcade",
                  StringComparison.OrdinalIgnoreCase))
@@ -49,16 +54,21 @@ for (int index = 0; index < args.Length; index++)
         if (++index >= args.Length)
             return StartupFailure(
                 $"{argument} requires a course name; supported courses are " +
-                "seattle-circuit, special-stage-route-5, and trial-mountain.",
+                string.Join(
+                    ", ",
+                    RecompOne.Runtime.Sdk.GT2Compat.
+                        SupportedDirectArcadeCourses) + ".",
                 headless);
         directArcadeRace = args[index].Trim().ToLowerInvariant();
-        if (directArcadeRace is not
-                ("seattle-circuit" or "special-stage-route-5" or
-                 "trial-mountain"))
+        if (!RecompOne.Runtime.Sdk.GT2Compat.
+                IsSupportedDirectArcadeCourse(directArcadeRace))
             return StartupFailure(
                 $"Unsupported direct Arcade course: {args[index]}. " +
-                "Supported courses are seattle-circuit, " +
-                "special-stage-route-5, and trial-mountain.",
+                "Supported courses are " +
+                string.Join(
+                    ", ",
+                    RecompOne.Runtime.Sdk.GT2Compat.
+                        SupportedDirectArcadeCourses) + ".",
                 headless);
         directArcadeReplay = replay;
         startArcade = true;
@@ -124,6 +134,11 @@ else if (mute)
 if (verifyReplayCodec)
 {
     VerifyReplayCodecs();
+    return 0;
+}
+if (verifyCarPreviewCamera)
+{
+    VerifyCarPreviewCameras();
     return 0;
 }
 
@@ -485,6 +500,63 @@ static void VerifyReplayCodecs()
     Console.WriteLine(
         "[GT2-Replay-Codec] pass variants=Simulation,Arcade " +
         "source=original-guest-codec");
+}
+
+static void VerifyCarPreviewCameras()
+{
+    var memory = new PSMemory();
+    VerifyCarPreviewCamera(
+        "Simulation",
+        Recompiled.Simulation.GranTurismo2PC.func_8001E5D8,
+        memory);
+    VerifyCarPreviewCamera(
+        "Arcade",
+        Recompiled.Arcade.GranTurismo2ArcadePC.func_8001E5BC,
+        memory);
+    Console.WriteLine(
+        "[GT2-Car-Preview-Camera] pass variants=Simulation,Arcade " +
+        "entry=0x00094CCC step=0x00008000 limit=0x000F4CCC");
+}
+
+static void VerifyCarPreviewCamera(
+    string variant,
+    Action<RecompOne.Runtime.Context.CpuContext, IMemory> update,
+    PSMemory memory)
+{
+    const uint camera = 0x800F04E0u;
+    const uint distanceOffset = 0xA8u;
+    const uint entryDistance = 0x00094CCCu;
+    const uint distanceStep = 0x00008000u;
+    const uint distanceLimit = 0x000F4CCCu;
+    const uint zoomTrigger = 0x0000FB91u;
+    const int authoredSteps = 12;
+    var context = new RecompOne.Runtime.Context.CpuContext();
+    memory.WriteU32(camera + distanceOffset, entryDistance);
+
+    for (int step = 1; step <= authoredSteps; step++)
+    {
+        context.A0 = camera;
+        context.A2 = zoomTrigger;
+        update(context, memory);
+        uint expected = entryDistance + (uint)step * distanceStep;
+        uint actual = memory.ReadU32(camera + distanceOffset);
+        if (actual != expected)
+            throw new InvalidDataException(
+                $"{variant} car preview distance mismatch at step {step}: " +
+                $"actual=0x{actual:X8} expected=0x{expected:X8}");
+    }
+
+    for (int stress = 0; stress < 256; stress++)
+    {
+        context.A0 = camera;
+        context.A2 = zoomTrigger;
+        update(context, memory);
+    }
+    uint heldDistance = memory.ReadU32(camera + distanceOffset);
+    if (heldDistance != distanceLimit)
+        throw new InvalidDataException(
+            $"{variant} car preview did not hold its final distance: " +
+            $"actual=0x{heldDistance:X8} expected=0x{distanceLimit:X8}");
 }
 
 static void VerifyReplayCodec(

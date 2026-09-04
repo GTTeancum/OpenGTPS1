@@ -45,6 +45,8 @@ internal static unsafe class InputManager
     static bool _automaticStageCapture;
     static string? _captureInputStage;
     static int _captureInputStagePoll;
+    static int _captureInputStageIntervalPolls;
+    static int _captureInputStageEndPoll = -1;
     static string? _exitInputStage;
     static int _exitInputStagePoll;
     static int _stageExitPoll = -1;
@@ -89,6 +91,20 @@ internal static unsafe class InputManager
             out int captureInputStagePoll)
                 ? Math.Max(0, captureInputStagePoll)
                 : 0;
+        _captureInputStageIntervalPolls = int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_CAPTURE_INPUT_STAGE_INTERVAL_POLLS"),
+            out int captureInputStageIntervalPolls) &&
+            captureInputStageIntervalPolls > 0
+                ? captureInputStageIntervalPolls
+                : 0;
+        _captureInputStageEndPoll = int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_CAPTURE_INPUT_STAGE_END_POLL"),
+            out int captureInputStageEndPoll) &&
+            captureInputStageEndPoll >= 0
+                ? captureInputStageEndPoll
+                : -1;
         string? exitInputStage = Environment.GetEnvironmentVariable(
             "RECOMPONE_TEST_EXIT_INPUT_STAGE");
         _exitInputStage = string.IsNullOrWhiteSpace(exitInputStage)
@@ -297,8 +313,16 @@ internal static unsafe class InputManager
             : hasScriptedInput && _automaticStageCapture
                 ? captureDelayPolls
                 : -1;
+        if (explicitDiagnosticCapture &&
+            _captureInputStageEndPoll >= 0 &&
+            _stageCapturePoll > _captureInputStageEndPoll)
+        {
+            _stageCapturePoll = -1;
+        }
         _stageCaptureLabel = explicitDiagnosticCapture
-            ? $"{stage}_{_captureInputStagePoll:0000}"
+            ? _stageCapturePoll >= 0
+                ? $"{stage}_{_captureInputStagePoll:000000}"
+                : null
             : _stageCapturePoll >= 0
                 ? stage
                 : null;
@@ -309,10 +333,43 @@ internal static unsafe class InputManager
         if (_stageCapturePoll == 0 && _stageCaptureLabel != null)
         {
             HostWindow.RequestDisplayCapture(_stageCaptureLabel);
-            _stageCapturePoll = -1;
-            _stageCaptureLabel = null;
+            AdvanceStageCaptureSchedule(stage, 0);
         }
         Console.Error.WriteLine($"[Input] stage '{stage}' at absolute poll {_inputPoll}");
+        if (explicitDiagnosticCapture &&
+            _captureInputStageIntervalPolls > 0 &&
+            _stageCapturePoll >= 0)
+        {
+            Console.Error.WriteLine(
+                $"[Input] periodic stage capture armed: stage={stage} " +
+                $"start={_captureInputStagePoll} " +
+                $"interval={_captureInputStageIntervalPolls} " +
+                $"end={_captureInputStageEndPoll}");
+        }
+    }
+
+    static void AdvanceStageCaptureSchedule(string stage, int capturedPoll)
+    {
+        bool periodic = _captureInputStageIntervalPolls > 0 &&
+            string.Equals(
+                stage, _captureInputStage, StringComparison.OrdinalIgnoreCase);
+        if (!periodic)
+        {
+            _stageCapturePoll = -1;
+            _stageCaptureLabel = null;
+            return;
+        }
+
+        int next = capturedPoll + _captureInputStageIntervalPolls;
+        if (_captureInputStageEndPoll >= 0 &&
+            next > _captureInputStageEndPoll)
+        {
+            _stageCapturePoll = -1;
+            _stageCaptureLabel = null;
+            return;
+        }
+        _stageCapturePoll = next;
+        _stageCaptureLabel = $"{stage}_{next:000000}";
     }
 
     static void ApplyScriptedInput()
@@ -326,8 +383,7 @@ internal static unsafe class InputManager
             HostWindow.RequestDisplayCapture(_stageCaptureLabel);
             Console.Error.WriteLine(
                 $"[Input] requested stage '{_stageCaptureLabel}' capture at poll {stagePoll}");
-            _stageCapturePoll = -1;
-            _stageCaptureLabel = null;
+            AdvanceStageCaptureSchedule(_scriptStage ?? string.Empty, stagePoll);
         }
         if (_stageExitPoll == stagePoll)
         {

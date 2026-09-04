@@ -154,20 +154,23 @@ if ($ExpectedGuest -eq 'arcade') {
     if (-not $StartArcade) {
         if ($stdout -notmatch (
                 '\[Host\] seamless guest handoff: Simulation title -> ' +
-                'Arcade START GAME destination')) {
+                'Arcade Mode menu')) {
             throw 'Unified Arcade fixture did not use the seamless handoff'
         }
         if ($stdout -notmatch (
                 '\[GT2\] Arcade frontend handoff: ' +
-                'entry=0x8005D650 START GAME overlay=1')) {
-            throw 'Unified Arcade fixture did not enter the START GAME destination'
+                'entry=0x8005D650 Arcade Mode menu overlay=2')) {
+            throw 'Unified Arcade fixture did not enter the Arcade Mode menu'
         }
     }
     if ($stdout -match 'loaded overlay: gt2_arcade_overlay_5') {
         throw 'Unified Arcade fixture replayed the boot/title overlay'
     }
-    if ($stdout -notmatch 'loaded overlay: gt2_arcade_overlay_1') {
-        throw 'Unified Arcade fixture did not load frontend overlay 1'
+    if ($stdout -match 'loaded overlay: gt2_arcade_overlay_1') {
+        throw 'Unified Arcade fixture exposed the skipped Arcade disc title'
+    }
+    if ($stdout -notmatch 'loaded overlay: gt2_arcade_overlay_2') {
+        throw 'Unified Arcade fixture did not load the Arcade Mode menu overlay'
     }
 }
 if ($stderr -match 'unmapped call|Unhandled exception|unknown software exception') {

@@ -162,6 +162,30 @@ int main() {
                 16.0F) < 0.0001F,
         "draw list uses fixed-point view reconstruction and reversed depth");
 
+    // Integer PS1 SXY collapses the first and third vertices to the same
+    // pixel. Continuous projection separates their X coordinates and would
+    // otherwise invent a thin, screen-spanning sliver at enhanced resolution.
+    // Keep the command and weld every occurrence of both endpoints so its
+    // neighboring surfaces remain closed.
+    WorldCaptureTriangle native_degenerate = triangles[0];
+    native_degenerate.vertices[0] = vertex(1, 0, 4000, 0, 0);
+    native_degenerate.vertices[1] = vertex(-250, -500, 4000, 0, 0);
+    native_degenerate.vertices[2] = vertex(2, 0, 4000, 0, 0);
+    WorldDrawList native_degenerate_list{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            &native_degenerate,
+            1,
+            WorldDrawListOptions{false, false, true},
+            &native_degenerate_list) == WorldDrawListResult::success &&
+        native_degenerate_list.commands.size() == 1 &&
+        native_degenerate_list.commands[0].vertices[0].screen_x ==
+            native_degenerate_list.commands[0].vertices[2].screen_x &&
+        native_degenerate_list.commands[0].vertices[0].screen_y ==
+            native_degenerate_list.commands[0].vertices[2].screen_y,
+        "weld authored zero-width PS1 micro-seams");
+
     // GT2 independently normalizes camera translation for each submitted
     // object before the GTE sees it. Raw SZ/view-Z therefore cannot be
     // compared across objects. This fixture deliberately reverses the raw-Z
@@ -217,6 +241,126 @@ int main() {
             &missing_depth_scale_list) ==
             WorldDrawListResult::invalid_depth_scale,
         "reject live world geometry without GT2 depth normalization");
+
+    // The former Clubman test incorrectly treated reverse DMA ordinal 3390
+    // as a metric bucket. A halo at Z 7,183,360 is in front of a surface at
+    // Z 13,538,792, not behind it. Preserve actual depth and projected shape.
+    WorldCaptureTriangle biased_billboard = triangles[0];
+    biased_billboard.depth_scale_exponent = 9;
+    biased_billboard.depth_scale_valid = true;
+    biased_billboard.ordering_table_index = 3390;
+    for (auto& point : biased_billboard.vertices) {
+        point = vertex(0, 0, 14030, 0, 0);
+        point.screen_offset_anchor = true;
+    }
+    biased_billboard.vertices[1].view_x = 1000;
+    biased_billboard.vertices[2].view_y = 1000;
+    WorldDrawList biased_billboard_list{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            &biased_billboard,
+            1,
+            WorldDrawListOptions{false, false, true, true},
+            &biased_billboard_list) == WorldDrawListResult::success &&
+        biased_billboard_list.commands.size() == 1,
+        "build authored track billboard depth fixture");
+    if (biased_billboard_list.commands.size() == 1) {
+        const auto& point = biased_billboard_list.commands[0].vertices[1];
+        constexpr float authored_common_z = 14030.0F * 512.0F;
+        okay &= expect(
+            point.clip_w == authored_common_z &&
+                16.0F / point.clip_w > 16.0F / 13538792.0F,
+            "screen-offset halo uses anchor depth, not reverse DMA ordinal");
+        okay &= expect(
+            std::fabs(
+                point.clip_x / point.clip_w -
+                (point.screen_x / 160.0F - 1.0F)) < 0.0001F,
+            "physical halo depth preserves projected screen position");
+    }
+    // SSR5 starting straight: near right-hand lamp halo versus far building.
+    auto ssr5_flare = biased_billboard;
+    ssr5_flare.depth_scale_exponent = 8;
+    ssr5_flare.ordering_table_index = 4020;
+    for (auto& point : ssr5_flare.vertices) point.view_z = 7888;
+    WorldDrawList ssr5_flare_list{};
+    okay &= expect(build_world_draw_list(header, &ssr5_flare, 1,
+        WorldDrawListOptions{false, false, true, true}, &ssr5_flare_list) ==
+            WorldDrawListResult::success &&
+        ssr5_flare_list.commands.size() == 1 &&
+        ssr5_flare_list.commands[0].vertices[0].clip_w == 2019328.0F &&
+        ssr5_flare_list.commands[0].vertices[0].clip_z /
+            ssr5_flare_list.commands[0].vertices[0].clip_w > 16.0F / 12567668.0F,
+        "SSR5 streetlight halo remains in front of its distant building");
+    WorldCaptureTriangle ordinary_track = biased_billboard;
+    for (auto& point : ordinary_track.vertices)
+        point.screen_offset_anchor = false;
+    WorldDrawList ordinary_track_list{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            &ordinary_track,
+            1,
+            WorldDrawListOptions{false, false, true, true},
+            &ordinary_track_list) == WorldDrawListResult::success &&
+        ordinary_track_list.commands.size() == 1 &&
+        ordinary_track_list.commands[0].vertices[0].clip_w ==
+            14030.0F * 512.0F,
+        "keep ordinary track geometry on normalized camera depth");
+    WorldCaptureTriangle resident_billboard = ordinary_track;
+    resident_billboard.primitive_flags |=
+        world_primitive_track_billboard_depth_flag;
+    WorldDrawList resident_billboard_list{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            &resident_billboard,
+            1,
+            WorldDrawListOptions{false, false, true, true},
+            &resident_billboard_list) == WorldDrawListResult::success &&
+        resident_billboard_list.commands.size() == 1 &&
+        resident_billboard_list.commands[0].vertices[0].clip_w ==
+            14030.0F * 512.0F,
+        "legacy resident billboard tag must not turn DMA ordinal into depth");
+    // Measured Midfield wall/tree overlap at poll 2859. The farther tree's
+    // reverse traversal ordinal 168 previously became common Z 1,376,256,
+    // incorrectly beating the wall at common Z approximately 4,049,442.
+    resident_billboard.depth_scale_exponent = 11;
+    resident_billboard.ordering_table_index = 168;
+    resident_billboard.primitive_flags |= world_primitive_resident_course_flag;
+    for (auto& point : resident_billboard.vertices)
+        point.view_z = 16361;
+    resident_billboard.vertices[1].view_z = 16367;
+    resident_billboard.vertices[2].view_z = 16368;
+    WorldDrawList midfield_billboard_list{};
+    okay &= expect(
+        build_world_draw_list(header, &resident_billboard, 1,
+            WorldDrawListOptions{false, false, true, true},
+            &midfield_billboard_list) == WorldDrawListResult::success &&
+        midfield_billboard_list.commands.size() == 1,
+        "build measured Midfield resident tree regression");
+    if (midfield_billboard_list.commands.size() == 1) {
+        const auto& points = midfield_billboard_list.commands[0].vertices;
+        okay &= expect(
+            points[0].clip_w == 16361.0F * 2048.0F &&
+            points[1].clip_w == 16367.0F * 2048.0F &&
+            points[2].clip_w == 16368.0F * 2048.0F &&
+            points[0].clip_z / points[0].clip_w < 16.0F / 4049442.0F,
+            "distant Midfield tree stays behind building using physical corner depth");
+    }
+    biased_billboard.ordering_table_index = 0;
+    WorldDrawList zero_bucket_billboard_list{};
+    okay &= expect(
+        build_world_draw_list(
+            header,
+            &biased_billboard,
+            1,
+            WorldDrawListOptions{false, false, true, true},
+            &zero_bucket_billboard_list) == WorldDrawListResult::success &&
+        zero_bucket_billboard_list.commands.size() == 1 &&
+        zero_bucket_billboard_list.commands[0].vertices[0].clip_w ==
+            14030.0F * 512.0F,
+        "keep zero-bucket track billboard on captured anchor depth");
 
     WorldCaptureTriangle background_triangle = triangles[0];
     background_triangle.object_kind = 3;

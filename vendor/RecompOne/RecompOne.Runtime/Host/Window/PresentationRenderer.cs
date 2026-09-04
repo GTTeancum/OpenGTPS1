@@ -1,424 +1,172 @@
 using System.Diagnostics;
-using Silk.NET.OpenGL;
+using Vortice.Mathematics;
 
 namespace RecompOne.Runtime.Host.Window;
 
-// Final host-only presentation pass. The source texture is always the completed
-// PS1 framebuffer; this class cannot affect emulated VRAM or game state.
+/// <summary>D3D11-only final presentation, capture, and video resolve.</summary>
 internal sealed class PresentationRenderer : IDisposable
 {
-    const string UpscaleFs = """
-        #version 330 core
-        in vec2 vUv;
-        uniform sampler2D uSource;
-        uniform vec2 uSourceSize;
-        out vec4 oColor;
-        void main() {
-            ivec2 size = ivec2(uSourceSize);
-            ivec2 p = clamp(ivec2(vUv * uSourceSize), ivec2(0), size - 1);
-            oColor = vec4(texelFetch(uSource, p, 0).rgb, 1.0);
-        }
-        """;
-
-    const string FxaaFs = """
-        #version 330 core
-        in vec2 vUv;
-        uniform sampler2D uSource;
-        uniform vec2 uSourceSize;
-        uniform vec2 uInvResolution;
-        out vec4 oColor;
-
-        vec3 sampleLinear(vec2 uv) {
-            return texture(uSource, clamp(uv, vec2(0.0), vec2(1.0))).rgb;
-        }
-
-        float luma(vec3 rgb) { return dot(rgb, vec3(0.299, 0.587, 0.114)); }
-
-        void main() {
-            vec3 nw = sampleLinear(vUv + vec2(-1.0, -1.0) * uInvResolution);
-            vec3 ne = sampleLinear(vUv + vec2( 1.0, -1.0) * uInvResolution);
-            vec3 sw = sampleLinear(vUv + vec2(-1.0,  1.0) * uInvResolution);
-            vec3 se = sampleLinear(vUv + vec2( 1.0,  1.0) * uInvResolution);
-            vec3 m  = sampleLinear(vUv);
-
-            float lumaNW = luma(nw), lumaNE = luma(ne);
-            float lumaSW = luma(sw), lumaSE = luma(se), lumaM = luma(m);
-            float lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));
-            float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));
-
-            vec2 dir;
-            dir.x = -((lumaNW + lumaNE) - (lumaSW + lumaSE));
-            dir.y =  ((lumaNW + lumaSW) - (lumaNE + lumaSE));
-            float reduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * (0.25 / 8.0), 1.0 / 128.0);
-            float reciprocal = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);
-            dir = clamp(dir * reciprocal, vec2(-8.0), vec2(8.0)) * uInvResolution;
-
-            vec3 a = 0.5 * (sampleLinear(vUv + dir * (1.0 / 3.0 - 0.5)) +
-                            sampleLinear(vUv + dir * (2.0 / 3.0 - 0.5)));
-            vec3 b = a * 0.5 + 0.25 * (sampleLinear(vUv + dir * -0.5) +
-                                      sampleLinear(vUv + dir *  0.5));
-            float lumaB = luma(b);
-            oColor = vec4((lumaB < lumaMin || lumaB > lumaMax) ? a : b, 1.0);
-        }
-        """;
-
-    readonly GL _gl;
-    uint _vao, _vbo, _upscaleProgram, _fxaaProgram;
-    uint _upscaleTexture, _fxaaTexture, _upscaleFbo, _fxaaFbo;
-    uint _videoTexture, _videoFbo;
-    int _width, _height;
-    int _lastSourceWidth, _lastSourceHeight, _lastOutputWidth, _lastOutputHeight;
+    readonly D3D11Renderer _renderer;
+    D3D11Renderer.Texture? _upscale;
+    D3D11Renderer.Texture? _fxaa;
+    D3D11Renderer.Texture? _video;
+    int _lastSourceWidth, _lastSourceHeight;
+    int _lastOutputWidth, _lastOutputHeight;
     bool _lastFxaa;
-    int _upscaleSourceSize, _fxaaSourceSize, _fxaaInvResolution;
-    readonly string? _videoCapturePath =
-        Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_CAPTURE");
-    readonly int _videoStartPoll =
-        int.TryParse(Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_START_INPUT_POLL"), out int videoStartPoll)
-            ? Math.Max(0, videoStartPoll)
-            : 0;
-    readonly int _videoEndPoll =
-        int.TryParse(Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_END_INPUT_POLL"), out int videoEndPoll)
-            ? Math.Max(0, videoEndPoll)
-            : 0;
-    readonly int _videoOutputWidth =
-        int.TryParse(Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_WIDTH"), out int videoOutputWidth)
-            ? Math.Clamp(videoOutputWidth, 160, 1920)
-            : 640;
-    readonly int _videoOutputHeight =
-        int.TryParse(Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_HEIGHT"), out int videoOutputHeight)
-            ? Math.Clamp(videoOutputHeight, 120, 1080)
-            : 480;
-    readonly bool _videoCaptureEveryPresentation =
-        Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_FPS") == "60";
-    readonly string _videoFrameRate =
-        Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_FPS") == "60"
-            ? "60000/1001"
-            : "30000/1001";
-    readonly int _videoCrf =
-        int.TryParse(
-            Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_CRF"),
-            out int videoCrf)
-            ? Math.Clamp(videoCrf, 0, 51)
-            : 12;
-    readonly int _videoFrameLimit =
-        int.TryParse(
-            Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_CAPTURE_FRAMES"),
-            out int videoFrameLimit)
-            ? Math.Max(0, videoFrameLimit)
-            : 0;
+
+    readonly string? _videoCapturePath = Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_CAPTURE");
+    readonly int _videoStartPoll = int.TryParse(Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_START_INPUT_POLL"), out int videoStartPoll) ? Math.Max(0, videoStartPoll) : 0;
+    readonly int _videoEndPoll = int.TryParse(Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_END_INPUT_POLL"), out int videoEndPoll) ? Math.Max(0, videoEndPoll) : 0;
+    readonly int _videoOutputWidth = int.TryParse(Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_WIDTH"), out int videoWidth) ? Math.Clamp(videoWidth, 160, 1920) : 640;
+    readonly int _videoOutputHeight = int.TryParse(Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_HEIGHT"), out int videoHeight) ? Math.Clamp(videoHeight, 120, 1080) : 480;
+    readonly bool _videoCaptureEveryPresentation = Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_FPS") == "60";
+    readonly string _videoFrameRate = Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_FPS") == "60" ? "60000/1001" : "30000/1001";
+    readonly int _videoCrf = int.TryParse(Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_CRF"), out int videoCrf) ? Math.Clamp(videoCrf, 0, 51) : 12;
+    readonly int _videoFrameLimit = int.TryParse(Environment.GetEnvironmentVariable("RECOMPONE_VIDEO_CAPTURE_FRAMES"), out int videoFrames) ? Math.Max(0, videoFrames) : 0;
     Process? _videoProcess;
     Stream? _videoInput;
-    byte[] _videoPixels = [];
-    int _videoPresentationFrame;
-    int _videoWrittenFrames;
+    byte[] _readback = [];
+    byte[] _videoRgb = [];
+    int _videoPresentationFrame, _videoWrittenFrames;
     bool _videoFinished;
 
     public bool Ready { get; private set; }
 
-    public PresentationRenderer(GL gl) => _gl = gl;
+    public PresentationRenderer(D3D11Renderer renderer) => _renderer = renderer;
 
-    public unsafe void Initialize()
+    public void Initialize()
     {
-        _upscaleProgram = Hle.GlShaders.Build(_gl, Hle.GlShaders.FullscreenVs, UpscaleFs, "presentation-upscale");
-        _fxaaProgram = Hle.GlShaders.Build(_gl, Hle.GlShaders.FullscreenVs, FxaaFs, "presentation-fxaa");
-        if (_upscaleProgram == 0 || _fxaaProgram == 0) return;
-
-        _gl.UseProgram(_upscaleProgram);
-        _gl.Uniform1(_gl.GetUniformLocation(_upscaleProgram, "uSource"), 0);
-        _upscaleSourceSize = _gl.GetUniformLocation(_upscaleProgram, "uSourceSize");
-        _gl.UseProgram(_fxaaProgram);
-        _gl.Uniform1(_gl.GetUniformLocation(_fxaaProgram, "uSource"), 0);
-        _fxaaSourceSize = _gl.GetUniformLocation(_fxaaProgram, "uSourceSize");
-        _fxaaInvResolution = _gl.GetUniformLocation(_fxaaProgram, "uInvResolution");
-
-        _vao = _gl.GenVertexArray();
-        _vbo = _gl.GenBuffer();
-        _gl.BindVertexArray(_vao);
-        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _vbo);
-        float[] quad = [-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f];
-        fixed (float* vertices = quad)
-            _gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(quad.Length * sizeof(float)), vertices, BufferUsageARB.StaticDraw);
-        _gl.EnableVertexAttribArray(0);
-        _gl.VertexAttribPointer(0, 2, VertexAttribPointerType.Float, false, 2 * sizeof(float), (void*)0);
-
-        (_upscaleTexture, _upscaleFbo) = CreateTarget();
-        (_fxaaTexture, _fxaaFbo) = CreateTarget();
+        _upscale = _renderer.CreateTexture(1, 1, renderTarget: true);
+        _fxaa = _renderer.CreateTexture(1, 1, renderTarget: true);
         if (!string.IsNullOrWhiteSpace(_videoCapturePath))
-        {
-            (_videoTexture, _videoFbo) = CreateTarget();
-            _gl.BindTexture(TextureTarget.Texture2D, _videoTexture);
-            _gl.TexImage2D(
-                TextureTarget.Texture2D,
-                0,
-                InternalFormat.Rgba8,
-                (uint)_videoOutputWidth,
-                (uint)_videoOutputHeight,
-                0,
-                PixelFormat.Rgba,
-                PixelType.UnsignedByte,
-                null);
-        }
-        EnsureSize(1, 1);
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            _video = _renderer.CreateTexture(_videoOutputWidth, _videoOutputHeight, renderTarget: true);
         Ready = true;
     }
 
-    (uint texture, uint fbo) CreateTarget()
+    public D3D11Renderer.Texture Render(D3D11Renderer.Texture source,
+        int sourceWidth, int sourceHeight, int outputWidth, int outputHeight,
+        bool fxaa, string? captureLabel = null)
     {
-        uint texture = _gl.GenTexture();
-        _gl.BindTexture(TextureTarget.Texture2D, texture);
-        // The upscale pass uses texelFetch and therefore remains exact-nearest.
-        // Linear target sampling lets the following FXAA pass use the GPU's
-        // bilinear unit instead of four explicit texelFetch operations for
-        // each of its nine taps.
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)GLEnum.Linear);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)GLEnum.Linear);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)GLEnum.ClampToEdge);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)GLEnum.ClampToEdge);
-        uint fbo = _gl.GenFramebuffer();
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
-        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
-            TextureTarget.Texture2D, texture, 0);
-        return (texture, fbo);
-    }
-
-    unsafe void EnsureSize(int width, int height)
-    {
-        if (width == _width && height == _height) return;
-        foreach (uint texture in new[] { _upscaleTexture, _fxaaTexture })
-        {
-            _gl.BindTexture(TextureTarget.Texture2D, texture);
-            _gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgba8, (uint)width, (uint)height, 0,
-                PixelFormat.Rgba, PixelType.UnsignedByte, null);
-        }
-        _width = width;
-        _height = height;
-    }
-
-    public uint Render(uint sourceTexture, int sourceWidth, int sourceHeight,
-        int outputWidth, int outputHeight, bool fxaa, string? captureLabel = null)
-    {
-        if (!Ready || sourceTexture == 0 || sourceWidth <= 0 || sourceHeight <= 0)
-            return sourceTexture;
-
+        if (!Ready || sourceWidth <= 0 || sourceHeight <= 0) return source;
         outputWidth = Math.Clamp(outputWidth, 1, 8192);
         outputHeight = Math.Clamp(outputHeight, 1, 8192);
-        EnsureSize(outputWidth, outputHeight);
+        _renderer.EnsureTexture(_upscale!, outputWidth, outputHeight, renderTarget: true);
+        _renderer.EnsureTexture(_fxaa!, outputWidth, outputHeight, renderTarget: true);
         if (sourceWidth != _lastSourceWidth || sourceHeight != _lastSourceHeight ||
             outputWidth != _lastOutputWidth || outputHeight != _lastOutputHeight || fxaa != _lastFxaa)
         {
-            Console.WriteLine($"[Host] presentation source={sourceWidth}x{sourceHeight} output={outputWidth}x{outputHeight} aa={(fxaa ? "FXAA" : "Off")}");
-            _lastSourceWidth = sourceWidth;
-            _lastSourceHeight = sourceHeight;
-            _lastOutputWidth = outputWidth;
-            _lastOutputHeight = outputHeight;
+            Console.WriteLine($"[Host] presentation source={sourceWidth}x{sourceHeight} output={outputWidth}x{outputHeight} aa={(fxaa ? "FXAA" : "Off")} api=D3D11");
+            (_lastSourceWidth, _lastSourceHeight) = (sourceWidth, sourceHeight);
+            (_lastOutputWidth, _lastOutputHeight) = (outputWidth, outputHeight);
             _lastFxaa = fxaa;
         }
 
-        PreparePass(_upscaleFbo, _upscaleProgram, sourceTexture);
-        _gl.Uniform2(_upscaleSourceSize, (float)sourceWidth, sourceHeight);
-        _gl.DrawArrays(PrimitiveType.TriangleStrip, 0, 4);
-
-        uint finalTexture = _upscaleTexture;
-        uint finalFbo = _upscaleFbo;
+        _renderer.DrawFullscreen(source, _upscale!.Target!, outputWidth, outputHeight, linear: false);
+        D3D11Renderer.Texture final = _upscale;
         if (fxaa)
         {
-            PreparePass(_fxaaFbo, _fxaaProgram, _upscaleTexture);
-            _gl.Uniform2(_fxaaSourceSize, (float)outputWidth, outputHeight);
-            _gl.Uniform2(_fxaaInvResolution, 1f / outputWidth, 1f / outputHeight);
-            _gl.DrawArrays(PrimitiveType.TriangleStrip, 0, 4);
-            finalTexture = _fxaaTexture;
-            finalFbo = _fxaaFbo;
+            _renderer.DrawFullscreen(_upscale, _fxaa!.Target!, outputWidth, outputHeight, linear: true, fxaa: true);
+            final = _fxaa;
         }
-
-        if (!string.IsNullOrEmpty(captureLabel))
-            CapturePpm(finalFbo, outputWidth, outputHeight, captureLabel, fxaa);
-        CaptureVideoFrame(finalFbo, outputWidth, outputHeight);
-
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
-        return finalTexture;
+        if (!string.IsNullOrEmpty(captureLabel)) CapturePpm(final, captureLabel, fxaa);
+        CaptureVideoFrame(final);
+        _renderer.RestoreBackBuffer();
+        return final;
     }
 
-    void PreparePass(uint fbo, uint program, uint sourceTexture)
+    void EnsureReadback(int bytes)
     {
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
-        _gl.Viewport(0, 0, (uint)_width, (uint)_height);
-        _gl.Disable(EnableCap.DepthTest);
-        _gl.Disable(EnableCap.Blend);
-        _gl.Disable(EnableCap.ScissorTest);
-        _gl.Disable(EnableCap.CullFace);
-        _gl.UseProgram(program);
-        _gl.BindVertexArray(_vao);
-        _gl.ActiveTexture(TextureUnit.Texture0);
-        _gl.BindTexture(TextureTarget.Texture2D, sourceTexture);
+        if (_readback.Length < bytes) _readback = new byte[bytes];
     }
 
-    void CapturePpm(uint fbo, int width, int height, string label, bool fxaa)
+    void CapturePpm(D3D11Renderer.Texture texture, string label, bool fxaa)
     {
-        // The source upload stores its first (top) scanline at texture row zero.
-        // The two fullscreen passes preserve that convention, so GL readback is
-        // already in the top-to-bottom order expected by PPM.
-        byte[] pixels = new byte[width * height * 3];
-        _gl.BindFramebuffer(FramebufferTarget.ReadFramebuffer, fbo);
-        _gl.PixelStore(PixelStoreParameter.PackAlignment, 1);
-        _gl.ReadPixels(0, 0, (uint)width, (uint)height, PixelFormat.Rgb, PixelType.UnsignedByte, pixels.AsSpan());
-
+        int rgbaBytes = texture.Width * texture.Height * 4;
+        EnsureReadback(rgbaBytes);
+        _renderer.Readback(texture, _readback.AsSpan(0, rgbaBytes));
+        byte[] rgb = new byte[texture.Width * texture.Height * 3];
+        RgbaToRgb(_readback.AsSpan(0, rgbaBytes), rgb);
         string mode = fxaa ? "fxaa" : "off";
-        string path = $"recompone_present_{label}_{width}x{height}_{mode}.ppm";
+        string path = $"recompone_present_{label}_{texture.Width}x{texture.Height}_{mode}.ppm";
         using var output = File.Create(path);
-        byte[] header = System.Text.Encoding.ASCII.GetBytes($"P6\n{width} {height}\n255\n");
-        output.Write(header);
-        output.Write(pixels);
-        Console.WriteLine($"[Host] captured presentation '{label}' at {width}x{height} aa={mode} to {path}");
+        output.Write(System.Text.Encoding.ASCII.GetBytes($"P6\n{texture.Width} {texture.Height}\n255\n"));
+        output.Write(rgb);
+        Console.WriteLine(
+            $"[Host] captured presentation '{label}' at " +
+            $"{texture.Width}x{texture.Height} aa={mode} api=D3D11 to {path}");
     }
 
-    void CaptureVideoFrame(uint fbo, int width, int height)
+    void CaptureVideoFrame(D3D11Renderer.Texture source)
     {
-        if (_videoFinished || string.IsNullOrWhiteSpace(_videoCapturePath))
-            return;
-
-        if (_videoFrameLimit > 0 &&
-            _videoWrittenFrames >= _videoFrameLimit)
-        {
-            FinishVideo();
-            return;
-        }
-
+        if (_videoFinished || string.IsNullOrWhiteSpace(_videoCapturePath)) return;
+        if (_videoFrameLimit > 0 && _videoWrittenFrames >= _videoFrameLimit) { FinishVideo(); return; }
         int poll = InputManager.CurrentPoll;
-        if (poll < _videoStartPoll)
-            return;
-        if (_videoEndPoll > 0 && poll >= _videoEndPoll)
-        {
-            FinishVideo();
-            return;
-        }
-
-        // GT2 presents at NTSC 60000/1001 Hz. Historical 30 fps evidence keeps
-        // every other presentation; explicit 60-mode proofs retain every
-        // independently authored presentation and label the stream 60000/1001.
-        if (!_videoCaptureEveryPresentation &&
-            (_videoPresentationFrame++ & 1) != 0)
-            return;
-        if (_videoCaptureEveryPresentation)
-            _videoPresentationFrame++;
+        if (poll < _videoStartPoll) return;
+        if (_videoEndPoll > 0 && poll >= _videoEndPoll) { FinishVideo(); return; }
+        if (!_videoCaptureEveryPresentation && (_videoPresentationFrame++ & 1) != 0) return;
+        if (_videoCaptureEveryPresentation) _videoPresentationFrame++;
 
         try
         {
             EnsureVideoEncoder();
-            int needed = _videoOutputWidth * _videoOutputHeight * 3;
-            if (_videoPixels.Length != needed)
-                _videoPixels = new byte[needed];
+            _renderer.Clear(_video!, new Color4(0f, 0f, 0f, 1f));
+            double scale = Math.Min((double)_videoOutputWidth / source.Width, (double)_videoOutputHeight / source.Height);
+            int width = Math.Clamp((int)Math.Round(source.Width * scale), 1, _videoOutputWidth);
+            int height = Math.Clamp((int)Math.Round(source.Height * scale), 1, _videoOutputHeight);
+            int x = (_videoOutputWidth - width) / 2;
+            int y = (_videoOutputHeight - height) / 2;
+            _renderer.DrawFullscreen(source, _video!.Target!, _videoOutputWidth, _videoOutputHeight,
+                linear: true, x: x, y: y, drawWidth: width, drawHeight: height);
 
-            // The presentation target changes size during GT2 mode handoffs
-            // and when a native Hor+ output replaces a transition frame. A
-            // rawvideo pipe has one immutable frame size; writing those
-            // variable buffers into it shifts every later frame boundary and
-            // produces mosaics. Resolve each source into one fixed, letterboxed
-            // GPU target before readback, reducing both transfer cost and the
-            // encoder contract to exactly one byte count per frame.
-            double scale = Math.Min(
-                (double)_videoOutputWidth / width,
-                (double)_videoOutputHeight / height);
-            int destinationWidth = Math.Clamp(
-                (int)Math.Round(width * scale),
-                1,
-                _videoOutputWidth);
-            int destinationHeight = Math.Clamp(
-                (int)Math.Round(height * scale),
-                1,
-                _videoOutputHeight);
-            int destinationX = (_videoOutputWidth - destinationWidth) / 2;
-            int destinationY = (_videoOutputHeight - destinationHeight) / 2;
-
-            _gl.BindFramebuffer(FramebufferTarget.DrawFramebuffer, _videoFbo);
-            _gl.Viewport(
-                0,
-                0,
-                (uint)_videoOutputWidth,
-                (uint)_videoOutputHeight);
-            _gl.Disable(EnableCap.ScissorTest);
-            _gl.ClearColor(0f, 0f, 0f, 1f);
-            _gl.Clear(ClearBufferMask.ColorBufferBit);
-            _gl.BindFramebuffer(FramebufferTarget.ReadFramebuffer, fbo);
-            _gl.BlitFramebuffer(
-                0,
-                0,
-                width,
-                height,
-                destinationX,
-                destinationY,
-                destinationX + destinationWidth,
-                destinationY + destinationHeight,
-                ClearBufferMask.ColorBufferBit,
-                BlitFramebufferFilter.Linear);
-            _gl.BindFramebuffer(
-                FramebufferTarget.ReadFramebuffer,
-                _videoFbo);
-            _gl.PixelStore(PixelStoreParameter.PackAlignment, 1);
-            _gl.ReadPixels(
-                0,
-                0,
-                (uint)_videoOutputWidth,
-                (uint)_videoOutputHeight,
-                PixelFormat.Rgb,
-                PixelType.UnsignedByte,
-                _videoPixels.AsSpan());
-            _videoInput!.Write(_videoPixels);
+            int rgbaBytes = _videoOutputWidth * _videoOutputHeight * 4;
+            int rgbBytes = _videoOutputWidth * _videoOutputHeight * 3;
+            EnsureReadback(rgbaBytes);
+            if (_videoRgb.Length != rgbBytes) _videoRgb = new byte[rgbBytes];
+            _renderer.Readback(_video, _readback.AsSpan(0, rgbaBytes));
+            RgbaToRgb(_readback.AsSpan(0, rgbaBytes), _videoRgb);
+            _videoInput!.Write(_videoRgb);
             _videoWrittenFrames++;
-            if (_videoFrameLimit > 0 &&
-                _videoWrittenFrames >= _videoFrameLimit)
-                FinishVideo();
+            if (_videoFrameLimit > 0 && _videoWrittenFrames >= _videoFrameLimit) FinishVideo();
         }
-        catch (Exception e)
+        catch (Exception exception)
         {
-            Console.Error.WriteLine($"[Host] video capture failed: {e.Message}");
+            Console.Error.WriteLine($"[Host] video capture failed: {exception.Message}");
             FinishVideo();
+        }
+    }
+
+    static void RgbaToRgb(ReadOnlySpan<byte> rgba, Span<byte> rgb)
+    {
+        for (int source = 0, destination = 0; source + 3 < rgba.Length; source += 4, destination += 3)
+        {
+            rgb[destination] = rgba[source];
+            rgb[destination + 1] = rgba[source + 1];
+            rgb[destination + 2] = rgba[source + 2];
         }
     }
 
     void EnsureVideoEncoder()
     {
-        if (_videoProcess != null)
-            return;
-
+        if (_videoProcess != null) return;
         string path = Path.GetFullPath(_videoCapturePath!);
         string? directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrEmpty(directory))
-            Directory.CreateDirectory(directory);
-
-        var start = new ProcessStartInfo
-        {
-            FileName = "ffmpeg",
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            CreateNoWindow = true,
-        };
+        if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+        var start = new ProcessStartInfo { FileName = "ffmpeg", UseShellExecute = false, RedirectStandardInput = true, CreateNoWindow = true };
         foreach (string argument in new[]
         {
-            "-y", "-loglevel", "error",
-            "-f", "rawvideo", "-pix_fmt", "rgb24",
-            "-video_size", $"{_videoOutputWidth}x{_videoOutputHeight}",
-            "-framerate", _videoFrameRate,
-            "-i", "pipe:0", "-an",
-            "-c:v", "libx264", "-preset", "medium", "-crf", _videoCrf.ToString(),
+            "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+            "-video_size", $"{_videoOutputWidth}x{_videoOutputHeight}", "-framerate", _videoFrameRate,
+            "-i", "pipe:0", "-an", "-c:v", "libx264", "-preset", "medium", "-crf", _videoCrf.ToString(),
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", path,
-        })
-            start.ArgumentList.Add(argument);
-
-        _videoProcess = Process.Start(start) ??
-            throw new InvalidOperationException("ffmpeg did not start");
+        }) start.ArgumentList.Add(argument);
+        _videoProcess = Process.Start(start) ?? throw new InvalidOperationException("ffmpeg did not start");
         _videoInput = _videoProcess.StandardInput.BaseStream;
-        Console.Error.WriteLine(
-            $"[Host] video capture started at input poll {InputManager.CurrentPoll}: " +
-            $"fixed {_videoOutputWidth}x{_videoOutputHeight} GPU resolve " +
-            $"at {_videoFrameRate} fps, " +
-            $"H.264 CRF {_videoCrf} without a bitrate ceiling -> {path}");
+        Console.Error.WriteLine($"[Host] D3D11 video capture started at input poll {InputManager.CurrentPoll}: {_videoOutputWidth}x{_videoOutputHeight} at {_videoFrameRate} fps -> {path}");
     }
 
     void FinishVideo()
     {
-        if (_videoFinished)
-            return;
+        if (_videoFinished) return;
         _videoFinished = true;
         try
         {
@@ -427,36 +175,24 @@ internal sealed class PresentationRenderer : IDisposable
             _videoInput = null;
             if (_videoProcess != null)
             {
-                if (!_videoProcess.WaitForExit(30000))
-                    _videoProcess.Kill();
-                Console.Error.WriteLine(
-                    $"[Host] video capture complete at input poll {InputManager.CurrentPoll}: " +
-                    $"frames={_videoWrittenFrames}/{_videoFrameLimit} " +
-                    $"ffmpeg exit={_videoProcess.ExitCode}");
+                if (!_videoProcess.WaitForExit(30000)) _videoProcess.Kill();
+                Console.Error.WriteLine($"[Host] video capture complete: frames={_videoWrittenFrames}/{_videoFrameLimit} ffmpeg exit={_videoProcess.ExitCode}");
                 _videoProcess.Dispose();
                 _videoProcess = null;
-                if (Environment.GetEnvironmentVariable("RECOMPONE_EXIT_AFTER_VIDEO_CAPTURE") == "1")
-                    Runtime.RequestShutdown();
+                if (Environment.GetEnvironmentVariable("RECOMPONE_EXIT_AFTER_VIDEO_CAPTURE") == "1") Runtime.RequestShutdown();
             }
         }
-        catch (Exception e)
+        catch (Exception exception)
         {
-            Console.Error.WriteLine($"[Host] video finalization failed: {e.Message}");
+            Console.Error.WriteLine($"[Host] video finalization failed: {exception.Message}");
         }
     }
 
     public void Dispose()
     {
         FinishVideo();
-        if (_vbo != 0) _gl.DeleteBuffer(_vbo);
-        if (_vao != 0) _gl.DeleteVertexArray(_vao);
-        if (_upscaleProgram != 0) _gl.DeleteProgram(_upscaleProgram);
-        if (_fxaaProgram != 0) _gl.DeleteProgram(_fxaaProgram);
-        if (_upscaleTexture != 0) _gl.DeleteTexture(_upscaleTexture);
-        if (_fxaaTexture != 0) _gl.DeleteTexture(_fxaaTexture);
-        if (_videoTexture != 0) _gl.DeleteTexture(_videoTexture);
-        if (_upscaleFbo != 0) _gl.DeleteFramebuffer(_upscaleFbo);
-        if (_fxaaFbo != 0) _gl.DeleteFramebuffer(_fxaaFbo);
-        if (_videoFbo != 0) _gl.DeleteFramebuffer(_videoFbo);
+        _renderer.DisposeTexture(_video);
+        _renderer.DisposeTexture(_fxaa);
+        _renderer.DisposeTexture(_upscale);
     }
 }

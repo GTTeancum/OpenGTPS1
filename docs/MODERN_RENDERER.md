@@ -773,7 +773,7 @@ hashes and zero adjacent duplicates. The 12 FPS motion sheets covering seconds
 single car silhouettes, and stable roadside geometry throughout passing and
 distance transitions.
 
-The recorder performs synchronous GL readback and encoding; even at a 640x480
+The recorder performs synchronous D3D11 staging readback and encoding; even at a 640x480
 presentation target it reduces the instrumented host rate while active. The
 video therefore proves motion continuity and absence of duplicate recorded
 images, but it is deliberately not used as the real-time pacing benchmark. The
@@ -964,8 +964,8 @@ track/scenery and vehicle LOD, and no compatibility-world fallback.
   from pair generation. D3D11 maps the staging slot being replaced, which was
   submitted one complete authored pair earlier; the bridge delays matching
   midpoint/actual provenance by the same amount. The native worker uses normal
-  thread priority, and no-capture headless runs skip the hidden OpenGL
-  compositor while continuing to consume, audit, and time every D3D11 output.
+  thread priority, and no-capture headless runs skip presentation readback and
+  encoding while continuing to consume, audit, and time every D3D11 output.
 - A 125-second sampled trace at
   `artifacts/modern-renderer-guest-cpu-long-v40` identified a test-only load:
   SDL's dummy sink spent about 63 seconds of managed CPU mixing muted audio
@@ -1299,6 +1299,28 @@ tessellation without allowing unrelated geometry to attract or cross a material
 seam. The marked early-race road crop falls from 63 exposed background pixels
 to zero and reports 28 projected seam groups with 52 adjusted instances.
 
+Resident course objects normally bypass that repair because their model
+topology is authoritative. A separate global rule handles the narrower case
+where different resident objects are power-of-two LOD copies meeting at a
+shared solid boundary in a Hor+ side margin. Both edges must be instance-local
+boundaries with identical opaque material and ordering-table state, opposite
+triangle interiors, endpoint view coordinates related by an exact 2/4/8/16x
+scale within a four-GTE-unit residual, and projections no more than one-half
+native pixel apart. The endpoints may share exact authored SXY or merely the
+same continuous source-raster cells, which covers adjacent integer rounding
+without using a track, object, model, address, texture, or color identity. The
+far boundary is placed one-half native pixel into the near triangle and the
+correction is propagated to every copy of each affected model vertex. The
+rule is restricted to the horizontal margins and cannot alter the original
+4:3 image.
+
+Seattle Circuit exposed this as a one-pixel diagonal backdrop seam through
+the right side of the overpass after the first hairpin. At the exact
+105-second reproduction, command-ID readback found 72 backdrop-owned pixels
+in the marked region before the rule and zero afterward. All 60 captures in a
+separate 180-second pass were then inspected individually in chronological
+order without recurrence.
+
 The inspector reports all topology counters on stdout and can write one CSV
 row per source triangle. Synthetic tests cover boundary copies, T-junction
 subdivision, deterministic coplanar ownership, and exact projected-position
@@ -1311,7 +1333,7 @@ model pointer for all five submissions. Track topology also retains authored
 integer SXY alongside continuous projection. It uses that data only as proof
 for same-object/model/transform/material road LOD copies and bounded
 vertex-to-edge joins; it does not render through the PS1 path or expand
-triangles. Power-of-two LOD-scale checks, a quarter-native-pixel limit, and
+triangles. Power-of-two LOD-scale checks, a half-native-pixel limit, and
 exact-vertex propagation prevent unrelated surfaces or adjacent materials
 from tearing.
 
@@ -1486,7 +1508,7 @@ Current retained evidence from the exact packaged build is:
   zero repeats, substitutions, or misses, with both cards restored exactly.
 
 Full-resolution presentation capture is opt-in and is never used as pacing
-evidence. It synchronizes OpenGL readback and can add 18-26 ms to a captured
+evidence. It synchronizes D3D11 staging readback and can add 18-26 ms to a captured
 host frame. Captured runs remain visual evidence; no-capture runs are the
 authoritative 59.94 Hz measurement.
 
@@ -1574,6 +1596,31 @@ receives continuous modern backface, homogeneous near-plane, target-aspect
 frustum, and depth processing after reconstruction. This avoids sector pop-in
 without co-rendering the looping course's mutually exclusive road/proxy meshes.
 
+Resident billboard depth correction (September 3 evening): model-space tree
+corners use the same per-vertex normalized camera depth as other resident course
+geometry. `Dma.TryGetOrderingTableIndex` returns `(head - entry) / 4`, a reverse
+traversal ordinal, not a metric distance bucket. Multiplying that ordinal by
+8192 inverted near/far ownership. In the captured Midfield building overlap,
+ordinal 168 produced Z 1,376,256 while the actual tree was near Z 33,515,000,
+behind a wall near Z 4,049,442. The renderer ignores the old resident billboard
+depth-override bit, including in existing captures. No tree geometry, texture,
+position, alpha cutoff, or per-track exception is changed. Screen-offset effects
+are a separate legacy path and are not claimed fixed by this correction.
+
+Screen-offset flare follow-up (September 4): the same invalid DMA-ordinal
+conversion remained in the legacy halo path. The matched SSR5 starting-straight
+capture has a near streetlight halo at normalized anchor Z 2,019,328 and a
+building behind it at Z 12,567,668. Ordinal 4020 was instead converted to
+32,931,840, incorrectly hiding the halo behind that building while its pole
+remained in front. All world primitives now retain their normalized camera Z;
+screen-offset halos retain their anchor Z and resident foliage retains its
+per-corner Z. Ordering metadata remains available for submission ordering but
+never substitutes for distance. The former Clubman unit test encoded the same
+incorrect ordinal-as-distance assumption and is replaced by physical-depth
+expectations plus GPU tests with a halo in front of / behind an opaque wall in
+both submission orders. No blend, alpha-coverage, geometry, texture, or
+course-specific rule changes. Evidence: `artifacts/ssr5-depth-fix`.
+
 Course billboard stream 8 has two distinct authored coordinate layouts and is
 decoded as such. Arcade `func_8002009C` stores primary billboard center X/Y,
 base Z, and Z height; its temporary GTE matrix rotates width through X/Y.
@@ -1632,6 +1679,20 @@ unified-memory limit. It will use:
 - no runtime shader compilation; and
 - no dependency on .NET, SDL desktop windows, or desktop-only filesystem APIs.
 
+## Filtered course cutout depth
+
+Course cutouts use two complementary coverage passes: alpha at least 0.5
+owns depth, while lower nonzero filtered coverage blends with depth testing
+but without depth writes. Both retain coverage blending. This prevents faint
+minified foliage from punching opaque depth holes into later terrain without
+making solid leaves transparent to farther objects. The passes remain in
+authored batch order; this is not order-independent transparency.
+
+The GPU regression renders sparse and solid foliage before farther opaque
+terrain. Sparse coverage must reveal the terrain; solid coverage must occlude
+it. Re-enabling fringe depth writes fails the sparse-coverage assertion.
+Midfield native race captures provide the corresponding visual audit.
+
 ## Milestones
 
 0. Capture and independently rasterize the live projected draw stream and VRAM
@@ -1649,9 +1710,9 @@ unified-memory limit. It will use:
    and persistence for every HUD layer, eliminate motion-visible track seams
    and section pop-in, remove PS1 Quality/custom switches, and retain the GPU
    command layer for world-free menus, loading screens, Results, and video.
-5. Consolidate the remaining authored 2D command layer and native world backend
-   behind one portable renderer interface, then delete residual software
-   framebuffer and comparison-oracle code from the shipping runtime.
+5. **Complete on Windows:** the authored 2D command layer, native world backend,
+   presentation scaling/FXAA, capture, and ImGui wrapper share one D3D11 device
+   and DXGI swap chain; the OpenGL shipping path and dependencies are removed.
 6. Add the RecompOne C++ guest emitter/runtime needed by NXDK.
 7. Render the same captured scene through the NV2A backend within a measured
    memory budget.

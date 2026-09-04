@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <new>
 
@@ -310,6 +311,87 @@ ContinuousProjectedPoint project_continuous_view(
     };
 }
 
+bool collapsed_authored_micro_edge(
+    const WorldDrawVertex& a,
+    const WorldDrawVertex& b
+) noexcept {
+    if (
+        a.authored_screen_x != b.authored_screen_x ||
+        a.authored_screen_y != b.authored_screen_y
+    )
+        return false;
+    const std::int64_t dx =
+        static_cast<std::int64_t>(a.exact_view_x) - b.exact_view_x;
+    const std::int64_t dy =
+        static_cast<std::int64_t>(a.exact_view_y) - b.exact_view_y;
+    const std::int64_t dz =
+        static_cast<std::int64_t>(a.exact_view_z) - b.exact_view_z;
+    return
+        dx >= -1 && dx <= 1 &&
+        dy >= -1 && dy <= 1 &&
+        dz >= -1 && dz <= 1;
+}
+
+struct AuthoredMicroSeamVertexKey {
+    std::uint32_t object_kind;
+    std::uint32_t object_id;
+    std::uint32_t model_pointer;
+    std::uint64_t transform_id;
+    std::int32_t view_x;
+    std::int32_t view_y;
+    std::int32_t view_z;
+
+    bool operator==(
+        const AuthoredMicroSeamVertexKey& other
+    ) const noexcept {
+        return
+            object_kind == other.object_kind &&
+            object_id == other.object_id &&
+            model_pointer == other.model_pointer &&
+            transform_id == other.transform_id &&
+            view_x == other.view_x &&
+            view_y == other.view_y &&
+            view_z == other.view_z;
+    }
+};
+
+struct AuthoredMicroSeamVertexKeyHash {
+    std::size_t operator()(
+        const AuthoredMicroSeamVertexKey& key
+    ) const noexcept {
+        std::size_t hash = 0x9E3779B97F4A7C15ULL;
+        const auto mix = [&hash] (std::uint64_t value) {
+            hash ^= static_cast<std::size_t>(
+                value + 0x9E3779B97F4A7C15ULL +
+                (static_cast<std::uint64_t>(hash) << 6U) +
+                (static_cast<std::uint64_t>(hash) >> 2U));
+        };
+        mix(key.object_kind);
+        mix(key.object_id);
+        mix(key.model_pointer);
+        mix(key.transform_id);
+        mix(static_cast<std::uint32_t>(key.view_x));
+        mix(static_cast<std::uint32_t>(key.view_y));
+        mix(static_cast<std::uint32_t>(key.view_z));
+        return hash;
+    }
+};
+
+AuthoredMicroSeamVertexKey authored_micro_seam_key(
+    const WorldDrawCommand& command,
+    const WorldDrawVertex& vertex
+) noexcept {
+    return AuthoredMicroSeamVertexKey{
+        command.object_kind,
+        command.object_id,
+        command.model_pointer,
+        command.transform_id,
+        vertex.exact_view_x,
+        vertex.exact_view_y,
+        vertex.exact_view_z,
+    };
+}
+
 } // namespace
 
 Ps1ProjectedPoint project_ps1_vertex(
@@ -396,6 +478,10 @@ WorldDrawListResult build_world_draw_list(
         result.commands.reserve(triangle_count);
         WorldMaterialIndices material_indices;
         material_indices.reserve(256);
+        std::unordered_set<
+            AuthoredMicroSeamVertexKey,
+            AuthoredMicroSeamVertexKeyHash> authored_micro_seam_vertices;
+        authored_micro_seam_vertices.reserve(64);
 
         for (std::size_t index = 0; index < triangle_count; ++index) {
             const auto& triangle = triangles[index];
@@ -569,6 +655,12 @@ WorldDrawListResult build_world_draw_list(
                 const float raw_clip_w = screen_space
                     ? 1.0F
                     : static_cast<float>(view.z);
+                // DMA records (head - entry) / 4, a reverse traversal ordinal,
+                // not metric Z. All world primitives retain normalized camera
+                // depth: model-space corners for resident foliage, and anchor
+                // Z for screen-offset light halos. Using ordinal * 8192 put
+                // SSR5's near lamp halo behind its distant buildings. Neither
+                // the legacy resident-billboard tag nor OT order overrides Z.
                 const float clip_w = screen_space
                     ? 1.0F
                     : raw_clip_w * depth_scale;
@@ -579,7 +671,9 @@ WorldDrawListResult build_world_draw_list(
                 destination.view_x = static_cast<float>(view.x);
                 destination.view_y = static_cast<float>(view.y);
                 destination.view_z = static_cast<float>(view.z);
-                if (!screen_space && options.continuous_projection) {
+                if (
+                    !screen_space && options.continuous_projection
+                ) {
                     // Build homogeneous coordinates directly from GT2's
                     // captured camera-space vertex. This remains linear on
                     // edges that cross the camera or near plane. Projecting
@@ -671,6 +765,23 @@ WorldDrawListResult build_world_draw_list(
                 destination.authored_screen_x = projected.x;
                 destination.authored_screen_y = projected.y;
             }
+            // Record exact sub-view-unit seams which the authored PS1 SXY
+            // collapsed to one point. A later pass welds every occurrence of
+            // both endpoints; dropping only the thin joining faces would open
+            // a crack between their neighboring surfaces.
+            constexpr int edge_vertices[3][2] = {
+                {0, 1}, {1, 2}, {2, 0},
+            };
+            for (const auto& edge : edge_vertices) {
+                const auto& a = command.vertices[edge[0]];
+                const auto& b = command.vertices[edge[1]];
+                if (!collapsed_authored_micro_edge(a, b))
+                    continue;
+                authored_micro_seam_vertices.insert(
+                    authored_micro_seam_key(command, a));
+                authored_micro_seam_vertices.insert(
+                    authored_micro_seam_key(command, b));
+            }
             normal(&command);
             result.commands.push_back(command);
             if (command.object_kind == 1)
@@ -683,6 +794,37 @@ WorldDrawListResult build_world_draw_list(
                 ++result.unclassified_commands;
                 if (!screen_space)
                     ++result.unclassified_world_commands;
+            }
+        }
+        // Continuous projection normally preserves fractional movement and
+        // rigid shape. For an authored micro-seam, however, separating the
+        // endpoints invents raster area which the PS1 never had. Snap every
+        // shared occurrence back to its authored SXY and rebuild homogeneous
+        // X/Y at its existing depth. This is topology/provenance based and is
+        // independent of track, material, texture, address, or screen region.
+        for (auto& command : result.commands) {
+            for (auto& vertex : command.vertices) {
+                if (
+                    authored_micro_seam_vertices.find(
+                        authored_micro_seam_key(command, vertex)) ==
+                    authored_micro_seam_vertices.end()
+                )
+                    continue;
+                vertex.screen_x =
+                    static_cast<float>(vertex.authored_screen_x);
+                vertex.screen_y =
+                    static_cast<float>(vertex.authored_screen_y);
+                const float ndc_x =
+                    ((vertex.screen_x - header.display_x) /
+                        static_cast<float>(header.display_width)) *
+                        2.0F - 1.0F;
+                const float ndc_y =
+                    1.0F -
+                    ((vertex.screen_y - header.display_y) /
+                        static_cast<float>(header.display_height)) *
+                        2.0F;
+                vertex.clip_x = ndc_x * vertex.clip_w;
+                vertex.clip_y = ndc_y * vertex.clip_w;
             }
         }
         *output = std::move(result);

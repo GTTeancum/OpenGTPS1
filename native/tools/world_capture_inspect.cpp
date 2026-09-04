@@ -545,6 +545,7 @@ int main(int argc, char** argv) {
             "transform_id,material,primitive_flags,texture_page,clut,ordering_table,"
             "vertex,model_x,model_y,model_z,world_x,world_y,world_z,"
             "view_x,view_y,view_z,screen_x,screen_y,"
+            "source_screen_x,source_screen_y,authored_screen_x,authored_screen_y,"
             "clip_x,clip_y,clip_z,clip_w,projection_offset_x,"
             "projection_offset_y,projection_plane,u,v,r,g,b,"
             "source_identity,provenance_flags\n");
@@ -556,10 +557,16 @@ int main(int argc, char** argv) {
                 draw_list.materials[command.material_index];
             for (int vertex_index = 0; vertex_index < 3; ++vertex_index) {
                 const auto& vertex = command.vertices[vertex_index];
+                const auto* source_vertex =
+                    command.source_command_index < triangles.size()
+                    ? &triangles[command.source_command_index]
+                        .vertices[vertex_index]
+                    : nullptr;
                 std::fprintf(
                     csv,
                     "%zu,%u,%u,%u,%u,%u,%llu,%u,%u,%u,%u,%d,%d,%d,%d,%d,"
                     "%.6f,%.6f,%.6f,%.0f,%.0f,%.0f,%.6f,%.6f,"
+                    "%.6f,%.6f,%d,%d,"
                     "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,"
                     "%.6f,%.6f,%u,%u,%u,%u,%u\n",
                     command_index,
@@ -586,6 +593,14 @@ int main(int argc, char** argv) {
                     vertex.view_z,
                     vertex.screen_x,
                     vertex.screen_y,
+                    source_vertex != nullptr
+                        ? source_vertex->screen_x
+                        : std::numeric_limits<float>::quiet_NaN(),
+                    source_vertex != nullptr
+                        ? source_vertex->screen_y
+                        : std::numeric_limits<float>::quiet_NaN(),
+                    vertex.authored_screen_x,
+                    vertex.authored_screen_y,
                     vertex.clip_x,
                     vertex.clip_y,
                     vertex.clip_z,

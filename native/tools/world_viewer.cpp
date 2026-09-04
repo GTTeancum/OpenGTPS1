@@ -225,6 +225,7 @@ int main(int argc, char** argv) {
             "[--include-screen-space] "
             "[--perspective-textures] [--affine-textures] "
             "[--no-texture-smoothing] "
+            "[--physical-billboard-depth] "
             "[--scale <1-8>] [--aspect <width:height>] "
             "[--clear-color <RRGGBB>] "
             "[--inspect-pixel <x> <y>] "
@@ -240,6 +241,7 @@ int main(int argc, char** argv) {
     bool include_screen_space = false;
     bool perspective_correct = false;
     bool texture_smoothing = true;
+    bool physical_billboard_depth = false;
     std::uint32_t scale = 1;
     std::uint32_t target_aspect_width = 0;
     std::uint32_t target_aspect_height = 0;
@@ -268,6 +270,8 @@ int main(int argc, char** argv) {
             perspective_correct = true;
         else if (std::strcmp(argv[index], "--no-texture-smoothing") == 0)
             texture_smoothing = false;
+        else if (std::strcmp(argv[index], "--physical-billboard-depth") == 0)
+            physical_billboard_depth = true;
         else if (
             std::strcmp(argv[index], "--clear-color") == 0 &&
             index + 1 < argc
@@ -370,6 +374,24 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    if (physical_billboard_depth) {
+        std::size_t changed = 0;
+        for (auto& triangle : triangles) {
+            if (triangle.object_kind != 1U)
+                continue;
+            const bool billboard =
+                (triangle.primitive_flags & world_primitive_track_billboard_depth_flag) != 0 ||
+                std::all_of(std::begin(triangle.vertices), std::end(triangle.vertices),
+                    [](const auto& vertex) { return vertex.screen_offset_anchor; });
+            if (billboard && triangle.ordering_table_index > 0) {
+                // Offline A/B only: zero is the draw-list's existing sentinel
+                // for using captured physical depth without an OT override.
+                triangle.ordering_table_index = 0;
+                ++changed;
+            }
+        }
+        std::printf("diagnostic physical billboard depth: triangles=%zu\n", changed);
+    }
     WorldDrawList draw_list{};
     const auto list_result = build_world_draw_list(
         header,

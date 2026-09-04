@@ -5,6 +5,13 @@ namespace RecompOne.Runtime;
 
 public sealed partial class Gpu
 {
+    enum LiveTriangleCaptureKind
+    {
+        None,
+        World,
+        Screen,
+    }
+
     readonly ProjectedSceneCapture _projectedCapture = new();
     readonly WorldSceneCapture _worldCapture = new();
     readonly LiveWorldRenderer _liveWorldRenderer = new();
@@ -219,6 +226,24 @@ public sealed partial class Gpu
 
     [System.Runtime.CompilerServices.MethodImpl(
         System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    static LiveTriangleCaptureKind ClassifyLiveTriangleCapture(
+        bool liveWorldCapture,
+        bool containsWorldProvenance,
+        bool containsNativeWorldProvenance,
+        bool rawTrackReplacement,
+        bool rawBackgroundReplacement)
+    {
+        if (!liveWorldCapture || rawTrackReplacement || rawBackgroundReplacement)
+            return LiveTriangleCaptureKind.None;
+        if (containsNativeWorldProvenance)
+            return LiveTriangleCaptureKind.World;
+        return containsWorldProvenance
+            ? LiveTriangleCaptureKind.None
+            : LiveTriangleCaptureKind.Screen;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     bool CaptureTri(
         in Vert a,
         in Vert b,
@@ -258,6 +283,10 @@ public sealed partial class Gpu
         bool liveWorldCapture = _liveWorldCapture.Enabled;
         bool containsWorldProvenance =
             originA.Valid || originB.Valid || originC.Valid;
+        bool containsNativeWorldProvenance =
+            IsNativeWorldOrigin(in originA) ||
+            IsNativeWorldOrigin(in originB) ||
+            IsNativeWorldOrigin(in originC);
         bool derivedScreenAnchor =
             (originA.Flags & GteProjectionOriginFlags.ScreenOffsetAnchor) != 0 ||
             (originB.Flags & GteProjectionOriginFlags.ScreenOffsetAnchor) != 0 ||
@@ -315,46 +344,54 @@ public sealed partial class Gpu
                     in originC,
                     in flags);
             }
-            if (liveWorldCapture &&
-                !rawTrackReplacement &&
-                !rawBackgroundReplacement)
+            LiveTriangleCaptureKind liveCaptureKind =
+                ClassifyLiveTriangleCapture(
+                    liveWorldCapture,
+                    containsWorldProvenance,
+                    containsNativeWorldProvenance,
+                    rawTrackReplacement,
+                    rawBackgroundReplacement);
+            if (liveCaptureKind == LiveTriangleCaptureKind.World)
             {
-                if (originA.Valid || originB.Valid || originC.Valid)
-                {
-                    _liveWorldCapture.RecordTriangle(
-                        _projectedCaptureFrame + 1,
-                        in environment,
-                        in ha,
-                        in hb,
-                        in hc,
-                        in originA,
-                        in originB,
-                        in originC,
-                        in flags);
-                }
-                else
-                {
-                    // HUD needles and redline wedges are ordinary polygon
-                    // packets, not only GPU line commands. Preserve triangles
-                    // with no GTE provenance as explicit screen primitives.
-                    _liveWorldCapture.RecordScreenTriangle(
-                        _projectedCaptureFrame + 1,
-                        in environment,
-                        in ha,
-                        in hb,
-                        in hc,
-                        in flags);
-                }
+                _liveWorldCapture.RecordTriangle(
+                    _projectedCaptureFrame + 1,
+                    in environment,
+                    in ha,
+                    in hb,
+                    in hc,
+                    in originA,
+                    in originB,
+                    in originC,
+                    in flags);
+            }
+            else if (liveCaptureKind == LiveTriangleCaptureKind.Screen)
+            {
+                // HUD needles and redline wedges are ordinary polygon
+                // packets, and GT2's pause capsules use provenance-free
+                // polygon end-caps around rectangle fills. Preserve every
+                // such triangle as an explicit screen primitive. World
+                // provenance from an unselected scene generation remains
+                // excluded rather than becoming a screen-space fallback.
+                _liveWorldCapture.RecordScreenTriangle(
+                    _projectedCaptureFrame + 1,
+                    in environment,
+                    in ha,
+                    in hb,
+                    in hc,
+                    in flags);
             }
         }
         // On the Windows shipping path, provenance-backed 3D is native-only.
         // Return the classification even when the native worker has failed or
         // is stopping so neither the GL-HLE nor software compatibility
         // rasterizer can silently reappear as a world-renderer fallback.
-        return containsWorldProvenance ||
+        return containsNativeWorldProvenance ||
             rawTrackReplacement ||
             rawBackgroundReplacement;
     }
+
+    internal static bool IsNativeWorldOrigin(in GteProjectionOrigin origin) =>
+        origin.Valid && origin.Object.SceneGeneration != 0;
 
     void TraceMixedProjectionTriangle(
         in Vert a,
@@ -762,11 +799,9 @@ public sealed partial class Gpu
     internal void CapturePresentedFrame()
     {
         _projectedCaptureFrame++;
-        // Diagnostic captures require the completed GL framebuffer. Live
-        // rendering only needs texture/CLUT VRAM, whose CPU mirror is kept
-        // current at upload/fill/copy time. Reading all 1 MiB of GL VRAM on
-        // every presented frame serializes the emulation and render threads
-        // and is both unnecessary and catastrophically slow.
+        // Diagnostic captures require the completed selected-backend
+        // framebuffer. Live rendering only needs texture/CLUT VRAM, whose CPU
+        // mirror is kept current at upload/fill/copy time.
         bool initializeLiveVram =
             !_liveVramInitialized &&
             _liveWorldCapture.NeedsVramSnapshot;

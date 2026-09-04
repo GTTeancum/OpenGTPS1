@@ -187,6 +187,8 @@ internal sealed class WorldSceneCapture : IDisposable
             if (flags.RawTexture) primitiveFlags |= 1U << 2;
             if (flags.Gouraud) primitiveFlags |= 1U << 3;
             if (flags.ResidentCourse) primitiveFlags |= 1U << 4;
+            if (flags.AuthoredTrackBillboardDepth)
+                primitiveFlags |= 1U << 8;
             _writer!.Write(primitiveFlags);
             _writer.Write(flags.TPage);
             _writer.Write(flags.Clut);

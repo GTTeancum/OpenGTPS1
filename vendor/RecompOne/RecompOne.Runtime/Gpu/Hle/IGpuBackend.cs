@@ -5,7 +5,7 @@ namespace RecompOne.Runtime.Hle;
 /// </summary>
 public interface IGpuBackend
 {
-    // false in headless or if gl init failed
+    // false in headless mode or when the selected backend cannot initialize
     bool Ready { get; }
 
     // submit
@@ -18,7 +18,7 @@ public interface IGpuBackend
     void WriteVram(int x, int y, int w, int h, ReadOnlySpan<ushort> px);
     void ReadVram(int x, int y, int w, int h, Span<ushort> px);
 
-    // these touch gl
+    // flush queued commands and select the current display
     void Flush();
     void Present(in HleDispEnv disp);
 }

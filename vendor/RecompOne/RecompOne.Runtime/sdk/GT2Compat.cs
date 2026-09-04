@@ -16,8 +16,23 @@ public sealed class GT2VariantSwitch(string variant) : Exception
 /// </summary>
 public static class GT2Compat
 {
+    const uint CarPreviewCameraAddress = 0x800F04E0u;
+    const uint CarPreviewCameraDistanceLimit = 0x000F4CCCu;
+
     readonly record struct LiverySelection(
         uint BodyId, byte BodyPaletteIndex, byte ColorId);
+
+    /// <summary>
+    /// Keeps the selector's probabilistic 0x8000 pullback steps inside GT2's
+    /// authored preview stage. The car enters at 0x94CCC and completes twelve
+    /// steps at 0xF4CCC; only the shared selector camera uses this ceiling.
+    /// </summary>
+    public static uint LimitCarPreviewCameraDistance(
+        uint cameraAddress, uint distance) =>
+        cameraAddress == CarPreviewCameraAddress &&
+        distance > CarPreviewCameraDistanceLimit
+            ? CarPreviewCameraDistanceLimit
+            : distance;
 
     /// <summary>
     /// Activates GT2's current view projection before its vehicle pass. The
@@ -290,7 +305,7 @@ public static class GT2Compat
     static readonly bool UnlockArcadeCourses =
         Environment.GetEnvironmentVariable(
             "RECOMPONE_GT2_ARCADE_UNLOCK_ALL_COURSES") == "1";
-    static readonly string? DirectArcadeRace =
+    static string? DirectArcadeRace =>
         Environment.GetEnvironmentVariable(
             "RECOMPONE_GT2_DIRECT_ARCADE_RACE");
     static readonly int AiAutoDriveMaxEngagements =
@@ -581,7 +596,11 @@ public static class GT2Compat
     static bool _unifiedTitleInstalled;
     static bool _unifiedArcadeTransition;
     static bool _unifiedArcadeFrontendPending;
-    static int _unifiedArcadeSelectionDelay;
+    static bool _unifiedSimulationFrontendPending;
+    static long _unifiedTitleConfirmationMixFrame;
+    static uint _unifiedTitleConfirmationKeyOnSerial;
+    static long _unifiedArcadeSelectionTimestamp;
+    static int _unifiedArcadeSelectionInputPoll;
     static readonly object LiveryTableLock = new();
     static Dictionary<ulong, LiverySelection>? _liveriesByPalette;
     static Dictionary<ulong, LiverySelection>? _liveriesByColorId;
@@ -774,12 +793,30 @@ public static class GT2Compat
     const uint UnifiedTitleBlankDescriptor = UnifiedTitleDescriptorBase + 0x30u;
     static bool _unifiedTitleMenuActive;
     static ushort[]? _unifiedTitlePanels;
+    static uint _unifiedTitleBufferedPressed;
+    static uint _unifiedTitleBufferedRepeated;
     const int UnifiedTitleWidth = 512;
     const int UnifiedTitleHeight = 480;
 
     public static bool UnifiedTitleMenuActive => _unifiedTitleMenuActive;
     public static bool UnifiedArcadeTransitionCoverActive =>
-        _unifiedArcadeFrontendPending;
+        _unifiedArcadeFrontendPending ||
+        _unifiedSimulationFrontendPending;
+    /// <summary>
+    /// Arcade's service initializer includes two timed boot panels in
+    /// func_80010CEC, before mounting the game filesystem. A selector-driven
+    /// handoff has already presented the unified boot sequence and covers
+    /// these panels; do not spend another 310 display ticks on them. Keep the
+    /// surrounding GPU, filesystem, audio and frontend initialization intact.
+    /// </summary>
+    public static bool ShouldPresentArcadeBootPanels()
+    {
+        if (!_unifiedArcadeTransition)
+            return true;
+        Console.WriteLine(
+            "[GT2] Arcade handoff: omitted duplicate timed boot panels");
+        return false;
+    }
 
     public static void ConfigureUnifiedTitlePanels(string path)
     {
@@ -808,8 +845,10 @@ public static class GT2Compat
         global::RecompOne.Runtime.Gpu gpu, IMemory m)
     {
         ushort[]? panels = _unifiedTitlePanels;
-        bool coverArcadeHandoff = _unifiedArcadeFrontendPending;
-        if ((!_unifiedTitleMenuActive && !coverArcadeHandoff) || panels == null)
+        bool coverGuestHandoff =
+            _unifiedArcadeFrontendPending ||
+            _unifiedSimulationFrontendPending;
+        if ((!_unifiedTitleMenuActive && !coverGuestHandoff) || panels == null)
             return;
         // The live title owns the guest display registers. During the Arcade
         // handoff, HostWindow presents this VRAM panel explicitly so the cover
@@ -821,7 +860,7 @@ public static class GT2Compat
         // that private counter at zero while preserving ordinary pad input.
         if (_unifiedTitleMenuActive)
             m.WriteU32(0x800B1228u, 0u);
-        int selected = coverArcadeHandoff
+        int selected = coverGuestHandoff
             ? 1
             : m.ReadU16(UnifiedTitleList + 6u);
         if (selected is < 1 or > 4)
@@ -842,10 +881,9 @@ public static class GT2Compat
         _unifiedTitleMenuActive && list == UnifiedTitleList;
 
     /// <summary>
-    /// Keep the PC Arcade frontend resident until the player selects an item.
-    /// Retail overlay 1 otherwise starts its Seattle attract-mode race after
-    /// 901 idle updates. This is the Arcade counter; the Simulation title uses
-    /// a different address.
+    /// Keep the skipped Arcade-disc title resident only for standalone Arcade
+    /// boot diagnostics. The unified path enters overlay 2 directly, so this
+    /// counter is normally never exposed to the player.
     /// </summary>
     public static void BeginUnifiedArcadeFrontendFrame(IMemory m)
     {
@@ -854,17 +892,148 @@ public static class GT2Compat
     }
 
     /// <summary>
-    /// Remove the unified-title transition cover only after Arcade overlay 1
-    /// has completed a real frontend update. This prevents the guest-image and
-    /// display initializers from exposing a disc-style reboot between menus.
+    /// Remove the unified-title transition cover only after the requested
+    /// Arcade Mode menu enters its native presentation loop. Its original
+    /// reveal animation still runs after this boundary. This prevents
+    /// the guest-image and display initializers from exposing a disc-style
+    /// reboot between menus.
     /// </summary>
     public static void CompleteUnifiedArcadeFrontendFrame()
     {
         if (!_unifiedArcadeFrontendPending)
             return;
         _unifiedArcadeFrontendPending = false;
+        double elapsedMilliseconds = _unifiedArcadeSelectionTimestamp > 0
+            ? Stopwatch.GetElapsedTime(
+                _unifiedArcadeSelectionTimestamp).TotalMilliseconds
+            : 0.0;
+        _unifiedArcadeSelectionTimestamp = 0;
+        int readyPoll = Host.InputManager.CurrentPoll;
+        int elapsedPolls = readyPoll - _unifiedArcadeSelectionInputPoll;
+        _unifiedArcadeSelectionInputPoll = 0;
+        string[] profile = Dispatch.Dispatcher.EndMethodProfile(
+            "arcade-menu-handoff");
         Console.WriteLine(
-            "[GT2] seamless Arcade frontend ready; transition cover released");
+            "[GT2] seamless Arcade frontend entered; transition cover released " +
+            $"selectionToFrontendMs={elapsedMilliseconds:F3} " +
+            $"selectionToFrontendPolls={elapsedPolls}");
+        Host.InputManager.SignalScriptStage("arcade_frontend");
+        if (profile.Length != 0)
+        {
+            Console.Error.WriteLine(
+                "[GT2-Handoff-Methods] " +
+                $"count={profile.Length} names={string.Join(',', profile)}");
+        }
+    }
+
+    /// <summary>
+    /// Record the SPU key-on generation immediately before the original title
+    /// selector invokes confirmation effect 3. The generation lets the host
+    /// distinguish that short voice from persistent title music.
+    /// </summary>
+    public static void BeginUnifiedTitleConfirmationAudio(uint index)
+    {
+        if (index != 1u)
+            return;
+        _unifiedTitleConfirmationKeyOnSerial =
+            Runtime.Spu?.LatestKeyOnSerial ?? 0u;
+    }
+
+    /// <summary>
+    /// The unified Arcade selection swaps guest RAM immediately so Simulation
+    /// overlay 4 cannot win a title-state race. Before that swap, advance only
+    /// VBlank/BIOS boundaries until the original confirmation effect is keyed,
+    /// then let that exact SPU voice finish plus a short output-queue tail. No
+    /// Simulation guest title update runs during this bounded drain.
+    /// </summary>
+    public static void CompleteUnifiedTitleConfirmationAudio()
+    {
+        long baseline = Interlocked.Exchange(
+            ref _unifiedTitleConfirmationMixFrame, 0);
+        uint keyedAfterSerial = _unifiedTitleConfirmationKeyOnSerial;
+        _unifiedTitleConfirmationKeyOnSerial = 0;
+        Spu? spu = Runtime.Spu;
+        if (baseline <= 0 || spu == null ||
+            !RecompOne.Runtime.Host.Audio.MixerActive)
+            return;
+
+        long started = Stopwatch.GetTimestamp();
+        uint voiceMask = spu.CaptureVoiceMaskKeyedAfter(keyedAfterSerial);
+        int queuedVBlanks = 0;
+        // GT2 may defer sequenced effects to its installed VBlank callback.
+        // Run that boundary without re-entering overlay 1's title update.
+        while (voiceMask == 0 && queuedVBlanks < 12)
+        {
+            Runtime.PresentFrame();
+            queuedVBlanks++;
+            voiceMask = spu.CaptureVoiceMaskKeyedAfter(keyedAfterSerial);
+        }
+
+        bool voiceCompleted = voiceMask != 0 && spu.WaitForVoicesToStop(
+            voiceMask, keyedAfterSerial, timeoutMilliseconds: 3000);
+        // SDL normally holds about 4096 frames (~93 ms). Advancing another
+        // 6144 frames drains the sample end from that queue and leaves a small
+        // ~46 ms silent margin before the guest reset.
+        long tailBaseline = RecompOne.Runtime.Host.Audio.MixedFrameCount;
+        bool tailCompleted = RecompOne.Runtime.Host.Audio.WaitForMixAdvance(
+            tailBaseline,
+            additionalFrames: 6144,
+            timeoutMilliseconds: 500);
+        Console.WriteLine(
+            "[GT2] unified title confirmation audio: " +
+            $"voiceMask=0x{voiceMask:X6} " +
+            $"queuedVBlanks={queuedVBlanks} " +
+            $"voiceCompleted={voiceCompleted} tailCompleted={tailCompleted} " +
+            $"elapsedMs={Stopwatch.GetElapsedTime(started).TotalMilliseconds:F3} " +
+            $"mixedFrames=" +
+            (RecompOne.Runtime.Host.Audio.MixedFrameCount - baseline));
+    }
+
+    /// <summary>
+    /// Overlay 2's native Back result normally requests the Arcade disc title
+    /// overlay. In the unified product that title was deliberately skipped, so
+    /// preserve the authored Back operation while routing its destination to
+    /// the unified Simulation title instead.
+    /// </summary>
+    public static void ReturnFromUnifiedArcade()
+    {
+        if (!_unifiedArcadeTransition)
+            return;
+        _unifiedArcadeFrontendPending = false;
+        _unifiedSimulationFrontendPending = true;
+        Console.WriteLine(
+            "[GT2] Arcade Mode Back: returning to unified title");
+        throw new GT2VariantSwitch("simulation");
+    }
+
+    /// <summary>
+    /// Gran Turismo Mode's world-map root has no disc-era parent screen, so
+    /// its native Triangle handling intentionally does nothing there. In the
+    /// unified PC shell that root does have a parent: the unified title menu.
+    /// Intercept Triangle only while the world-map controller is idle; nested
+    /// dealerships, garages and modal transitions retain their native Back
+    /// behavior.
+    /// </summary>
+    public static void ReturnFromUnifiedGranTurismoRoot(
+        uint worldMapController, IMemory m)
+    {
+        if (_overlayPrefix != "gt2_overlay" ||
+            _overlayIndex != 4u ||
+            worldMapController == 0u ||
+            m.ReadU16(worldMapController + 0x1CEu) != 0u ||
+            m.ReadU8(worldMapController + 0x1B0u) != 0u ||
+            m.ReadU8(worldMapController + 0x1C4u) != 0u ||
+            m.ReadU8(worldMapController + 0x1CCu) != 0u ||
+            (RecompOne.Runtime.Hardware.Controller.State & 0x1000u) != 0u)
+        {
+            return;
+        }
+
+        _unifiedTitleMenuActive = false;
+        _unifiedSimulationFrontendPending = true;
+        Console.WriteLine(
+            "[GT2] Gran Turismo Mode Back: returning to unified title");
+        throw new GT2VariantSwitch("simulation-title");
     }
 
     public static bool ArcadeVariant =>
@@ -883,34 +1052,259 @@ public static class GT2Compat
     public static void SetUnifiedArcadeTransition(bool enabled) =>
         _unifiedArcadeTransition = enabled;
 
-    static bool DirectSpecialStageRoute5 =>
-        DirectArcadeRace?.Equals(
-            "special-stage-route-5",
-            StringComparison.OrdinalIgnoreCase) == true;
+    readonly record struct DirectArcadeCourseSpec(
+        string SelectionName,
+        string RaceName,
+        uint Hash);
 
-    static bool DirectTrialMountain =>
-        DirectArcadeRace?.Equals(
-            "trial-mountain",
-            StringComparison.OrdinalIgnoreCase) == true;
+    // This is the complete native stock-course inventory used by the renderer
+    // certification harness: all 30 forward layouts plus every reverse layout
+    // exposed by GT2 Arcade.  The dirt and reverse identities come directly
+    // from the archive's .crsinfo table.  Converted Route 11 forward/reverse
+    // identities are deliberately kept last by the certification harness.
+    // Course identity is data only: the same native Class C race constructor
+    // and renderer path is used for every non-Seattle entry.
+    static readonly Dictionary<string, DirectArcadeCourseSpec>
+        DirectArcadeCourses = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["tahiti-road"] = new(
+                "Tahiti Road", "Tahiti Road", 0x6AD87E5Eu),
+            ["midfield-raceway"] = new(
+                "Midfield Raceway", "Midfield Raceway", 0x718B3BA1u),
+            ["high-speed-ring"] = new(
+                "High Speed Ring", "High Speed Ring", 0x35B88252u),
+            ["super-speedway"] = new(
+                "Super Speedway", "Super Speedway", 0x34C670ECu),
+            ["seattle-short-course"] = new(
+                "Seattle Short Course", "Seattle Short Course", 0xA2D75F7Cu),
+            ["rome-short-course"] = new(
+                "Rome Short Course", "Rome Short Course", 0x5197C71Cu),
+            ["red-rock-valley-speedway"] = new(
+                "Red Rock Valley Speedway",
+                "Red Rock Valley Speedway",
+                0x73AB047Eu),
+            ["seattle-circuit"] = new(
+                "Seattle Circuit", "Seattle Circuit Full Course", 0xA2D762AEu),
+            ["rome-circuit"] = new(
+                "Rome Circuit", "Rome Circuit Full Course", 0x01CF0BA1u),
+            ["grindelwald"] = new(
+                "Grindelwald", "Grindelwald", 0xEABE6038u),
+            ["laguna-seca-raceway"] = new(
+                "Laguna Seca Raceway", "Laguna Seca Raceway", 0x62A36BFCu),
+            ["apricot-hill-speedway"] = new(
+                "Apricot Hill Speedway", "Apricot Hill Speedway", 0x7EB5CA9Fu),
+            ["motor-sports-land"] = new(
+                "Motor Sports Land", "Motor Sports Land", 0x01922CF4u),
+            ["trial-mountain"] = new(
+                "Trial Mountain Circuit",
+                "Trial Mountain Circuit",
+                0xAFD7E5BBu),
+            ["clubman-stage-route-5"] = new(
+                "Clubman Stage Route 5",
+                "Clubman Stage Route 5",
+                0x33D95B55u),
+            ["grand-valley-east-section"] = new(
+                "Grand Valley East Section",
+                "Grand Valley East Section",
+                0x74A70CF4u),
+            ["grand-valley-speedway"] = new(
+                "Grand Valley Speedway",
+                "Grand Valley Speedway",
+                0xB39370FEu),
+            ["special-stage-route-5"] = new(
+                "Special Stage Route 5",
+                "Special Stage Route 5",
+                0xA8A78F53u),
+            ["autumn-ring"] = new(
+                "Autumn Ring", "Autumn Ring", 0xB6D76BC6u),
+            ["test-course"] = new(
+                "Test Course", "Test Course", 0x74C669A4u),
+            ["deep-forest-raceway"] = new(
+                "Deep Forest Raceway", "Deep Forest Raceway", 0x3584821Fu),
+            ["rome-night"] = new(
+                "Rome-Night", "Rome-Night", 0x4C9B449Cu),
+            ["autumn-ring-mini"] = new(
+                "Autumn Ring Mini", "Autumn Ring Mini", 0x01BAABE9u),
+            ["green-forest-roadway"] = new(
+                "Green Forest Roadway", "Green Forest Roadway", 0x6B3F15FCu),
+            ["pikes-peak-downhill"] = new(
+                "Pikes Peak Downhill", "Pikes Peak Downhill", 0xB4F4E47Fu),
+            ["pikes-peak-hill-climb"] = new(
+                "Pikes Peak Hill Climb",
+                "Pikes Peak Hill Climb",
+                0x71AAC9B3u),
+            ["smokey-mountain-north"] = new(
+                "Smokey Mountain North",
+                "Smokey Mountain North",
+                0xA8C6399Cu),
+            ["smokey-mountain-south"] = new(
+                "Smokey Mountain South",
+                "Smokey Mountain South",
+                0x6B3F15FBu),
+            ["tahiti-dirt-route-3"] = new(
+                "Tahiti Dirt Route 3", "Tahiti Dirt Route 3", 0x4FEDD235u),
+            ["tahiti-maze"] = new(
+                "Tahiti Maze", "Tahiti Maze", 0x600625B5u),
+            ["apricot-hill-speedway-reverse"] = new(
+                "Apricot Hill Speedway",
+                "Apricot Hill Speedway",
+                0xA101EF80u),
+            ["autumn-ring-reverse"] = new(
+                "Autumn Ring", "Autumn Ring", 0xD3BE49B6u),
+            ["autumn-ring-mini-reverse"] = new(
+                "Autumn Ring Mini", "Autumn Ring Mini", 0xE0BC7A56u),
+            ["clubman-stage-route-5-reverse"] = new(
+                "Clubman Stage Route 5",
+                "Clubman Stage Route 5",
+                0x342B5B55u),
+            ["deep-forest-raceway-reverse"] = new(
+                "Deep Forest Raceway", "Deep Forest Raceway", 0xA36383EDu),
+            ["grand-valley-east-section-reverse"] = new(
+                "Grand Valley East Section",
+                "Grand Valley East Section",
+                0x351AA86Cu),
+            ["grand-valley-speedway-reverse"] = new(
+                "Grand Valley Speedway",
+                "Grand Valley Speedway",
+                0xED4AED05u),
+            ["grindelwald-reverse"] = new(
+                "Grindelwald", "Grindelwald", 0xB79B445Eu),
+            ["high-speed-ring-reverse"] = new(
+                "High Speed Ring", "High Speed Ring", 0xA3978420u),
+            ["midfield-raceway-reverse"] = new(
+                "Midfield Raceway", "Midfield Raceway", 0xA2F4C4F1u),
+            ["red-rock-valley-speedway-reverse"] = new(
+                "Red Rock Valley Speedway",
+                "Red Rock Valley Speedway",
+                0xAD628085u),
+            ["rome-circuit-reverse"] = new(
+                "Rome Circuit", "Rome Circuit Full Course", 0xE0D0DA0Eu),
+            ["rome-short-course-reverse"] = new(
+                "Rome Short Course", "Rome Short Course", 0x41B4ADFAu),
+            ["rome-night-reverse"] = new(
+                "Rome-Night", "Rome-Night", 0x3CB82B7Au),
+            ["seattle-circuit-reverse"] = new(
+                "Seattle Circuit", "Seattle Circuit Full Course", 0x762B025Fu),
+            ["seattle-short-course-reverse"] = new(
+                "Seattle Short Course",
+                "Seattle Short Course",
+                0x75F7E25Fu),
+            ["smokey-mountain-north-reverse"] = new(
+                "Smokey Mountain North",
+                "Smokey Mountain North",
+                0x9E2BFFEFu),
+            ["smokey-mountain-south-reverse"] = new(
+                "Smokey Mountain South",
+                "Smokey Mountain South",
+                0xFCEE78CBu),
+            ["special-stage-route-5-reverse"] = new(
+                "Special Stage Route 5",
+                "Special Stage Route 5",
+                0xA8A8D753u),
+            ["tahiti-dirt-route-3-reverse"] = new(
+                "Tahiti Dirt Route 3", "Tahiti Dirt Route 3", 0x36D32788u),
+            ["tahiti-road-reverse"] = new(
+                "Tahiti Road", "Tahiti Road", 0x5FEE1234u),
+            ["trial-mountain-reverse"] = new(
+                "Trial Mountain Circuit",
+                "Trial Mountain Circuit",
+                0x1DB6E78Au),
+            ["special-stage-route-11"] = new(
+                "Special Stage Route 11",
+                "Special Stage Route 11",
+                0xBFF9AB74u),
+            ["special-stage-route-11-reverse"] = new(
+                "Special Stage Route 11",
+                "Special Stage Route 11",
+                0xFE6ADDA1u),
+        };
 
-    // Trial Mountain deliberately uses the verified Class C Xsara template.
-    // It gives renderer audits a slower, keyboard-manageable field while the
-    // native constructor still owns every vehicle and race-state record.
-    static bool DirectClassC =>
-        DirectSpecialStageRoute5 || DirectTrialMountain;
+    public static IReadOnlyList<string> SupportedDirectArcadeCourses { get; } =
+    [
+        "tahiti-road",
+        "midfield-raceway",
+        "high-speed-ring",
+        "super-speedway",
+        "seattle-short-course",
+        "rome-short-course",
+        "red-rock-valley-speedway",
+        "seattle-circuit",
+        "rome-circuit",
+        "grindelwald",
+        "laguna-seca-raceway",
+        "apricot-hill-speedway",
+        "motor-sports-land",
+        "trial-mountain",
+        "clubman-stage-route-5",
+        "grand-valley-east-section",
+        "grand-valley-speedway",
+        "special-stage-route-5",
+        "autumn-ring",
+        "test-course",
+        "deep-forest-raceway",
+        "rome-night",
+        "autumn-ring-mini",
+        "green-forest-roadway",
+        "pikes-peak-downhill",
+        "pikes-peak-hill-climb",
+        "smokey-mountain-north",
+        "smokey-mountain-south",
+        "tahiti-dirt-route-3",
+        "tahiti-maze",
+        "apricot-hill-speedway-reverse",
+        "autumn-ring-reverse",
+        "autumn-ring-mini-reverse",
+        "clubman-stage-route-5-reverse",
+        "deep-forest-raceway-reverse",
+        "grand-valley-east-section-reverse",
+        "grand-valley-speedway-reverse",
+        "grindelwald-reverse",
+        "high-speed-ring-reverse",
+        "midfield-raceway-reverse",
+        "red-rock-valley-speedway-reverse",
+        "rome-circuit-reverse",
+        "rome-short-course-reverse",
+        "rome-night-reverse",
+        "seattle-circuit-reverse",
+        "seattle-short-course-reverse",
+        "smokey-mountain-north-reverse",
+        "smokey-mountain-south-reverse",
+        "special-stage-route-5-reverse",
+        "tahiti-dirt-route-3-reverse",
+        "tahiti-road-reverse",
+        "trial-mountain-reverse",
+        "special-stage-route-11",
+        "special-stage-route-11-reverse",
+    ];
 
-    static bool IsSupportedDirectArcadeRace() =>
+    public static bool IsSupportedDirectArcadeCourse(string course) =>
+        DirectArcadeCourses.ContainsKey(course);
+
+    static DirectArcadeCourseSpec RequiredDirectArcadeCourse =>
+        !string.IsNullOrWhiteSpace(DirectArcadeRace) &&
+        DirectArcadeCourses.TryGetValue(
+            DirectArcadeRace, out DirectArcadeCourseSpec course)
+            ? course
+            : throw new InvalidOperationException(
+                $"Unsupported direct Arcade race: {DirectArcadeRace}");
+
+    static bool DirectSeattle =>
         DirectArcadeRace?.Equals(
             "seattle-circuit",
-            StringComparison.OrdinalIgnoreCase) == true ||
-        DirectClassC;
+            StringComparison.OrdinalIgnoreCase) == true;
+
+    // Every new audit course deliberately uses the verified Class C Xsara
+    // template. It gives manual and automated audits a slower field while the
+    // native constructor still owns every vehicle and race-state record.
+    static bool DirectClassC =>
+        !string.IsNullOrWhiteSpace(DirectArcadeRace) && !DirectSeattle;
+
+    static bool IsSupportedDirectArcadeRace() =>
+        !string.IsNullOrWhiteSpace(DirectArcadeRace) &&
+        IsSupportedDirectArcadeCourse(DirectArcadeRace);
 
     static string DirectArcadeRaceLabel =>
-        DirectTrialMountain
-            ? "Trial Mountain Circuit"
-            : DirectSpecialStageRoute5
-                ? "Special Stage Route 5"
-                : "Seattle Circuit";
+        RequiredDirectArcadeCourse.SelectionName;
 
     /// <summary>
     /// A unified-menu handoff has already shown the Simulation-disc legal and
@@ -920,6 +1314,8 @@ public static class GT2Compat
     /// </summary>
     public static uint InitialArcadeOverlayIndex(IMemory m)
     {
+        if (_unifiedArcadeTransition)
+            RestoreUnifiedArcadeProgress(m);
         if (!string.IsNullOrWhiteSpace(DirectArcadeRace))
         {
             if (!IsSupportedDirectArcadeRace())
@@ -931,7 +1327,59 @@ public static class GT2Compat
             // separate 0x58C-byte race state that overlay 0 consumes.
             return 2u;
         }
-        return _unifiedArcadeTransition ? 1u : 5u;
+        // The unified title's Arcade selection is already equivalent to the
+        // stock disc's START GAME confirmation. Overlay 2 is the resulting
+        // ARCADE MODE menu (Single Player / 2 Player Battle / Bonus Items /
+        // Load Guest Garage); overlay 1 is the redundant disc title screen.
+        return _unifiedArcadeTransition ? 2u : 5u;
+    }
+
+    // Both NTSC-U guests use the same progress-record layout, at different
+    // working-data bases. The seamless path skips the disc title's card load;
+    // preserve the progress already loaded by Simulation before Arcade clears
+    // its BSS, then restore it AFTER the native new-game initializer. Copy the
+    // records, not course-table gates: a locked card must remain locked.
+    static byte[]? _pendingUnifiedArcadeProgress;
+    const uint SimulationProgressBase = 0x801C98E0u;
+    const uint ArcadeProgressBase = 0x801C9340u;
+    static readonly (uint Offset, int Length)[] UnifiedProgressRanges =
+    [
+        (0xB8u, 0x160), // Arcade results, unlock flags and records.
+        (0x1418u, 60 * 0xA4), // Complete license-test records.
+    ];
+
+    public static void PreserveUnifiedArcadeProgress(IMemory m)
+    {
+        var progress = new byte[0x160 + 60 * 0xA4];
+        int index = 0;
+        foreach (var range in UnifiedProgressRanges)
+            for (uint offset = 0; offset < range.Length; offset++)
+                progress[index++] = m.ReadU8(
+                    SimulationProgressBase + range.Offset + offset);
+        _pendingUnifiedArcadeProgress = progress;
+    }
+
+    static void RestoreUnifiedArcadeProgress(IMemory m)
+    {
+        if (_pendingUnifiedArcadeProgress is not { } progress)
+            return;
+        int index = 0;
+        foreach (var range in UnifiedProgressRanges)
+            for (uint offset = 0; offset < range.Length; offset++)
+                m.WriteU8(ArcadeProgressBase + range.Offset + offset,
+                    progress[index++]);
+        _pendingUnifiedArcadeProgress = null;
+        int licenses = 0;
+        int courses = 0;
+        for (uint test = 0; test < 60; test++)
+            if (m.ReadU8(ArcadeProgressBase + 0x1419u + test * 0xA4u) != 0)
+                licenses++;
+        for (uint course = 0; course < 21; course++)
+            if (m.ReadU8(ArcadeProgressBase + 0xB8u + course) != 0)
+                courses++;
+        Console.WriteLine(
+            $"[GT2] Arcade progress preserved from loaded Simulation save: " +
+            $"licenseTests={licenses}/60 courseResults={courses}/21");
     }
 
     /// <summary>
@@ -1221,9 +1669,6 @@ public static class GT2Compat
             "native-constructor=overlay-2");
     }
 
-    const string DirectTrialMountainCourseName = "Trial Mountain Circuit";
-    const uint DirectTrialMountainCourseHash = 0xAFD7E5BBu;
-
     static byte[] BuildDirectArcadeTemplate(
         string seattleBase64,
         string classCBase64,
@@ -1231,14 +1676,25 @@ public static class GT2Compat
     {
         byte[] template = Convert.FromBase64String(
             DirectClassC ? classCBase64 : seattleBase64);
-        if (DirectTrialMountain)
-            ReplaceDirectArcadeCourseIdentity(template, raceState);
+        if (DirectClassC)
+        {
+            DirectArcadeCourseSpec course = RequiredDirectArcadeCourse;
+            ReplaceDirectArcadeCourseIdentity(
+                template,
+                raceState,
+                course.SelectionName,
+                course.RaceName,
+                course.Hash);
+        }
         return template;
     }
 
     static void ReplaceDirectArcadeCourseIdentity(
         byte[] template,
-        bool raceState)
+        bool raceState,
+        string selectionName,
+        string raceName,
+        uint courseHash)
     {
         int expectedLength = raceState ? 0x58C : 0x2D4;
         int nameOffset = raceState ? 0x20 : 0xB8;
@@ -1246,17 +1702,17 @@ public static class GT2Compat
         int hashOffset = raceState ? 0x40 : 0x1B8;
         if (template.Length != expectedLength)
             throw new InvalidDataException(
-                $"Direct Trial Mountain template has {template.Length} " +
+                $"Direct Arcade template has {template.Length} " +
                 $"bytes; expected {expectedLength}");
 
         byte[] name = System.Text.Encoding.ASCII.GetBytes(
-            DirectTrialMountainCourseName);
+            raceState ? raceName : selectionName);
         if (name.Length >= nameCapacity)
             throw new InvalidDataException(
-                "Direct Trial Mountain course name exceeds its native field");
+                "Direct Arcade course name exceeds its native field");
         Array.Clear(template, nameOffset, nameCapacity);
         name.CopyTo(template, nameOffset);
-        BitConverter.GetBytes(DirectTrialMountainCourseHash)
+        BitConverter.GetBytes(courseHash)
             .CopyTo(template, hashOffset);
     }
 
@@ -1403,9 +1859,10 @@ public static class GT2Compat
 
     /// <summary>
     /// Enter the Arcade frontend through the post-bootstrap initializer used
-    /// immediately before the original disc requests overlay 1. This retains
-    /// the native Arcade executable, frontend, overlays and data while avoiding
-    /// a second game boot in the unified player-facing flow.
+    /// immediately before the original disc requests its first overlay. The
+    /// unified selector changes only that destination to overlay 2. This
+    /// retains the native Arcade executable, frontend, overlays and data while
+    /// avoiding a second game boot in the unified player-facing flow.
     /// </summary>
     public static void RunArcadeFrontendHandoff(CpuContext c, IMemory m)
     {
@@ -1414,10 +1871,14 @@ public static class GT2Compat
         _overlayPrefix = arcadePrefix;
         try
         {
+            long serviceStarted = Stopwatch.GetTimestamp();
             // This is the sole pre-initializer call made by the stock Arcade
             // entry after clearing BSS and before entering func_8005D650.
             c.RA = 0x8005D5F0u;
             Dispatch.Dispatcher.Call(c, m, 0x8008CD18u);
+            Console.WriteLine(
+                "[GT2-Handoff] Arcade service initializer " +
+                $"elapsedMs={Stopwatch.GetElapsedTime(serviceStarted).TotalMilliseconds:F3}");
             // SCUS-94455 saves these at 0x80090E80/84 before the initializer
             // and restores them for func_8005D650. Preserve that ABI without
             // running the top-level boot function.
@@ -1426,7 +1887,7 @@ public static class GT2Compat
             c.RA = 0x8005D608u;
             Console.WriteLine(
                 "[GT2] Arcade frontend handoff: " +
-                "entry=0x8005D650 START GAME overlay=1");
+                "entry=0x8005D650 Arcade Mode menu overlay=2");
             RunGuestLoop(c, m, 0x8005D650u, arcadePrefix);
         }
         finally
@@ -1444,18 +1905,6 @@ public static class GT2Compat
     /// </summary>
     public static void InstallUnifiedTitleMenu(IMemory m)
     {
-        if (_unifiedArcadeSelectionDelay > 0 &&
-            --_unifiedArcadeSelectionDelay == 0)
-        {
-            _unifiedTitleMenuActive = false;
-            _unifiedArcadeFrontendPending = true;
-            Console.WriteLine(
-                "[GT2] title selection: Arcade Mode; " +
-                "authored confirmation window completed; " +
-                "spuOutputBeforeHandoff=" +
-                RecompOne.Runtime.Host.Audio.HasProducedAudibleOutput);
-            throw new GT2VariantSwitch("arcade");
-        }
         _unifiedTitleMenuActive = true;
         EnableExactTitleDisplay();
         // Two sentinels plus the four complete Sony-authored demo entries:
@@ -1473,6 +1922,14 @@ public static class GT2Compat
             m, UnifiedTitleBlankDescriptor,
             u: 0, v: 0,
             width: 0, height: 0, tpage: 0, clut: 0);
+
+        if (_unifiedSimulationFrontendPending)
+        {
+            _unifiedSimulationFrontendPending = false;
+            Console.WriteLine(
+                "[GT2] seamless unified title ready; " +
+                "transition cover released");
+        }
 
         if (_unifiedTitleInstalled)
             return;
@@ -1597,19 +2054,20 @@ public static class GT2Compat
     {
         if (index == 1u)
         {
-            // The native selector has just invoked sound effect 3. Keep the
-            // Simulation guest alive long enough to mix that authored sample
-            // before replacing its RAM image with the Arcade executable.
-            // An immediate exception here made every Arcade confirmation
-            // silent even though the original sound call was intact.
-            if (_unifiedArcadeSelectionDelay == 0)
-            {
-                _unifiedArcadeSelectionDelay = 12;
-                Console.WriteLine(
-                    "[GT2] Arcade Mode confirmation queued; " +
-                    "handoff delayed for 12 title updates");
-            }
-            return;
+            // The native selector has already invoked sound effect 3. It also
+            // commits its retail START GAME destination before this hook, so
+            // leaving the Simulation title state machine alive for additional
+            // frames can dispatch Simulation overlay 4 before the guest swap.
+            // Switch at this exact confirmation boundary instead.
+            _unifiedTitleMenuActive = false;
+            _unifiedArcadeFrontendPending = true;
+            _unifiedTitleConfirmationMixFrame =
+                RecompOne.Runtime.Host.Audio.MixedFrameCount;
+            _unifiedArcadeSelectionTimestamp = Stopwatch.GetTimestamp();
+            _unifiedArcadeSelectionInputPoll = Host.InputManager.CurrentPoll;
+            Dispatch.Dispatcher.BeginMethodProfile("arcade-menu-handoff");
+            Console.WriteLine("[GT2] title selection: Arcade Mode");
+            throw new GT2VariantSwitch("arcade");
         }
 
         _unifiedTitleMenuActive = false;
@@ -1685,6 +2143,54 @@ public static class GT2Compat
                 $"model-index={selector - 1u} " +
                 $"source={(maximum ? "wrapper Maximum" : "diagnostic override")}");
         return selector;
+    }
+
+    /// <summary>
+    /// Mark the exact point at which the unified title begins its native
+    /// initialization. Diagnostics use this stage to prove that input offered
+    /// during the short authored fade is accepted instead of silently lost.
+    /// </summary>
+    public static void CompleteUnifiedTitleMenuInitialization(IMemory m)
+    {
+        _unifiedTitleBufferedPressed = 0;
+        _unifiedTitleBufferedRepeated = 0;
+        Host.InputManager.SignalScriptStage("unified_title");
+    }
+
+    /// <summary>
+    /// Preserve input edges produced while the retail title controller is in
+    /// its sixteen-update initialization state. Once that controller reaches
+    /// its ordinary interactive state, replay the edges through GT2's own
+    /// input record so its native list code handles navigation and selection.
+    /// </summary>
+    public static void BufferUnifiedTitleInput(uint input, IMemory m)
+    {
+        if (!_unifiedTitleMenuActive || !IsGuestRam(input))
+            return;
+        uint pressed = m.ReadU32(input + 4u);
+        uint repeated = m.ReadU32(input + 0xCu);
+        ushort state = m.ReadU16(0x800B122Cu);
+        if (state == 0)
+        {
+            _unifiedTitleBufferedPressed |= pressed;
+            _unifiedTitleBufferedRepeated |= repeated;
+            return;
+        }
+        if (_unifiedTitleBufferedPressed == 0 &&
+            _unifiedTitleBufferedRepeated == 0)
+            return;
+        m.WriteU32(
+            input + 4u,
+            pressed | _unifiedTitleBufferedPressed);
+        m.WriteU32(
+            input + 0xCu,
+            repeated | _unifiedTitleBufferedRepeated);
+        Console.WriteLine(
+            "[GT2] buffered unified-title input accepted after native " +
+            $"initialization: pressed=0x{_unifiedTitleBufferedPressed:X8} " +
+            $"repeated=0x{_unifiedTitleBufferedRepeated:X8}");
+        _unifiedTitleBufferedPressed = 0;
+        _unifiedTitleBufferedRepeated = 0;
     }
 
     /// <summary>
@@ -1787,6 +2293,68 @@ public static class GT2Compat
                     }
                 };
             }
+        }
+    }
+
+    /// <summary>
+    /// Reproduce the Simulation executable's authored BSS state without
+    /// replaying its top-level boot when Arcade's Back action returns to the
+    /// unified title.
+    /// </summary>
+    public static void PrepareSimulationTitleHandoff(
+        CpuContext c, IMemory m)
+    {
+        const uint simulationBssStart = 0x801C93B0u;
+        const uint simulationBssEnd = 0x801F0D60u;
+        const uint saved = 0x80091144u;
+        m.WriteU32(saved - 8u, c.A0);
+        m.WriteU32(saved - 4u, c.A1);
+        m.WriteU32(saved, c.S0);
+        m.WriteU32(saved + 4u, c.S1);
+        m.WriteU32(saved + 8u, c.S2);
+        m.WriteU32(saved + 12u, c.S3);
+        m.WriteU32(saved + 16u, c.S4);
+        m.WriteU32(saved + 20u, c.S5);
+        m.WriteU32(saved + 24u, c.S6);
+        m.WriteU32(saved + 28u, c.S7);
+        m.WriteU32(saved + 32u, c.GP);
+        m.WriteU32(saved + 36u, c.SP);
+        m.WriteU32(saved + 40u, c.FP);
+        m.WriteU32(saved + 44u, c.RA);
+        c.SP -= 0x18u;
+        m.ZeroRange(
+            simulationBssStart,
+            simulationBssEnd - simulationBssStart);
+        Console.WriteLine(
+            "[GT2] Simulation title handoff prepared: native BSS " +
+            "initialized; boot/legal overlays omitted");
+    }
+
+    /// <summary>
+    /// Enter the original Simulation title through its post-bootstrap
+    /// initializer, mirroring SCUS-94488 immediately before it requests
+    /// overlay 1.
+    /// </summary>
+    public static void RunSimulationTitleHandoff(CpuContext c, IMemory m)
+    {
+        const string simulationPrefix = "gt2_overlay";
+        string previousOverlayPrefix = _overlayPrefix;
+        _overlayPrefix = simulationPrefix;
+        try
+        {
+            c.RA = 0x8005D680u;
+            Dispatch.Dispatcher.Call(c, m, 0x8008CE08u);
+            c.A0 = m.ReadU32(0x8009113Cu);
+            c.A1 = m.ReadU32(0x80091140u);
+            c.RA = 0x8005D698u;
+            Console.WriteLine(
+                "[GT2] Simulation title handoff: " +
+                "entry=0x8005D6E0 unified title overlay=1");
+            RunGuestLoop(c, m, 0x8005D6E0u, simulationPrefix);
+        }
+        finally
+        {
+            _overlayPrefix = previousOverlayPrefix;
         }
     }
 
@@ -2338,20 +2906,24 @@ public static class GT2Compat
                     TraceTrackVisibilityStartPoll,
                     TraceTrackVisibilityEndPoll))
             {
-                string flareObjects = string.Join(
+                string stockObjects = string.Join(
+                    ',',
+                    Enumerable.Range(0, stockCount)
+                        .Select(index => m.ReadU16(
+                            stockList + 2u + (uint)index * 2u))
+                        .Select(entry => $"{entry:X4}"));
+                string expandedObjects = string.Join(
                     ',',
                     ExpandedVisibilityEntries
                         .AsSpan(0, visibleCount)
                         .ToArray()
-                        .Where(entry =>
-                            (entry & 0x3FFF) is >= 40 and <= 74)
                         .Select(entry => $"{entry:X4}"));
                 Console.Error.WriteLine(
                     $"[GT2-Visibility-Exact] poll={tracePoll} " +
                     $"root=0x{trackRoot:X8} stock=0x{stockList:X8} " +
                     $"sector={currentSector}/{sectorCount} " +
                     $"stockCount={stockCount} expandedCount={visibleCount} " +
-                    $"objects40to74=[{flareObjects}]");
+                    $"stock=[{stockObjects}] expanded=[{expandedObjects}]");
             }
             _visibilityExpandedCalls++;
             _visibilityExpandedStockEntries += stockCount;

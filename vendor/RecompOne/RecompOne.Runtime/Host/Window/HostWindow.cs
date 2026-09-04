@@ -3,8 +3,6 @@ using System.Numerics;
 using ImGuiNET;
 using Silk.NET.Input;
 using Silk.NET.Maths;
-using Silk.NET.OpenGL;
-using Silk.NET.OpenGL.Extensions.ImGui;
 using Silk.NET.Windowing;
 using RecompOne.Runtime.Config;
 using RecompOne.Runtime.Hardware;
@@ -15,19 +13,20 @@ namespace RecompOne.Runtime.Host;
 internal static class HostWindow
 {
     static IWindow? _window;
-    static GL? _gl;
-    static ImGuiController? _imgui;
+    static D3D11Renderer? _d3d;
+    static D3D11ImGuiController? _imgui;
     static bool _headless;
     static Gpu? _gpu;
 
-    static uint _displayTex;
-    static uint _nativeWorldTex;
-    static uint _vramTex;
-    static uint _ramTex;
-    static Hle.GlBackend? _glBackend;
+    static D3D11Renderer.Texture? _displayTex;
+    static D3D11Renderer.Texture? _nativeWorldTex;
+    static D3D11Renderer.Texture? _vramTex;
+    static D3D11Renderer.Texture? _ramTex;
+    static Hle.D3D11GpuBackend? _d3dBackend;
     static PresentationRenderer? _presentationRenderer;
 
     static byte[] _rgbDisplay = [];
+    static byte[] _rgbaUpload = [];
     static ushort[] _hleDisplay = [];
     static byte[] _rgbVram = [];
     static byte[] _ramFront = new byte[Memory.RamLogger.Width * Memory.RamLogger.Height * 4];
@@ -90,6 +89,11 @@ internal static class HostWindow
         int.TryParse(Environment.GetEnvironmentVariable("RECOMPONE_PRESENTATION_CAPTURE_FRAME"), out int captureFrame)
             ? Math.Max(1, captureFrame)
             : 0;
+    static readonly int _wrapperCaptureFrame =
+        int.TryParse(Environment.GetEnvironmentVariable(
+            "RECOMPONE_D3D_WRAPPER_CAPTURE_FRAME"), out int wrapperCaptureFrame)
+            ? Math.Max(1, wrapperCaptureFrame)
+            : 0;
     static readonly HashSet<int> _presentationCaptureFrames =
         (Environment.GetEnvironmentVariable("RECOMPONE_PRESENTATION_CAPTURE_FRAMES") ?? "")
         .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -105,6 +109,7 @@ internal static class HostWindow
         .Where(frame => frame > 0)
         .ToHashSet();
     static int _presentationFrame;
+    static int _wrapperFrame;
     static readonly bool _capturePresentation =
         Environment.GetEnvironmentVariable("RECOMPONE_PRESENTATION_CAPTURE") == "1";
     static readonly string? _nativeWorldStageDumpDirectory =
@@ -152,17 +157,11 @@ internal static class HostWindow
                 Title = title,
                 IsVisible = _windowVisible,
                 VSync = false,
-                // Keep buffer submission explicit. Hidden/headless sessions
-                // still execute the complete render callback (including
-                // capture and native texture upload) but have no visible
-                // surface to present. Swapping that hidden surface can block
-                // inside DWM/GLFW for seconds and falsely attribute an OS
-                // compositor pause to the game or native renderer.
                 ShouldSwapAutomatically = false,
                 UpdatesPerSecond = 0,
                 FramesPerSecond = 0,
                 WindowState = ConfigManager.View.Fullscreen ? WindowState.Fullscreen : WindowState.Maximized,
-                API = new GraphicsAPI(ContextAPI.OpenGL, ContextProfile.Core, ContextFlags.Default, new APIVersion(4, 5)),
+                API = GraphicsAPI.None,
             };
             _window = Silk.NET.Windowing.Window.Create(options);
             _window.Load += OnLoad;
@@ -253,68 +252,13 @@ internal static class HostWindow
     static void RenderWindow()
     {
         _window!.DoRender();
-        if (!_windowVisible)
-        {
-            if (!_capturePresentation)
-            {
-                // A telemetry-only headless soak consumes native-world output
-                // in OnRender without issuing GL commands. Finishing an empty
-                // hidden GL stream can still serialize the driver against the
-                // independent D3D11 renderer for hundreds of milliseconds, so
-                // there is deliberately nothing to flush in this mode.
-                return;
-            }
-            // SwapBuffers normally flushes and applies backpressure to the GL
-            // command queue. A hidden soak deliberately has no swap, so finish
-            // the small offscreen presentation explicitly; otherwise queued
-            // GL work accumulates and periodically contends with the native
-            // D3D11 renderer, creating a test-only output starvation spike.
-            long finishStarted = _tracePerformance
-                ? Stopwatch.GetTimestamp()
-                : 0;
-            _gl!.Finish();
-            if (_tracePerformance)
-            {
-                long completed = Stopwatch.GetTimestamp();
-                double elapsedMs =
-                    (completed - finishStarted) * 1000.0 /
-                        Stopwatch.Frequency;
-                if (elapsedMs >= 40.0)
-                {
-                    Console.Error.WriteLine(
-                        $"[Host-Long-Headless-Finish] " +
-                        $"poll={InputManager.CurrentPoll} " +
-                        $"finishMs={elapsedMs:F3}");
-                }
-            }
-            return;
-        }
-        long started = _tracePerformance
-            ? Stopwatch.GetTimestamp()
-            : 0;
-        _window.SwapBuffers();
-        if (_tracePerformance)
-        {
-            long completed = Stopwatch.GetTimestamp();
-            double elapsedMs =
-                (completed - started) * 1000.0 / Stopwatch.Frequency;
-            if (elapsedMs >= 40.0)
-            {
-                Console.Error.WriteLine(
-                    $"[Host-Long-Swap] poll={InputManager.CurrentPoll} " +
-                    $"swapMs={elapsedMs:F3}");
-            }
-        }
     }
 
     public static void Shutdown()
     {
-        // Silk/GLFW can wait indefinitely when Close is requested from the
-        // same render callback that owns the current GL context. Runtime
-        // shutdown always terminates the process immediately after this
-        // method, so perform the registered close work directly and let
-        // Environment.Exit release the native window after resources and
-        // capture encoders are finalized.
+        // Runtime shutdown terminates the process immediately after this
+        // method, so perform the registered close work directly and release
+        // D3D11, input, audio, and capture resources deterministically.
         Console.Error.WriteLine("[Host] shutdown request=resources");
         OnClosing();
         Console.Error.WriteLine("[Host] shutdown request=input");
@@ -429,35 +373,31 @@ internal static class HostWindow
         var input = _window!.CreateInput();
         InputManager.Initialize(input);
 
-        _gl = GL.GetApi(_window);
-        _gl.ClearColor(0.08f, 0.08f, 0.08f, 1f);
-
         var fb = _window!.FramebufferSize;
         Volatile.Write(ref _framebufferAspectWidth, fb.X);
         Volatile.Write(ref _framebufferAspectHeight, fb.Y);
-        _gl.Viewport(0, 0, (uint)fb.X, (uint)fb.Y);
         _window.FramebufferResize += size =>
         {
             Volatile.Write(ref _framebufferAspectWidth, size.X);
             Volatile.Write(ref _framebufferAspectHeight, size.Y);
-            _gl?.Viewport(0, 0, (uint)size.X, (uint)size.Y);
+            _d3d?.Resize(size.X, size.Y);
         };
-        _displayTex = CreateTexture(_gl);
-        _nativeWorldTex = CreateTexture(_gl);
-        _vramTex= CreateTexture(_gl);
-        _ramTex = CreateTexture(_gl);
-        _presentationRenderer = new PresentationRenderer(_gl);
+        nint hwnd = _window!.Native?.Win32?.Hwnd ?? 0;
+        _d3d = new D3D11Renderer(hwnd, fb.X, fb.Y);
+        _displayTex = _d3d.CreateTexture();
+        _nativeWorldTex = _d3d.CreateTexture();
+        _vramTex = _d3d.CreateTexture();
+        _ramTex = _d3d.CreateTexture();
+        _presentationRenderer = new PresentationRenderer(_d3d);
         _presentationRenderer.Initialize();
 
-        // There is no shipping low-resolution/legacy 3D mode. The command
-        // compositor still draws authored 2D menus, videos, HUD, and Results,
-        // while all live race/replay worlds are owned by the native renderer.
-        const bool highResolution3D = true;
-        Hle.GlVram.Scale = 4;
-        _glBackend = new Hle.GlBackend(_gl);
-        _glBackend.InitGl();
-        Hle.GpuHle.Active = highResolution3D;
-        Hle.GpuHle.Backend = _glBackend;
+        // Authored PS1 commands and final presentation share this D3D11
+        // device. Provenance-backed worlds remain owned exclusively by the
+        // native D3D11 renderer.
+        _d3dBackend = new Hle.D3D11GpuBackend(_d3d);
+        _d3dBackend.Initialize();
+        Hle.GpuHle.Active = true;
+        Hle.GpuHle.Backend = _d3dBackend;
         Hle.GpuHle.NativeResolution = false;
         Console.WriteLine(
             $"[Host] color dithering={(ConfigManager.View.Ps1Dithering ? "On" : "Off (modern fixed)")}");
@@ -477,7 +417,8 @@ internal static class HostWindow
             $"[Host] native world renderer=" +
             $"{(Hle.LiveWorldRenderer.Requested ? "Enabled" : "Disabled")}");
 
-        _imgui = new ImGuiController(_gl, _window, input, null, ConfigureImGui);
+        _imgui = new D3D11ImGuiController(
+            _d3d, _window, input, ConfigureImGui);
 
         PanelManager.Register(new OutputPanel());
         PanelManager.Register(new VramViewerPanel());
@@ -528,15 +469,12 @@ internal static class HostWindow
         long traceStart = _tracePerformance
             ? Stopwatch.GetTimestamp()
             : 0;
-        var gl = _gl!;
+        var d3d = _d3d!;
         if (!_windowVisible && !_capturePresentation && !_captureVideo &&
             string.IsNullOrEmpty(_requestedDisplayCapture))
         {
-            // Silent performance/soak runs need to consume and audit every
-            // modern-world output, but they do not need an invisible OpenGL
-            // upload, ImGui pass, or framebuffer draw. Keep the D3D11 renderer
-            // fully active and measure its real queue while removing the
-            // otherwise test-only cross-API synchronization path.
+            // Silent performance/soak runs consume native-world output
+            // without allocating or presenting an invisible wrapper frame.
             Runtime.RamLog.Tick();
             if (_gpu is { } headlessGpu)
                 PresentNativeWorld(null, headlessGpu);
@@ -547,11 +485,8 @@ internal static class HostWindow
             ? Stopwatch.GetTimestamp()
             : 0;
     
-        gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
         var fbDef = _window!.FramebufferSize;
-        gl.Viewport(0, 0, (uint)fbDef.X, (uint)fbDef.Y);
-        gl.ClearColor(0.08f, 0.08f, 0.08f, 1f);
-        gl.Clear(ClearBufferMask.ColorBufferBit);
+        d3d.BeginFrame(fbDef.X, fbDef.Y);
         long afterClear = _tracePerformance
             ? Stopwatch.GetTimestamp()
             : 0;
@@ -566,39 +501,26 @@ internal static class HostWindow
         var gpu = _gpu;
         if (gpu != null)
         {
-            // A scripted diagnostic may explicitly request the authored VRAM
-            // while the native renderer owns presentation (for example, to
-            // identify a frontend course choice behind a 3D preview). Consume
-            // that one-shot request without changing the visible output path.
             if (!string.IsNullOrEmpty(_requestedDisplayCapture) &&
-                Hle.GpuHle.Active &&
-                _glBackend is { Ready: true } &&
-                gpu.DisplayEnabled)
-                ProbeHleDisplay(
-                    _glBackend, gpu, gpu.DisplayWidth, gpu.DisplayHeight);
+                _d3dBackend is { Ready: true } && gpu.DisplayEnabled)
+                ProbeHleDisplay(_d3dBackend, gpu,
+                    gpu.DisplayWidth, gpu.DisplayHeight);
 
             bool transitionCoverPresented = false;
             if (Sdk.GT2Compat.UnifiedArcadeTransitionCoverActive &&
-                Hle.GpuHle.Active &&
-                _glBackend is { Ready: true })
+                _d3dBackend is { Ready: true })
             {
                 const int coverWidth = 512;
                 const int coverHeight = 480;
-                var wf = _window!.FramebufferSize;
-                var (tex, tw, th, aspect) = _glBackend.PresentDisplay(
-                    0, 0, coverWidth, coverHeight, false,
-                    outW: wf.X, outH: wf.Y);
-                if (tex != 0)
-                {
-                    PresentTexture(gl, tex, tw, th, aspect);
-                    transitionCoverPresented = true;
-                }
-                gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
-                gl.Viewport(0, 0, (uint)wf.X, (uint)wf.Y);
+                var (texture, width, height, aspect) =
+                    _d3dBackend.PresentDisplay(
+                        0, 0, coverWidth, coverHeight, false);
+                PresentTexture(texture, width, height, aspect);
+                transitionCoverPresented = texture.Id != 0;
             }
 
             bool nativePresented =
-                !transitionCoverPresented && PresentNativeWorld(gl, gpu);
+                !transitionCoverPresented && PresentNativeWorld(d3d, gpu);
             if (transitionCoverPresented)
             {
                 // Preserve the unified title image until Arcade overlay 1 has
@@ -622,30 +544,24 @@ internal static class HostWindow
                         "legacy 3D fallback suppressed");
                 }
             }
-            else if (
-                Hle.GpuHle.Active &&
-                _glBackend is { Ready: true } &&
-                gpu.DisplayEnabled
-            )
+            else if (_d3dBackend is { Ready: true } && gpu.DisplayEnabled)
             {
-                var wf = _window!.FramebufferSize;
-                var (tex, tw, th, aspect) = _glBackend.PresentDisplay(
-                    gpu.DisplayX, gpu.DisplayY,
-                    gpu.DisplayWidth, gpu.DisplayHeight,
-                    gpu.Display24Bit,
-                    outW: wf.X, outH: wf.Y);
-                ProbeHleDisplay(_glBackend, gpu, gpu.DisplayWidth, gpu.DisplayHeight);
-                if (tex != 0) PresentTexture(gl, tex, tw, th, aspect);
-                gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
-                gl.Viewport(0, 0, (uint)wf.X, (uint)wf.Y);
+                var (texture, width, height, aspect) =
+                    _d3dBackend.PresentDisplay(
+                        gpu.DisplayX, gpu.DisplayY,
+                        gpu.DisplayWidth, gpu.DisplayHeight,
+                        gpu.Display24Bit);
+                ProbeHleDisplay(_d3dBackend, gpu,
+                    gpu.DisplayWidth, gpu.DisplayHeight);
+                PresentTexture(texture, width, height, aspect);
             }
             else
             {
-                UploadDisplayTexture(gl, gpu);
+                UploadDisplayTexture(d3d, gpu);
             }
 
             if (PanelManager.Get<VramViewerPanel>()?.IsOpen == true)
-                UploadVramTexture(gl, gpu);
+                UploadVramTexture(d3d, gpu);
         }
         long afterGpu = _tracePerformance
             ? Stopwatch.GetTimestamp()
@@ -654,7 +570,7 @@ internal static class HostWindow
         if (PanelManager.Get<RamMapPanel>()?.IsOpen == true)
         {
             QueueRamConvert();
-            if (_ramReady) FlushRamTexture(gl);
+            if (_ramReady) FlushRamTexture(d3d);
         }
 
         if (!ConfigManager.View.HideTopBar)
@@ -667,9 +583,16 @@ internal static class HostWindow
         long afterPanels = _tracePerformance
             ? Stopwatch.GetTimestamp()
             : 0;
-        gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
-        gl.Viewport(0, 0, (uint)fbDef.X, (uint)fbDef.Y);
         _imgui.Render();
+        if (++_wrapperFrame == _wrapperCaptureFrame)
+        {
+            string path = $"recompone_wrapper_frame_{_wrapperFrame:000000}_" +
+                $"{d3d.BackBufferWidth}x{d3d.BackBufferHeight}.ppm";
+            d3d.CaptureBackBufferPpm(path);
+            Console.WriteLine(
+                $"[Host] captured D3D11 wrapper frame {_wrapperFrame} to {path}");
+        }
+        d3d.EndFrame(_windowVisible);
         if (_tracePerformance)
         {
             long afterImGuiRender = Stopwatch.GetTimestamp();
@@ -733,7 +656,8 @@ internal static class HostWindow
         Console.Error.WriteLine("[Host] shutdown stage=panels");
         PanelManager.Shutdown();
         Console.Error.WriteLine("[Host] shutdown stage=hle");
-        _glBackend?.Dispose();
+        Hle.GpuHle.Backend = null;
+        _d3dBackend?.Dispose();
         Console.Error.WriteLine("[Host] shutdown stage=native-world");
         _gpu?.ShutdownLiveWorldRenderer();
         Console.Error.WriteLine("[Host] shutdown stage=presentation");
@@ -741,39 +665,41 @@ internal static class HostWindow
         Console.Error.WriteLine("[Host] shutdown stage=imgui");
         _imgui?.Dispose();
         Console.Error.WriteLine("[Host] shutdown stage=textures");
-        _gl?.DeleteTexture(_displayTex);
-        _gl?.DeleteTexture(_nativeWorldTex);
-        _gl?.DeleteTexture(_vramTex);
-        _gl?.DeleteTexture(_ramTex);
+        _d3d?.DisposeTexture(_displayTex);
+        _d3d?.DisposeTexture(_nativeWorldTex);
+        _d3d?.DisposeTexture(_vramTex);
+        _d3d?.DisposeTexture(_ramTex);
+        _d3d?.Dispose();
         Console.Error.WriteLine("[Host] shutdown stage=complete");
     }
 
-    static uint CreateTexture(GL gl)
-    {
-        var tex = gl.GenTexture();
-        gl.BindTexture(TextureTarget.Texture2D, tex);
-        gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)GLEnum.Nearest);
-        gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)GLEnum.Nearest);
-        gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)GLEnum.ClampToEdge);
-        gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)GLEnum.ClampToEdge);
-        return tex;
-    }
-
-    static void UploadDisplayTexture(GL gl, Gpu gpu)
+    static void UploadDisplayTexture(D3D11Renderer d3d, Gpu gpu)
     {
         int w = gpu.DisplayWidth, h = gpu.DisplayHeight;
         if (!gpu.DisplayEnabled || w <= 0 || h <= 0) return;
-        int needed = w * h * 3;
-        if (_rgbDisplay.Length < needed) _rgbDisplay = new byte[needed];
-        ConvertDisplay(gpu, w, h);
+        UploadDisplayRegion(d3d, gpu, gpu.DisplayX, gpu.DisplayY,
+            w, h, gpu.Display24Bit, 4f / 3f);
         ProbeDisplay(gpu, w, h);
-        gl.BindTexture(TextureTarget.Texture2D, _displayTex);
-        gl.TexImage2D<byte>(TextureTarget.Texture2D, 0, InternalFormat.Rgb, (uint)w, (uint)h, 0,
-            PixelFormat.Rgb, PixelType.UnsignedByte, _rgbDisplay.AsSpan(0, needed));
-        PresentTexture(gl, _displayTex, w, h, 4f / 3f);
     }
 
-    static bool PresentNativeWorld(GL? gl, Gpu gpu)
+    static void UploadDisplayRegion(D3D11Renderer d3d, Gpu gpu,
+        int x, int y, int w, int h, bool rgb24, float aspect)
+    {
+        int needed = w * h * 3;
+        if (_rgbDisplay.Length < needed) _rgbDisplay = new byte[needed];
+        ConvertDisplay(gpu.Vram, x, y, w, h, rgb24,
+            _rgbDisplay.AsSpan(0, needed));
+        int rgbaNeeded = w * h * 4;
+        if (_rgbaUpload.Length < rgbaNeeded)
+            _rgbaUpload = new byte[rgbaNeeded];
+        ExpandRgbToRgba(_rgbDisplay.AsSpan(0, needed),
+            _rgbaUpload.AsSpan(0, rgbaNeeded));
+        d3d.Upload(_displayTex!, w, h,
+            _rgbaUpload.AsSpan(0, rgbaNeeded));
+        PresentTexture(_displayTex!, w, h, aspect);
+    }
+
+    static bool PresentNativeWorld(D3D11Renderer? d3d, Gpu gpu)
     {
         long traceStart = _tracePerformance
             ? Stopwatch.GetTimestamp()
@@ -979,42 +905,13 @@ internal static class HostWindow
                 )
                 {
                     CaptureNativeWorldReadback(in output, needed);
-                    if (gl != null)
+                    if (d3d != null)
                     {
-                        gl.BindTexture(
-                            TextureTarget.Texture2D,
-                            _nativeWorldTex);
-                        if (
-                            output.Width != _nativeWorldAllocatedWidth ||
-                            output.Height != _nativeWorldAllocatedHeight
-                        )
-                        {
-                            gl.TexImage2D<byte>(
-                                TextureTarget.Texture2D,
-                                0,
-                                InternalFormat.Rgba8,
-                                (uint)output.Width,
-                                (uint)output.Height,
-                                0,
-                                PixelFormat.Rgba,
-                                PixelType.UnsignedByte,
-                                output.Pixels.AsSpan(0, needed));
-                            _nativeWorldAllocatedWidth = output.Width;
-                            _nativeWorldAllocatedHeight = output.Height;
-                        }
-                        else
-                        {
-                            gl.TexSubImage2D<byte>(
-                                TextureTarget.Texture2D,
-                                0,
-                                0,
-                                0,
-                                (uint)output.Width,
-                                (uint)output.Height,
-                                PixelFormat.Rgba,
-                                PixelType.UnsignedByte,
-                                output.Pixels.AsSpan(0, needed));
-                        }
+                        d3d.Upload(_nativeWorldTex!,
+                            output.Width, output.Height,
+                            output.Pixels.AsSpan(0, needed));
+                        _nativeWorldAllocatedWidth = output.Width;
+                        _nativeWorldAllocatedHeight = output.Height;
                     }
                     _nativeWorldWidth = output.Width;
                     _nativeWorldHeight = output.Height;
@@ -1119,11 +1016,10 @@ internal static class HostWindow
                     temporalResetBoundaryHold);
             return false;
         }
-        if (gl != null)
+        if (d3d != null)
         {
             PresentTexture(
-                gl,
-                _nativeWorldTex,
+                _nativeWorldTex!,
                 _nativeWorldWidth,
                 _nativeWorldHeight,
                 _nativeWorldHeight > 0
@@ -1378,7 +1274,8 @@ internal static class HostWindow
         _nativePerfAgeMaximum = 0;
     }
 
-    static void PresentTexture(GL gl, uint sourceTexture, int sourceWidth, int sourceHeight, float aspect)
+    static void PresentTexture(D3D11Renderer.Texture sourceTexture,
+        int sourceWidth, int sourceHeight, float aspect)
     {
         var framebuffer = _window!.FramebufferSize;
         var output = OutputPanel.GetPresentationSize(aspect, framebuffer.X, framebuffer.Y);
@@ -1389,11 +1286,21 @@ internal static class HostWindow
         }
         bool fxaa = (_antiAliasingOverride ?? ConfigManager.View.AntiAliasing)
             .Equals("FXAA", StringComparison.OrdinalIgnoreCase);
-        uint texture = sourceTexture;
+        D3D11Renderer.Texture texture = sourceTexture;
         if (_presentationRenderer is { Ready: true })
         {
-            string? capture = _pendingPresentationCapture;
-            _pendingPresentationCapture = null;
+            bool deferCaptureToNativeWorld =
+                !string.IsNullOrWhiteSpace(_pendingPresentationCapture) &&
+                sourceTexture != _nativeWorldTex &&
+                _capturePresentation &&
+                Hle.LiveWorldRenderer.Requested &&
+                (_gpu?.LiveWorldExpected == true ||
+                 _gpu?.LiveWorldRecentlySeen == true);
+            string? capture = deferCaptureToNativeWorld
+                ? null
+                : _pendingPresentationCapture;
+            if (!deferCaptureToNativeWorld)
+                _pendingPresentationCapture = null;
             ++_presentationFrame;
             bool captureSourceFrame =
                 _presentationCaptureSourceFrames.Contains(_nativeWorldFrame);
@@ -1422,9 +1329,7 @@ internal static class HostWindow
                      StringComparison.OrdinalIgnoreCase)))
                 Runtime.RequestShutdown();
         }
-        OutputPanel.SetTexture(texture, output.w, output.h, aspect);
-        gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
-        gl.Viewport(0, 0, (uint)framebuffer.X, (uint)framebuffer.Y);
+        OutputPanel.SetTexture(texture.Id, output.w, output.h, aspect);
     }
 
     static void ProbeDisplay(Gpu gpu, int w, int h)
@@ -1500,22 +1405,29 @@ internal static class HostWindow
         dump.Write(_rgbDisplay, 0, pixels * 3);
     }
 
-    static ushort[] _vramView = new ushort[Gpu.VramWidth * Gpu.VramHeight];
-    static void UploadVramTexture(GL gl, Gpu gpu)
+    static void UploadVramTexture(D3D11Renderer d3d, Gpu gpu)
     {
         const int sz = Gpu.VramWidth * Gpu.VramHeight * 3;
         if (_rgbVram.Length < sz) _rgbVram = new byte[sz];
-        ushort[] src;
-        if (Hle.GpuHle.Active && _glBackend is { Ready: true })
+        ushort[] source = gpu.Vram;
+        if (_d3dBackend is { Ready: true })
         {
-            _glBackend.ReadVram(0, 0, Gpu.VramWidth, Gpu.VramHeight, _vramView);
-            src = _vramView;
+            if (_hleDisplay.Length < Gpu.VramWidth * Gpu.VramHeight)
+                _hleDisplay = new ushort[Gpu.VramWidth * Gpu.VramHeight];
+            _d3dBackend.ReadVram(0, 0, Gpu.VramWidth,
+                Gpu.VramHeight, _hleDisplay);
+            source = _hleDisplay;
         }
-        else src = gpu.Vram;
-        ConvertVramToBuffer(src, _rgbVram);
-        gl.BindTexture(TextureTarget.Texture2D, _vramTex);
-        gl.TexImage2D<byte>(TextureTarget.Texture2D, 0, InternalFormat.Rgb, Gpu.VramWidth, Gpu.VramHeight, 0, PixelFormat.Rgb, PixelType.UnsignedByte, _rgbVram.AsSpan(0, sz));
-        VramViewerPanel.SetTexture(_vramTex, Gpu.VramWidth, Gpu.VramHeight);
+        ConvertVramToBuffer(source, _rgbVram);
+        int rgbaSize = Gpu.VramWidth * Gpu.VramHeight * 4;
+        if (_rgbaUpload.Length < rgbaSize)
+            _rgbaUpload = new byte[rgbaSize];
+        ExpandRgbToRgba(_rgbVram.AsSpan(0, sz),
+            _rgbaUpload.AsSpan(0, rgbaSize));
+        d3d.Upload(_vramTex!, Gpu.VramWidth, Gpu.VramHeight,
+            _rgbaUpload.AsSpan(0, rgbaSize));
+        VramViewerPanel.SetTexture(_vramTex!.Id,
+            Gpu.VramWidth, Gpu.VramHeight);
     }
 
     static void QueueRamConvert()
@@ -1535,22 +1447,24 @@ internal static class HostWindow
             }, TaskContinuationOptions.ExecuteSynchronously);
     }
 
-    static void FlushRamTexture(GL gl)
+    static void FlushRamTexture(D3D11Renderer d3d)
     {
         _ramReady = false;
-        gl.BindTexture(TextureTarget.Texture2D, _ramTex);
-        gl.TexImage2D<byte>(TextureTarget.Texture2D, 0, InternalFormat.Rgba,
-            Memory.RamLogger.Width, Memory.RamLogger.Height, 0,
-            PixelFormat.Rgba, PixelType.UnsignedByte, _ramFront);
-        RamMapPanel.SetTexture(_ramTex);
+        d3d.Upload(_ramTex!, Memory.RamLogger.Width,
+            Memory.RamLogger.Height, _ramFront);
+        RamMapPanel.SetTexture(_ramTex!.Id);
     }
 
     static void ConvertDisplay(Gpu gpu, int w, int h)
+        => ConvertDisplay(gpu.Vram, gpu.DisplayX, gpu.DisplayY,
+            w, h, gpu.Display24Bit,
+            _rgbDisplay.AsSpan(0, w * h * 3));
+
+    static void ConvertDisplay(ushort[] vram, int dx, int dy,
+        int w, int h, bool display24Bit, Span<byte> output)
     {
-        var vram = gpu.Vram;
-        int dx = gpu.DisplayX, dy = gpu.DisplayY;
         int o = 0;
-        if (gpu.Display24Bit)
+        if (display24Bit)
         {
             for (int y = 0; y < h; y++)
             {
@@ -1558,9 +1472,9 @@ internal static class HostWindow
                 for (int x = 0; x < w; x++)
                 {
                     int bo = lineByte + x * 3;
-                    _rgbDisplay[o++] = VramByte(vram, bo);
-                    _rgbDisplay[o++] = VramByte(vram, bo + 1);
-                    _rgbDisplay[o++] = VramByte(vram, bo + 2);
+                    output[o++] = VramByte(vram, bo);
+                    output[o++] = VramByte(vram, bo + 1);
+                    output[o++] = VramByte(vram, bo + 2);
                 }
             }
         }
@@ -1572,11 +1486,24 @@ internal static class HostWindow
                 for (int x = 0; x < w; x++)
                 {
                     ushort px = vram[line + ((dx + x) & (Gpu.VramWidth - 1))];
-                    _rgbDisplay[o++] = (byte)((px & 0x1F) << 3);
-                    _rgbDisplay[o++] = (byte)(((px >> 5) & 0x1F) << 3);
-                    _rgbDisplay[o++] = (byte)(((px >> 10) & 0x1F) << 3);
+                    output[o++] = (byte)((px & 0x1F) << 3);
+                    output[o++] = (byte)(((px >> 5) & 0x1F) << 3);
+                    output[o++] = (byte)(((px >> 10) & 0x1F) << 3);
                 }
             }
+        }
+    }
+
+    static void ExpandRgbToRgba(ReadOnlySpan<byte> rgb, Span<byte> rgba)
+    {
+        for (int source = 0, destination = 0;
+            source + 2 < rgb.Length;
+            source += 3, destination += 4)
+        {
+            rgba[destination] = rgb[source];
+            rgba[destination + 1] = rgb[source + 1];
+            rgba[destination + 2] = rgb[source + 2];
+            rgba[destination + 3] = 255;
         }
     }
 

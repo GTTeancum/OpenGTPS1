@@ -95,6 +95,34 @@ def apply_auxiliary_billboard_projection(race: Path) -> None:
 """,
             f"Simulation auxiliary billboard projection end hook {label}",
         )
+    # Auxiliary flare cores are assembled from a projected world anchor using
+    # CPU-side 16-bit packet writes. Preserve that anchor through construction
+    # so the native renderer classifies the cores as track effects and applies
+    # their authored ordering-table depth rather than drawing them as HUD.
+    replace_once(
+        race,
+        """        c.A2 = RecompOne.Runtime.Gte.Read(24);
+        c.V0 = RecompOne.Runtime.Gte.Read(14);
+        c.A1 = c.A1 << (int)(c.A3 & 31u);
+""",
+        """        c.A2 = RecompOne.Runtime.Gte.Read(24);
+        c.V0 = RecompOne.Runtime.Gte.Read(14);
+        RecompOne.Runtime.Gte.BeginDerivedScreenProjection(c.V0);
+        c.A1 = c.A1 << (int)(c.A3 & 31u);
+""",
+        "Simulation auxiliary flare projection begin hook",
+    )
+    replace_once(
+        race,
+        """        L8001FF88: ;
+        c.S1 = c.S1 + 0x14u;
+""",
+        """        L8001FF88: ;
+        RecompOne.Runtime.Gte.EndDerivedScreenProjection();
+        c.S1 = c.S1 + 0x14u;
+""",
+        "Simulation auxiliary flare projection end hook",
+    )
 
 
 def include_livery_preview_helper() -> None:
@@ -297,6 +325,24 @@ def apply_livery_preview_reload(track: Path) -> None:
     )
 
 
+def apply_car_preview_camera_limit(track: Path) -> None:
+    replace_in_function_once(
+        track,
+        "func_8001E5D8",
+        """        c.V0 = m.ReadU32((c.A0 + 0xA8u));
+        c.V0 = c.V0 + c.V1;
+        m.WriteU32((c.A0 + 0xA8u), c.V0);
+""",
+        """        c.V0 = m.ReadU32((c.A0 + 0xA8u));
+        c.V0 = c.V0 + c.V1;
+        c.V0 = RecompOne.Runtime.Sdk.GT2Compat.
+            LimitCarPreviewCameraDistance(c.A0, c.V0);
+        m.WriteU32((c.A0 + 0xA8u), c.V0);
+""",
+        "Simulation car-preview camera distance ceiling",
+    )
+
+
 def main() -> int:
     race = GENERATED / "gt2_overlay_0.cs"
     track = GENERATED / "gt2_overlay_2.cs"
@@ -310,6 +356,20 @@ def main() -> int:
     include_bundled_native_renderer()
     preload_bundled_window_dependencies(program)
     use_windows_gui_subsystem()
+
+    replace_in_function_once(
+        showroom,
+        "func_80013EEC",
+        """    {
+        c.SP = c.SP - 0x28u;
+""",
+        """    {
+        RecompOne.Runtime.Sdk.GT2Compat.ReturnFromUnifiedGranTurismoRoot(
+            c.A0, m);
+        c.SP = c.SP - 0x28u;
+""",
+        "Unified Gran Turismo world-map reverse title handoff",
+    )
 
     replace_in_function_once(
         race,
@@ -522,6 +582,20 @@ def main() -> int:
 
     replace_once(
         title,
+        """        c.S4 = 0x00000004u;
+        L80017A9C: ;
+        c.V0 = MemoryAccess.ReadU32(m, c.S3);
+""",
+        """        c.S4 = 0x00000004u;
+        L80017A9C: ;
+        RecompOne.Runtime.Sdk.GT2Compat.BufferUnifiedTitleInput(c.S3, m);
+        c.V0 = MemoryAccess.ReadU32(m, c.S3);
+""",
+        "unified title initialization input buffer",
+    )
+
+    replace_once(
+        title,
         """        c.A3 = (uint)(short)m.ReadU16((c.A1 + 0x10u));
         c.A2 = m.ReadU32(c.A1);
         c.V0 = (uint)(short)m.ReadU16(c.V1);
@@ -576,6 +650,20 @@ def main() -> int:
 
     replace_once(
         title,
+        """        c.V0 = 0x800B0000u;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1228u), 0u);
+        c.SP = c.SP + 0x18u;
+""",
+        """        c.V0 = 0x800B0000u;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1228u), 0u);
+        RecompOne.Runtime.Sdk.GT2Compat.CompleteUnifiedTitleMenuInitialization(m);
+        c.SP = c.SP + 0x18u;
+""",
+        "unified title immediate input readiness",
+    )
+
+    replace_once(
+        title,
         """        c.A0 = c.S1 + 0u;
         c.A1 = 0x00000001u;
         c.S0 = c.V0 + 0u;
@@ -623,6 +711,19 @@ def main() -> int:
         c.RA = 0x800178F4u;
 """,
         "unified title authored 2x2 positions",
+    )
+
+    replace_once(
+        title,
+        """        L80017B7C: ;
+        c.A0 = 0x00000003u;
+""",
+        """        L80017B7C: ;
+        RecompOne.Runtime.Sdk.GT2Compat.BeginUnifiedTitleConfirmationAudio(
+            c.S0);
+        c.A0 = 0x00000003u;
+""",
+        "unified title confirmation audio key-on boundary",
     )
 
     replace_once(
@@ -1400,6 +1501,7 @@ def main() -> int:
     )
 
     apply_auxiliary_billboard_projection(race)
+    apply_car_preview_camera_limit(track)
 
     replace_once(
         track,

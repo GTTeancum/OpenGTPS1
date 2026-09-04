@@ -10,7 +10,9 @@ namespace opengt::render {
 // a non-zero authored vertex identity and exact integer GTE view coordinates.
 // Continuous high-resolution projection may additionally close a subpixel
 // seam between mutually nearest boundary vertices, but only after exact
-// authored evidence proves that the two track sections are adjacent.
+// authored evidence proves that the two track sections are adjacent. Resident
+// power-of-two LOD boundaries have a separate, equally bounded proof path for
+// matching source-raster cells outside the original 4:3 viewport.
 struct WorldTopologyOptions {
     bool join_authored_boundaries;
     bool split_exact_t_junctions;
@@ -36,6 +38,12 @@ struct WorldTopologyStats {
     std::uint32_t adjusted_authored_raster_instances;
     std::uint32_t authored_overlap_seam_groups;
     std::uint32_t adjusted_authored_overlap_instances;
+    std::uint32_t resident_lod_edge_groups;
+    std::uint32_t adjusted_resident_lod_instances;
+    std::uint32_t resident_lod_edges;
+    std::uint32_t resident_lod_boundary_edges;
+    std::uint32_t resident_lod_authored_edge_groups;
+    std::uint32_t resident_lod_candidate_pairs;
     std::uint32_t projected_t_junctions;
     std::uint32_t adjusted_projected_t_junction_instances;
     std::uint32_t boundary_edges;

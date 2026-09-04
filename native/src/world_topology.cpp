@@ -314,6 +314,108 @@ struct AuthoredRasterLineKey {
     }
 };
 
+struct ResidentInstanceVertexKey {
+    std::uint32_t object_id;
+    std::uint32_t model_pointer;
+    std::uint64_t transform_id;
+    Position model;
+
+    bool operator==(const ResidentInstanceVertexKey& other) const noexcept {
+        return object_id == other.object_id &&
+            model_pointer == other.model_pointer &&
+            transform_id == other.transform_id &&
+            model == other.model;
+    }
+};
+
+struct ResidentInstanceVertexKeyHash {
+    std::size_t operator()(
+        const ResidentInstanceVertexKey& value
+    ) const noexcept {
+        std::size_t seed = 0;
+        hash_combine(&seed, value.object_id);
+        hash_combine(&seed, value.model_pointer);
+        hash_combine(&seed, value.transform_id);
+        hash_combine(&seed, PositionHash{}(value.model));
+        return seed;
+    }
+};
+
+struct ResidentInstanceEdgeKey {
+    std::uint32_t object_id;
+    std::uint32_t model_pointer;
+    std::uint64_t transform_id;
+    Edge model_edge;
+
+    bool operator==(const ResidentInstanceEdgeKey& other) const noexcept {
+        return object_id == other.object_id &&
+            model_pointer == other.model_pointer &&
+            transform_id == other.transform_id &&
+            model_edge == other.model_edge;
+    }
+};
+
+struct ResidentInstanceEdgeKeyHash {
+    std::size_t operator()(const ResidentInstanceEdgeKey& value) const noexcept {
+        std::size_t seed = 0;
+        hash_combine(&seed, value.object_id);
+        hash_combine(&seed, value.model_pointer);
+        hash_combine(&seed, value.transform_id);
+        hash_combine(&seed, EdgeHash{}(value.model_edge));
+        return seed;
+    }
+};
+
+struct AuthoredScreenPoint {
+    std::int32_t x;
+    std::int32_t y;
+
+    bool operator<(const AuthoredScreenPoint& other) const noexcept {
+        return std::tie(x, y) < std::tie(other.x, other.y);
+    }
+
+    bool operator==(const AuthoredScreenPoint& other) const noexcept {
+        return x == other.x && y == other.y;
+    }
+};
+
+struct ResidentAuthoredEdgeKey {
+    AuthoredScreenPoint first;
+    AuthoredScreenPoint second;
+    std::int32_t ordering_table_index;
+    WorldViewChannel channel;
+
+    bool operator==(const ResidentAuthoredEdgeKey& other) const noexcept {
+        return first == other.first && second == other.second &&
+            ordering_table_index == other.ordering_table_index &&
+            channel == other.channel;
+    }
+};
+
+struct ResidentAuthoredEdgeKeyHash {
+    std::size_t operator()(
+        const ResidentAuthoredEdgeKey& value
+    ) const noexcept {
+        std::size_t seed = 0;
+        hash_combine(&seed, static_cast<std::uint32_t>(value.first.x));
+        hash_combine(&seed, static_cast<std::uint32_t>(value.first.y));
+        hash_combine(&seed, static_cast<std::uint32_t>(value.second.x));
+        hash_combine(&seed, static_cast<std::uint32_t>(value.second.y));
+        hash_combine(
+            &seed,
+            static_cast<std::uint32_t>(value.ordering_table_index));
+        hash_combine(&seed, static_cast<std::uint8_t>(value.channel));
+        return seed;
+    }
+};
+
+struct ResidentLodEdge {
+    std::size_t command;
+    int first_vertex;
+    int second_vertex;
+    ResidentInstanceEdgeKey instance_edge;
+};
+
 struct AuthoredRasterLineKeyHash {
     std::size_t operator()(
         const AuthoredRasterLineKey& key
@@ -377,6 +479,20 @@ bool resident_course_command(
             world_primitive_resident_course_flag) != 0;
 }
 
+bool identical_material(
+    const WorldMaterial& left,
+    const WorldMaterial& right
+) noexcept {
+    return left.primitive_flags == right.primitive_flags &&
+        left.texture_page == right.texture_page &&
+        left.clut == right.clut &&
+        left.texture_mask_x == right.texture_mask_x &&
+        left.texture_mask_y == right.texture_mask_y &&
+        left.texture_offset_x == right.texture_offset_x &&
+        left.texture_offset_y == right.texture_offset_y &&
+        left.environment_flags == right.environment_flags;
+}
+
 bool eligible(
     const WorldDrawList& list,
     const WorldDrawCommand& command
@@ -429,9 +545,12 @@ bool opaque_track_surface(
     const std::int64_t normal_x = ab_y * ac_z - ab_z * ac_y;
     const std::int64_t normal_y = ab_z * ac_x - ab_x * ac_z;
     const std::int64_t normal_z = ab_x * ac_y - ab_y * ac_x;
+    // GT2 course models are Z-up: an authored ground triangle lies in XY and
+    // therefore has a dominant +/-Z normal.  Keep this in lockstep with the
+    // GPU renderer's surface classifier.
     return
-        std::llabs(normal_y) >= std::llabs(normal_x) &&
-        std::llabs(normal_y) >= std::llabs(normal_z);
+        std::llabs(normal_z) >= std::llabs(normal_x) &&
+        std::llabs(normal_z) >= std::llabs(normal_y);
 }
 
 auto occurrence_key(
@@ -979,6 +1098,41 @@ WorldTopologyResult apply_world_topology(
         const bool projected_pair_diagnostics =
             std::getenv(
                 "OPENGT_TOPOLOGY_PROJECTED_PAIR_DIAGNOSTICS") != nullptr;
+        AuthoredScreenPoint resident_lod_diagnostic_first{};
+        AuthoredScreenPoint resident_lod_diagnostic_second{};
+        bool resident_lod_edge_diagnostics = false;
+        if (const char* configured =
+                std::getenv("OPENGT_TOPOLOGY_RESIDENT_LOD_EDGE")) {
+            int first_x = 0;
+            int first_y = 0;
+            int second_x = 0;
+            int second_y = 0;
+            if (std::sscanf(
+                    configured,
+                    "%d,%d,%d,%d",
+                    &first_x,
+                    &first_y,
+                    &second_x,
+                    &second_y) == 4) {
+                resident_lod_diagnostic_first =
+                    AuthoredScreenPoint{first_x, first_y};
+                resident_lod_diagnostic_second =
+                    AuthoredScreenPoint{second_x, second_y};
+                if (resident_lod_diagnostic_second <
+                    resident_lod_diagnostic_first) {
+                    std::swap(
+                        resident_lod_diagnostic_first,
+                        resident_lod_diagnostic_second);
+                }
+                resident_lod_edge_diagnostics = true;
+            }
+        }
+        std::int32_t resident_lod_diagnostic_poll = -1;
+        if (const char* configured =
+                std::getenv("OPENGT_TOPOLOGY_RESIDENT_LOD_POLL")) {
+            resident_lod_diagnostic_poll = static_cast<std::int32_t>(
+                std::strtol(configured, nullptr, 0));
+        }
         // Topology rebuilds several thousand short-lived lookup nodes for each
         // authored field. A frame-local arena preserves the exact containers
         // and iteration semantics while removing general-heap allocation and
@@ -2898,6 +3052,711 @@ WorldTopologyResult apply_world_topology(
             projected_finished = setup_finished;
         }
 
+        if (options.join_authored_boundaries &&
+            draw_list->continuous_projection) {
+            // The resident course normally needs no packet-topology repair:
+            // its shared model vertices are already exact. GT2 can, however,
+            // place two different resident LOD objects against the same PS1
+            // raster edge. Their view coordinates are power-of-two copies,
+            // so integer SXY is identical while continuous projection retains
+            // each transform's independent rounding residual. In a Hor+
+            // margin that subpixel disagreement exposes a one-output-pixel
+            // strip of backdrop between otherwise matching solid panels.
+            //
+            // Align only the fully proven relation. Both instance-local edges
+            // must be boundaries, share either authored endpoints or the same
+            // continuous source-raster cells, carry identical material/OT
+            // state, lie wholly outside one horizontal side of the source
+            // viewport, match within half a native pixel, and
+            // have endpoint view coordinates related by one exact 2/4/8/16x
+            // scale with at most four GTE units of rounding residual. This
+            // preserves the resident primitive set and central 4:3 image; it
+            // changes only the far LOD edge's projection and propagates that
+            // position to every copy of the same model vertex.
+            std::pmr::unordered_map<
+                ResidentInstanceEdgeKey,
+                std::uint32_t,
+                ResidentInstanceEdgeKeyHash> resident_edge_counts{
+                    &topology_arena};
+            std::pmr::unordered_map<
+                ResidentInstanceVertexKey,
+                OccurrenceList,
+                ResidentInstanceVertexKeyHash> resident_vertex_occurrences{
+                    &topology_arena};
+            std::pmr::vector<ResidentLodEdge> resident_edges{
+                &topology_arena};
+            resident_edge_counts.reserve(draw_list->track_commands * 2U);
+            resident_vertex_occurrences.reserve(
+                draw_list->track_commands * 2U);
+            resident_edges.reserve(draw_list->track_commands * 3U);
+            for (std::size_t command_index = 0;
+                 command_index < draw_list->commands.size();
+                 ++command_index) {
+                const auto& command = draw_list->commands[command_index];
+                if (
+                    command.object_kind != 1U ||
+                    command.channel != WorldViewChannel::main_view ||
+                    !resident_course_command(*draw_list, command) ||
+                    !command.exact_transform_valid ||
+                    command.material_index >= draw_list->materials.size()
+                ) continue;
+                const auto& material =
+                    draw_list->materials[command.material_index];
+                if (
+                    (material.primitive_flags & 1U) == 0 ||
+                    (material.primitive_flags & 2U) != 0 ||
+                    (material.primitive_flags &
+                        world_primitive_screen_space_flag) != 0
+                ) continue;
+                bool finite = true;
+                for (int vertex_index = 0; vertex_index < 3; ++vertex_index) {
+                    const auto& vertex = command.vertices[vertex_index];
+                    finite = finite && vertex.exact_transform_valid &&
+                        std::isfinite(vertex.screen_x) &&
+                        std::isfinite(vertex.screen_y) &&
+                        std::isfinite(vertex.clip_x) &&
+                        std::isfinite(vertex.clip_y) &&
+                        std::isfinite(vertex.clip_w);
+                    resident_vertex_occurrences[
+                        ResidentInstanceVertexKey{
+                            command.object_id,
+                            command.model_pointer,
+                            command.transform_id,
+                            model_position(vertex)}].push_back(
+                                Occurrence{command_index, vertex_index});
+                }
+                if (!finite)
+                    continue;
+                for (int edge_index = 0; edge_index < 3; ++edge_index) {
+                    const int next = (edge_index + 1) % 3;
+                    const ResidentInstanceEdgeKey instance_edge{
+                        command.object_id,
+                        command.model_pointer,
+                        command.transform_id,
+                        Edge{
+                            model_position(command.vertices[edge_index]),
+                            model_position(command.vertices[next])}};
+                    ++resident_edge_counts[instance_edge];
+                    int first_vertex = edge_index;
+                    int second_vertex = next;
+                    const AuthoredScreenPoint authored_first{
+                        command.vertices[first_vertex].authored_screen_x,
+                        command.vertices[first_vertex].authored_screen_y};
+                    const AuthoredScreenPoint authored_second{
+                        command.vertices[second_vertex].authored_screen_x,
+                        command.vertices[second_vertex].authored_screen_y};
+                    if (authored_second < authored_first)
+                        std::swap(first_vertex, second_vertex);
+                    resident_edges.push_back(ResidentLodEdge{
+                        command_index,
+                        first_vertex,
+                        second_vertex,
+                        instance_edge});
+                }
+            }
+
+            using ResidentEdgeIndices = std::pmr::vector<std::size_t>;
+            std::pmr::unordered_map<
+                ResidentAuthoredEdgeKey,
+                ResidentEdgeIndices,
+                ResidentAuthoredEdgeKeyHash> resident_authored_edges{
+                    &topology_arena};
+            resident_authored_edges.reserve(resident_edges.size());
+            const float source_left =
+                static_cast<float>(draw_list->display_x);
+            const float source_right = source_left +
+                static_cast<float>(draw_list->display_width);
+            for (std::size_t edge_index = 0;
+                 edge_index < resident_edges.size();
+                 ++edge_index) {
+                ++stats.resident_lod_edges;
+                const auto& edge = resident_edges[edge_index];
+                const auto count = resident_edge_counts.find(
+                    edge.instance_edge);
+                const auto& command = draw_list->commands[edge.command];
+                const auto& first = command.vertices[edge.first_vertex];
+                const auto& second = command.vertices[edge.second_vertex];
+                const bool off_left =
+                    first.screen_x < source_left &&
+                    second.screen_x < source_left;
+                const bool off_right =
+                    first.screen_x >= source_right &&
+                    second.screen_x >= source_right;
+                if (
+                    resident_lod_edge_diagnostics &&
+                    (resident_lod_diagnostic_poll < 0 ||
+                        draw_list->input_poll ==
+                            resident_lod_diagnostic_poll) &&
+                    AuthoredScreenPoint{
+                        first.authored_screen_x,
+                        first.authored_screen_y} ==
+                        resident_lod_diagnostic_first &&
+                    AuthoredScreenPoint{
+                        second.authored_screen_x,
+                        second.authored_screen_y} ==
+                        resident_lod_diagnostic_second
+                ) {
+                    std::fprintf(
+                        stderr,
+                        "[Topology-Resident-LOD-Edge] poll=%d command=%zu "
+                        "edge=%d-%d object=%08x model=%08x transform=%016llx "
+                        "count=%u offLeft=%d offRight=%d "
+                        "screen=(%.9f,%.9f)..(%.9f,%.9f) "
+                        "model=(%d,%d,%d)..(%d,%d,%d)\n",
+                        draw_list->input_poll,
+                        edge.command,
+                        edge.first_vertex,
+                        edge.second_vertex,
+                        command.object_id,
+                        command.model_pointer,
+                        static_cast<unsigned long long>(command.transform_id),
+                        count == resident_edge_counts.end()
+                            ? 0U
+                            : count->second,
+                        off_left ? 1 : 0,
+                        off_right ? 1 : 0,
+                        first.screen_x,
+                        first.screen_y,
+                        second.screen_x,
+                        second.screen_y,
+                        first.model_x,
+                        first.model_y,
+                        first.model_z,
+                        second.model_x,
+                        second.model_y,
+                        second.model_z);
+                }
+                if (count == resident_edge_counts.end() || count->second != 1U)
+                    continue;
+                ++stats.resident_lod_boundary_edges;
+                if (!off_left && !off_right)
+                    continue;
+                const float dx = second.screen_x - first.screen_x;
+                const float dy = second.screen_y - first.screen_y;
+                if (dx * dx + dy * dy < 16.0F)
+                    continue;
+                const ResidentAuthoredEdgeKey authored_key{
+                    AuthoredScreenPoint{
+                        first.authored_screen_x,
+                        first.authored_screen_y},
+                    AuthoredScreenPoint{
+                        second.authored_screen_x,
+                        second.authored_screen_y},
+                    command.ordering_table_index,
+                    command.channel};
+                resident_authored_edges[authored_key].push_back(edge_index);
+                // Adjacent power-of-two resident objects can round one SXY
+                // endpoint to neighboring integers even though their
+                // continuous projections occupy the same source pixel. Index
+                // that raster-cell identity as a second, global lookup path;
+                // the exact view-scale, material, side and distance proofs
+                // below still decide whether the pair is a real LOD join.
+                const ResidentAuthoredEdgeKey projected_cell_key{
+                    AuthoredScreenPoint{
+                        static_cast<std::int32_t>(std::floor(first.screen_x)),
+                        static_cast<std::int32_t>(std::floor(first.screen_y))},
+                    AuthoredScreenPoint{
+                        static_cast<std::int32_t>(std::floor(second.screen_x)),
+                        static_cast<std::int32_t>(std::floor(second.screen_y))},
+                    command.ordering_table_index,
+                    command.channel};
+                if (!(projected_cell_key == authored_key)) {
+                    resident_authored_edges[projected_cell_key].push_back(
+                        edge_index);
+                }
+            }
+
+            struct ResidentLodCandidate {
+                std::size_t near_edge;
+                std::size_t far_edge;
+                double maximum_screen_distance_squared;
+                int scale;
+            };
+            std::pmr::unordered_map<std::size_t, ResidentLodCandidate>
+                resident_lod_candidates{&topology_arena};
+            resident_lod_candidates.reserve(resident_edges.size() / 8U + 1U);
+            // GTE integer residuals can move a proven power-of-two LOD copy
+            // slightly beyond one quarter native pixel from frame to frame.
+            // Half a pixel remains below the authored SXY quantization step;
+            // the exact view-scale and material/interior tests below are the
+            // geometric proof, while this bound rejects visibly distinct edges.
+            constexpr double maximum_resident_lod_screen_distance = 0.5;
+            constexpr double maximum_resident_lod_screen_distance_squared =
+                maximum_resident_lod_screen_distance *
+                maximum_resident_lod_screen_distance;
+            constexpr std::int64_t maximum_view_residual_squared = 16;
+            constexpr std::array<int, 4> resident_lod_scales{2, 4, 8, 16};
+            const auto scaled_vertex = [] (
+                const WorldDrawVertex& near,
+                const WorldDrawVertex& far,
+                int scale
+            ) noexcept {
+                const std::int64_t dx =
+                    static_cast<std::int64_t>(far.exact_view_x) -
+                    static_cast<std::int64_t>(near.exact_view_x) * scale;
+                const std::int64_t dy =
+                    static_cast<std::int64_t>(far.exact_view_y) -
+                    static_cast<std::int64_t>(near.exact_view_y) * scale;
+                const std::int64_t dz =
+                    static_cast<std::int64_t>(far.exact_view_z) -
+                    static_cast<std::int64_t>(near.exact_view_z) * scale;
+                return dx * dx + dy * dy + dz * dz <=
+                    maximum_view_residual_squared;
+            };
+            for (const auto& group : resident_authored_edges) {
+                const auto& indices = group.second;
+                const bool diagnostic_group =
+                    resident_lod_edge_diagnostics &&
+                    (resident_lod_diagnostic_poll < 0 ||
+                        draw_list->input_poll ==
+                            resident_lod_diagnostic_poll) &&
+                    group.first.first == resident_lod_diagnostic_first &&
+                    group.first.second == resident_lod_diagnostic_second;
+                if (indices.size() > 1U)
+                    ++stats.resident_lod_authored_edge_groups;
+                for (std::size_t left = 0; left < indices.size(); ++left) {
+                    for (std::size_t right = left + 1;
+                         right < indices.size();
+                         ++right) {
+                        const std::size_t left_index = indices[left];
+                        const std::size_t right_index = indices[right];
+                        const auto& left_edge = resident_edges[left_index];
+                        const auto& right_edge = resident_edges[right_index];
+                        const auto& left_command =
+                            draw_list->commands[left_edge.command];
+                        const auto& right_command =
+                            draw_list->commands[right_edge.command];
+                        if (
+                            left_command.object_id == right_command.object_id &&
+                            left_command.model_pointer ==
+                                right_command.model_pointer &&
+                            left_command.transform_id == right_command.transform_id
+                        ) continue;
+                        const auto& left_material = draw_list->materials[
+                            left_command.material_index];
+                        const auto& right_material = draw_list->materials[
+                            right_command.material_index];
+                        const bool material_match = identical_material(
+                            left_material,
+                            right_material);
+                        if (diagnostic_group) {
+                            std::fprintf(
+                                stderr,
+                                "[Topology-Resident-LOD-Pair] poll=%d "
+                                "left=%zu right=%zu materialMatch=%d "
+                                "material=%u/%u flags=%08x/%08x "
+                                "tpage=%04x/%04x clut=%04x/%04x "
+                                "mask=%d,%d/%d,%d offset=%d,%d/%d,%d\n",
+                                draw_list->input_poll,
+                                left_edge.command,
+                                right_edge.command,
+                                material_match ? 1 : 0,
+                                left_command.material_index,
+                                right_command.material_index,
+                                left_material.primitive_flags,
+                                right_material.primitive_flags,
+                                left_material.texture_page,
+                                right_material.texture_page,
+                                left_material.clut,
+                                right_material.clut,
+                                left_material.texture_mask_x,
+                                left_material.texture_mask_y,
+                                right_material.texture_mask_x,
+                                right_material.texture_mask_y,
+                                left_material.texture_offset_x,
+                                left_material.texture_offset_y,
+                                right_material.texture_offset_x,
+                                right_material.texture_offset_y);
+                        }
+                        if (!material_match)
+                            continue;
+                        const std::array<const WorldDrawVertex*, 2>
+                            left_vertices{{
+                                &left_command.vertices[left_edge.first_vertex],
+                                &left_command.vertices[left_edge.second_vertex]}};
+                        const std::array<const WorldDrawVertex*, 2>
+                            right_vertices{{
+                                &right_command.vertices[right_edge.first_vertex],
+                                &right_command.vertices[right_edge.second_vertex]}};
+                        const int left_opposite = 3 -
+                            left_edge.first_vertex - left_edge.second_vertex;
+                        const int right_opposite = 3 -
+                            right_edge.first_vertex - right_edge.second_vertex;
+                        const auto edge_side = [] (
+                            const WorldDrawVertex& first,
+                            const WorldDrawVertex& second,
+                            const WorldDrawVertex& point
+                        ) noexcept {
+                            const double dx = second.screen_x - first.screen_x;
+                            const double dy = second.screen_y - first.screen_y;
+                            return dx * (point.screen_y - first.screen_y) -
+                                dy * (point.screen_x - first.screen_x);
+                        };
+                        const double left_side = edge_side(
+                            *left_vertices[0],
+                            *left_vertices[1],
+                            left_command.vertices[left_opposite]);
+                        const double right_side = edge_side(
+                            *right_vertices[0],
+                            *right_vertices[1],
+                            right_command.vertices[right_opposite]);
+                        // A true join has triangle interiors on opposite sides
+                        // of the common line. This rejects two LOD surfaces
+                        // which merely project onto the same authored pixels.
+                        if (left_side == 0.0 || right_side == 0.0 ||
+                            (left_side < 0.0) == (right_side < 0.0))
+                            continue;
+                        double maximum_screen_distance_squared = 0.0;
+                        bool screen_match = true;
+                        for (int endpoint = 0; endpoint < 2; ++endpoint) {
+                            const double dx =
+                                left_vertices[endpoint]->screen_x -
+                                right_vertices[endpoint]->screen_x;
+                            const double dy =
+                                left_vertices[endpoint]->screen_y -
+                                right_vertices[endpoint]->screen_y;
+                            const double distance_squared = dx * dx + dy * dy;
+                            maximum_screen_distance_squared = (std::max)(
+                                maximum_screen_distance_squared,
+                                distance_squared);
+                            if (distance_squared >
+                                maximum_resident_lod_screen_distance_squared)
+                                screen_match = false;
+                        }
+                        if (diagnostic_group) {
+                            std::fprintf(
+                                stderr,
+                                "[Topology-Resident-LOD-Screen] poll=%d "
+                                "left=%zu right=%zu match=%d maxSquared=%.12f\n",
+                                draw_list->input_poll,
+                                left_edge.command,
+                                right_edge.command,
+                                screen_match ? 1 : 0,
+                                maximum_screen_distance_squared);
+                        }
+                        if (!screen_match)
+                            continue;
+                        std::size_t near_index = left_index;
+                        std::size_t far_index = right_index;
+                        int proven_scale = 0;
+                        for (const int scale : resident_lod_scales) {
+                            const bool right_is_far =
+                                scaled_vertex(
+                                    *left_vertices[0],
+                                    *right_vertices[0],
+                                    scale) &&
+                                scaled_vertex(
+                                    *left_vertices[1],
+                                    *right_vertices[1],
+                                    scale);
+                            const bool left_is_far =
+                                scaled_vertex(
+                                    *right_vertices[0],
+                                    *left_vertices[0],
+                                    scale) &&
+                                scaled_vertex(
+                                    *right_vertices[1],
+                                    *left_vertices[1],
+                                    scale);
+                            if (!right_is_far && !left_is_far)
+                                continue;
+                            if (left_is_far) {
+                                near_index = right_index;
+                                far_index = left_index;
+                            }
+                            proven_scale = scale;
+                            break;
+                        }
+                        if (diagnostic_group) {
+                            const auto residual = [] (
+                                const WorldDrawVertex& near,
+                                const WorldDrawVertex& far,
+                                int scale
+                            ) noexcept {
+                                const std::int64_t dx =
+                                    static_cast<std::int64_t>(far.exact_view_x) -
+                                    static_cast<std::int64_t>(near.exact_view_x) *
+                                        scale;
+                                const std::int64_t dy =
+                                    static_cast<std::int64_t>(far.exact_view_y) -
+                                    static_cast<std::int64_t>(near.exact_view_y) *
+                                        scale;
+                                const std::int64_t dz =
+                                    static_cast<std::int64_t>(far.exact_view_z) -
+                                    static_cast<std::int64_t>(near.exact_view_z) *
+                                        scale;
+                                return dx * dx + dy * dy + dz * dz;
+                            };
+                            std::fprintf(
+                                stderr,
+                                "[Topology-Resident-LOD-Scale] poll=%d "
+                                "left=%zu right=%zu scale=%d "
+                                "leftToRight2=%lld,%lld rightToLeft2=%lld,%lld\n",
+                                draw_list->input_poll,
+                                left_edge.command,
+                                right_edge.command,
+                                proven_scale,
+                                static_cast<long long>(residual(
+                                    *left_vertices[0], *right_vertices[0], 2)),
+                                static_cast<long long>(residual(
+                                    *left_vertices[1], *right_vertices[1], 2)),
+                                static_cast<long long>(residual(
+                                    *right_vertices[0], *left_vertices[0], 2)),
+                                static_cast<long long>(residual(
+                                    *right_vertices[1], *left_vertices[1], 2)));
+                        }
+                        if (proven_scale == 0)
+                            continue;
+                        ++stats.resident_lod_candidate_pairs;
+                        const ResidentLodCandidate candidate{
+                            near_index,
+                            far_index,
+                            maximum_screen_distance_squared,
+                            proven_scale};
+                        const auto existing =
+                            resident_lod_candidates.find(far_index);
+                        if (
+                            existing == resident_lod_candidates.end() ||
+                            candidate.maximum_screen_distance_squared <
+                                existing->second
+                                    .maximum_screen_distance_squared ||
+                            (candidate.maximum_screen_distance_squared ==
+                                    existing->second
+                                        .maximum_screen_distance_squared &&
+                                std::tie(
+                                    candidate.near_edge,
+                                    candidate.scale) <
+                                std::tie(
+                                    existing->second.near_edge,
+                                    existing->second.scale))
+                        ) {
+                            resident_lod_candidates.insert_or_assign(
+                                far_index,
+                                candidate);
+                        }
+                    }
+                }
+            }
+
+            std::pmr::vector<ResidentLodCandidate>
+                ordered_resident_lod_candidates{&topology_arena};
+            ordered_resident_lod_candidates.reserve(
+                resident_lod_candidates.size());
+            for (const auto& candidate : resident_lod_candidates)
+                ordered_resident_lod_candidates.push_back(candidate.second);
+            std::sort(
+                ordered_resident_lod_candidates.begin(),
+                ordered_resident_lod_candidates.end(),
+                [] (const auto& left, const auto& right) {
+                    return std::tie(
+                        left.scale,
+                        left.near_edge,
+                        left.far_edge) <
+                        std::tie(
+                            right.scale,
+                            right.near_edge,
+                            right.far_edge);
+                });
+            struct ResidentLodVertexAdjustment {
+                ResidentInstanceVertexKey key;
+                float target_x;
+                float target_y;
+                double overlap_x;
+                double overlap_y;
+                std::int32_t ordering_table_index;
+                bool off_left;
+                bool diagnostic;
+            };
+            std::pmr::unordered_map<
+                ResidentInstanceVertexKey,
+                std::size_t,
+                ResidentInstanceVertexKeyHash> resident_lod_adjustment_indices{
+                    &topology_arena};
+            std::pmr::vector<ResidentLodVertexAdjustment>
+                resident_lod_adjustments{&topology_arena};
+            resident_lod_adjustment_indices.reserve(
+                ordered_resident_lod_candidates.size() * 2U);
+            resident_lod_adjustments.reserve(
+                ordered_resident_lod_candidates.size() * 2U);
+            for (const auto& candidate :
+                  ordered_resident_lod_candidates) {
+                const auto& near_edge =
+                    resident_edges[candidate.near_edge];
+                const auto& far_edge = resident_edges[candidate.far_edge];
+                const auto& near_command =
+                    draw_list->commands[near_edge.command];
+                const auto& far_command =
+                    draw_list->commands[far_edge.command];
+                const auto& near_first =
+                    near_command.vertices[near_edge.first_vertex];
+                const auto& near_second =
+                    near_command.vertices[near_edge.second_vertex];
+                const int near_opposite = 3 -
+                    near_edge.first_vertex - near_edge.second_vertex;
+                const auto& near_inside =
+                    near_command.vertices[near_opposite];
+                const double edge_dx =
+                    near_second.screen_x - near_first.screen_x;
+                const double edge_dy =
+                    near_second.screen_y - near_first.screen_y;
+                const double edge_length = std::hypot(edge_dx, edge_dy);
+                const double inside_side =
+                    edge_dx * (near_inside.screen_y - near_first.screen_y) -
+                    edge_dy * (near_inside.screen_x - near_first.screen_x);
+                // Matching but oppositely wound triangles can both exclude an
+                // exactly coincident edge under D3D's top-left fill rule. Move
+                // the farther boundary one half native pixel into the near
+                // triangle: two internal pixels at the normal 4x world scale.
+                // Accumulate every incident seam normal before moving a shared
+                // far vertex, so repairing one edge cannot overwrite the
+                // neighboring edge's corner correction. The candidate is
+                // wholly outside 4:3 and the x clamp below guarantees that this
+                // overlap cannot alter that source image.
+                constexpr double resident_lod_overlap = 0.5;
+                double overlap_x = 0.0;
+                double overlap_y = 0.0;
+                if (edge_length > 0.0 && inside_side != 0.0) {
+                    const double side = inside_side > 0.0 ? 1.0 : -1.0;
+                    overlap_x = (-edge_dy / edge_length) *
+                        resident_lod_overlap * side;
+                    overlap_y = (edge_dx / edge_length) *
+                        resident_lod_overlap * side;
+                }
+                const bool off_left =
+                    near_first.screen_x < source_left &&
+                    near_second.screen_x < source_left;
+                const bool diagnostic_candidate =
+                    resident_lod_edge_diagnostics &&
+                    (resident_lod_diagnostic_poll < 0 ||
+                        draw_list->input_poll ==
+                            resident_lod_diagnostic_poll) &&
+                    AuthoredScreenPoint{
+                        near_first.authored_screen_x,
+                        near_first.authored_screen_y} ==
+                        resident_lod_diagnostic_first &&
+                    AuthoredScreenPoint{
+                        near_second.authored_screen_x,
+                        near_second.authored_screen_y} ==
+                        resident_lod_diagnostic_second;
+                if (diagnostic_candidate) {
+                    std::fprintf(
+                        stderr,
+                        "[Topology-Resident-LOD-Apply] poll=%d near=%zu "
+                        "far=%zu scale=%d insideSide=%.9f "
+                        "overlap=(%.9f,%.9f)\n",
+                        draw_list->input_poll,
+                        near_edge.command,
+                        far_edge.command,
+                        candidate.scale,
+                        inside_side,
+                        overlap_x,
+                        overlap_y);
+                }
+                ++stats.resident_lod_edge_groups;
+                for (int endpoint = 0; endpoint < 2; ++endpoint) {
+                    const int near_vertex_index = endpoint == 0
+                        ? near_edge.first_vertex
+                        : near_edge.second_vertex;
+                    const int far_vertex_index = endpoint == 0
+                        ? far_edge.first_vertex
+                        : far_edge.second_vertex;
+                    const auto& target =
+                        near_command.vertices[near_vertex_index];
+                    const auto& seed =
+                        far_command.vertices[far_vertex_index];
+                    if (diagnostic_candidate) {
+                        std::fprintf(
+                            stderr,
+                            "[Topology-Resident-LOD-Apply-Vertex] "
+                            "endpoint=%d near=(%.9f,%.9f) "
+                            "farBefore=(%.9f,%.9f) delta=(%.9f,%.9f)\n",
+                            endpoint,
+                            target.screen_x,
+                            target.screen_y,
+                            seed.screen_x,
+                            seed.screen_y,
+                            overlap_x,
+                            overlap_y);
+                    }
+                    const ResidentInstanceVertexKey key{
+                        far_command.object_id,
+                        far_command.model_pointer,
+                        far_command.transform_id,
+                        model_position(seed)};
+                    const auto existing =
+                        resident_lod_adjustment_indices.find(key);
+                    if (existing == resident_lod_adjustment_indices.end()) {
+                        const std::size_t index =
+                            resident_lod_adjustments.size();
+                        resident_lod_adjustment_indices.emplace(key, index);
+                        resident_lod_adjustments.push_back(
+                            ResidentLodVertexAdjustment{
+                                key,
+                                target.screen_x,
+                                target.screen_y,
+                                overlap_x,
+                                overlap_y,
+                                far_command.ordering_table_index,
+                                off_left,
+                                diagnostic_candidate});
+                    } else {
+                        auto& adjustment =
+                            resident_lod_adjustments[existing->second];
+                        adjustment.overlap_x += overlap_x;
+                        adjustment.overlap_y += overlap_y;
+                        adjustment.diagnostic = adjustment.diagnostic ||
+                            diagnostic_candidate;
+                    }
+                }
+            }
+            for (const auto& adjustment : resident_lod_adjustments) {
+                float target_x = static_cast<float>(
+                    adjustment.target_x + adjustment.overlap_x);
+                const float target_y = static_cast<float>(
+                    adjustment.target_y + adjustment.overlap_y);
+                if (adjustment.off_left)
+                    target_x = (std::min)(target_x, source_left);
+                else
+                    target_x = (std::max)(target_x, source_right);
+                if (adjustment.diagnostic) {
+                    std::fprintf(
+                        stderr,
+                        "[Topology-Resident-LOD-Apply-Final] poll=%d "
+                        "base=(%.9f,%.9f) accumulated=(%.9f,%.9f) "
+                        "target=(%.9f,%.9f)\n",
+                        draw_list->input_poll,
+                        adjustment.target_x,
+                        adjustment.target_y,
+                        adjustment.overlap_x,
+                        adjustment.overlap_y,
+                        target_x,
+                        target_y);
+                }
+                const auto occurrences = resident_vertex_occurrences.find(
+                    adjustment.key);
+                    if (occurrences == resident_vertex_occurrences.end())
+                        continue;
+                    for (const auto& occurrence : occurrences->second) {
+                        auto& command =
+                            draw_list->commands[occurrence.command];
+                        if (command.ordering_table_index !=
+                            adjustment.ordering_table_index)
+                            continue;
+                        auto& vertex = command.vertices[occurrence.vertex];
+                        const bool changed =
+                            vertex.screen_x != target_x ||
+                            vertex.screen_y != target_y;
+                        set_projected_position(
+                            &vertex,
+                            target_x,
+                            target_y,
+                            *draw_list);
+                        if (changed)
+                            ++stats.adjusted_resident_lod_instances;
+                    }
+            }
+        }
+
         struct EdgeOccurrenceBucket {
             EdgeOccurrence first{};
             std::uint32_t count = 0;
@@ -3277,6 +4136,16 @@ WorldTopologyResult apply_world_topology(
                     projected_candidate_edge_tests),
                 stats.projected_t_junctions,
                 stats.adjusted_projected_t_junction_instances);
+            std::fprintf(
+                stderr,
+                "[Topology-Resident-LOD-Counters] edges=%u boundaries=%u "
+                "authoredGroups=%u candidates=%u aligned=%u adjusted=%u\n",
+                stats.resident_lod_edges,
+                stats.resident_lod_boundary_edges,
+                stats.resident_lod_authored_edge_groups,
+                stats.resident_lod_candidate_pairs,
+                stats.resident_lod_edge_groups,
+                stats.adjusted_resident_lod_instances);
         }
         *output_stats = stats;
         return WorldTopologyResult::success;
