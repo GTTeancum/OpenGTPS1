@@ -5260,12 +5260,61 @@ def named_tim_members(data: bytes) -> list[tuple[str, bytes]]:
     ]
 
 
-def convert_gt1_sky_texture_package(data: bytes) -> bytes:
-    """Remove GT1's name table and retain its native ordered sky TIM stream."""
+def tim_stream_members(data: bytes) -> list[bytes]:
+    """Read the counted, unnamed 4-bit TIM stream used by GT2 scenery."""
+    if len(data) < 4:
+        raise ValueError("truncated GT2 texture package")
+    count = struct.unpack_from("<I", data)[0]
+    offset = 4
+    members: list[bytes] = []
+    for _ in range(count):
+        start = offset
+        if (
+            offset + 8 > len(data)
+            or struct.unpack_from("<II", data, offset) != (16, 8)
+        ):
+            raise ValueError("expected an indexed 4-bit scenery TIM")
+        offset += 8
+        for _ in range(2):
+            if offset + 12 > len(data):
+                raise ValueError("truncated scenery TIM block")
+            size, _, _, width, height = struct.unpack_from("<I4H", data, offset)
+            if size != 12 + width * height * 2 or offset + size > len(data):
+                raise ValueError("invalid scenery TIM block size")
+            offset += size
+        members.append(data[start:offset])
+    if offset != len(data):
+        raise ValueError("unexpected trailing scenery TIM data")
+    return members
+
+
+def convert_gt1_sky_texture_package(data: bytes, native_template: bytes) -> bytes:
+    """Keep GT1 artwork, but upload its palettes where the native BSO reads.
+
+    The shared dawn image planes are identical in both games. Their palettes
+    are not at the same VRAM addresses: leaving GT1's x=0 CLUTs unchanged made
+    the GT2 BSO sample unrelated course palettes at x=624 instead.
+    """
     members = named_tim_members(data)
+    native_members = tim_stream_members(native_template)
+    if len(members) != len(native_members):
+        raise ValueError("GT1/GT2 sky TIM counts differ")
     output = bytearray(struct.pack("<I", len(members)))
-    for _, tim in members:
-        output.extend(tim)
+    for (_, tim), native in zip(members, native_members, strict=True):
+        if struct.unpack_from("<II", tim) != (16, 8):
+            raise ValueError("expected an indexed 4-bit GT1 sky TIM")
+        source_image = 8 + struct.unpack_from("<I", tim, 8)[0]
+        native_image = 8 + struct.unpack_from("<I", native, 8)[0]
+        if tim[source_image:] != native[native_image:]:
+            raise ValueError("GT1/GT2 sky image planes differ")
+        if (
+            struct.unpack_from("<HH", tim, 16) != (16, 1)
+            or native[16:20] != tim[16:20]
+        ):
+            raise ValueError("unexpected sky palette dimensions")
+        converted = bytearray(tim)
+        converted[12:16] = native[12:16]
+        output.extend(converted)
     return bytes(output)
 
 
@@ -6151,6 +6200,8 @@ def patch_ssr11_arcade_overlay(
 
 def convert_gt1_texture_package(
     data: bytes,
+    *,
+    reserved_cluts: frozenset[tuple[int, int]] = frozenset(),
 ) -> tuple[bytes, bytes, TextureRelocation]:
     """Convert a named GT1 course package into native GT2 TRP/crsmap data.
 
@@ -6158,8 +6209,9 @@ def convert_gt1_texture_package(
     GT1/GT2 High Speed Ring files are byte-identical), so it belongs in
     ``crsmap`` rather than the course texture atlas. GT2 packs the remaining
     4-bit images into twelve protected 256x256 texture pages at x=640..1023
-    and its CLUTs into x=496..703, y=496..511. Reproduce that layout and
-    return the relocation metadata needed to rewrite the real polygon packets.
+    and its CLUTs into x=496..703, y=496..511. Reproduce that layout, excluding
+    any palette slots used by the accompanying sky, and return the relocation
+    metadata needed to rewrite the real polygon packets.
     """
     textures: list[dict[str, object]] = []
     for name, member in named_tim_members(data):
@@ -6205,16 +6257,19 @@ def convert_gt1_texture_package(
         dict.fromkeys(texture["clut"] for texture in atlas)
     )
     clut_columns = 13
-    if len(unique_cluts) > clut_columns * 16:
+    clut_slots = [
+        (496 + column * 16, 496 + row)
+        for row in range(16)
+        for column in range(clut_columns)
+        if (496 + column * 16, 496 + row) not in reserved_cluts
+    ]
+    if len(unique_cluts) > len(clut_slots):
         raise ValueError(
             f"GT1 course needs {len(unique_cluts)} CLUT slots; "
-            f"GT2 bank holds {clut_columns * 16}"
+            f"GT2 bank has {len(clut_slots)} unreserved slots"
         )
     relocated_coordinates = {
-        coordinate: (
-            496 + (index % clut_columns) * 16,
-            496 + index // clut_columns,
-        )
+        coordinate: clut_slots[index]
         for index, coordinate in enumerate(unique_cluts)
     }
     clut_id_map = {
@@ -6547,9 +6602,8 @@ class Gt1CourseDeserializer:
             # packets.  GT2's renderer indexes the same 32-byte descriptor
             # but expects packet A first and the threshold at +0x0c.
             #
-            # Keeping the original packets is intentional: the converted
-            # TRP retains the GT1 TIM images and their native VRAM placement,
-            # so no texture-page or CLUT remap is necessary.
+            # Keep the original packets here. remap_texture_packets later
+            # applies the paired TRP's palette/image allocation to both tails.
             self.data[descriptor : descriptor + 32] = (
                 source[4:16] + source[0:4] + source[16:32]
             )
@@ -7179,7 +7233,17 @@ def convert_ssr11(
         background_archive,
         background_entries[3 * 2 + 1],
     )
-    sky_texture = convert_gt1_sky_texture_package(source_sky_texture)
+    sky_texture = convert_gt1_sky_texture_package(
+        source_sky_texture,
+        read_gt2_gzip_member(gt2_arcade_volume, "bgsobj/dawn.bsp.gz"),
+    )
+    # Sky and course uploads share VRAM. Moving the sky palettes alone would
+    # overwrite live track materials; reserve the BSO's native slots in all
+    # six variant TRPs and remap every corresponding TRO packet together.
+    sky_cluts = frozenset(
+        struct.unpack_from("<HH", tim, 12)
+        for tim in tim_stream_members(sky_texture)
+    )
     sky_model, sky_model_conversion = convert_gt1_sky_model(
         reference_sky_model,
         source_sky_model,
@@ -7209,12 +7273,13 @@ def convert_ssr11(
         "modelSha256": hashlib.sha256(sky_model).hexdigest(),
         "modelBasis": "GT2 native dawn BSO layout with GT1 dawn3 colours",
         "modelConversion": sky_model_conversion,
+        "reservedClutSlots": sorted(sky_cluts),
     }
 
     for stem, course_index, label in SSR11_VARIANTS:
         source_texture = unpack_entry(archive, entries[course_index * 2])
         texture, course_map, relocation = convert_gt1_texture_package(
-            source_texture
+            source_texture, reserved_cluts=sky_cluts
         )
         source_geometry = unpack_entry(
             archive, entries[course_index * 2 + 1]
