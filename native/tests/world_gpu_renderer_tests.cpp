@@ -831,6 +831,120 @@ bool authored_track_overlay_wins_coplanar_depth() {
     return color[0] > 150U && color[1] > 120U && color[2] < 16U;
 }
 
+bool surface_detail_stays_visible_during_camera_motion(bool vehicle = false, bool occluded = false) {
+    using namespace opengt::render;
+    // A small marking and its large road triangle share one authored plane,
+    // but not raster vertices. Move their perspective projection through 32
+    // subpixel positions, including opposite diagonals/winding. A constant-Z
+    // pixel test cannot exercise independent raster depth interpolation.
+    for (int frame = 0; frame < 32; ++frame) {
+        WorldDrawList list{};
+        list.display_width = list.display_height = 64;
+        WorldMaterial support{};
+        support.primitive_flags = world_primitive_track_overlay_support_flag;
+        WorldMaterial detail{};
+        detail.primitive_flags = 1U << world_primitive_track_overlay_layer_shift;
+        if (vehicle) {
+            support.primitive_flags = 1U | 4U;
+            support.texture_page = 2U << 7U;
+            detail.primitive_flags = 1U | 2U;
+            detail.texture_page = (2U << 7U) | (1U << 5U);
+        }
+        list.materials = {support, detail};
+        for (int layer = 0; layer < 2; ++layer) {
+            const std::int16_t extent = layer == 0 ? 100 : 30;
+            WorldDrawCommand command{};
+            command.material_index = layer;
+            command.object_kind = vehicle ? 2U : 1U;
+            command.object_id = 1;
+            command.model_pointer = 0x80004000U;
+            command.transform_id = static_cast<std::uint64_t>(frame + 1);
+            command.exact_transform_valid = true;
+            command.clip_x1 = command.clip_y1 = 63;
+            const std::array<std::array<std::int16_t, 2>, 3> model{{
+                {{static_cast<std::int16_t>(-extent), static_cast<std::int16_t>(-extent)}},
+                {{0, extent}}, {{extent, static_cast<std::int16_t>(-extent)}}}};
+            for (int corner = 0; corner < 3; ++corner) {
+                const auto& p = model[(frame % 2 && layer == 1) ? 2-corner : corner];
+                auto& point = command.vertices[corner];
+                point = vertex(p[0]*10.0F + frame*0.137F,
+                    p[1]*10.0F + frame*0.173F, p[0], p[1], 0);
+                point.clip_w = 1000.0F + p[1]*3.0F + p[0]*0.021F + frame*0.193F;
+                point.clip_z = 16.0F;
+                point.r = layer == 1 ? 192 : 0;
+                point.g = layer == 1 ? 160 : 128;
+                point.b = 0;
+                if (vehicle) {
+                    point.r = point.g = point.b = 128;
+                    point.u = point.v = layer == 1 ? 20.0F : 10.0F;
+                }
+            }
+            list.commands.push_back(command);
+        }
+        list.track_commands = 2;
+        if (vehicle) {
+            // Eight exact body/detail pairs establish a broad environment
+            // material; a smaller, differently tessellated visible detail
+            // triangle exercises its shared-plane depth in the center.
+            for (int pair = 0; pair < 8; ++pair) {
+                auto body = list.commands[0];
+                for (auto& point : body.vertices) {
+                    point.model_x += static_cast<std::int16_t>(pair + 1);
+                    point.clip_x += (pair + 1)*10.0F;
+                    point.clip_w += (pair + 1)*0.021F;
+                }
+                auto reflection = body;
+                reflection.material_index = 1;
+                for (auto& point : reflection.vertices)
+                    point.u = point.v = 30.0F;
+                list.commands.push_back(body);
+                list.commands.push_back(reflection);
+            }
+            list.vehicle_commands = static_cast<std::uint32_t>(list.commands.size());
+            list.track_commands = 0;
+        }
+        if (occluded) {
+            list.materials.push_back(WorldMaterial{});
+            auto foreground = list.commands[0];
+            foreground.material_index = 2;
+            foreground.object_kind = 1;
+            foreground.object_id = 2;
+            foreground.model_pointer = 0x80005000U;
+            for (auto& point : foreground.vertices) {
+                point.clip_z *= 1.01F;
+                point.r = point.g = 0;
+                point.b = 255;
+            }
+            list.commands.push_back(foreground);
+            ++list.track_commands;
+        }
+        std::vector<std::uint16_t> vram(1024U*512U);
+        vram[10U*1024U+10U] = 0x4210U;
+        vram[20U*1024U+20U] = 0xA108U;
+        std::vector<std::uint8_t> output(64U*64U*4U);
+        WorldGpuRenderStats stats{};
+        reset_world_d3d11_readback(false);
+        const auto result = render_world_d3d11(list, vram.data(), vram.size(),
+            output.data(), output.size(), WorldGpuRenderOptions{
+                false, true, false, false, false, false, 1, clear_rgba}, &stats);
+        if (result != WorldGpuRenderResult::success || !stats.output_valid)
+            return false;
+        // Interior pixels are safely inside both triangles throughout motion.
+        for (std::size_t y = 30; y <= 35; ++y)
+            for (std::size_t x = 30; x <= 33; ++x) {
+                const auto pixel = (y*64U+x)*4U;
+                const bool okay = occluded
+                    ? output[pixel] < 16U && output[pixel+2] > 240U
+                    : vehicle
+                    ? output[pixel] >= 194U && output[pixel] <= 202U
+                    : output[pixel] >= 150U && output[pixel+1] >= 120U;
+                if (!okay)
+                    return false;
+            }
+    }
+    return true;
+}
+
 bool mask_checked_track_overlay_obeys_ps1_mask() {
     const auto unmasked = render_authored_track_overlay_depth_case(
         false, false, true, 192, 160, 0, false, 1000.0F,
@@ -1540,6 +1654,262 @@ bool async_frames_preserve_mutable_inputs() {
     return true;
 }
 
+std::array<std::uint8_t, 4> render_vehicle_reflection_center(
+    std::size_t paired_commands,
+    bool base_visible = true,
+    bool reflection_visible = true,
+    bool nearer_track = false,
+    std::size_t unpaired_reflections = 0
+) {
+    using namespace opengt::render;
+    WorldDrawList list{};
+    list.display_width = 16;
+    list.display_height = 16;
+    list.materials.push_back(WorldMaterial{
+        1U | 4U,
+        2U << 7U,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    });
+    list.materials.push_back(WorldMaterial{
+        1U | 2U,
+        static_cast<std::uint16_t>((2U << 7U) | (1U << 5U)),
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    });
+    list.materials.push_back(WorldMaterial{});
+
+    const auto append = [&list] (
+        std::uint32_t material_index,
+        std::int16_t model_offset,
+        float depth,
+        float uv,
+        std::uint32_t object_kind = 2U
+    ) {
+        WorldDrawCommand command{};
+        command.vertices[0] = vertex(
+            -1.0F, -1.0F, model_offset, 0, 0);
+        command.vertices[1] = vertex(
+            0.0F, 1.0F, model_offset, 1, 0);
+        command.vertices[2] = vertex(
+            1.0F, -1.0F, model_offset, 0, 1);
+        for (auto& point : command.vertices) {
+            point.clip_z = depth;
+            point.clip_w = 1.0F;
+            point.u = point.v = uv;
+            point.r = point.g = point.b = 128;
+        }
+        command.material_index = material_index;
+        command.clip_x0 = command.clip_y0 = 0;
+        command.clip_x1 = command.clip_y1 = 15;
+        command.object_kind = object_kind;
+        command.object_id = object_kind == 2U ? 1U : 2U;
+        command.model_pointer = object_kind == 2U
+            ? 0x80008000U
+            : 0x80009000U;
+        command.transform_id = object_kind == 2U
+            ? 0x123456789ABCDEF0ULL
+            : 0x0FEDCBA987654321ULL;
+        command.channel = WorldViewChannel::main_view;
+        list.commands.push_back(command);
+    };
+
+    for (std::size_t index = 0; index < paired_commands; ++index)
+        append(0, static_cast<std::int16_t>(index * 4), 0.5F, 10.0F);
+    if (nearer_track) {
+        append(2, 100, 0.75F, 0.0F, 1U);
+        for (auto& point : list.commands.back().vertices) {
+            point.r = point.g = 0;
+            point.b = 255;
+        }
+    }
+    for (std::size_t index = 0; index < paired_commands; ++index) {
+        append(
+            1,
+            static_cast<std::int16_t>(index * 4),
+            0.5F,
+            index == 0 ? 20.0F : 30.0F + static_cast<float>(index));
+    }
+    for (std::size_t index = 0; index < unpaired_reflections; ++index)
+        append(1, static_cast<std::int16_t>(1000 + index*4), 0.5F, 100.0F);
+    list.vehicle_commands = static_cast<std::uint32_t>(
+        paired_commands * 2U + unpaired_reflections);
+    list.track_commands = nearer_track ? 1U : 0U;
+
+    std::vector<std::uint16_t> vram(1024U * 512U);
+    if (base_visible)
+        vram[10U * 1024U + 10U] = 0x4210U;
+    if (reflection_visible)
+        vram[20U * 1024U + 20U] = 0xA108U;
+    std::vector<std::uint8_t> output(16U * 16U * 4U);
+    WorldGpuRenderStats stats{};
+    reset_world_d3d11_readback(false);
+    const auto result = render_world_d3d11(
+        list,
+        vram.data(),
+        vram.size(),
+        output.data(),
+        output.size(),
+        WorldGpuRenderOptions{
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            1,
+            clear_rgba,
+        },
+        &stats);
+    if (result != WorldGpuRenderResult::success || !stats.output_valid)
+        return {};
+    const std::size_t center = (8U * 16U + 8U) * 4U;
+    return {
+        output[center],
+        output[center + 1],
+        output[center + 2],
+        output[center + 3],
+    };
+}
+
+bool broad_vehicle_reflection_keeps_authored_strength() {
+    const auto pixel = render_vehicle_reflection_center(8U);
+    const auto ordinary_additive = render_vehicle_reflection_center(1U);
+    return pixel == ordinary_additive &&
+        pixel[0] >= 194U && pixel[0] <= 202U &&
+        pixel[1] >= 194U && pixel[1] <= 202U &&
+        pixel[2] >= 194U && pixel[2] <= 202U;
+}
+
+bool curved_body_reflection_follows_authored_subdivision(bool occluded = false) {
+    using namespace opengt::render;
+    WorldDrawList list{};
+    list.display_width = list.display_height = 64;
+    WorldMaterial body_material{}, reflection_material{};
+    body_material.primitive_flags = 1U | 4U;
+    body_material.texture_page = 2U << 7U;
+    reflection_material.primitive_flags = 1U | 2U;
+    reflection_material.texture_page = (2U << 7U) | (1U << 5U);
+    list.materials = {body_material, reflection_material, WorldMaterial{}};
+    const auto point = [] (int x, int y, bool reflection) {
+        const auto z = static_cast<std::int16_t>(-(x+100)*(y+100)/500);
+        auto result = vertex(x*5.0F, y*5.0F,
+            static_cast<std::int16_t>(x), static_cast<std::int16_t>(y), z);
+        result.clip_z = 16.0F;
+        result.clip_w = 1000.0F + z;
+        result.u = result.v = reflection ? 20.0F : 10.0F;
+        return result;
+    };
+    const auto append = [&] (WorldDrawVertex a, WorldDrawVertex b,
+                            WorldDrawVertex c, bool reflection) {
+        WorldDrawCommand command{};
+        command.vertices[0] = a; command.vertices[1] = b; command.vertices[2] = c;
+        command.material_index = reflection ? 1U : 0U;
+        command.object_kind = 2;
+        command.object_id = 1;
+        command.model_pointer = 0x80004000U;
+        command.transform_id = 1;
+        command.exact_transform_valid = true;
+        command.clip_x1 = command.clip_y1 = 63;
+        list.commands.push_back(command);
+    };
+    for (int y = -100; y < 100; y += 50)
+        for (int x = -100; x < 100; x += 50) {
+            append(point(x,y,false), point(x+50,y,false), point(x,y+50,false), false);
+            append(point(x+50,y,false), point(x,y+50,false), point(x+50,y+50,false), false);
+        }
+    // The broad environment material has exact pairs elsewhere on the body;
+    // its visible roof is the mismatched coarse nonplanar quad under test.
+    for (int pair = 0; pair < 8; ++pair) {
+        auto a = point(-100,-100,false), b = point(100,-100,false), c = point(-100,100,false);
+        for (auto* vertex : {&a,&b,&c}) {
+            vertex->model_x += static_cast<std::int16_t>(1000 + pair*300);
+            vertex->clip_x += 10000.0F + pair*3000.0F;
+        }
+        append(a,b,c,false);
+        for (auto* vertex : {&a,&b,&c}) vertex->u = vertex->v = 20.0F;
+        append(a,b,c,true);
+    }
+    append(point(-100,-100,true),point(100,-100,true),point(-100,100,true),true);
+    append(point(100,-100,true),point(-100,100,true),point(100,100,true),true);
+    list.vehicle_commands = static_cast<std::uint32_t>(list.commands.size());
+    if (occluded) {
+        WorldDrawCommand foreground = list.commands.front();
+        foreground.material_index = 2;
+        foreground.object_id = 2;
+        foreground.object_kind = 1;
+        foreground.vertices[0] = vertex(-1.0F,-1.0F,0,0,0);
+        foreground.vertices[1] = vertex(0.0F,1.0F,0,1,0);
+        foreground.vertices[2] = vertex(1.0F,-1.0F,1,0,0);
+        for (auto& vertex : foreground.vertices) {
+            vertex.r = vertex.g = 0;
+            vertex.b = 255;
+        }
+        list.commands.push_back(foreground);
+        list.track_commands = 1;
+    }
+    std::vector<std::uint16_t> vram(1024U*512U);
+    vram[10U*1024U+10U] = 0x4210U;
+    vram[20U*1024U+20U] = 0xA108U;
+    std::vector<std::uint8_t> output(64U*64U*4U);
+    WorldGpuRenderStats stats{};
+    reset_world_d3d11_readback(false);
+    const auto result = render_world_d3d11(list, vram.data(), vram.size(),
+        output.data(), output.size(), WorldGpuRenderOptions{
+            false,true,false,false,false,false,1,clear_rgba}, &stats);
+    if (result != WorldGpuRenderResult::success || !stats.output_valid)
+        return false;
+    for (std::size_t y = 25; y < 39; ++y)
+        for (std::size_t x = 25; x < 39; ++x) {
+            const auto pixel = (y*64U+x)*4U;
+            if (occluded ? output[pixel] > 16U || output[pixel+2] < 240U
+                         : output[pixel] < 194U || output[pixel] > 202U)
+                return false;
+        }
+    return true;
+}
+
+bool small_additive_vehicle_detail_keeps_ps1_blend() {
+    const auto pixel = render_vehicle_reflection_center(1U);
+    return pixel[0] >= 194U && pixel[1] >= 194U && pixel[2] >= 194U;
+}
+
+bool vehicle_reflection_strength_survives_tessellation_changes() {
+    const auto reference = render_vehicle_reflection_center(8U);
+    // More unpaired coarse reflection triangles must not change the strength
+    // of an existing body/detail pair as base tessellation changes nearby.
+    for (const auto count : {8U, 9U, 40U, 125U})
+        if (render_vehicle_reflection_center(8U, true, true, false, count) != reference)
+            return false;
+    return true;
+}
+
+bool vehicle_reflection_requires_visible_base_owner() {
+    return is_clear(render_vehicle_reflection_center(8U, false));
+}
+
+bool vehicle_reflection_preserves_zero_texel_transparency() {
+    const auto pixel = render_vehicle_reflection_center(8U, true, false);
+    return
+        pixel[0] >= 128U && pixel[0] <= 136U &&
+        pixel[1] >= 128U && pixel[1] <= 136U &&
+        pixel[2] >= 128U && pixel[2] <= 136U;
+}
+
+bool nearer_track_occludes_vehicle_reflection() {
+    const auto pixel = render_vehicle_reflection_center(
+        8U, true, true, true);
+    return pixel[0] < 16U && pixel[1] < 16U && pixel[2] > 240U;
+}
+
 std::array<std::uint8_t, 4> render_vehicle_shadow_center(
     bool prepend_clipped_shadow
 ) {
@@ -2011,6 +2381,18 @@ int main() {
         authored_track_overlay_wins_coplanar_depth(),
         "give classified yellow road artwork priority over its support");
     okay &= expect(
+        surface_detail_stays_visible_during_camera_motion(),
+        "retain every interior road-marking pixel through perspective camera motion");
+    okay &= expect(
+        surface_detail_stays_visible_during_camera_motion(false, true),
+        "keep nearer geometry ahead of shared-plane road artwork during motion");
+    okay &= expect(
+        surface_detail_stays_visible_during_camera_motion(true),
+        "retain the vehicle reflection contribution through perspective camera motion");
+    okay &= expect(
+        surface_detail_stays_visible_during_camera_motion(true, true),
+        "keep nearer geometry ahead of shared-plane vehicle detail during motion");
+    okay &= expect(
         mask_checked_track_overlay_obeys_ps1_mask(),
         "preserve PS1 mask rejection for typed road artwork");
     okay &= expect(
@@ -2058,6 +2440,28 @@ int main() {
     okay &= expect(
         async_frames_preserve_mutable_inputs(),
         "preserve each asynchronous frame's mutable GPU inputs");
+    okay &= expect(
+        broad_vehicle_reflection_keeps_authored_strength(),
+        "preserve authored additive strength for broad vehicle reflections");
+    okay &= expect(
+        small_additive_vehicle_detail_keeps_ps1_blend(),
+        "preserve ordinary PS1 blending for small additive vehicle detail");
+    okay &= expect(
+        vehicle_reflection_strength_survives_tessellation_changes(),
+        "retain reflection strength when camera-dependent tessellation changes exact-pair ratios");
+    okay &= expect(curved_body_reflection_follows_authored_subdivision(),
+        "keep reflection on every interior pixel of a subdivided nonplanar body quad");
+    okay &= expect(curved_body_reflection_follows_authored_subdivision(true),
+        "retain foreground occlusion when reflection follows subdivided body geometry");
+    okay &= expect(
+        vehicle_reflection_requires_visible_base_owner(),
+        "require an opaque body owner beneath stock vehicle reflection");
+    okay &= expect(
+        vehicle_reflection_preserves_zero_texel_transparency(),
+        "preserve zero-texel transparency in stock vehicle reflection");
+    okay &= expect(
+        nearer_track_occludes_vehicle_reflection(),
+        "keep stock vehicle reflection behind genuinely nearer track geometry");
     okay &= expect(
         is_soft_shadow(render_vehicle_shadow_center(false)),
         "recognize a vehicle shadow with no model-space-flat edge");
