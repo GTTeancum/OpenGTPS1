@@ -6,8 +6,5 @@ Only unresolved work belongs in this list.
 2. Finish visual validation of every stock Arcade course with the unlocked North American card. Loaded-card progress now survives the unified handoff; SSR5 and restored SSR11 are visually confirmed in the installed EXE (`artifacts/course-access-final/verification.md`).
 3. Complete the native GT1 conversion pipeline, including every archive-proven exclusive asset and silent selector/race smoke coverage for both paints of all 31 staged RM bodies.
 4. Bring the modern renderer to sustained, correctly paced 60 FPS at full quality in Arcade and Gran Turismo modes with representative race, replay, imported-content, HUD, stability, and telemetry validation.
-5. Correct SSR11's remaining DirectX rendering defects and validate the result against stock GT2.
-6. Add resolution selection outside the graphics-quality preset system.
-7. Implement widescreen support and its associated resolution work in a future build.
-8. Later, deliver an original-Xbox port with a CLR-free C++ runtime, NXDK/NV2A rendering, complete platform services, extensible materials, and a verified 64 MiB memory budget.
-9. Obtain live-controller confirmation that the main-menu first press is fixed. The installed deterministic test now commits a first-poll Cross one poll later without cursor movement; host-input operation remains for the user to verify.
+5. Later, deliver an original-Xbox port with a CLR-free C++ runtime, NXDK/NV2A rendering, complete platform services, extensible materials, and a verified 64 MiB memory budget.
+6. Obtain live-controller confirmation that the main-menu first press is fixed. The installed deterministic test now commits a first-poll Cross one poll later without cursor movement; host-input operation remains for the user to verify.
