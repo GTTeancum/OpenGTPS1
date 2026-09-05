@@ -1,4 +1,5 @@
 #include "opengt/world_gpu_renderer.hpp"
+#include "opengt/vehicle_paint.hpp"
 
 #if defined(_WIN32)
 
@@ -3355,6 +3356,7 @@ struct GpuVertex {
     float uv[2];
     float color[4];
     std::uint32_t command_index;
+    std::uint32_t paint_index{};
 };
 
 constexpr std::uint32_t replacement_mode_rgb = 0;
@@ -4010,6 +4012,15 @@ const char shader_source[] = R"(
 Texture2D<uint> Vram : register(t0);
 Texture2D<float4> ReplacementAtlas : register(t2);
 SamplerState ReplacementSampler : register(s0);
+struct PaintVertexData {
+    float3 normal; float mode;
+    float3 viewPosition; float intensity;
+    float2 uv; float2 padding;
+    float3 lightDirection; float padding2;
+};
+StructuredBuffer<PaintVertexData> PaintVertices : register(t7);
+Texture2D<float4> PaintMask : register(t8);
+SamplerState PaintSampler : register(s1);
 
 struct MaterialData {
     uint primitiveFlags;
@@ -4056,6 +4067,7 @@ struct VsInput {
     float2 uv : TEXCOORD0;
     float4 color : COLOR0;
     uint commandIndex : TEXCOORD2;
+    uint paintIndex : TEXCOORD3;
 };
 
 struct VsOutput {
@@ -4064,6 +4076,10 @@ struct VsOutput {
     noperspective float2 affineUv : TEXCOORD1;
     noperspective float4 color : COLOR0;
     nointerpolation uint commandIndex : TEXCOORD2;
+    float4 paintNormal : TEXCOORD3;
+    float4 paintView : TEXCOORD4;
+    float2 paintUv : TEXCOORD5;
+    nointerpolation float3 paintLight : TEXCOORD6;
 };
 
 struct PsOutput {
@@ -4078,6 +4094,17 @@ VsOutput VSMain(VsInput input) {
     output.affineUv = input.uv;
     output.color = input.color;
     output.commandIndex = input.commandIndex;
+    output.paintNormal = 0;
+    output.paintView = 0;
+    output.paintUv = 0;
+    output.paintLight = 0;
+    if (input.paintIndex != 0) {
+        PaintVertexData paint = PaintVertices[input.paintIndex];
+        output.paintNormal = float4(paint.normal, paint.mode);
+        output.paintView = float4(paint.viewPosition, paint.intensity);
+        output.paintUv = paint.uv;
+        output.paintLight = paint.lightDirection;
+    }
     return output;
 }
 
@@ -4323,7 +4350,26 @@ PsOutput ShadePixel(VsOutput input, bool preserveCutoutCoverage) {
     float3 color = saturate(input.color.rgb);
     bool textureStp = false;
     float cutoutCoverage = 1.0;
-    if (textured) {
+    float4 paintMask = 0;
+    if (input.paintNormal.w > 0.5)
+        paintMask = PaintMask.SampleLevel(PaintSampler,
+            (input.paintUv + 0.5) / float2(256.0,224.0), 0);
+    if (paintMask.a > 0.001) {
+        // Replace only explicitly masked paint in the additive environment
+        // layer. The colour atlas remains untouched; mask alpha zero executes
+        // the exact original glass/trim path below, including transparency.
+        if (PassKind == 0) discard;
+        float3 n = normalize(input.paintNormal.xyz);
+        float3 v = normalize(-input.paintView.xyz);
+        float3 l = normalize(input.paintLight);
+        float3 h = normalize(v+l);
+        float nl = saturate(dot(n,l));
+        float nh = saturate(dot(n,h));
+        float gloss = lerp(12.0,80.0,paintMask.g);
+        float highlight = pow(nh,gloss)*0.90 + pow(nh,6.0)*0.08;
+        color = highlight * nl * paintMask.r * saturate(input.paintView.w);
+        textureStp = true;
+    } else if (textured) {
         // PS1 UV interpolation assigns the complete [N,N+1) interval to
         // texel N. Keep the world alpha/STP and footprint decisions aligned
         // with that contract, the bilinear color base, and replacement UVs.
@@ -5306,6 +5352,9 @@ struct FrameInputResources {
     ComPtr<ID3D11Buffer> material_buffer;
     ComPtr<ID3D11ShaderResourceView> material_view;
     UINT material_buffer_bytes{};
+    ComPtr<ID3D11Buffer> paint_buffer;
+    ComPtr<ID3D11ShaderResourceView> paint_view;
+    UINT paint_buffer_bytes{};
     std::array<ComPtr<ID3D11Buffer>, 3> constant_buffers;
     ComPtr<ID3D11Buffer> screen_arc_buffer;
     ComPtr<ID3D11Texture2D> vram_texture;
@@ -5404,7 +5453,79 @@ struct BaseResources {
     std::uint32_t output_height;
     std::uint32_t screen_grid_width;
     std::uint32_t screen_grid_height;
+    bool paint_attempted{}, paint_reported{};
+    VehiclePaintPack paint_pack;
+    ComPtr<ID3D11Texture2D> paint_texture;
+    ComPtr<ID3D11ShaderResourceView> paint_mask_view;
+    ComPtr<ID3D11SamplerState> paint_sampler;
 };
+
+void configure_vehicle_paint(BaseResources* resources) {
+    if(resources->paint_attempted) return;
+    resources->paint_attempted=true;
+    if(const char* disabled=std::getenv("OPENGT_VEHICLE_PAINT_DISABLE"))
+        if(std::strcmp(disabled,"1")==0) return;
+    std::filesystem::path path="mods/gt2000_paint/generated/fcx8n.ogtpaint";
+    if(const char* configured=std::getenv("OPENGT_VEHICLE_PAINT_PACK")) path=configured;
+    std::error_code path_error;
+    if(!std::filesystem::exists(path,path_error)) return;
+    std::string error;
+    if(!load_vehicle_paint_pack(path.string().c_str(),&resources->paint_pack,&error)) {
+        std::fprintf(stderr,"[Vehicle-Paint] rejected pack: %s\n",error.c_str());
+        return;
+    }
+    const auto& pack=resources->paint_pack;
+    D3D11_TEXTURE2D_DESC description{};
+    description.Width=pack.width; description.Height=pack.height;
+    description.MipLevels=description.ArraySize=1;
+    description.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
+    description.SampleDesc.Count=1;
+    description.Usage=D3D11_USAGE_IMMUTABLE;
+    description.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA data{pack.mask.data(),pack.width*4,0};
+    D3D11_SAMPLER_DESC sampler{};
+    sampler.Filter=D3D11_FILTER_MIN_MAG_MIP_POINT;
+    sampler.AddressU=sampler.AddressV=sampler.AddressW=D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampler.MaxLOD=D3D11_FLOAT32_MAX;
+    if(FAILED(resources->device->CreateTexture2D(&description,&data,&resources->paint_texture)) ||
+       FAILED(resources->device->CreateShaderResourceView(resources->paint_texture.Get(),nullptr,&resources->paint_mask_view)) ||
+       FAILED(resources->device->CreateSamplerState(&sampler,&resources->paint_sampler))) {
+        resources->paint_pack={}; resources->paint_mask_view.Reset();
+        resources->paint_texture.Reset(); resources->paint_sampler.Reset();
+        std::fprintf(stderr,"[Vehicle-Paint] GPU resource creation failed; original materials retained\n");
+        return;
+    }
+    std::fprintf(stderr,"[Vehicle-Paint] loaded mask=%ux%u faces=%zu bitmap=%016llx\n",
+        pack.width,pack.height,pack.faces.size(),static_cast<unsigned long long>(pack.bitmap_key));
+}
+
+bool upload_vehicle_paint(BaseResources& base, FrameInputResources& frame,
+    const VehiclePaintFrame& paint) {
+    if(paint.vertices.empty()) return true;
+    const auto bytes=static_cast<UINT>(paint.vertices.size()*sizeof(PaintGpuVertex));
+    if(bytes>frame.paint_buffer_bytes) {
+        frame.paint_view.Reset(); frame.paint_buffer.Reset();
+        frame.paint_buffer_bytes=0;
+        D3D11_BUFFER_DESC description{};
+        description.ByteWidth=(bytes+65535U)&~65535U;
+        description.Usage=D3D11_USAGE_DYNAMIC;
+        description.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+        description.CPUAccessFlags=D3D11_CPU_ACCESS_WRITE;
+        description.MiscFlags=D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+        description.StructureByteStride=sizeof(PaintGpuVertex);
+        if(FAILED(base.device->CreateBuffer(&description,nullptr,&frame.paint_buffer))) return false;
+        D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+        view.ViewDimension=D3D11_SRV_DIMENSION_BUFFER;
+        view.Buffer.NumElements=description.ByteWidth/sizeof(PaintGpuVertex);
+        if(FAILED(base.device->CreateShaderResourceView(frame.paint_buffer.Get(),&view,&frame.paint_view))) return false;
+        frame.paint_buffer_bytes=description.ByteWidth;
+    }
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if(FAILED(base.context->Map(frame.paint_buffer.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped))) return false;
+    std::memcpy(mapped.pData,paint.vertices.data(),bytes);
+    base.context->Unmap(frame.paint_buffer.Get(),0);
+    return true;
+}
 
 struct LooseReplacementImage {
     std::string name;
@@ -7918,6 +8039,10 @@ bool initialize_base(
             "TEXCOORD", 2, DXGI_FORMAT_R32_UINT,
             0, 40, D3D11_INPUT_PER_VERTEX_DATA, 0,
         },
+        {
+            "TEXCOORD", 3, DXGI_FORMAT_R32_UINT,
+            0, 44, D3D11_INPUT_PER_VERTEX_DATA, 0,
+        },
     };
     if (FAILED(resources->device->CreateInputLayout(
             elements,
@@ -8613,6 +8738,7 @@ WorldGpuRenderResult render_world_d3d11(
     if (!base.ready)
         return WorldGpuRenderResult::device_failed;
     configure_replacement_pack(&base);
+    configure_vehicle_paint(&base);
     ID3D11DeviceContext* context = base.context.Get();
     const std::size_t authored_vertex_count =
         draw_list.commands.size() * 3;
@@ -8642,6 +8768,20 @@ WorldGpuRenderResult render_world_d3d11(
             : async_staging_write)
         : staging_write;
     auto& frame = base.frame_inputs[frame_input_index];
+    VehiclePaintFrame paint_frame;
+    if(base.paint_mask_view) {
+        paint_frame=build_vehicle_paint_frame(draw_list,vram,base.paint_pack);
+        if(!upload_vehicle_paint(base,frame,paint_frame)) {
+            paint_frame={};
+            base.paint_mask_view.Reset();
+            std::fprintf(stderr,"[Vehicle-Paint] upload failed; original materials retained\n");
+        }
+        if(!base.paint_reported && paint_frame.reflection_triangles) {
+            base.paint_reported=true;
+            std::fprintf(stderr,"[Vehicle-Paint] matched vehicles=%u reflection-triangles=%u original-glass=mask-zero\n",
+                paint_frame.matched_vehicles,paint_frame.reflection_triangles);
+        }
+    }
     if (!ensure_mutable_frame_resources(
             &base,
             &frame,
@@ -8839,6 +8979,8 @@ WorldGpuRenderResult render_world_d3d11(
                     alpha,
                 },
                 static_cast<std::uint32_t>(command_index),
+                paint_frame.vertex_indices.empty() ? 0U :
+                    paint_frame.vertex_indices[command_index*3+index],
             };
             gpu_vertices[command_index * 3 + index].position[0] *=
                 horizontal_projection_scale;
@@ -9120,6 +9262,12 @@ WorldGpuRenderResult render_world_d3d11(
     ID3D11SamplerState* replacement_sampler =
         base.replacement_sampler.Get();
     context->PSSetSamplers(0, 1, &replacement_sampler);
+    ID3D11ShaderResourceView* paint_vertices=frame.paint_view.Get();
+    ID3D11ShaderResourceView* paint_mask=base.paint_mask_view.Get();
+    ID3D11SamplerState* paint_sampler=base.paint_sampler.Get();
+    context->VSSetShaderResources(7,1,&paint_vertices);
+    context->PSSetShaderResources(8,1,&paint_mask);
+    context->PSSetSamplers(1,1,&paint_sampler);
 
     for (std::uint32_t pass = 0; pass < 3; ++pass) {
         const DrawConstants constants{

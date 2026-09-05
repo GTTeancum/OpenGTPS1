@@ -1,0 +1,11 @@
+{
+  "format": 1,
+  "car": "fcx8n",
+  "description": "Citroen Xsara: explicitly authored paint islands. Unmarked glass, lamps, grille, wheels and trim retain the original environment pass. Coordinates are in the 256x224 source atlas; not derived from paint colour.",
+  "regions": [
+    {"name": "bonnet", "strength": 210, "gloss": 150, "polygon": [[0,128],[63,128],[63,200],[0,200]]},
+    {"name": "roof", "strength": 200, "gloss": 155, "polygon": [[49,33],[79,33],[79,47],[50,47]]},
+    {"name": "door upper paint", "strength": 175, "gloss": 140, "polygon": [[61,54],[150,54],[148,65],[62,65]]},
+    {"name": "door lower paint", "strength": 165, "gloss": 125, "polygon": [[63,74],[145,74],[144,87],[64,87]]}
+  ]
+}

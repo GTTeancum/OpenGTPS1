@@ -11,6 +11,7 @@ add_library(opengt_renderer_core STATIC
     src/world_draw_list.cpp
     src/world_gpu_renderer_d3d11.cpp
     src/world_topology.cpp
+    src/vehicle_paint.cpp
 )
 
 # Synthetic midpoint reconstruction remains available only to explicitly
@@ -86,6 +87,10 @@ endif()
 
 if(OPENGT_BUILD_TESTS)
     enable_testing()
+
+    add_executable(opengt_vehicle_paint_tests tests/vehicle_paint_tests.cpp)
+    target_link_libraries(opengt_vehicle_paint_tests PRIVATE opengt_renderer_core)
+    add_test(NAME opengt_vehicle_paint_tests COMMAND opengt_vehicle_paint_tests)
 
     add_executable(opengt_renderer_core_tests
         tests/geometry_stitcher_tests.cpp

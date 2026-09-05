@@ -229,6 +229,7 @@ int main(int argc, char** argv) {
             "[--scale <1-8>] [--aspect <width:height>] "
             "[--clear-color <RRGGBB>] "
             "[--inspect-pixel <x> <y>] "
+            "[--detail <x> <y> <width> <height> <detail.png>] "
             "[--oracle <oracle.png>] [--window]\n");
         return 2;
     }
@@ -249,6 +250,8 @@ int main(int argc, char** argv) {
     int inspect_x = -1;
     int inspect_y = -1;
     const char* oracle_path = nullptr;
+    const char* detail_path = nullptr;
+    int detail_x=0,detail_y=0,detail_width=0,detail_height=0;
     for (int index = 3; index < argc; ++index) {
         if (std::strcmp(argv[index], "--warp") == 0)
             warp = true;
@@ -333,6 +336,11 @@ int main(int argc, char** argv) {
             }
             target_aspect_width = static_cast<std::uint32_t>(width);
             target_aspect_height = static_cast<std::uint32_t>(height);
+        }
+        else if (std::strcmp(argv[index], "--detail") == 0 && index+5<argc) {
+            detail_x=std::atoi(argv[++index]); detail_y=std::atoi(argv[++index]);
+            detail_width=std::atoi(argv[++index]); detail_height=std::atoi(argv[++index]);
+            detail_path=argv[++index];
         }
         else if (
             std::strcmp(argv[index], "--oracle") == 0 &&
@@ -855,6 +863,21 @@ int main(int argc, char** argv) {
             output_height)) {
         std::fprintf(stderr, "cannot write %s\n", argv[2]);
         return 1;
+    }
+
+    // Native diagnostic capture: copy exact framebuffer pixels, with no
+    // scaling, retouching, camera alteration or desktop capture involved.
+    if(detail_path) {
+        if(detail_x<0 || detail_y<0 || detail_width<=0 || detail_height<=0 ||
+            std::uint64_t(detail_x)+detail_width>output_width ||
+            std::uint64_t(detail_y)+detail_height>output_height) {
+            std::fprintf(stderr,"detail rectangle outside framebuffer\n"); return 2;
+        }
+        std::vector<std::uint8_t> detail(std::size_t(detail_width)*detail_height*4);
+        for(int y=0;y<detail_height;++y)
+            std::copy_n(gpu.data()+(std::size_t(detail_y+y)*output_width+detail_x)*4,
+                std::size_t(detail_width)*4,detail.data()+std::size_t(y)*detail_width*4);
+        if(!write_rgba_png(detail_path,detail.data(),detail_width,detail_height)) return 1;
     }
 
     const auto oracle_triangles =
