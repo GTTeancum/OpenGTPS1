@@ -450,6 +450,50 @@ GT1_ARCADE_LIVERY_SMOKE_CARS = {
         "ratings": (9, 8, 7),
     },
 }
+
+# Every archive-proven Racing Modification body is tested through the same
+# developer-only Class A replacement slot.  The native GT1 wordmark remains
+# authoritative; the generic label exists only in conversion manifests.  Do
+# not add these entries to the production roster.
+GT1_RACING_MODIFICATION_ARCADE_MAKER_LOGO_INDICES = {
+    "d": 7,   # Dodge
+    "h": 10,  # Honda
+    "m": 19,  # Mitsubishi
+    "n": 20,  # Nissan
+    "t": 31,  # Toyota
+    "v": 32,  # TVR
+}
+for _gt1_rm_source_stem in GT1_PROVEN_DISTINCT_RACING_MODIFICATION_STEMS:
+    _gt1_rm_target_stem = _gt1_rm_source_stem[:-1] + "n"
+    _gt1_rm_maker = _gt1_rm_source_stem[0]
+    if _gt1_rm_maker not in GT1_RACING_MODIFICATION_ARCADE_MAKER_LOGO_INDICES:
+        raise ValueError(
+            "GT1 Racing Modification smoke target has no Arcade maker logo: "
+            f"{_gt1_rm_source_stem}"
+        )
+    GT1_ARCADE_LIVERY_SMOKE_CARS.setdefault(
+        _gt1_rm_target_stem,
+        {
+            "displayName": f"GT1 RM {_gt1_rm_source_stem}",
+            "menuLogoName": f"{_gt1_rm_source_stem[:-1]}.tim",
+            "physicsBasisStem": _gt1_rm_target_stem,
+            "physicsPartBasis": {},
+            "arcadeClass": 1,
+            # The first stock slot initializes its palette selection to zero.
+            # Starting there lets the RM smoke wrap directly to the final two
+            # imported choices without traversing unrelated folded liveries.
+            "developerReplacementIndex": 0,
+            "manufacturerLogoIndex": (
+                GT1_RACING_MODIFICATION_ARCADE_MAKER_LOGO_INDICES[
+                    _gt1_rm_maker
+                ]
+            ),
+            "ratings": (9, 8, 7),
+        },
+    )
+    GT1_ARCADE_LIVERY_SMOKE_CARS[
+        _gt1_rm_target_stem
+    ]["developerReplacementIndex"] = 0
 GT1_IMPREZA_STI_V3_CAR = {
     "stem": "s-pbn",
     "displayName": "IMPREZA Sedan WRX-STi version III",
@@ -1523,6 +1567,8 @@ def _gt2_car_model_end(data: bytes) -> int:
 def convert_gt1_car_model(
     data: bytes,
     gt2_header_basis: bytes,
+    *,
+    fit_native_slot: bool = False,
 ) -> tuple[bytes, dict[str, object]]:
     if len(data) < 0x80 or not data.startswith(b"@(#)GT-CAR\0"):
         raise ValueError("GT1 car model header is missing")
@@ -1540,7 +1586,7 @@ def convert_gt1_car_model(
             f"GT1 car LOD distances changed: {lod_distances}"
         )
 
-    output = bytearray(gt2_header_basis[:0x868])
+    header = bytearray(gt2_header_basis[:0x868])
     gt1_wheels = [
         struct.unpack_from("<4h", data, 0x10 + index * 8)
         for index in range(4)
@@ -1559,35 +1605,57 @@ def convert_gt1_car_model(
         if not -0x8000 <= menu_x <= 0x7FFF:
             raise ValueError("converted GT1 menu wheel position overflowed")
         struct.pack_into(
-            "<4h", output, 0x20 + index * 8, x, y, z, menu_x
+            "<4h", header, 0x20 + index * 8, x, y, z, menu_x
         )
 
+    cursor = 0x80
+    converted_lods: list[bytes] = []
+    source_lods: list[dict[str, object]] = []
+    for index in range(3):
+        lod, cursor, metadata = _convert_gt1_car_lod(data, cursor)
+        converted_lods.append(lod)
+        source_lods.append(metadata)
+        if index != 2:
+            if cursor + 40 > len(data) or any(data[cursor : cursor + 40]):
+                raise ValueError("GT1 inter-LOD padding changed")
+            cursor += 40
+
+    shadow, cursor, shadow_metadata = _convert_gt1_car_shadow(data, cursor)
+    if cursor != len(data):
+        raise ValueError(
+            f"GT1 car model has {len(data) - cursor} trailing bytes"
+        )
+
+    full_runtime_lods = (0, 1, 2)
+    runtime_lod_source_indices = full_runtime_lods
+    full_converted_size = (
+        0x884 + sum(len(lod) for lod in converted_lods) + len(shadow)
+    )
+    if fit_native_slot and full_converted_size > len(gt2_header_basis):
+        # The shipped renderer keeps player and opponent vehicles on LOD0.
+        # Retain the authored low-detail fallback in both nonresident slots so
+        # the high-detail model and exact shadow still fit the native resource
+        # allocation used by GT2's fixed car-object arena.
+        runtime_lod_source_indices = (0, 2, 2)
+
+    output = bytearray(header)
     output.extend(struct.pack("<I", 3))
     distance_offsets: list[int] = []
     for distance in lod_distances:
         output.extend(struct.pack("<HHI", 0, distance, 0))
         distance_offsets.append(len(output) - 4)
-
-    cursor = 0x80
-    lods: list[dict[str, object]] = []
     lod_offsets: list[int] = []
-    for index in range(3):
+    for source_index in runtime_lod_source_indices:
         lod_offsets.append(len(output))
-        lod, cursor, metadata = _convert_gt1_car_lod(data, cursor)
-        output.extend(lod)
-        lods.append(metadata)
-        if index != 2:
-            if cursor + 40 > len(data) or any(data[cursor : cursor + 40]):
-                raise ValueError("GT1 inter-LOD padding changed")
-            cursor += 40
+        output.extend(converted_lods[source_index])
     struct.pack_into("<I", output, distance_offsets[1], lod_offsets[1])
     struct.pack_into("<I", output, distance_offsets[2], lod_offsets[2])
-
-    shadow, cursor, shadow_metadata = _convert_gt1_car_shadow(data, cursor)
     output.extend(shadow)
-    if cursor != len(data):
+
+    if fit_native_slot and len(output) > len(gt2_header_basis):
         raise ValueError(
-            f"GT1 car model has {len(data) - cursor} trailing bytes"
+            "converted GT2 car model cannot fit its native resource slot: "
+            f"converted={len(output):#x}, native={len(gt2_header_basis):#x}"
         )
     if len(output) >= GT2_CAR_MODEL_SAFE_SIZE:
         raise ValueError(
@@ -1601,7 +1669,28 @@ def convert_gt1_car_model(
         "sourceSize": len(data),
         "convertedSize": len(output),
         "lodDistances": list(lod_distances),
-        "lods": lods,
+        "lods": [
+            {
+                **source_lods[source_index],
+                "runtimeLodIndex": runtime_index,
+                "sourceLodIndex": source_index,
+            }
+            for runtime_index, source_index in enumerate(
+                runtime_lod_source_indices
+            )
+        ],
+        "sourceLods": [
+            {**metadata, "sourceLodIndex": source_index}
+            for source_index, metadata in enumerate(source_lods)
+        ],
+        "runtimeLodSourceIndices": list(runtime_lod_source_indices),
+        "residentMaximumLodCompaction": (
+            runtime_lod_source_indices != full_runtime_lods
+        ),
+        "fullAuthoredConvertedSize": full_converted_size,
+        "nativeSlotFitRequired": fit_native_slot,
+        "nativeSlotSize": len(gt2_header_basis),
+        "nativeSlotSlack": len(gt2_header_basis) - len(output),
         "shadow": shadow_metadata,
         "sourceSha256": hashlib.sha256(data).hexdigest(),
         "convertedSha256": hashlib.sha256(output).hexdigest(),
@@ -1905,6 +1994,99 @@ def extend_gt2_carinfo(
         "colorCount": len(appended),
         "appended": appended,
         "finalColorIds": new_color_ids,
+    }
+
+
+def replace_gt2_carinfo_paints(
+    carinfo: bytes,
+    carcolor: bytes,
+    stem: str,
+    paint_sources: tuple[tuple[int, str], ...],
+) -> tuple[bytes, bytes, dict[str, object]]:
+    """Replace the paint list of one existing non-customer body identity."""
+
+    records = _parse_gt2_carinfo(carinfo)
+    colors = _parse_gt2_carcolor(carcolor, records)
+    by_stem = {str(record["stem"]): index for index, record in enumerate(records)}
+    if stem not in by_stem:
+        raise ValueError(f"GT2 carinfo body is absent: {stem}")
+
+    main_colors: list[int] = []
+    color_names: list[int] = []
+    color_ids: list[int] = []
+    for color_id, source_stem in paint_sources:
+        if source_stem not in by_stem:
+            raise ValueError(f"GT2 paint source is absent: {source_stem}")
+        source_index = by_stem[source_stem]
+        source = records[source_index]
+        try:
+            source_color = source["colorIds"].index(color_id)
+        except ValueError as exc:
+            raise ValueError(
+                f"GT2 paint source {source_stem} lacks ID {color_id}"
+            ) from exc
+        color_ids.append(color_id)
+        main_colors.append(source["mainColors"][source_color])
+        color_names.append(colors[source_index][source_color])
+
+    if not color_ids or len(color_ids) > 32:
+        raise ValueError(f"GT2 {stem} replacement paint count is invalid")
+    target_index = by_stem[stem]
+    target = records[target_index]
+    target["mainColors"] = tuple(main_colors)
+    target["colorIds"] = tuple(color_ids)
+    colors[target_index] = tuple(color_names)
+
+    info = bytearray(b"CAR\0" + struct.pack("<I", len(records)))
+    info.extend(b"\0" * (len(records) * 8))
+    colour = bytearray(b"CCOL00\0\0")
+    colour.extend(b"\0" * (len(records) * 2))
+    for index, (record, name_indices) in enumerate(zip(records, colors)):
+        while len(info) & 1:
+            info.append(0)
+        info_offset = len(info)
+        count = len(record["colorIds"])
+        info.extend(struct.pack(f"<{count}H", *record["mainColors"]))
+        info.extend(bytes(record["colorIds"]))
+        name = bytes(record["name"])
+        info.append(len(name))
+        info.extend(name + b"\0")
+        encoded = info_offset | ((count - 1) << 18) | int(record["flags"])
+        struct.pack_into(
+            "<II",
+            info,
+            8 + index * 8,
+            int(record["carId"]),
+            encoded,
+        )
+
+        while len(colour) & 1:
+            colour.append(0)
+        colour_offset = len(colour)
+        if colour_offset > 0xFFFF:
+            raise ValueError("GT2 carcolor escaped its 16-bit offset range")
+        struct.pack_into("<H", colour, 8 + index * 2, colour_offset)
+        colour.extend(struct.pack(f"<{count}H", *name_indices))
+
+    verified = _parse_gt2_carinfo(bytes(info))
+    verified_colors = _parse_gt2_carcolor(bytes(colour), verified)
+    verified_index = next(
+        index for index, record in enumerate(verified) if record["stem"] == stem
+    )
+    verified_target = verified[verified_index]
+    if (
+        list(verified_target["colorIds"]) != color_ids
+        or list(verified_target["mainColors"]) != main_colors
+        or list(verified_colors[verified_index]) != color_names
+    ):
+        raise ValueError(f"GT2 {stem} replacement paints failed round-trip")
+    return bytes(info), bytes(colour), {
+        "stem": stem,
+        "index": verified_index,
+        "colorIds": color_ids,
+        "mainColors": main_colors,
+        "colorNameIndices": color_names,
+        "replacedExisting": True,
     }
 
 
@@ -3069,19 +3251,22 @@ def stage_gt2_arcade_livery_smoke_car(
     disc_root: Path,
     gt2_arcade_volume: Path,
     patch_root: Path,
-    stem: str,
+    target_stem: str,
+    body_stem: str | None = None,
 ) -> dict[str, object]:
-    """Expose one existing GT2 identity in Arcade for livery visual proof.
+    """Expose one livery body in Arcade for native visual proof.
 
-    This developer-only entry adds no car identity or body. It reuses the
-    target's native GT Mode physics and the livery layer's exact car-info and
-    body packages so the ordinary Arcade selector can render and cycle every
-    authored choice.
+    The developer-only roster uses the alternate body directly so GT2 includes
+    it in the selector's native preload table. Mid-selector lookup can only
+    retrieve bodies from that table; attempting to decompress an unlisted body
+    there corrupts the guest inflater. Customer-facing target/body mappings are
+    still emitted and checked independently by the livery layer.
     """
 
+    roster_stem = body_stem or target_stem
     definition = {
-        "stem": stem,
-        **GT1_ARCADE_LIVERY_SMOKE_CARS[stem],
+        "stem": roster_stem,
+        **GT1_ARCADE_LIVERY_SMOKE_CARS[target_stem],
     }
     source_logo = read_gt1_menu_car_logo(
         disc_root, str(definition["menuLogoName"])
@@ -3108,13 +3293,15 @@ def stage_gt2_arcade_livery_smoke_car(
     staged_logos.write_bytes(merged_logos)
 
     stats = read_gt1_spec_stats(
-        disc_root / "CARINF.DAT", stem
+        disc_root / "CARINF.DAT", target_stem
     )
     arcade_physics = stage_gt2_arcade_car_physics(
         gt2_arcade_volume, patch_root, definition
     )
     return {
-        "stem": stem,
+        "stem": roster_stem,
+        "targetStem": target_stem,
+        "alternateBodyStem": body_stem,
         "displayName": definition["displayName"],
         "arcadeLogoIndex": logo_index,
         "arcadeLogoSha256": hashlib.sha256(logo).hexdigest(),
@@ -3124,6 +3311,9 @@ def stage_gt2_arcade_livery_smoke_car(
         "stats": list(stats),
         "arcadePhysics": arcade_physics,
         "developerLiverySmoke": True,
+        "developerReplacementIndex": definition.get(
+            "developerReplacementIndex"
+        ),
     }
 
 
@@ -4465,11 +4655,15 @@ def stage_gt1_livery_fold(
     source_stem = str(definition["sourceStem"])
     body_stem = str(definition["bodyStem"])
     model_basis = str(definition["modelBasisStem"])
-    if any(
+    body_exists = any(
         entry.name.startswith(f"carobj/{body_stem}.")
         for entry in read_entries(gt2_volume)
-    ):
+    )
+    replace_existing_body = bool(definition.get("racingModificationBody"))
+    if body_exists and not replace_existing_body:
         raise ValueError(f"GT2 alternate livery body already exists: {body_stem}")
+    if replace_existing_body and not body_exists:
+        raise ValueError(f"GT2 Racing Modification body is absent: {body_stem}")
 
     stems = read_gt1_car_stems(disc_root / "SYSTEM.DAT")
     day_texture, day_model, night_texture, night_model = (
@@ -4509,7 +4703,11 @@ def stage_gt1_livery_fold(
         basis = read_gt2_gzip_member(
             gt2_volume, f"carobj/{model_basis}.{extension}.gz"
         )
-        converted, details = convert_gt1_car_model(source_model, basis)
+        converted, details = convert_gt1_car_model(
+            source_model,
+            basis,
+            fit_native_slot=replace_existing_body,
+        )
         (car_output / f"{body_stem}.{extension}.gz").write_bytes(
             gzip.compress(converted, compresslevel=9, mtime=0)
         )
@@ -4519,13 +4717,21 @@ def stage_gt1_livery_fold(
     def fold_carinfo(
         carinfo: bytes, carcolor: bytes
     ) -> tuple[bytes, bytes, dict[str, object]]:
-        carinfo, carcolor, body_metadata = append_gt2_carinfo(
-            carinfo,
-            carcolor,
-            body_stem,
-            "delete",
-            tuple(definition["bodyPaintSources"]),
-        )
+        if replace_existing_body:
+            carinfo, carcolor, body_metadata = replace_gt2_carinfo_paints(
+                carinfo,
+                carcolor,
+                body_stem,
+                tuple(definition["bodyPaintSources"]),
+            )
+        else:
+            carinfo, carcolor, body_metadata = append_gt2_carinfo(
+                carinfo,
+                carcolor,
+                body_stem,
+                "delete",
+                tuple(definition["bodyPaintSources"]),
+            )
         carinfo, carcolor, target_metadata = extend_gt2_carinfo(
             carinfo,
             carcolor,
@@ -4967,12 +5173,15 @@ def discover_gt1_livery_folds(
             )
             for color_id in source_ids
         )
-        while True:
-            body_stem = _hidden_livery_body_stem(generated_body_index)
-            generated_body_index += 1
-            if body_stem not in used_stems:
-                break
-        used_stems.add(body_stem)
+        # GT2 already indexes the otherwise non-customer RM resource identity.
+        # Overlay that native slot with the converted GT1 body instead of
+        # appending a synthetic carobj name that the guest preload table does
+        # not know how to materialize.
+        body_stem = source_stem
+        if body_stem not in used_stems:
+            raise ValueError(
+                f"GT2 Racing Modification body resource is absent: {body_stem}"
+            )
         definitions.append(
             {
                 "targetStem": target_stem,
@@ -6058,6 +6267,16 @@ def patch_ssr11_arcade_overlay(
             raise ValueError(
                 f"GT2 Arcade class {class_index} has no native roster"
             )
+        replacement_index = int(
+            car.get("developerReplacementIndex", old_count - 1)
+            if replace_for_livery_smoke
+            else old_count
+        )
+        if replace_for_livery_smoke and not 0 <= replacement_index < old_count:
+            raise ValueError(
+                f"GT2 Arcade developer replacement index {replacement_index} "
+                f"is invalid for class {class_index} count {old_count}"
+            )
         if (
             not replace_for_livery_smoke
             and class_index <= 3
@@ -6110,7 +6329,7 @@ def patch_ssr11_arcade_overlay(
             merged_offset = len(arcade)
             if replace_for_livery_smoke:
                 merged_table = bytearray(source_table)
-                replacement_offset = (old_count - 1) * stride
+                replacement_offset = replacement_index * stride
                 merged_table[
                     replacement_offset : replacement_offset + stride
                 ] = appended
@@ -6127,7 +6346,7 @@ def patch_ssr11_arcade_overlay(
                     "mergedAddress": merged_address,
                     "stride": stride,
                     "replacementIndex": (
-                        old_count - 1
+                        replacement_index
                         if replace_for_livery_smoke
                         else None
                     ),
@@ -6143,7 +6362,7 @@ def patch_ssr11_arcade_overlay(
                 "newCount": new_count,
                 "developerReplacement": replace_for_livery_smoke,
                 "replacementIndex": (
-                    old_count - 1 if replace_for_livery_smoke else None
+                    replacement_index if replace_for_livery_smoke else None
                 ),
                 "stemAddress": stem_address,
                 "tables": patched_tables,
@@ -7471,14 +7690,6 @@ def main() -> int:
     )
     arcade_patch_root = args.output / "patch"
     arcade_livery_smoke_car = None
-    if args.smoke_arcade_livery is not None:
-        arcade_livery_smoke_car = stage_gt2_arcade_livery_smoke_car(
-            args.disc_root,
-            args.gt2_arcade_volume,
-            arcade_patch_root,
-            args.smoke_arcade_livery,
-        )
-        arcade_cars += (arcade_livery_smoke_car,)
     arcade_livery_root = args.output / "livery-arcade-patch"
     simulation_patch_root = args.output / "gt1-cars-simulation-patch"
     simulation_livery_root = args.output / "livery-simulation-patch"
@@ -7497,6 +7708,32 @@ def main() -> int:
     simulation_livery_definitions = discover_gt1_livery_folds(
         args.disc_root, args.gt2_simulation_volume
     )
+    if args.smoke_arcade_livery is not None:
+        proven_rm_source = args.smoke_arcade_livery[:-1] + "r"
+        smoke_folds = [
+            definition
+            for definition in arcade_livery_definitions
+            if definition["targetStem"] == args.smoke_arcade_livery
+            and definition["sourceStem"] == proven_rm_source
+            and proven_rm_source
+            in GT1_PROVEN_DISTINCT_RACING_MODIFICATION_STEMS
+        ]
+        if len(smoke_folds) > 1:
+            raise ValueError(
+                "GT1 RM smoke target has multiple alternate bodies: "
+                f"{args.smoke_arcade_livery}"
+            )
+        smoke_body_stem = (
+            str(smoke_folds[0]["bodyStem"]) if smoke_folds else None
+        )
+        arcade_livery_smoke_car = stage_gt2_arcade_livery_smoke_car(
+            args.disc_root,
+            args.gt2_arcade_volume,
+            arcade_patch_root,
+            args.smoke_arcade_livery,
+            smoke_body_stem,
+        )
+        arcade_cars += (arcade_livery_smoke_car,)
     smoke_existing_livery = (
         build_gt2_existing_livery_smoke_car(
             args.gt2_simulation_volume,
