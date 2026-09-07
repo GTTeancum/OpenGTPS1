@@ -12,6 +12,7 @@ namespace RecompOne.Runtime.Hle;
 
 internal readonly record struct LiveWorldOutput(
     byte[] Pixels,
+    nint NativeTexture,
     int Width,
     int Height,
     long Frame,
@@ -27,6 +28,7 @@ internal struct LiveNativeOptions
     public uint ClearColorRgba8;
     public uint TargetAspectWidth;
     public uint TargetAspectHeight;
+    public uint DirectOutputSlot;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -55,6 +57,7 @@ internal struct LiveNativeStats
     public ulong PipelineMicroseconds;
     public ulong OutputFingerprint;
     public ulong WorldFingerprint;
+    public ulong OutputTexture;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -89,14 +92,13 @@ internal sealed class LiveWorldRenderer : IDisposable
 {
     const int CaptureBufferCount = 3;
     const int PendingCaptureCount = CaptureBufferCount - 1;
-    internal const int OutputBufferCount = 4;
+    internal const int OutputBufferCount = 5;
     // The capture side owns one active frame plus a two-frame pending FIFO.
-    // Give every member of that bounded window a completion slot, plus one
-    // buffer briefly owned by the host upload path. The host prebuffers three
-    // outputs: one for presentation and two as a completion-tail reserve. The
-    // fourth buffer is transiently owned by the host upload or active native
-    // render and does not expand steady-state latency.
-    internal const int PublishedOutputCapacity = 3;
+    // The five fixed output buffers form the completed-output reserve. During
+    // initial prebuffering all five may be published; the host then consumes
+    // and returns one before the worker needs its next destination. GPU
+    // readback uses a separate staging ring and cannot consume these slots.
+    internal const int PublishedOutputCapacity = 5;
     // Presentation spends this only when the chronological output queue is
     // empty. It is returned by the later vblank throttle in the normal case;
     // Twelve milliseconds catches imminent native completions without letting a
@@ -128,6 +130,7 @@ internal sealed class LiveWorldRenderer : IDisposable
     const uint TextureSmoothingFlag = 1u << 5;
     const uint RealtimeReadbackFlag = 1u << 6;
     const uint HighResolutionTexturesFlag = 1u << 7;
+    const uint DirectGpuOutputFlag = 1u << 8;
     const uint NoOutputStatsFlag = 1u << 3;
 
     static readonly bool ForceWarp =
@@ -192,14 +195,29 @@ internal sealed class LiveWorldRenderer : IDisposable
             out int dumpOutputCount)
             ? Math.Clamp(dumpOutputCount, 1, 16)
             : 1;
+    static readonly bool DirectGpuOutputAllowed =
+        !string.Equals(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_DISABLE_DIRECT_GPU_OUTPUT"),
+            "1",
+            StringComparison.Ordinal) &&
+        !string.Equals(
+            Environment.GetEnvironmentVariable(
+                "RECOMPONE_AUDIT_NATIVE_WORLD_OUTPUT_HASH"),
+            "1",
+            StringComparison.Ordinal) &&
+        string.IsNullOrWhiteSpace(DumpOutputPath);
 
     readonly ConcurrentQueue<byte[]> _capturePool = new();
     readonly ConcurrentQueue<byte[]> _outputPool = new();
+    readonly Dictionary<byte[], uint> _outputSlots =
+        new(ReferenceEqualityComparer.Instance);
     readonly ConcurrentQueue<byte[]> _residentMeshRegistrations = new();
     readonly object _gate = new();
     readonly object _textureUploadGate = new();
     readonly AutoResetEvent _workReady = new(false);
     readonly ManualResetEventSlim _firstOutputReady = new(false);
+    readonly ManualResetEventSlim _presentationDeviceReady = new(false);
     readonly Thread? _worker;
 
     readonly Queue<PendingCapture> _pendingCaptures = new();
@@ -227,6 +245,7 @@ internal sealed class LiveWorldRenderer : IDisposable
     long _outputWaitMaxTicks;
     int _activeCaptureInputPoll = -1;
     long _activeRenderStartTicks;
+    nint _presentationDevice;
     long _totalRenderMicroseconds;
     long _totalPipelineMicroseconds;
     long _renderOperations;
@@ -258,6 +277,8 @@ internal sealed class LiveWorldRenderer : IDisposable
 
     public bool Enabled => Requested && !_failed && !_stopping;
 
+    internal long DroppedFrames => Interlocked.Read(ref _dropped);
+
     internal void ThrowIfFailed()
     {
 #if OPENGT_RELEASE_PACKAGE
@@ -278,8 +299,13 @@ internal sealed class LiveWorldRenderer : IDisposable
             return;
         for (int index = 0; index < CaptureBufferCount; ++index)
             _capturePool.Enqueue(new byte[CaptureCapacity]);
-        for (int index = 0; index < OutputBufferCount; ++index)
-            _outputPool.Enqueue(new byte[MaxOutputBytes]);
+        for (uint index = 0; index < OutputBufferCount; ++index)
+        {
+            byte[] output = new byte[
+                DirectGpuOutputAllowed ? 1 : MaxOutputBytes];
+            _outputSlots.Add(output, index);
+            _outputPool.Enqueue(output);
+        }
         _worker = new Thread(WorkerMain)
         {
             IsBackground = true,
@@ -298,6 +324,22 @@ internal sealed class LiveWorldRenderer : IDisposable
             $"[Native-World] enabled buffers={CaptureBufferCount} " +
             $"maxTriangles={MaxTriangles} outputBuffers={OutputBufferCount} " +
             "mode=authored-only syntheticPath=absent");
+    }
+
+    public void ConfigurePresentationDevice(nint d3d11Device)
+    {
+        if (!DirectGpuOutputAllowed || d3d11Device == 0)
+            return;
+        Volatile.Write(ref _presentationDevice, d3d11Device);
+        _workReady.Set();
+        if (!_presentationDeviceReady.Wait(TimeSpan.FromSeconds(10)))
+            throw new TimeoutException(
+                "native presentation device initialization timed out");
+        Exception? failure = Volatile.Read(ref _failure);
+        if (failure is not null)
+            throw new InvalidOperationException(
+                "native presentation device initialization failed",
+                failure);
     }
 
     public bool TryRentCaptureBuffer(out byte[] buffer) =>
@@ -538,8 +580,8 @@ internal sealed class LiveWorldRenderer : IDisposable
             }
             _consumed++;
             output = _published.Dequeue();
-            // A completed fourth frame may be waiting for the host to consume
-            // one member of the three-frame presentation reserve. Wake only
+            // A completed fifth frame may be waiting for the host to consume
+            // one member of the presentation reserve. Wake only
             // the renderer worker; the emulation/presentation thread never
             // waits on a full output queue.
             Monitor.PulseAll(_gate);
@@ -611,20 +653,23 @@ internal sealed class LiveWorldRenderer : IDisposable
 
     public void ReturnOutput(byte[] pixels)
     {
-        if (pixels.Length != MaxOutputBytes)
-            return;
-        _outputPool.Enqueue(pixels);
         lock (_gate)
+        {
+            if (!_outputSlots.ContainsKey(pixels))
+                return;
+            _outputPool.Enqueue(pixels);
             Monitor.PulseAll(_gate);
+        }
     }
 
     void WorkerMain()
     {
         nint handle = 0;
+        nint boundPresentationDevice = 0;
         LiveTextureUpload[] boundTextureUploads = [];
         try
         {
-            if (NativeMethods.ApiVersion() != 10)
+            if (NativeMethods.ApiVersion() != 11)
                 throw new InvalidOperationException(
                     "native renderer API version mismatch");
             handle = NativeMethods.Create();
@@ -634,6 +679,24 @@ internal sealed class LiveWorldRenderer : IDisposable
             while (true)
             {
                 _workReady.WaitOne();
+                nint requestedPresentationDevice = Volatile.Read(
+                    ref _presentationDevice);
+                if (
+                    boundPresentationDevice == 0 &&
+                    requestedPresentationDevice != 0
+                )
+                {
+                    int deviceResult = NativeMethods.SetPresentationDevice(
+                        handle, requestedPresentationDevice);
+                    if (deviceResult != 0)
+                        throw new InvalidOperationException(
+                            "native presentation device binding failed " +
+                            $"result={deviceResult}");
+                    boundPresentationDevice = requestedPresentationDevice;
+                    Console.Error.WriteLine(
+                        "[Native-World] direct GPU presentation enabled");
+                    _presentationDeviceReady.Set();
+                }
                 PendingCapture pending;
                 lock (_gate)
                 {
@@ -700,8 +763,8 @@ internal sealed class LiveWorldRenderer : IDisposable
                 byte[]? firstOutput = null;
                 lock (_gate)
                 {
-                    // All four fixed buffers can briefly be owned by three
-                    // published frames plus the host upload. Wait for that
+                    // All five fixed buffers can briefly be owned by the
+                    // published reserve or host upload. Wait for that
                     // upload to return its buffer instead of dropping the next
                     // authored capture. This blocks only the renderer worker.
                     while (
@@ -715,6 +778,20 @@ internal sealed class LiveWorldRenderer : IDisposable
                 {
                     ReturnCaptureBuffer(capture);
                     break;
+                }
+                if (
+                    boundPresentationDevice == 0 &&
+                    firstOutput.Length != MaxOutputBytes
+                )
+                {
+                    uint fallbackSlot;
+                    lock (_gate)
+                    {
+                        fallbackSlot = _outputSlots[firstOutput];
+                        _outputSlots.Remove(firstOutput);
+                        firstOutput = new byte[MaxOutputBytes];
+                        _outputSlots.Add(firstOutput, fallbackSlot);
+                    }
                 }
                 bool firstPublished = false;
                 try
@@ -764,6 +841,10 @@ internal sealed class LiveWorldRenderer : IDisposable
                         flags |= HighResolutionTexturesFlag;
                     if (FrameClock.RealTimeThrottleActive)
                         flags |= RealtimeReadbackFlag;
+                    bool directGpuOutput = boundPresentationDevice != 0;
+                    if (directGpuOutput)
+                        flags |= DirectGpuOutputFlag;
+                    uint outputSlot = _outputSlots[firstOutput];
                     var options = new LiveNativeOptions
                     {
                         StructSize =
@@ -776,6 +857,7 @@ internal sealed class LiveWorldRenderer : IDisposable
                             1, settings.TargetAspectWidth),
                         TargetAspectHeight = (uint)Math.Max(
                             1, settings.TargetAspectHeight),
+                        DirectOutputSlot = outputSlot,
                     };
                     var firstStats = new LiveNativeStats
                     {
@@ -922,6 +1004,7 @@ internal sealed class LiveWorldRenderer : IDisposable
             Console.Error.WriteLine(
                 $"[Native-World] disabled: " +
                 $"{exception.GetType().Name}: {exception.Message}");
+            _presentationDeviceReady.Set();
         }
         finally
         {
@@ -934,7 +1017,8 @@ internal sealed class LiveWorldRenderer : IDisposable
         byte[] pixels,
         in LiveNativeStats stats)
     {
-        DumpRenderedOutput(pixels, in stats);
+        if (stats.OutputTexture == 0)
+            DumpRenderedOutput(pixels, in stats);
         if (!PublishOutput(pixels, in stats))
             return false;
         _rendered++;
@@ -1015,10 +1099,10 @@ internal sealed class LiveWorldRenderer : IDisposable
     {
         lock (_gate)
         {
-            // The three-frame limit mirrors the complete bounded capture work
-            // window. It absorbs catch-up after one active render plus two
-            // pending captures without expanding the two-output steady-state
-            // prebuffer or returning to the retired eight-frame latency queue.
+            // The five-frame limit combines the complete bounded capture work
+            // window with two extra completion slots for dense preparation and
+            // scheduler tails, without returning to the retired eight-frame
+            // latency queue.
             // A renderer completion that races the next vblank waits here for
             // one reserve slot; discarding the oldest completed authored image
             // creates a visible temporal skip at world startup.
@@ -1032,6 +1116,7 @@ internal sealed class LiveWorldRenderer : IDisposable
                 return false;
             _published.Enqueue(new LiveWorldOutput(
                 pixels,
+                unchecked((nint)stats.OutputTexture),
                 checked((int)stats.OutputWidth),
                 checked((int)stats.OutputHeight),
                 checked((long)stats.FrameIndex),
@@ -1096,7 +1181,11 @@ internal sealed class LiveWorldRenderer : IDisposable
                 ReturnOutput(_published.Dequeue().Pixels);
         }
         _workReady.Set();
-        _worker?.Join(TimeSpan.FromSeconds(5));
+        // Native direct-output frames share the host's D3D11 device. The
+        // worker drains its GPU fences during native destruction, so do not
+        // dispose synchronization objects while that drain is still active.
+        _worker?.Join();
+        _presentationDeviceReady.Dispose();
         _firstOutputReady.Dispose();
         _workReady.Dispose();
         var pipelinePercentiles = GetPercentiles(
@@ -1154,6 +1243,14 @@ internal sealed class LiveWorldRenderer : IDisposable
             EntryPoint = "opengt_live_destroy",
             CallingConvention = CallingConvention.Cdecl)]
         internal static extern void Destroy(nint handle);
+
+        [DllImport(
+            Library,
+            EntryPoint = "opengt_live_set_presentation_device",
+            CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int SetPresentationDevice(
+            nint handle,
+            nint d3d11Device);
 
         [DllImport(
             Library,
@@ -1443,7 +1540,10 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         in GteProjectionOrigin originA,
         in GteProjectionOrigin originB,
         in GteProjectionOrigin originC,
-        in PrimFlags flags)
+        in PrimFlags flags,
+        uint sourceA = 0,
+        uint sourceB = 0,
+        uint sourceC = 0)
     {
         RecordTriangleCore(
             pendingFrame,
@@ -1457,9 +1557,9 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
             in flags,
             explicitScreenSpace: false,
             residentTrack: false,
-            0,
-            0,
-            0);
+            sourceA,
+            sourceB,
+            sourceC);
     }
 
     [MethodImpl(
@@ -1781,7 +1881,9 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         WriteInt16(record, ref offset, (short)env.DrawOffsetY);
         WriteUInt64(record, ref offset, identity.TransformId);
         WriteTransform(record, ref offset, in identity);
-        if (residentTrack)
+        // Authored background meshes also supply exact RAM vertex addresses.
+        // Keep the legacy origin-derived identity path for ordinary packets.
+        if (residentTrack || (sourceA != 0 && sourceB != 0 && sourceC != 0))
         {
             WriteVertex(record, ref offset, in a, in originA, sourceA);
             WriteVertex(record, ref offset, in b, in originB, sourceB);

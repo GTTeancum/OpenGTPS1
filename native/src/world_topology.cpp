@@ -1,4 +1,5 @@
 #include "opengt/world_topology.hpp"
+#include "background_seams.hpp"
 
 #include <algorithm>
 #include <array>
@@ -3078,17 +3079,14 @@ WorldTopologyResult apply_world_topology(
                 std::uint32_t,
                 ResidentInstanceEdgeKeyHash> resident_edge_counts{
                     &topology_arena};
-            std::pmr::unordered_map<
-                ResidentInstanceVertexKey,
-                OccurrenceList,
-                ResidentInstanceVertexKeyHash> resident_vertex_occurrences{
-                    &topology_arena};
             std::pmr::vector<ResidentLodEdge> resident_edges{
                 &topology_arena};
             resident_edge_counts.reserve(draw_list->track_commands * 2U);
-            resident_vertex_occurrences.reserve(
-                draw_list->track_commands * 2U);
             resident_edges.reserve(draw_list->track_commands * 3U);
+            const float source_left =
+                static_cast<float>(draw_list->display_x);
+            const float source_right = source_left +
+                static_cast<float>(draw_list->display_width);
             for (std::size_t command_index = 0;
                  command_index < draw_list->commands.size();
                  ++command_index) {
@@ -3117,18 +3115,29 @@ WorldTopologyResult apply_world_topology(
                         std::isfinite(vertex.clip_x) &&
                         std::isfinite(vertex.clip_y) &&
                         std::isfinite(vertex.clip_w);
-                    resident_vertex_occurrences[
-                        ResidentInstanceVertexKey{
-                            command.object_id,
-                            command.model_pointer,
-                            command.transform_id,
-                            model_position(vertex)}].push_back(
-                                Occurrence{command_index, vertex_index});
                 }
                 if (!finite)
                     continue;
                 for (int edge_index = 0; edge_index < 3; ++edge_index) {
                     const int next = (edge_index + 1) % 3;
+                    ++stats.resident_lod_edges;
+                    const auto& edge_first =
+                        command.vertices[edge_index];
+                    const auto& edge_second = command.vertices[next];
+                    const bool off_left =
+                        edge_first.screen_x < source_left &&
+                        edge_second.screen_x < source_left;
+                    const bool off_right =
+                        edge_first.screen_x >= source_right &&
+                        edge_second.screen_x >= source_right;
+                    if (!off_left && !off_right)
+                        continue;
+                    const float dx =
+                        edge_second.screen_x - edge_first.screen_x;
+                    const float dy =
+                        edge_second.screen_y - edge_first.screen_y;
+                    if (dx * dx + dy * dy < 16.0F)
+                        continue;
                     const ResidentInstanceEdgeKey instance_edge{
                         command.object_id,
                         command.model_pointer,
@@ -3162,14 +3171,9 @@ WorldTopologyResult apply_world_topology(
                 ResidentAuthoredEdgeKeyHash> resident_authored_edges{
                     &topology_arena};
             resident_authored_edges.reserve(resident_edges.size());
-            const float source_left =
-                static_cast<float>(draw_list->display_x);
-            const float source_right = source_left +
-                static_cast<float>(draw_list->display_width);
             for (std::size_t edge_index = 0;
                  edge_index < resident_edges.size();
                  ++edge_index) {
-                ++stats.resident_lod_edges;
                 const auto& edge = resident_edges[edge_index];
                 const auto count = resident_edge_counts.find(
                     edge.instance_edge);
@@ -3229,12 +3233,6 @@ WorldTopologyResult apply_world_topology(
                 if (count == resident_edge_counts.end() || count->second != 1U)
                     continue;
                 ++stats.resident_lod_boundary_edges;
-                if (!off_left && !off_right)
-                    continue;
-                const float dx = second.screen_x - first.screen_x;
-                const float dy = second.screen_y - first.screen_y;
-                if (dx * dx + dy * dy < 16.0F)
-                    continue;
                 const ResidentAuthoredEdgeKey authored_key{
                     AuthoredScreenPoint{
                         first.authored_screen_x,
@@ -3709,7 +3707,12 @@ WorldTopologyResult apply_world_topology(
                     }
                 }
             }
-            for (const auto& adjustment : resident_lod_adjustments) {
+            // Most frames have no proven resident-LOD join.  Do not build an
+            // occurrence list for every resident vertex up front; that was a
+            // large hash-map allocation and insertion pass even when there
+            // was nothing to repair.  Resolve the sparse adjustment keys in
+            // one linear command scan only when a join was actually proven.
+            for (auto& adjustment : resident_lod_adjustments) {
                 float target_x = static_cast<float>(
                     adjustment.target_x + adjustment.overlap_x);
                 const float target_y = static_cast<float>(
@@ -3732,17 +3735,34 @@ WorldTopologyResult apply_world_topology(
                         target_x,
                         target_y);
                 }
-                const auto occurrences = resident_vertex_occurrences.find(
-                    adjustment.key);
-                    if (occurrences == resident_vertex_occurrences.end())
+                adjustment.target_x = target_x;
+                adjustment.target_y = target_y;
+            }
+            if (!resident_lod_adjustments.empty()) {
+                for (auto& command : draw_list->commands) {
+                    if (command.object_kind != 1U ||
+                        command.channel != WorldViewChannel::main_view ||
+                        !resident_course_command(*draw_list, command))
                         continue;
-                    for (const auto& occurrence : occurrences->second) {
-                        auto& command =
-                            draw_list->commands[occurrence.command];
+                    for (auto& vertex : command.vertices) {
+                        const ResidentInstanceVertexKey key{
+                            command.object_id,
+                            command.model_pointer,
+                            command.transform_id,
+                            model_position(vertex)};
+                        const auto found =
+                            resident_lod_adjustment_indices.find(key);
+                        if (found == resident_lod_adjustment_indices.end())
+                            continue;
+                        const auto& adjustment =
+                            resident_lod_adjustments[found->second];
                         if (command.ordering_table_index !=
                             adjustment.ordering_table_index)
                             continue;
-                        auto& vertex = command.vertices[occurrence.vertex];
+                        const float target_x = static_cast<float>(
+                            adjustment.target_x);
+                        const float target_y = static_cast<float>(
+                            adjustment.target_y);
                         const bool changed =
                             vertex.screen_x != target_x ||
                             vertex.screen_y != target_y;
@@ -3754,6 +3774,7 @@ WorldTopologyResult apply_world_topology(
                         if (changed)
                             ++stats.adjusted_resident_lod_instances;
                     }
+                }
             }
         }
 
@@ -4069,6 +4090,9 @@ WorldTopologyResult apply_world_topology(
                 }
             }
         }
+        if (options.join_authored_boundaries)
+            stats.background_midpoint_junctions =
+                repair_background_midpoint_seams(*draw_list);
         ownership_finished = TopologyClock::now();
 
         stats.output_commands =

@@ -22,6 +22,10 @@ enum {
     OPENGT_LIVE_TEXTURE_SMOOTHING = 1u << 5,
     OPENGT_LIVE_REALTIME_READBACK = 1u << 6,
     OPENGT_LIVE_HIGH_RESOLUTION_TEXTURES = 1u << 7,
+    // The caller supplied its D3D11 presentation device and requests a
+    // same-device texture result. output_rgba remains a valid fallback
+    // buffer, but no GPU-to-CPU staging copy is performed for this frame.
+    OPENGT_LIVE_DIRECT_GPU_OUTPUT = 1u << 8,
 };
 
 typedef struct opengt_live_options {
@@ -33,6 +37,9 @@ typedef struct opengt_live_options {
     // display width. The vertical resolution and field of view never change.
     uint32_t target_aspect_width;
     uint32_t target_aspect_height;
+    // Stable caller-owned output slot. A slot is not submitted again until
+    // the caller has finished copying the texture returned in stats.
+    uint32_t direct_output_slot;
 } opengt_live_options;
 
 typedef struct opengt_live_stats {
@@ -67,6 +74,9 @@ typedef struct opengt_live_stats {
     // list. Unlike output_fingerprint this is produced before asynchronous
     // GPU staging, so it remains intrinsically tied to frame_index/input_poll.
     uint64_t world_fingerprint;
+    // Borrowed ID3D11Texture2D*. It remains valid until the caller reuses
+    // direct_output_slot in a later render call. Zero selects CPU pixels.
+    uint64_t output_texture;
 } opengt_live_stats;
 
 enum {
@@ -125,6 +135,14 @@ typedef struct opengt_live_texture_upload {
 OPENGT_LIVE_EXPORT void* opengt_live_create(void);
 
 OPENGT_LIVE_EXPORT void opengt_live_destroy(void* handle);
+
+// Selects the host presentation device for the calling renderer thread.
+// Native rendering records on a deferred context and submits one isolated
+// command list to this device's immediate context. The device pointer is
+// retained until the native renderer thread exits.
+OPENGT_LIVE_EXPORT int32_t opengt_live_set_presentation_device(
+    void* handle,
+    void* d3d11_device);
 
 // With OPENGT_LIVE_REALTIME_READBACK, this submits the authored frame to the
 // asynchronous image queue.  stats.reserved carries

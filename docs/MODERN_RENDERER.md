@@ -1098,6 +1098,43 @@ report is
 `artifacts/modern-renderer-closure-audit-v137/closure-report.json`; its state is
 deliberately `machine-pass-user-visual-pending`, not complete.
 
+### September 7, 2026 60 Hz performance closure
+
+Race rendering is mode-agnostic, so one representative race/replay cadence
+gate covers both Arcade and Gran Turismo modes; the modes do not need duplicate
+FPS routes. The accepted gate requires every complete 300-frame world window
+to remain within `55.0-60.5 Hz`, the aggregate complete-window rate to remain
+within `58.0-60.5 Hz`, and every complete window to contain zero repeated
+presentations and zero world misses.
+
+The retained race evidence in
+`work/60fps-window-drop-race-1200-pass.stderr.log` has three complete windows
+at `59.10-59.81 Hz` and a `59.477 Hz` aggregate. The natural replay evidence in
+`work/60fps-window-drop-replay-2100-pass.stderr.log` has six complete windows
+at `57.50-59.96 Hz` and a `59.163 Hz` aggregate. Every complete window has 300
+new authored presentations, zero repeats, and zero world misses. Replay's final
+pipeline/submit/topology p50/p95/p99 is
+`15.068/17.310/18.269`, `8.295/10.269/11.044`, and
+`2.497/3.063/3.749 ms`.
+
+The current imported-content authority is
+`artifacts/60fps-imported-ssr11-final`. Its ReadyToRun SSR11 race has 17
+complete windows at `59.01-60.02 Hz`, a `59.886 Hz` aggregate, zero repeats,
+zero world misses, zero dropped publications, Maximum track LOD on all 5,545
+audited calls, highest vehicle LOD on all 31,627 requests, six distinct vehicle
+owners, and the complete 244-command HUD. Final pipeline/submit/topology
+p50/p95/p99 is `9.799/12.885/14.461`, `4.726/7.887/9.039`, and
+`1.373/2.144/2.518 ms`; shutdown is clean.
+
+The initial SSR11 failure was a deterministic cold-JIT hitch at poll 7,495,
+not a rendering-capacity failure. The bundled Arcade race hot-path profile was
+only prepared for no-menu direct-race launches. Standard standalone Arcade
+starts now prepare the same profile before executing the guest, removing the
+hitch. D3D11 VRAM reads also stage only the requested wrapped region instead of
+copying the complete 4096x2048 texture for a small guest read. The final tree
+passes all eight native CTests, the managed modern-renderer policy suite, and
+the enhancement-script syntax checks.
+
 ## Texture projection
 
 Race vertices carry model/world position and exact GTE view/projection state

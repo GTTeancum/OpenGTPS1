@@ -145,6 +145,7 @@ public sealed partial class Gpu
             Span<HleVertex> vertices = stackalloc HleVertex[4];
             Span<GteProjectionOrigin> packetOrigins =
                 stackalloc GteProjectionOrigin[4];
+            Span<uint> packetSourceIdentities = stackalloc uint[4];
 
             for (int stream = 0; stream < streamCounts.Length; stream++)
             {
@@ -235,6 +236,8 @@ public sealed partial class Gpu
                         environment.DrawOffsetX,
                         environment.DrawOffsetY);
                     packetOrigins[corner] = origin;
+                    packetSourceIdentities[corner] =
+                        vertexPointer + sourceIndices[sourceCorner] * 8u;
                 }
 
                 _liveWorldCapture.RecordTriangle(
@@ -246,7 +249,10 @@ public sealed partial class Gpu
                     in packetOrigins[0],
                     in packetOrigins[1],
                     in packetOrigins[2],
-                    in flags);
+                    in flags,
+                    packetSourceIdentities[0],
+                    packetSourceIdentities[1],
+                    packetSourceIdentities[2]);
                 frameTriangles++;
                 if (quad)
                 {
@@ -259,7 +265,10 @@ public sealed partial class Gpu
                         in packetOrigins[1],
                         in packetOrigins[2],
                         in packetOrigins[3],
-                        in flags);
+                        in flags,
+                        packetSourceIdentities[1],
+                        packetSourceIdentities[2],
+                        packetSourceIdentities[3]);
                     frameTriangles++;
                 }
                 framePrimitives++;

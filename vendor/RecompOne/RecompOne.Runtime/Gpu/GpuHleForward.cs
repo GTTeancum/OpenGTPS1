@@ -243,6 +243,28 @@ public sealed partial class Gpu
     }
 
     [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    bool CanSkipRawReplacementPolygon(in GteProjectionOrigin origin)
+    {
+        if (!origin.Valid ||
+            (origin.Flags & GteProjectionOriginFlags.ScreenOffsetAnchor) != 0)
+        {
+            return false;
+        }
+        bool rawReplacement =
+            (RawTrackReplacementActive &&
+             origin.Object.Kind == WorldObjectKind.Track) ||
+            (RawBackgroundReplacementActive &&
+             origin.Object.Kind == WorldObjectKind.Background);
+        return rawReplacement &&
+            !_rawTrackCorrelationRequested &&
+            !_projectedCapture.Enabled &&
+            !_worldCapture.Enabled &&
+            !_traceScreenEffectPrimitives &&
+            !_traceMixedProjectionTriangles;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
         System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     bool CaptureTri(
         in Vert a,
@@ -257,6 +279,43 @@ public sealed partial class Gpu
         bool raw,
         int clut)
     {
+        bool containsWorldProvenance =
+            originA.Valid || originB.Valid || originC.Valid;
+        bool containsNativeWorldProvenance =
+            IsNativeWorldOrigin(in originA) ||
+            IsNativeWorldOrigin(in originB) ||
+            IsNativeWorldOrigin(in originC);
+        bool derivedScreenAnchor =
+            (originA.Flags & GteProjectionOriginFlags.ScreenOffsetAnchor) != 0 ||
+            (originB.Flags & GteProjectionOriginFlags.ScreenOffsetAnchor) != 0 ||
+            (originC.Flags & GteProjectionOriginFlags.ScreenOffsetAnchor) != 0;
+        bool rawTrackReplacement =
+            RawTrackReplacementActive &&
+            !derivedScreenAnchor &&
+            (originA.Object.Kind == WorldObjectKind.Track ||
+             originB.Object.Kind == WorldObjectKind.Track ||
+             originC.Object.Kind == WorldObjectKind.Track);
+        bool rawBackgroundReplacement =
+            RawBackgroundReplacementActive &&
+            !derivedScreenAnchor &&
+            (originA.Object.Kind == WorldObjectKind.Background ||
+             originB.Object.Kind == WorldObjectKind.Background ||
+             originC.Object.Kind == WorldObjectKind.Background);
+        // Raw track/background replacement has already recorded the native
+        // resident instance or authored background mesh before the guest emits
+        // these compatibility packets. In the ordinary live path they are
+        // neither screen primitives nor transient world captures. Avoid
+        // constructing HLE vertices and flags for thousands of triangles when
+        // none of the explicit correlation/file diagnostics needs them.
+        if ((rawTrackReplacement || rawBackgroundReplacement) &&
+            !_rawTrackCorrelationRequested &&
+            !_projectedCapture.Enabled &&
+            !_worldCapture.Enabled &&
+            !_traceScreenEffectPrimitives &&
+            !_traceMixedProjectionTriangles)
+        {
+            return true;
+        }
         var flags = PrimOf(tex, semi, raw, clut, gouraud);
         var ha = HV(a);
         var hb = HV(b);
@@ -281,28 +340,6 @@ public sealed partial class Gpu
             in flags);
         bool fileWorldCapture = _worldCapture.Enabled;
         bool liveWorldCapture = _liveWorldCapture.Enabled;
-        bool containsWorldProvenance =
-            originA.Valid || originB.Valid || originC.Valid;
-        bool containsNativeWorldProvenance =
-            IsNativeWorldOrigin(in originA) ||
-            IsNativeWorldOrigin(in originB) ||
-            IsNativeWorldOrigin(in originC);
-        bool derivedScreenAnchor =
-            (originA.Flags & GteProjectionOriginFlags.ScreenOffsetAnchor) != 0 ||
-            (originB.Flags & GteProjectionOriginFlags.ScreenOffsetAnchor) != 0 ||
-            (originC.Flags & GteProjectionOriginFlags.ScreenOffsetAnchor) != 0;
-        bool rawTrackReplacement =
-            RawTrackReplacementActive &&
-            !derivedScreenAnchor &&
-            (originA.Object.Kind == WorldObjectKind.Track ||
-             originB.Object.Kind == WorldObjectKind.Track ||
-             originC.Object.Kind == WorldObjectKind.Track);
-        bool rawBackgroundReplacement =
-            RawBackgroundReplacementActive &&
-            !derivedScreenAnchor &&
-            (originA.Object.Kind == WorldObjectKind.Background ||
-             originB.Object.Kind == WorldObjectKind.Background ||
-             originC.Object.Kind == WorldObjectKind.Background);
         if (_traceScreenEffectPrimitives &&
             (!string.Equals(
                  _traceScreenEffectTextureFilter,
@@ -922,6 +959,9 @@ public sealed partial class Gpu
     internal bool LiveWorldWorkPending =>
         _liveWorldRenderer.HasPendingOrActiveWork;
 
+    internal long LiveWorldDroppedFrames =>
+        _liveWorldRenderer.DroppedFrames;
+
     internal void DiscardLiveWorldOutputs() =>
         _liveWorldRenderer.DiscardPublishedOutputs();
 
@@ -930,6 +970,9 @@ public sealed partial class Gpu
 
     internal void ReturnLiveWorldOutput(byte[] pixels) =>
         _liveWorldRenderer.ReturnOutput(pixels);
+
+    internal void ConfigureLiveWorldPresentationDevice(nint d3d11Device) =>
+        _liveWorldRenderer.ConfigurePresentationDevice(d3d11Device);
 
     internal void ShutdownLiveWorldRenderer()
     {

@@ -31,6 +31,15 @@ double average_ms(const std::vector<std::uint64_t>& samples) {
         1000.0 / samples.size();
 }
 
+std::uint64_t fnv1a64(const std::uint8_t* bytes, std::size_t size) {
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (std::size_t index = 0; index < size; ++index) {
+        hash ^= bytes[index];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -92,6 +101,7 @@ int main(int argc, char** argv) {
     draw_list_samples.reserve(frames);
     topology_samples.reserve(frames);
     pipeline_samples.reserve(frames);
+    opengt_live_stats last_stats{};
     const auto started = std::chrono::steady_clock::now();
     for (int index = -warmup_frames; index < frames; ++index) {
         opengt_live_stats stats{};
@@ -118,6 +128,7 @@ int main(int argc, char** argv) {
         const auto frame_finished = std::chrono::steady_clock::now();
         if (index < 0)
             continue;
+        last_stats = stats;
         wall_samples.push_back(static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 frame_finished - frame_started).count()));
@@ -173,6 +184,15 @@ int main(int argc, char** argv) {
         average_ms(topology_samples),
         average_ms(decode_samples),
         average_ms(draw_list_samples));
+    const std::size_t output_bytes =
+        static_cast<std::size_t>(last_stats.output_width) *
+        last_stats.output_height * 4U;
+    std::printf(
+        "outputHash=%016llx worldHash=%016llx outputBytes=%zu\n",
+        static_cast<unsigned long long>(
+            fnv1a64(output.data(), output_bytes)),
+        static_cast<unsigned long long>(last_stats.world_fingerprint),
+        output_bytes);
     std::fflush(stdout);
     opengt_live_destroy(renderer);
     return 0;

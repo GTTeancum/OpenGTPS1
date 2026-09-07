@@ -68,10 +68,115 @@ opengt::render::WorldDrawCommand triangle(
     return result;
 }
 
+bool background_midpoint_tests() {
+    using namespace opengt::render;
+    const auto sky_vertex=[](short x,short y,short z,unsigned id) {
+        auto v=vertex(x,y,z,id);
+        v.exact_transform_valid=true; v.transform_id=42;
+        v.transform_rotation[0]=v.transform_rotation[4]=v.transform_rotation[8]=4096;
+        v.r=154; v.g=180; v.b=195;
+        return v;
+    };
+    const auto a=sky_vertex(-593,941,4031,1);
+    const auto b=sky_vertex(-1799,608,3661,2);
+    const auto c=sky_vertex(-589,1286,4004,3);
+    const auto m=sky_vertex(-1196,774,3846,4); // exact midpoint Y is 774.5
+    auto d=sky_vertex(-1214,-70,3907,5); d.r=158; d.g=185; d.b=200;
+    WorldDrawList original{};
+    original.materials.resize(2); original.materials[1].primitive_flags=8;
+    original.commands={triangle(a,b,c,0x80001000,0),
+        triangle(m,a,d,0x80001000,1,1),triangle(b,m,d,0x80001000,2,1)};
+    for (auto& cmd:original.commands) { cmd.object_kind=3; cmd.object_id=7; }
+    bool okay=true;
+    for (int variant=0;variant<10;++variant) {
+        auto list=original;
+        switch(variant) {
+        case 1: list.commands.pop_back(); break; // no complete A-M-B chain
+        case 2:
+            list.commands[1].vertices[0].model_y-=2;
+            list.commands[2].vertices[1].model_y-=2; break;
+        case 3: list.commands[1].model_pointer+=4; break;
+        case 4: list.commands[1].vertices[0].source_vertex_identity=0; break;
+        case 5: list.commands[0].vertices[0].r-=4; break; // no constant edge color
+        case 6: list.materials[0].primitive_flags=1; break;
+        case 7: list.commands[1].vertices[0].r-=1; break; // authored color seam
+        case 8: list.commands[0].channel=WorldViewChannel::secondary_view; break;
+        case 9: list.commands[1].vertices[0].projection_plane=123; break;
+        }
+        const auto count=list.commands.size();
+        WorldTopologyStats stats{};
+        okay &= expect(apply_world_topology(&list,{true,false,false},&stats)==WorldTopologyResult::success,
+            "background midpoint pass succeeds");
+        okay &= expect(stats.background_midpoint_junctions==(variant==0?1U:0U) &&
+            list.commands.size()==count+(variant==0?1U:0U),
+            "only the source-proven constant-color midpoint seam is split");
+        if (variant==0) {
+            unsigned inserted=0;
+            for (const auto& cmd:list.commands) {
+                if(cmd.source_command_index!=0) continue;
+                for(const auto& v:cmd.vertices) {
+                    okay &= expect(v.r==154 && v.g==180 && v.b==195,
+                        "background repair preserves flat authored RGB");
+                    if(v.source_vertex_identity==4) {
+                        ++inserted;
+                        okay &= expect(v.model_x==m.model_x && v.model_y==m.model_y &&
+                            v.model_z==m.model_z && v.clip_x==m.clip_x && v.clip_y==m.clip_y,
+                            "background repair reuses the exact existing midpoint");
+                    }
+                }
+            }
+            okay &= expect(inserted==2 && list.background_commands==4,
+                "both split triangles use the shared source midpoint");
+            WorldTopologyStats again{};
+            apply_world_topology(&list,{true,false,false},&again);
+            okay &= expect(again.background_midpoint_junctions==0 && list.commands.size()==4,
+                "background midpoint repair is idempotent");
+        }
+    }
+    for (int variant=0;variant<5;++variant) {
+        auto list=original;
+        list.commands[0].vertices[2].r=180; // gradient parent must stay intact
+        switch(variant) {
+        case 1: // projected midpoint lies inside the parent, not in a gap
+            list.commands[1].vertices[0].clip_y+=1;
+            list.commands[2].vertices[1].clip_y+=1; break;
+        case 2: list.commands[1].vertices[0].clip_w=0; break;
+        case 3: // midpoint color is not the rounded source half-way color
+            list.commands[1].vertices[0].r+=1;
+            list.commands[2].vertices[1].r+=1; break;
+        case 4: // projected neighbor overlaps the proposed gap
+            list.commands[1].vertices[2].clip_y=1500;
+            list.commands[2].vertices[2].clip_y=1500; break;
+        }
+        const auto before=list;
+        WorldTopologyStats stats{};
+        apply_world_topology(&list,{true,false,false},&stats);
+        okay &= expect(stats.background_midpoint_junctions==(variant==0?1U:0U),
+            "gradient sky gaps require non-overlap, finite projection and source RGB proof");
+        for (const auto& source:before.commands) {
+            bool intact=false;
+            for (const auto& candidate:list.commands) {
+                bool same=candidate.source_command_index==source.source_command_index;
+                for (int corner=0;corner<3;++corner) {
+                    const auto& a=source.vertices[corner];
+                    const auto& b=candidate.vertices[corner];
+                    same &= a.source_vertex_identity==b.source_vertex_identity &&
+                        a.r==b.r && a.g==b.g && a.b==b.b &&
+                        a.clip_x==b.clip_x && a.clip_y==b.clip_y && a.clip_w==b.clip_w;
+                }
+                intact |= same;
+            }
+            okay &= expect(intact,"gap-only repair preserves every original gradient face");
+        }
+    }
+    return okay;
+}
+
 } // namespace
 
 int main() {
     using namespace opengt::render;
+    if (!background_midpoint_tests()) return 1;
     WorldDrawList list{};
     list.materials.resize(2);
     list.commands.push_back(triangle(

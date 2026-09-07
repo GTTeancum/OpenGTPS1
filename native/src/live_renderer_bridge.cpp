@@ -24,13 +24,12 @@
 
 namespace {
 
-// Version 10 extends every resident instance from 96 to 104 bytes with the
-// GT2 depth-normalization exponent and its validity bit.  Keep this version
+// Version 11 adds same-device D3D11 texture output. Keep this version
 // synchronized with LiveWorldRenderer so a stale DLL cannot reinterpret the
-// next instance's mesh key as the previous instance's tail.
-constexpr std::uint32_t api_version = 10;
+// extended options/stats layouts.
+constexpr std::uint32_t api_version = 11;
 constexpr std::uint64_t resident_mesh_magic = 0x314853454D54474FULL;
-constexpr std::uint32_t resident_mesh_version = 1;
+constexpr std::uint32_t resident_mesh_version = 2;
 constexpr std::size_t resident_mesh_header_size = 32;
 constexpr std::size_t resident_vertex_stride = 12;
 constexpr std::size_t resident_primitive_stride = 80;
@@ -42,6 +41,7 @@ constexpr std::uint32_t resident_primitive_semi_transparent = 1U << 3;
 constexpr std::uint32_t resident_primitive_raw_texture = 1U << 4;
 constexpr std::uint32_t resident_primitive_gouraud = 1U << 5;
 constexpr std::uint32_t resident_primitive_primary_path = 1U << 6;
+constexpr std::uint32_t resident_primitive_local_coordinates = 1U << 7;
 
 constexpr std::array<int, 3> resident_quad_packet_corners(
     bool primary,
@@ -68,7 +68,8 @@ static_assert(resident_quad_packet_corners(false, 0)[2] == 3);
 static_assert(resident_quad_packet_corners(false, 1)[0] == 1);
 static_assert(resident_quad_packet_corners(false, 1)[1] == 3);
 static_assert(resident_quad_packet_corners(false, 1)[2] == 2);
-static_assert(sizeof(opengt_live_stats) == 128);
+static_assert(sizeof(opengt_live_options) == 28);
+static_assert(sizeof(opengt_live_stats) == 136);
 #if defined(OPENGT_SYNTHETIC_FRAME_DEV_SUPPORT)
 static_assert(sizeof(opengt_live_interpolation_stats) == 128);
 #endif
@@ -810,13 +811,6 @@ std::vector<ResidentPoint2> resident_triangle_overlap_polygon(
     return polygon;
 }
 
-bool resident_triangles_positive_overlap(
-    std::array<ResidentPoint2, 3> subject,
-    std::array<ResidentPoint2, 3> clip
-) {
-    return !resident_triangle_overlap_polygon(subject, clip).empty();
-}
-
 std::array<int, 3> resident_primitive_triangle_corners(
     const ResidentPrimitive& primitive,
     int triangle
@@ -1035,6 +1029,7 @@ bool resident_primitives_positive_overlap(
     const ResidentPrimitive& right,
     int dropped_axis
 ) {
+    double overlap_area_twice = 0.0;
     const int left_triangles =
         (left.flags & resident_primitive_quad) != 0 ? 2 : 1;
     const int right_triangles =
@@ -1061,12 +1056,37 @@ bool resident_primitives_positive_overlap(
                     mesh.vertices[right.indices[right_corners[vertex]]],
                     dropped_axis);
             }
-            if (resident_triangles_positive_overlap(
-                    left_points, right_points))
-                return true;
+            const auto overlap = resident_triangle_overlap_polygon(
+                left_points, right_points);
+            if (!overlap.empty())
+                overlap_area_twice += std::abs(
+                    resident_area_twice(overlap));
         }
     }
-    return false;
+    const double left_area_twice = resident_primitive_projected_area_twice(
+        mesh, left, dropped_axis);
+    const double right_area_twice = resident_primitive_projected_area_twice(
+        mesh, right, dropped_axis);
+    const double smaller_area_twice = (std::min)(
+        left_area_twice, right_area_twice);
+    // Adjacent fixed-point course sectors can miss exact collinearity by one
+    // half-unit and leave a numerical overlap sliver.  That boundary contact
+    // is not a road-artwork relationship: promoting the smaller full road
+    // sector into the stencil-only overlay pass cuts a rectangular hole when
+    // its adjacent sector no longer owns the same screen pixels.  Authored
+    // Some untextured authored paint ends at a resident-mesh boundary and can
+    // only be related to adjacent textured asphalt by a narrow overlap.  The
+    // Grand Valley start-box segment at 0x80122F34 is the limiting known
+    // valid case.  Same-material road sectors do not have that artwork/support
+    // relationship: keep the stricter threshold for them so the textured
+    // bridge-sector sliver at 0x800FC5FC remains rejected.
+    const bool mixed_texturing =
+        ((left.flags & resident_primitive_textured) != 0) !=
+        ((right.flags & resident_primitive_textured) != 0);
+    if (mixed_texturing)
+        return overlap_area_twice > 0.0;
+    return smaller_area_twice > 0.0 &&
+        overlap_area_twice > smaller_area_twice / 1024.0;
 }
 
 void classify_resident_track_overlays(ResidentMesh* mesh) {
@@ -1082,6 +1102,18 @@ void classify_resident_track_overlays(ResidentMesh* mesh) {
         primitive.overlay_support = false;
         primitive.replacement_surface = false;
     }
+    // The road relationship is defined in GT2's world-aligned course space
+    // (Z-up), not arbitrary object-local space. Auxiliary scenery is rotated
+    // per instance: Trial Mountain's upright sign panels lie in local Z=-2.
+    // Treating those panels as ground artwork removes their middle section
+    // in the road-stencil pass. Keep local-space meshes at physical depth;
+    // projection path/face winding does not identify their coordinate frame.
+    if (std::any_of(mesh->primitives.begin(), mesh->primitives.end(),
+            [](const ResidentPrimitive& primitive) {
+                return (primitive.flags &
+                    resident_primitive_local_coordinates) != 0;
+            }))
+        return;
     std::vector<ResidentOverlayCandidate> candidates;
     candidates.reserve(mesh->primitives.size());
     for (const auto& primitive : mesh->primitives) {
@@ -2864,6 +2896,9 @@ opengt::render::WorldGpuRenderOptions gpu_options(
     };
     result.target_aspect_width = options.target_aspect_width;
     result.target_aspect_height = options.target_aspect_height;
+    result.direct_gpu_output =
+        (options.flags & OPENGT_LIVE_DIRECT_GPU_OUTPUT) != 0;
+    result.direct_output_slot = options.direct_output_slot;
     return result;
 }
 
@@ -2907,6 +2942,8 @@ void fill_stats(
     stats->topology_microseconds = built.topology_microseconds;
     stats->pipeline_microseconds = pipeline_microseconds;
     stats->world_fingerprint = built.world_fingerprint;
+    stats->output_texture = reinterpret_cast<std::uintptr_t>(
+        render.output_texture);
 }
 
 std::uint32_t render_frame(
@@ -3205,7 +3242,6 @@ extern "C" {
 
 void* opengt_live_create(void) {
     try {
-        opengt::render::reset_world_d3d11_readback(false);
         return new LiveContext();
     } catch (...) {
         return nullptr;
@@ -3214,6 +3250,7 @@ void* opengt_live_create(void) {
 
 void opengt_live_destroy(void* handle) {
     auto* context = static_cast<LiveContext*>(handle);
+    opengt::render::drain_world_d3d11_direct_output();
     if (context != nullptr) {
         std::fprintf(
             stderr,
@@ -3273,6 +3310,16 @@ void opengt_live_destroy(void* handle) {
     delete context;
 }
 
+int32_t opengt_live_set_presentation_device(
+    void* handle,
+    void* d3d11_device
+) {
+    if (handle == nullptr || d3d11_device == nullptr)
+        return -1;
+    return opengt::render::set_world_d3d11_presentation_device(
+        d3d11_device) ? 0 : -2;
+}
+
 int32_t opengt_live_render(
     void* handle,
     const std::uint8_t* capture_bytes,
@@ -3313,6 +3360,21 @@ int32_t opengt_live_render(
             context->maximum_unclassified_world_commands = (std::max)(
                 context->maximum_unclassified_world_commands,
                 context->draw_list.unclassified_world_commands);
+        }
+        const bool direct_gpu_output =
+            (options->flags & OPENGT_LIVE_DIRECT_GPU_OUTPUT) != 0;
+        if (direct_gpu_output) {
+            context->has_previous = false;
+            result = render_frame(
+                built,
+                context->draw_list,
+                context->vram.data(),
+                context->vram.size(),
+                output_rgba,
+                output_capacity,
+                *options,
+                stats);
+            return result == 0 ? 0 : fail(stats, result);
         }
         const bool realtime_readback =
             (options->flags & OPENGT_LIVE_REALTIME_READBACK) != 0;

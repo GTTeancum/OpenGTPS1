@@ -243,6 +243,61 @@ PSMemory testMemory = VerifyArcadeFrontendContracts();
 
 VerifyCpuProjectionFastPath();
 
+static void VerifyWideCourseTranslation()
+{
+    short[][] matrices = [
+        [4096, 0, 0, 0, 4096, 0, 0, 0, 4096],
+        [63, 4095, 49, 10, 42, -3723, 4095, -63, 13]];
+    int[][] vectors = [
+        [0, 0, 0], [32767, -32768, 17], [-32768, 32767, -32768],
+        [65016, -3590, -63], [-65016, 3590, 63],
+        [32768, -32769, 65536], [2097151, -2097152, 4192]];
+    foreach (short[] matrix in matrices)
+    {
+        for (int register = 0; register < 5; register++)
+        {
+            int index = register * 2;
+            uint packed = (ushort)matrix[index];
+            if (index + 1 < 9) packed |= (uint)(ushort)matrix[index + 1] << 16;
+            Gte.WriteControl(register, packed);
+        }
+        foreach (int[] vector in vectors)
+        {
+            Gte.Write(9, unchecked((uint)vector[0]));
+            Gte.Write(10, unchecked((uint)vector[1]));
+            Gte.Write(11, unchecked((uint)vector[2]));
+            Gte.Execute(0x4A49E012u);
+            uint[] legacy = [Gte.Read(25), Gte.Read(26), Gte.Read(27)];
+            uint legacyFlags = Gte.ReadControl(31);
+            Gte.ExecuteTrackTranslation(unchecked((uint)vector[0]),
+                unchecked((uint)vector[1]), unchecked((uint)vector[2]));
+            for (int axis = 0; axis < 3; axis++)
+            {
+                long sum = 0;
+                for (int column = 0; column < 3; column++)
+                    sum += (long)matrix[axis * 3 + column] * vector[column];
+                int expected = checked((int)(sum >> 12));
+                Require(unchecked((int)Gte.Read(25 + axis)) == expected,
+                    "wide course translation wrapped or changed fixed-point rounding");
+                Require(unchecked((int)Gte.Read(9 + axis)) ==
+                    Math.Clamp(expected, short.MinValue, short.MaxValue),
+                    "wide course translation changed result-register saturation");
+            }
+            if (vector.All(value => value is >= short.MinValue and <= short.MaxValue))
+            {
+                Require(legacy.SequenceEqual(new[] {Gte.Read(25), Gte.Read(26), Gte.Read(27)}) &&
+                    legacyFlags == Gte.ReadControl(31),
+                    "in-range course translation differs from the original GTE path");
+            }
+            if (vector[0] == 65016)
+                Require(!legacy.SequenceEqual(new[] {Gte.Read(25), Gte.Read(26), Gte.Read(27)}),
+                    "measured Test Course negative control failed to reproduce 16-bit wrap");
+        }
+    }
+}
+
+VerifyWideCourseTranslation();
+
 static void VerifyProjectionOriginHandleFlow(PSMemory memory)
 {
     const uint directAddress = 0x00001000u;
@@ -749,6 +804,16 @@ string hostWindowSource = ReadRepoFile(
     @"vendor\RecompOne\RecompOne.Runtime\Host\Window\HostWindow.cs");
 string liveRendererSource = ReadRepoFile(
     @"vendor\RecompOne\RecompOne.Runtime\Gpu\Hle\LiveWorldRenderer.cs");
+string rawBackgroundSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Gpu\GpuRawBackground.cs");
+Require(rawBackgroundSource.Contains(
+        "vertexPointer + sourceIndices[sourceCorner] * 8u", StringComparison.Ordinal) &&
+    Occurrences(rawBackgroundSource, "packetSourceIdentities[1],") == 2 &&
+    Occurrences(rawBackgroundSource, "packetSourceIdentities[2]") == 2 &&
+    liveRendererSource.Contains(
+        "if (residentTrack || (sourceA != 0 && sourceB != 0 && sourceC != 0))",
+        StringComparison.Ordinal),
+    "authored background source identities are dropped before native serialization");
 string gt2CompatSource = ReadRepoFile(
     @"vendor\RecompOne\RecompOne.Runtime\sdk\GT2Compat.cs");
 string gteSource = ReadRepoFile(
@@ -773,6 +838,16 @@ string simulationEnhancements = ReadRepoFile(
     @"tools\apply_gt2_enhancements.py");
 string arcadeEnhancements = ReadRepoFile(
     @"tools\apply_gt2_arcade_enhancements.py");
+foreach (string coursePatch in new[] {simulationEnhancements, arcadeEnhancements})
+    Require(Occurrences(coursePatch,
+        "Gte.ExecuteTrackTranslation(c.A1, c.V1, c.A2);") == 1,
+        "course translation widening must target exactly one transform per game");
+foreach (string courseOverlay in new[] {
+    @"generated\arcade-recompiled\gt2_arcade_overlay_0.cs",
+    @"generated\recompiled\gt2_overlay_0.cs"})
+    Require(Occurrences(ReadRepoFile(courseOverlay),
+        "Gte.ExecuteTrackTranslation(c.A1, c.V1, c.A2);") == 1,
+        "generated course translation hook is absent or duplicated");
 string generatedArcadeFrontend = ReadRepoFile(
     @"generated\arcade-recompiled\gt2_arcade_overlay_2.cs");
 string generatedSimulationTitle = ReadRepoFile(
@@ -1188,6 +1263,15 @@ Require(
     rawTrackSource.Contains("materialLod=", StringComparison.Ordinal),
     "resident course geometry no longer preserves GT2's authored material LOD");
 Require(
+    Regex.IsMatch(rawTrackSource,
+        @"if\s*\(key\.AuxiliaryFormat\)\s+flags\s*\|=\s*1u\s*<<\s*7;"),
+    "resident mesh serialization lost the object-local coordinate flag");
+Require(
+    rawTrackSource.Contains("WriteUInt32LittleEndian(destination[8..], 2)", StringComparison.Ordinal) &&
+    liveBridgeSource.Contains("resident_mesh_version = 2", StringComparison.Ordinal) &&
+    liveBridgeSource.Contains("resident_primitive_local_coordinates = 1U << 7", StringComparison.Ordinal),
+    "managed/native resident mesh coordinate-space contract is inconsistent");
+Require(
     worldDrawListHeader.Contains(
         "world_primitive_track_overlay_layer_mask",
         StringComparison.Ordinal) &&
@@ -1382,16 +1466,38 @@ foreach (string standaloneVehicleOverlay in new[]
 }
 
 const uint stockVehicleFrustumMask = 0x003F001Fu;
+foreach (string trackOverlay in new[]
+{
+    @"generated\recompiled\gt2_overlay_0.cs",
+    @"generated\arcade-recompiled\gt2_arcade_overlay_0.cs",
+})
+{
+    string source = ReadRepoFile(trackOverlay);
+    Require(
+        Regex.IsMatch(source,
+            @"ExpandTrackFrustumClassification\(\s*c\.V0, c\.V1, MemoryAccess\.ReadU32\(m, c\.S1 \+ 0x4u\)\)"),
+        $"{trackOverlay}: track bridge lost the original bounding-box clip mask");
+}
 Require(
     RecompOne.Runtime.Sdk.GT2Compat.ApplyModernTrackFrustumClassification(
-        0u, enabled: true) == 0u &&
+        0u, 0u, enabled: true) == 0u &&
     RecompOne.Runtime.Sdk.GT2Compat.ApplyModernTrackFrustumClassification(
-        1u, enabled: true) == 1u &&
+        1u, 0x003F0000u, enabled: true) == 1u &&
     RecompOne.Runtime.Sdk.GT2Compat.ApplyModernTrackFrustumClassification(
-        2u, enabled: true) == 1u &&
+        2u, 0x003F0006u, enabled: true) == 1u &&
     RecompOne.Runtime.Sdk.GT2Compat.ApplyModernTrackFrustumClassification(
-        2u, enabled: false) == 2u,
+        2u, 0x003F0006u, enabled: false) == 2u,
     "expanded track objects did not retain GT2's intersecting packet order");
+foreach (uint mask in new uint[] { 0x003F003Fu, 0x00010001u, 0x003F0022u, 0u })
+    Require(
+        RecompOne.Runtime.Sdk.GT2Compat.ApplyModernTrackFrustumClassification(
+            2u, mask, enabled: true) == 2u,
+        $"whole-object depth/projection rejection was erased: 0x{mask:X8}");
+foreach (uint mask in new uint[] { 2u, 4u, 8u, 16u, 0x003F0018u })
+    Require(
+        RecompOne.Runtime.Sdk.GT2Compat.ApplyModernTrackFrustumClassification(
+            2u, mask, enabled: true) == 1u,
+        $"authored viewport rejection still removes modern geometry: 0x{mask:X8}");
 Require(
     RecompOne.Runtime.Sdk.GT2Compat.ApplyModernVehicleViewportMask(
         stockVehicleFrustumMask, enabled: false) == stockVehicleFrustumMask,
@@ -1771,7 +1877,7 @@ int publishedOutputCapacity = (int)rendererType.GetField(
     "PublishedOutputCapacity",
     BindingFlags.NonPublic | BindingFlags.Static)!.GetRawConstantValue()!;
 Require(
-    outputBufferCount == 4 && publishedOutputCapacity == 3,
+    outputBufferCount == 5 && publishedOutputCapacity == 5,
     "native output ring no longer covers the bounded capture work window");
 Require(
     hostWindowSource.Contains(
@@ -2187,6 +2293,22 @@ Type gteType = rendererType.Assembly.GetType(
 MethodInfo filterVehicleProjectionLimits = gteType.GetMethod(
     "FilterVehicleProjectionSummary",
     BindingFlags.NonPublic | BindingFlags.Static)!;
+MethodInfo correctVehicleNclipDepthSign = gteType.GetMethod(
+    "CorrectVehicleNclipDepthSign",
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+// A=(-2,-1,2), B=(2,-1,2), C=(0,2,-1). Perspective projection
+// gives signed area -3, but clipping at z=1 gives the CCW trapezoid
+// (-1,-.5), (1,-.5), (4/3,0), (-4/3,0), signed double-area 7/3.
+Require(
+    (double)correctVehicleNclipDepthSign.Invoke(null, [-3.0, 2L, 2L, -1L])! == 3.0 &&
+    (double)correctVehicleNclipDepthSign.Invoke(null, [3.0, 2L, -1L, 2L])! == -3.0,
+    "vehicle facing flips across the camera plane instead of matching the clipped polygon");
+Require(
+    (double)correctVehicleNclipDepthSign.Invoke(null, [0.125, 2L, 3L, 4L])! == 0.125 &&
+    (double)correctVehicleNclipDepthSign.Invoke(null, [-17.0, 2L, 3L, 4L])! == -17.0 &&
+    (double)correctVehicleNclipDepthSign.Invoke(null, [5.0, -2L, -3L, 4L])! == 5.0 &&
+    (double)correctVehicleNclipDepthSign.Invoke(null, [0.0, 2L, 3L, -4L])! == 0.0,
+    "vehicle facing correction changed front-facing area, even depth parity, or degeneracy");
 uint screenOnlyFlag = (uint)filterVehicleProjectionLimits.Invoke(
     null,
     [0x80006000u, true])!;
@@ -2297,7 +2419,7 @@ int prebufferOutputs = (int)hostWindowType.GetField(
     BindingFlags.NonPublic | BindingFlags.Static)!.GetRawConstantValue()!;
 Require(
     prebufferOutputs == 3,
-    "native presentation reserve no longer covers two-presentation GPU tails");
+    "direct presentation no longer retains its two-frame scheduling reserve");
 MethodInfo nativeStaleDiscardBeforePoll = hostWindowType.GetMethod(
     "SelectNativeWorldStaleDiscardBeforePoll",
     BindingFlags.NonPublic | BindingFlags.Static)!;
@@ -2444,6 +2566,7 @@ Console.WriteLine(
     "stage_throttle_latch=pass output_dock_validation=pass " +
     "native_reuse_age_guard=pass packet_origin_coordinate_guard=pass " +
     "bounded_world_ownership=pass cpu_projection_fast_path=pass " +
-    "projection_origin_handle_flow=pass " +
+    "projection_origin_handle_flow=pass wide_course_translation=pass " +
+    "background_source_identity_flow=pass " +
     "continuous_track_facing=pass exact_face_oracle=pass " +
     "authored_material_lod=pass oriented_minification=pass");

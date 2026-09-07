@@ -284,22 +284,131 @@ struct VehicleReflectionGroup {
     std::size_t paired_commands{};
 };
 
-bool same_vehicle_reflection_group(
-    const VehicleReflectionGroup& group,
+struct VehicleReflectionGroupKey {
+    std::uint32_t object_id{};
+    std::uint32_t model_pointer{};
+    std::uint64_t transform_id{};
+    WorldViewChannel channel{};
+
+    bool operator==(const VehicleReflectionGroupKey& other) const noexcept {
+        return object_id == other.object_id &&
+            model_pointer == other.model_pointer &&
+            transform_id == other.transform_id &&
+            channel == other.channel;
+    }
+};
+
+struct VehicleReflectionGroupKeyHash {
+    std::size_t operator()(
+        const VehicleReflectionGroupKey& key
+    ) const noexcept {
+        std::size_t result = 1469598103934665603ULL;
+        const auto mix = [&result](std::uint64_t value) {
+            result ^= static_cast<std::size_t>(value);
+            result *= 1099511628211ULL;
+        };
+        mix(key.object_id);
+        mix(key.model_pointer);
+        mix(key.transform_id);
+        mix(static_cast<std::uint32_t>(key.channel));
+        return result;
+    }
+};
+
+struct VehicleReflectionMaterialKey {
+    VehicleReflectionGroupKey group{};
+    std::uint32_t material_index{};
+
+    bool operator==(
+        const VehicleReflectionMaterialKey& other
+    ) const noexcept {
+        return group == other.group &&
+            material_index == other.material_index;
+    }
+};
+
+struct VehicleReflectionMaterialKeyHash {
+    std::size_t operator()(
+        const VehicleReflectionMaterialKey& key
+    ) const noexcept {
+        std::size_t result = VehicleReflectionGroupKeyHash{}(key.group);
+        result ^= static_cast<std::size_t>(key.material_index);
+        result *= 1099511628211ULL;
+        return result;
+    }
+};
+
+VehicleReflectionGroupKey vehicle_reflection_group_key(
     const WorldDrawCommand& command
 ) noexcept {
-    return
-        command.object_kind == 2U &&
-        group.object_id == command.object_id &&
-        group.model_pointer == command.model_pointer &&
-        group.transform_id == command.transform_id &&
-        group.channel == command.channel;
+    return {
+        command.object_id,
+        command.model_pointer,
+        command.transform_id,
+        command.channel,
+    };
 }
 
 struct VehicleReflectionEligibility {
     std::vector<std::uint8_t> details;
     std::vector<std::uint8_t> supports;
 };
+
+struct VehicleReflectionSupportKey {
+    std::uint32_t object_id{};
+    std::uint32_t model_pointer{};
+    std::uint64_t transform_id{};
+    WorldViewChannel channel{};
+    std::int32_t clip_x0{};
+    std::int32_t clip_y0{};
+    std::int32_t clip_x1{};
+    std::int32_t clip_y1{};
+
+    bool operator==(const VehicleReflectionSupportKey& other) const noexcept {
+        return object_id == other.object_id &&
+            model_pointer == other.model_pointer &&
+            transform_id == other.transform_id &&
+            channel == other.channel &&
+            clip_x0 == other.clip_x0 && clip_y0 == other.clip_y0 &&
+            clip_x1 == other.clip_x1 && clip_y1 == other.clip_y1;
+    }
+};
+
+struct VehicleReflectionSupportKeyHash {
+    std::size_t operator()(
+        const VehicleReflectionSupportKey& key
+    ) const noexcept {
+        std::size_t result = 1469598103934665603ULL;
+        const auto mix = [&result](std::uint64_t value) {
+            result ^= static_cast<std::size_t>(value);
+            result *= 1099511628211ULL;
+        };
+        mix(key.object_id);
+        mix(key.model_pointer);
+        mix(key.transform_id);
+        mix(static_cast<std::uint32_t>(key.channel));
+        mix(static_cast<std::uint32_t>(key.clip_x0));
+        mix(static_cast<std::uint32_t>(key.clip_y0));
+        mix(static_cast<std::uint32_t>(key.clip_x1));
+        mix(static_cast<std::uint32_t>(key.clip_y1));
+        return result;
+    }
+};
+
+VehicleReflectionSupportKey vehicle_reflection_support_key(
+    const WorldDrawCommand& command
+) noexcept {
+    return {
+        command.object_id,
+        command.model_pointer,
+        command.transform_id,
+        command.channel,
+        command.clip_x0,
+        command.clip_y0,
+        command.clip_x1,
+        command.clip_y1,
+    };
+}
 
 VehicleReflectionEligibility vehicle_reflection_eligibility(
     const WorldDrawList& draw_list
@@ -310,105 +419,116 @@ VehicleReflectionEligibility vehicle_reflection_eligibility(
     };
     using BodyKey = std::tuple<std::uint32_t, std::uint32_t, std::uint64_t,
         WorldViewChannel, VehicleModelTriangle>;
+    struct BodyKeyHash {
+        std::size_t operator()(const BodyKey& key) const noexcept {
+            std::size_t result = 1469598103934665603ULL;
+            const auto mix = [&result](std::uint64_t value) {
+                result ^= static_cast<std::size_t>(value);
+                result *= 1099511628211ULL;
+            };
+            mix(std::get<0>(key));
+            mix(std::get<1>(key));
+            mix(std::get<2>(key));
+            mix(static_cast<std::uint32_t>(std::get<3>(key)));
+            for (const auto& vertex : std::get<4>(key))
+                for (const auto coordinate : vertex)
+                    mix(static_cast<std::uint16_t>(coordinate));
+            return result;
+        }
+    };
     const auto body_key = [] (const WorldDrawCommand& command) {
         return BodyKey{command.object_id, command.model_pointer,
             command.transform_id, command.channel, vehicle_model_triangle(command)};
     };
     // Index once: close-up subdivision must not turn each reflection lookup
     // into another complete body scan (and repeated triangle sorting).
-    std::set<BodyKey> opaque_triangles;
-    for (const auto& command : draw_list.commands) {
-        if (command.object_kind != 2U || command.material_index >= draw_list.materials.size())
-            continue;
-        const auto flags = draw_list.materials[command.material_index].primitive_flags;
-        if ((flags & textured_flag) != 0 && (flags & semi_transparent_flag) == 0)
-            opaque_triangles.insert(body_key(command));
-    }
-    std::vector<VehicleReflectionGroup> groups;
+    std::unordered_set<BodyKey, BodyKeyHash> opaque_triangles;
+    opaque_triangles.reserve(draw_list.vehicle_commands);
+    std::vector<std::size_t> vehicle_indices;
+    std::vector<std::size_t> reflection_candidate_indices;
+    vehicle_indices.reserve(draw_list.vehicle_commands);
+    reflection_candidate_indices.reserve(draw_list.vehicle_commands / 4U);
     for (std::size_t command_index = 0;
          command_index < draw_list.commands.size();
          ++command_index) {
         const auto& command = draw_list.commands[command_index];
-        if (
-            command.object_kind != 2U ||
-            command.material_index >= draw_list.materials.size()
-        )
+        if (command.object_kind != 2U ||
+            command.material_index >= draw_list.materials.size())
             continue;
+        vehicle_indices.push_back(command_index);
         const auto& material = draw_list.materials[command.material_index];
-        const bool textured =
-            (material.primitive_flags & textured_flag) != 0;
+        const auto flags = material.primitive_flags;
+        const bool textured = (flags & textured_flag) != 0;
         const bool semitransparent =
-            (material.primitive_flags & semi_transparent_flag) != 0;
-        const bool raw_texture =
-            (material.primitive_flags & 4U) != 0;
-        const std::uint32_t blend_mode =
-            (material.texture_page >> 5U) & 3U;
-        if (
-            !textured || !semitransparent || raw_texture || blend_mode != 1U
-        )
-            continue;
-
-        auto group = std::find_if(
-            groups.begin(), groups.end(),
-            [&] (const VehicleReflectionGroup& candidate) {
-                return
-                    same_vehicle_reflection_group(candidate, command) &&
-                    candidate.material_index == command.material_index;
-            });
-        if (group == groups.end()) {
-            groups.push_back(VehicleReflectionGroup{
+            (flags & semi_transparent_flag) != 0;
+        if (textured && !semitransparent) {
+            opaque_triangles.insert(body_key(command));
+        } else if (
+            textured && semitransparent && (flags & 4U) == 0 &&
+            ((material.texture_page >> 5U) & 3U) == 1U
+        ) {
+            reflection_candidate_indices.push_back(command_index);
+        }
+    }
+    std::unordered_map<
+        VehicleReflectionMaterialKey,
+        VehicleReflectionGroup,
+        VehicleReflectionMaterialKeyHash> groups;
+    groups.reserve(32U);
+    for (const std::size_t command_index :
+         reflection_candidate_indices) {
+        const auto& command = draw_list.commands[command_index];
+        const VehicleReflectionMaterialKey material_key{
+            vehicle_reflection_group_key(command),
+            command.material_index};
+        auto [group, inserted] = groups.try_emplace(
+            material_key,
+            VehicleReflectionGroup{
                 command.object_id,
                 command.model_pointer,
                 command.transform_id,
                 command.channel,
                 command.material_index,
             });
-            group = groups.end() - 1;
-        }
-        ++group->commands;
+        (void)inserted;
+        ++group->second.commands;
         const bool paired = opaque_triangles.find(body_key(command)) != opaque_triangles.end();
         if (paired)
-            ++group->paired_commands;
+            ++group->second.paired_commands;
     }
 
-    groups.erase(
-        std::remove_if(
-            groups.begin(), groups.end(),
-            [] (const VehicleReflectionGroup& group) {
-                // Broad stock environment layers duplicate much of the opaque
-                // body mesh. Small additive lamps and trim do not. Requiring
-                // several exact source-triangle pairs makes the distinction
-                // from geometry/provenance rather than a car-specific texture
-                // page, palette, model pointer, or command range.
-                // Near-camera adaptive subdivision expands only the base
-                // mesh. Its exact-pair percentage therefore changes with the
-                // camera even though this is still the same material. Keep
-                // the positive geometric evidence; do not gate it on a ratio
-                // of the current tessellations (23/148 on the close roof).
-                return group.paired_commands < 8U;
-            }),
-        groups.end());
-
-    for (std::size_t command_index = 0;
-         command_index < draw_list.commands.size();
-         ++command_index) {
-        const auto& command = draw_list.commands[command_index];
-        if (command.material_index >= draw_list.materials.size())
+    std::unordered_set<
+        VehicleReflectionGroupKey,
+        VehicleReflectionGroupKeyHash> reflection_groups;
+    std::unordered_set<
+        VehicleReflectionMaterialKey,
+        VehicleReflectionMaterialKeyHash> reflection_materials;
+    reflection_groups.reserve(groups.size());
+    reflection_materials.reserve(groups.size());
+    for (const auto& [material_key, group] : groups) {
+        // Broad stock environment layers duplicate much of the opaque body
+        // mesh. Small additive lamps and trim do not. Requiring several exact
+        // source-triangle pairs makes the distinction from geometry/provenance
+        // rather than a car-specific texture page, palette, model pointer, or
+        // command range. Near-camera subdivision expands only the base mesh,
+        // so retain positive evidence rather than a tessellation ratio.
+        if (group.paired_commands < 8U)
             continue;
-        const bool reflection_group = std::any_of(
-            groups.begin(), groups.end(),
-            [&] (const VehicleReflectionGroup& candidate) {
-                return same_vehicle_reflection_group(candidate, command);
-            });
+        reflection_groups.insert(material_key.group);
+        reflection_materials.insert(material_key);
+    }
+
+    for (const std::size_t command_index : vehicle_indices) {
+        const auto& command = draw_list.commands[command_index];
+        const auto group_key = vehicle_reflection_group_key(command);
+        const bool reflection_group =
+            reflection_groups.find(group_key) != reflection_groups.end();
         if (!reflection_group)
             continue;
-        const bool reflection_material = std::any_of(
-            groups.begin(), groups.end(),
-            [&] (const VehicleReflectionGroup& candidate) {
-                return
-                    same_vehicle_reflection_group(candidate, command) &&
-                    candidate.material_index == command.material_index;
-            });
+        const bool reflection_material = reflection_materials.find(
+            VehicleReflectionMaterialKey{
+                group_key,
+                command.material_index}) != reflection_materials.end();
         const auto& material = draw_list.materials[command.material_index];
         const bool textured =
             (material.primitive_flags & textured_flag) != 0;
@@ -432,8 +552,25 @@ std::optional<WorldDrawList> conform_vehicle_reflection_quads(
     const VehicleReflectionEligibility& eligibility,
     VehicleReflectionEligibility* output_eligibility
 ) {
-    std::vector<std::vector<WorldDrawCommand>> replacements(source.commands.size());
+    std::vector<std::int32_t> replacement_slots(
+        source.commands.size(), -1);
+    std::vector<std::vector<WorldDrawCommand>> replacements;
+    replacements.reserve(32U);
     std::vector<bool> removed(source.commands.size());
+    std::unordered_map<
+        VehicleReflectionSupportKey,
+        std::vector<std::size_t>,
+        VehicleReflectionSupportKeyHash> support_commands;
+    support_commands.reserve(16U);
+    for (std::size_t index = 0; index < eligibility.supports.size(); ++index) {
+        if (eligibility.supports[index] == 0)
+            continue;
+        const auto& command = source.commands[index];
+        if (!command.exact_transform_valid)
+            continue;
+        support_commands[vehicle_reflection_support_key(command)].push_back(
+            index);
+    }
     bool changed = false;
     const auto position = [] (const WorldDrawVertex& vertex) {
         return std::array<double, 3>{
@@ -441,6 +578,20 @@ std::optional<WorldDrawList> conform_vehicle_reflection_quads(
             static_cast<double>(vertex.model_y),
             static_cast<double>(vertex.model_z)};
     };
+    struct CoordinateCacheEntry {
+        std::uint64_t key{};
+        std::uint32_t generation{};
+        bool valid{};
+        std::array<double, 2> uv{};
+    };
+    // A reflection patch repeatedly sees the same authored vertex through
+    // adjacent body triangles. This bounded direct-mapped cache removes those
+    // duplicate bilinear solves without retaining any data across patches or
+    // frames; a collision is only a cache miss.
+    constexpr std::size_t coordinate_cache_size = 2048U;
+    std::array<CoordinateCacheEntry, coordinate_cache_size>
+        coordinate_cache{};
+    std::uint32_t coordinate_cache_generation = 0U;
     for (std::size_t index = 0; index + 1 < source.commands.size(); ++index) {
         if (!eligibility.details[index] || !eligibility.details[index+1] || removed[index])
             continue;
@@ -501,35 +652,62 @@ std::optional<WorldDrawList> conform_vehicle_reflection_quads(
         // authored triangle UV interpolation and avoid needless subdivision.
         if (nonplanarity == 0.0)
             continue;
+        const std::array<double, 3> base_u{
+            p[1][0] - p[0][0],
+            p[1][1] - p[0][1],
+            p[1][2] - p[0][2]};
+        const std::array<double, 3> base_v{
+            p[2][0] - p[0][0],
+            p[2][1] - p[0][1],
+            p[2][2] - p[0][2]};
+        const std::array<double, 3> twist{
+            p[3][0] - p[1][0] - p[2][0] + p[0][0],
+            p[3][1] - p[1][1] - p[2][1] + p[0][1],
+            p[3][2] - p[1][2] - p[2][2] + p[0][2]};
         std::array<double, 3> minimum = p[0], maximum = p[0];
         for (const auto& point : p)
             for (int axis = 0; axis < 3; ++axis) {
                 minimum[axis] = (std::min)(minimum[axis], point[axis]);
                 maximum[axis] = (std::max)(maximum[axis], point[axis]);
             }
-        const auto coordinates = [&] (const WorldDrawVertex& vertex,
+        const std::array<std::int32_t, 3> integer_minimum{
+            static_cast<std::int32_t>(minimum[0]) - 2,
+            static_cast<std::int32_t>(minimum[1]) - 2,
+            static_cast<std::int32_t>(minimum[2]) - 2};
+        const std::array<std::int32_t, 3> integer_maximum{
+            static_cast<std::int32_t>(maximum[0]) + 2,
+            static_cast<std::int32_t>(maximum[1]) + 2,
+            static_cast<std::int32_t>(maximum[2]) + 2};
+        const auto coordinates = [&] (const std::array<double, 3>& target,
                                       std::array<double, 2>* uv) {
-            const auto target = position(vertex);
-            for (int axis = 0; axis < 3; ++axis)
-                if (target[axis] < minimum[axis]-2.0 || target[axis] > maximum[axis]+2.0)
-                    return false;
             double u = 0.5, v = 0.5;
             for (int iteration = 0; iteration < 8; ++iteration) {
                 double uu = 0, vv = 0, uv_product = 0, ur = 0, vr = 0;
                 for (int axis = 0; axis < 3; ++axis) {
-                    const double twist = p[3][axis]-p[1][axis]-p[2][axis]+p[0][axis];
-                    const double du = p[1][axis]-p[0][axis]+v*twist;
-                    const double dv = p[2][axis]-p[0][axis]+u*twist;
+                    const double du = base_u[axis] + v * twist[axis];
+                    const double dv = base_v[axis] + u * twist[axis];
                     const double residual = target[axis] -
-                        (p[0][axis]+u*(p[1][axis]-p[0][axis])+v*(p[2][axis]-p[0][axis])+u*v*twist);
+                        (p[0][axis] + u * base_u[axis] +
+                         v * base_v[axis] + u * v * twist[axis]);
                     uu += du*du; vv += dv*dv; uv_product += du*dv;
                     ur += du*residual; vr += dv*residual;
                 }
                 const double determinant = uu*vv-uv_product*uv_product;
                 if (determinant < 1.0e-8)
                     return false;
-                u += (ur*vv-vr*uv_product)/determinant;
-                v += (vr*uu-ur*uv_product)/determinant;
+                const double delta_u =
+                    (ur*vv-vr*uv_product)/determinant;
+                const double delta_v =
+                    (vr*uu-ur*uv_product)/determinant;
+                u += delta_u;
+                v += delta_v;
+                // Authored vertices that lie on this bilinear patch converge
+                // in only a few Newton steps. Stop once further work is far
+                // below float UV precision; the eight-step ceiling remains
+                // for difficult or ultimately rejected candidates.
+                if (std::abs(delta_u) <= 1.0e-12 &&
+                    std::abs(delta_v) <= 1.0e-12)
+                    break;
             }
             if (!std::isfinite(u) || !std::isfinite(v) ||
                 u < -0.001 || u > 1.001 || v < -0.001 || v > 1.001)
@@ -546,25 +724,48 @@ std::optional<WorldDrawList> conform_vehicle_reflection_quads(
             *uv = {u, v};
             return true;
         };
+        ++coordinate_cache_generation;
+        const auto cached_coordinates = [&] (
+            const WorldDrawVertex& vertex,
+            const std::array<double, 3>& target,
+            std::array<double, 2>* uv
+        ) {
+            const std::uint64_t key =
+                static_cast<std::uint16_t>(vertex.model_x) |
+                (static_cast<std::uint64_t>(
+                    static_cast<std::uint16_t>(vertex.model_y)) << 16U) |
+                (static_cast<std::uint64_t>(
+                    static_cast<std::uint16_t>(vertex.model_z)) << 32U);
+            const std::size_t slot = static_cast<std::size_t>(
+                (key * 11400714819323198485ULL) >> 53U) &
+                (coordinate_cache_size - 1U);
+            auto& entry = coordinate_cache[slot];
+            if (entry.generation == coordinate_cache_generation &&
+                entry.key == key) {
+                if (entry.valid)
+                    *uv = entry.uv;
+                return entry.valid;
+            }
+            entry.key = key;
+            entry.generation = coordinate_cache_generation;
+            entry.valid = coordinates(target, &entry.uv);
+            if (entry.valid)
+                *uv = entry.uv;
+            return entry.valid;
+        };
         double covered_area = 0.0;
         std::vector<WorldDrawCommand> conformed;
-        for (std::size_t body_index = 0; body_index < source.commands.size(); ++body_index) {
-            if (!eligibility.supports[body_index])
-                continue;
-            const auto& body = source.commands[body_index];
-            if (!body.exact_transform_valid || body.object_id != first.object_id ||
-                body.model_pointer != first.model_pointer || body.transform_id != first.transform_id ||
-                body.channel != first.channel || body.clip_x0 != first.clip_x0 ||
-                body.clip_y0 != first.clip_y0 || body.clip_x1 != first.clip_x1 || body.clip_y1 != first.clip_y1)
-                continue;
-            std::array<std::array<double, 2>, 3> uv{};
-            if (!coordinates(body.vertices[0], &uv[0]) ||
-                !coordinates(body.vertices[1], &uv[1]) || !coordinates(body.vertices[2], &uv[2]))
-                continue;
-            const double area = std::abs((uv[1][0]-uv[0][0])*(uv[2][1]-uv[0][1]) -
-                (uv[1][1]-uv[0][1])*(uv[2][0]-uv[0][0]))*0.5;
-            if (area < 1.0e-8)
-                continue;
+        const auto support_group = support_commands.find(
+            vehicle_reflection_support_key(first));
+        if (support_group == support_commands.end())
+            continue;
+        conformed.reserve((std::min<std::size_t>)(
+            support_group->second.size(), 128U));
+        const auto append_detail = [&] (
+            const WorldDrawCommand& body,
+            const std::array<std::array<double, 2>, 3>& uv,
+            double area
+        ) {
             auto detail = body;
             detail.material_index = first.material_index;
             detail.source_command_index = first.source_command_index;
@@ -588,24 +789,97 @@ std::optional<WorldDrawList> conform_vehicle_reflection_quads(
             }
             covered_area += area;
             conformed.push_back(detail);
+        };
+        for (const std::size_t body_index : support_group->second) {
+            const auto& body = source.commands[body_index];
+            bool within = true;
+            for (const auto& vertex : body.vertices) {
+                within = within &&
+                    vertex.model_x >= integer_minimum[0] &&
+                    vertex.model_x <= integer_maximum[0] &&
+                    vertex.model_y >= integer_minimum[1] &&
+                    vertex.model_y <= integer_maximum[1] &&
+                    vertex.model_z >= integer_minimum[2] &&
+                    vertex.model_z <= integer_maximum[2];
+            }
+            if (!within)
+                continue;
+            const std::array<std::array<double, 3>, 3> targets{
+                position(body.vertices[0]),
+                position(body.vertices[1]),
+                position(body.vertices[2])};
+            std::array<std::array<double, 2>, 3> uv{};
+            if (!cached_coordinates(
+                    body.vertices[0], targets[0], &uv[0]) ||
+                !cached_coordinates(
+                    body.vertices[1], targets[1], &uv[1]) ||
+                !cached_coordinates(
+                    body.vertices[2], targets[2], &uv[2]))
+                continue;
+            const double area = std::abs(
+                (uv[1][0]-uv[0][0])*(uv[2][1]-uv[0][1]) -
+                (uv[1][1]-uv[0][1])*(uv[2][0]-uv[0][0]))*0.5;
+            if (area < 1.0e-8)
+                continue;
+            append_detail(body, uv, area);
         }
         // Partial coverage or overlapping body layers are not evidence that
         // this mesh is a subdivision of the entire reflection patch.
         if (conformed.size() <= 2 || std::abs(covered_area-1.0) > 0.01)
             continue;
-        replacements[index] = std::move(conformed);
+        replacement_slots[index] = static_cast<std::int32_t>(
+            replacements.size());
+        replacements.push_back(std::move(conformed));
         removed[index+1] = true;
         changed = true;
         ++index;
     }
     if (!changed)
         return std::nullopt;
-    WorldDrawList result = source;
-    result.commands.clear();
+    std::size_t output_command_count = 0;
     for (std::size_t index = 0; index < source.commands.size(); ++index) {
         if (removed[index])
             continue;
-        if (replacements[index].empty())
+        const std::int32_t replacement_slot = replacement_slots[index];
+        output_command_count += replacement_slot < 0
+            ? 1U
+            : replacements[static_cast<std::size_t>(
+                replacement_slot)].size();
+    }
+    // Copy only the draw-list metadata and material table. Copying the whole
+    // source command vector and immediately clearing it doubled the memory
+    // traffic of every frame that conforms a vehicle reflection patch.
+    WorldDrawList result{};
+    result.display_x = source.display_x;
+    result.display_y = source.display_y;
+    result.display_width = source.display_width;
+    result.display_height = source.display_height;
+    result.frame_index = source.frame_index;
+    result.input_poll = source.input_poll;
+    result.camera_transform_id = source.camera_transform_id;
+    result.continuous_projection = source.continuous_projection;
+    result.materials = source.materials;
+    result.rejected_incomplete = source.rejected_incomplete;
+    result.rejected_incomplete_track = source.rejected_incomplete_track;
+    result.rejected_incomplete_vehicle = source.rejected_incomplete_vehicle;
+    result.rejected_screen_target = source.rejected_screen_target;
+    result.rejected_screen_target_track = source.rejected_screen_target_track;
+    result.rejected_oversized_screen_commands =
+        source.rejected_oversized_screen_commands;
+    result.secondary_commands = source.secondary_commands;
+    result.track_commands = source.track_commands;
+    result.vehicle_commands = source.vehicle_commands;
+    result.background_commands = source.background_commands;
+    result.unclassified_commands = source.unclassified_commands;
+    result.unclassified_world_commands = source.unclassified_world_commands;
+    result.commands.reserve(output_command_count);
+    output_eligibility->details.reserve(output_command_count);
+    output_eligibility->supports.reserve(output_command_count);
+    for (std::size_t index = 0; index < source.commands.size(); ++index) {
+        if (removed[index])
+            continue;
+        const std::int32_t replacement_slot = replacement_slots[index];
+        if (replacement_slot < 0)
         {
             result.commands.push_back(source.commands[index]);
             output_eligibility->details.push_back(eligibility.details[index]);
@@ -613,9 +887,20 @@ std::optional<WorldDrawList> conform_vehicle_reflection_quads(
         }
         else
         {
-            result.commands.insert(result.commands.end(), replacements[index].begin(), replacements[index].end());
-            output_eligibility->details.insert(output_eligibility->details.end(), replacements[index].size(), 1U);
-            output_eligibility->supports.insert(output_eligibility->supports.end(), replacements[index].size(), 0U);
+            const auto& replacement = replacements[
+                static_cast<std::size_t>(replacement_slot)];
+            result.commands.insert(
+                result.commands.end(),
+                replacement.begin(),
+                replacement.end());
+            output_eligibility->details.insert(
+                output_eligibility->details.end(),
+                replacement.size(),
+                1U);
+            output_eligibility->supports.insert(
+                output_eligibility->supports.end(),
+                replacement.size(),
+                0U);
         }
     }
     result.vehicle_commands += static_cast<std::uint32_t>(result.commands.size()-source.commands.size());
@@ -635,47 +920,119 @@ std::vector<std::array<float, 4>> shared_surface_depth_planes(
 ) {
     using Key = std::tuple<std::uint32_t, std::uint32_t, std::uint32_t,
         std::uint64_t, WorldViewChannel, std::array<std::int64_t, 4>>;
+    struct KeyHash {
+        std::size_t operator()(const Key& key) const noexcept {
+            std::size_t result = 1469598103934665603ULL;
+            const auto mix = [&result](std::uint64_t value) {
+                result ^= static_cast<std::size_t>(value);
+                result *= 1099511628211ULL;
+            };
+            mix(std::get<0>(key));
+            mix(std::get<1>(key));
+            mix(std::get<2>(key));
+            mix(std::get<3>(key));
+            mix(static_cast<std::uint32_t>(std::get<4>(key)));
+            for (const auto value : std::get<5>(key))
+                mix(static_cast<std::uint64_t>(value));
+            return result;
+        }
+    };
     struct Group {
         std::vector<std::size_t> commands;
         std::array<double, 3> plane{};
         double area{};
-        bool detail{};
+        bool has_detail{};
     };
-    std::map<Key, Group> groups;
-    std::vector<std::array<float, 4>> result(draw_list.commands.size());
-    for (std::size_t index = 0; index < draw_list.commands.size(); ++index) {
-        const auto& command = draw_list.commands[index];
+    const auto make_key = [&draw_list](
+        const WorldDrawCommand& command
+    ) -> std::optional<Key> {
         if ((command.object_kind != 1U && command.object_kind != 2U) ||
             !command.exact_transform_valid ||
             command.material_index >= draw_list.materials.size())
-            continue;
+            return std::nullopt;
         const auto& material = draw_list.materials[command.material_index];
         if ((material.primitive_flags & world_primitive_screen_space_flag) != 0)
-            continue;
+            return std::nullopt;
         const auto& a = command.vertices[0];
         const auto& b = command.vertices[1];
         const auto& c = command.vertices[2];
         const std::array<std::int64_t, 3> u{
-            b.model_x - a.model_x, b.model_y - a.model_y, b.model_z - a.model_z};
+            b.model_x - a.model_x,
+            b.model_y - a.model_y,
+            b.model_z - a.model_z};
         const std::array<std::int64_t, 3> v{
-            c.model_x - a.model_x, c.model_y - a.model_y, c.model_z - a.model_z};
+            c.model_x - a.model_x,
+            c.model_y - a.model_y,
+            c.model_z - a.model_z};
         std::array<std::int64_t, 4> model_plane{
-            u[1]*v[2] - u[2]*v[1], u[2]*v[0] - u[0]*v[2],
-            u[0]*v[1] - u[1]*v[0], 0};
-        const auto divisor = std::gcd(std::gcd(model_plane[0], model_plane[1]), model_plane[2]);
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+            0};
+        const auto divisor = std::gcd(
+            std::gcd(model_plane[0], model_plane[1]),
+            model_plane[2]);
         if (divisor == 0)
-            continue;
+            return std::nullopt;
         for (std::size_t axis = 0; axis < 3; ++axis)
             model_plane[axis] /= divisor;
         for (std::size_t axis = 0; axis < 3; ++axis) {
             if (model_plane[axis] == 0)
                 continue;
             if (model_plane[axis] < 0)
-                for (auto& value : model_plane) value = -value;
+                for (auto& value : model_plane)
+                    value = -value;
             break;
         }
-        model_plane[3] = -(model_plane[0]*a.model_x +
-            model_plane[1]*a.model_y + model_plane[2]*a.model_z);
+        model_plane[3] = -(model_plane[0] * a.model_x +
+            model_plane[1] * a.model_y + model_plane[2] * a.model_z);
+        return Key{
+            command.object_kind,
+            command.object_id,
+            command.model_pointer,
+            command.transform_id,
+            command.channel,
+            model_plane};
+    };
+    // Index each typed surface once. A group records whether it contains a
+    // detail layer, so support-only groups can be discarded before projection
+    // without rebuilding normalized model planes for every detail command.
+    std::unordered_map<Key, Group, KeyHash> groups;
+    groups.reserve(draw_list.vehicle_commands / 4U + 64U);
+    std::vector<std::array<float, 4>> result(draw_list.commands.size());
+    for (std::size_t index = 0; index < draw_list.commands.size(); ++index) {
+        const auto& command = draw_list.commands[index];
+        if (command.material_index >= draw_list.materials.size())
+            continue;
+        const auto& material = draw_list.materials[command.material_index];
+        const bool typed_surface = command.object_kind == 1U
+            ? track_overlay_layer(material.primitive_flags) != 0 ||
+                (material.primitive_flags &
+                    world_primitive_track_overlay_support_flag) != 0
+            : command.object_kind == 2U &&
+                index < reflections.details.size() &&
+                index < reflections.supports.size() &&
+                (reflections.details[index] != 0 ||
+                    reflections.supports[index] != 0);
+        if (!typed_surface)
+            continue;
+        const auto key = make_key(command);
+        if (!key)
+            continue;
+        const bool detail = command.object_kind == 1U
+            ? track_overlay_layer(material.primitive_flags) != 0
+            : index < reflections.details.size() &&
+                reflections.details[index] != 0;
+        auto& group = groups[*key];
+        group.commands.push_back(index);
+        group.has_detail |= detail;
+    }
+    for (auto& [key, group] : groups) {
+        (void)key;
+        if (!group.has_detail || group.commands.size() < 2)
+            continue;
+        for (const std::size_t index : group.commands) {
+            const auto& command = draw_list.commands[index];
         std::array<std::array<double, 3>, 3> projected{};
         bool valid = true;
         for (std::size_t corner = 0; corner < 3; ++corner) {
@@ -697,21 +1054,14 @@ std::vector<std::array<float, 4>> shared_surface_depth_planes(
         const double determinant = (q[0]-p[0])*(r[1]-p[1]) - (r[0]-p[0])*(q[1]-p[1]);
         if (!std::isfinite(determinant) || std::abs(determinant) < 1.0e-6)
             continue;
-        auto& group = groups[Key{command.object_kind, command.object_id,
-            command.model_pointer, command.transform_id, command.channel, model_plane}];
-        group.commands.push_back(index);
-        group.detail |= command.object_kind == 1U
-            ? track_overlay_layer(material.primitive_flags) != 0
-            : index < reflections.details.size() && reflections.details[index] != 0;
         if (std::abs(determinant) > group.area) {
             group.area = std::abs(determinant);
             const double dx = ((q[2]-p[2])*(r[1]-p[1]) - (r[2]-p[2])*(q[1]-p[1])) / determinant;
             const double dy = ((q[0]-p[0])*(r[2]-p[2]) - (r[0]-p[0])*(q[2]-p[2])) / determinant;
             group.plane = {dx, dy, p[2] - dx*p[0] - dy*p[1]};
         }
-    }
-    for (const auto& [key, group] : groups) {
-        if (!group.detail || group.commands.size() < 2)
+        }
+        if (group.area == 0.0)
             continue;
         // Reject inconsistent projection/provenance rather than flattening
         // genuinely separated geometry onto an inferred shared surface.
@@ -3779,7 +4129,11 @@ bool batch_compatible(
     bool left_road_support,
     bool right_road_support,
     bool left_vehicle_reflection_support,
-    bool right_vehicle_reflection_support
+    bool right_vehicle_reflection_support,
+    bool left_vehicle_reflection_detail,
+    bool right_vehicle_reflection_detail,
+    bool left_vehicle_shadow,
+    bool right_vehicle_shadow
 ) {
     const bool left_screen_space =
         (left_material.primitive_flags &
@@ -3795,6 +4149,14 @@ bool batch_compatible(
         (left_material.primitive_flags & textured_flag) != 0;
     const bool right_textured =
         (right_material.primitive_flags & textured_flag) != 0;
+    const bool left_full_native_scissor =
+        !left_screen_space &&
+        left.channel == WorldViewChannel::main_view &&
+        (left.object_kind == 1U || left.object_kind == 2U);
+    const bool right_full_native_scissor =
+        !right_screen_space &&
+        right.channel == WorldViewChannel::main_view &&
+        (right.object_kind == 1U || right.object_kind == 2U);
     return
         track_overlay_layer(left_material.primitive_flags) ==
             track_overlay_layer(right_material.primitive_flags) &&
@@ -3815,26 +4177,21 @@ bool batch_compatible(
             (set_mask_flag | check_mask_flag)) ==
             (right_material.environment_flags &
                 (set_mask_flag | check_mask_flag)) &&
-        left.clip_x0 == right.clip_x0 &&
-        left.clip_y0 == right.clip_y0 &&
-        left.clip_x1 == right.clip_x1 &&
-        left.clip_y1 == right.clip_y1 &&
+        ((left_full_native_scissor && right_full_native_scissor) ||
+            (left.clip_x0 == right.clip_x0 &&
+                left.clip_y0 == right.clip_y0 &&
+                left.clip_x1 == right.clip_x1 &&
+                left.clip_y1 == right.clip_y1)) &&
         left.channel == right.channel &&
         left_screen_space == right_screen_space &&
         left.object_kind == right.object_kind &&
-        left.ordering_table_index == right.ordering_table_index &&
         left_alpha_tested_cutout == right_alpha_tested_cutout &&
         left_road_support == right_road_support &&
         left_vehicle_reflection_support ==
             right_vehicle_reflection_support &&
-        ((!left_transparent &&
-                (left.object_kind == 1U ||
-                    (left.object_kind == 2U &&
-                        left.object_id == right.object_id))) ||
-            (left.object_id == right.object_id &&
-                (left.object_kind == 2U
-                    ? left.transform_id == right.transform_id
-                    : left.model_pointer == right.model_pointer)));
+        left_vehicle_reflection_detail ==
+            right_vehicle_reflection_detail &&
+        left_vehicle_shadow == right_vehicle_shadow;
 }
 
 struct GpuVertex {
@@ -4015,27 +4372,32 @@ std::vector<std::uint8_t> opaque_track_surface_eligibility(
     const WorldDrawList& draw_list
 ) {
     const std::size_t count = draw_list.commands.size();
-    std::vector<std::size_t> parent(count);
-    std::vector<std::uint8_t> rank(count, 0U);
+    static thread_local std::vector<std::size_t> parent;
+    static thread_local std::vector<std::uint8_t> rank;
+    static thread_local std::vector<std::uint8_t> resident_candidate;
+    static thread_local std::vector<std::array<double, 3>> normals;
+    parent.resize(count);
+    rank.assign(count, 0U);
+    resident_candidate.assign(count, 0U);
+    normals.assign(count, {});
     std::vector<std::uint8_t> eligible(count, 0U);
-    std::vector<std::uint8_t> resident_candidate(count, 0U);
     for (std::size_t index = 0; index < count; ++index) {
         parent[index] = index;
         const auto& command = draw_list.commands[index];
         if (command.material_index >= draw_list.materials.size())
             continue;
         const auto& material = draw_list.materials[command.material_index];
-        eligible[index] = is_opaque_track_surface(command, material)
-            ? 1U
-            : 0U;
-        resident_candidate[index] =
-            opaque_track_material_candidate(command, material) &&
-            (material.primitive_flags &
-                world_primitive_resident_course_flag) != 0
-            ? 1U
-            : 0U;
+        if (!opaque_track_material_candidate(command, material))
+            continue;
+        normals[index] = track_surface_face_normal(command);
+        const auto& normal = normals[index];
+        eligible[index] =
+            std::abs(normal[2]) >= std::abs(normal[0]) &&
+            std::abs(normal[2]) >= std::abs(normal[1]) ? 1U : 0U;
+        resident_candidate[index] = (material.primitive_flags &
+            world_primitive_resident_course_flag) != 0 ? 1U : 0U;
     }
-    const auto find_root = [&parent](std::size_t value) {
+    const auto find_root = [](std::size_t value) {
         std::size_t root = value;
         while (parent[root] != root)
             root = parent[root];
@@ -4046,7 +4408,7 @@ std::vector<std::uint8_t> opaque_track_surface_eligibility(
         }
         return root;
     };
-    const auto unite = [&parent, &rank, &find_root](
+    const auto unite = [&find_root](
         std::size_t left,
         std::size_t right
     ) {
@@ -4067,10 +4429,11 @@ std::vector<std::uint8_t> opaque_track_surface_eligibility(
             vertex.model_z,
         };
     };
-    std::unordered_multimap<
+    static thread_local std::unordered_multimap<
         TrackSurfaceEdgeKey,
         std::size_t,
         TrackSurfaceEdgeHash> edges;
+    edges.clear();
     edges.reserve(count * 2U);
     for (std::size_t command_index = 0;
          command_index < count;
@@ -4096,8 +4459,24 @@ std::vector<std::uint8_t> opaque_track_surface_eligibility(
             for (auto found = matching.first;
                  found != matching.second;
                  ++found) {
-                if (smoothly_connected_track_surfaces(
-                        draw_list.commands[found->second], command))
+                const auto& left_normal = normals[found->second];
+                const auto& right_normal = normals[command_index];
+                const double left_length_squared =
+                    left_normal[0] * left_normal[0] +
+                    left_normal[1] * left_normal[1] +
+                    left_normal[2] * left_normal[2];
+                const double right_length_squared =
+                    right_normal[0] * right_normal[0] +
+                    right_normal[1] * right_normal[1] +
+                    right_normal[2] * right_normal[2];
+                const double dot =
+                    left_normal[0] * right_normal[0] +
+                    left_normal[1] * right_normal[1] +
+                    left_normal[2] * right_normal[2];
+                if (left_length_squared > 1.0e-18 &&
+                    right_length_squared > 1.0e-18 &&
+                    dot * dot >= 0.25 * left_length_squared *
+                        right_length_squared)
                     unite(found->second, command_index);
             }
             edges.emplace(key, command_index);
@@ -4246,6 +4625,19 @@ std::vector<std::uint8_t> perspective_uv_island_eligibility(
             individually_eligible += eligible[index] != 0 ? 1U : 0U;
         }
     }
+    // The fixed modern contract marks every textured 3D command eligible;
+    // the island graph therefore cannot propagate a fallback in normal
+    // rendering. Build that graph only for the one-shot shipping audit or an
+    // explicit diagnostic request. This preserves the audit's topology data
+    // without rebuilding thousands of edge keys on every authored frame.
+    static thread_local bool emitted_shipping_uv_contract = false;
+    const bool explicit_uv_diagnostics =
+        std::getenv("OPENGT_RENDER_UV_DIAGNOSTICS") != nullptr;
+    const bool shipping_uv_contract =
+        !emitted_shipping_uv_contract &&
+        draw_list.track_commands >= 1000U;
+    if (!explicit_uv_diagnostics && !shipping_uv_contract)
+        return eligible;
     const auto find_root = [&parent](std::size_t value) {
         std::size_t root = value;
         while (parent[root] != root)
@@ -4375,12 +4767,8 @@ std::vector<std::uint8_t> perspective_uv_island_eligibility(
     }
     for (std::size_t index = 0; index < count; ++index)
         eligible[index] = island_eligible[find_root(index)];
-    static thread_local bool emitted_shipping_uv_contract = false;
-    const bool shipping_uv_contract =
-        !emitted_shipping_uv_contract &&
-        draw_list.track_commands >= 1000U;
     if (
-        std::getenv("OPENGT_RENDER_UV_DIAGNOSTICS") != nullptr ||
+        explicit_uv_diagnostics ||
         shipping_uv_contract
     ) {
         std::size_t textured_commands = 0;
@@ -4552,6 +4940,7 @@ struct VsOutput {
     float2 perspectiveUv : TEXCOORD0;
     noperspective float2 affineUv : TEXCOORD1;
     noperspective float4 color : COLOR0;
+    float4 perspectiveColor : TEXCOORD3;
     nointerpolation uint commandIndex : TEXCOORD2;
 };
 
@@ -4567,6 +4956,7 @@ VsOutput VSMain(VsInput input) {
     output.perspectiveUv = input.uv;
     output.affineUv = input.uv;
     output.color = input.color;
+    output.perspectiveColor = input.color;
     output.commandIndex = input.commandIndex;
     return output;
 }
@@ -4810,7 +5200,12 @@ PsOutput ShadePixel(VsOutput input, bool preserveCutoutCoverage) {
     float2 uv = perspectiveEligible
         ? input.perspectiveUv
         : input.affineUv;
-    float3 color = saturate(input.color.rgb);
+    // World texture and authored lighting must interpolate on the same
+    // surface. Affine color can extrapolate outside its vertex range when
+    // homogeneous clipping crosses W=0 (Pikes Peak's black road patch).
+    // Screen-space artwork retains its original affine color contract.
+    float3 modulation = perspectiveEligible ? input.perspectiveColor.rgb : input.color.rgb;
+    float3 color = saturate(modulation);
     bool textureStp = false;
     float cutoutCoverage = 1.0;
     if (textured) {
@@ -4942,7 +5337,7 @@ PsOutput ShadePixel(VsOutput input, bool preserveCutoutCoverage) {
         }
         color = rawTexture
             ? texel
-            : saturate(texel * input.color.rgb * 2.0);
+            : saturate(texel * modulation * 2.0);
     }
     if (
         Dithering != 0 &&
@@ -5824,6 +6219,8 @@ std::vector<AuthoredScreenArc> detect_authored_screen_arcs(
 struct FrameInputResources {
     ComPtr<ID3D11Buffer> vertex_buffer;
     UINT vertex_buffer_bytes{};
+    ComPtr<ID3D11Buffer> index_buffer;
+    UINT index_buffer_bytes{};
     ComPtr<ID3D11Buffer> material_buffer;
     ComPtr<ID3D11ShaderResourceView> material_view;
     UINT material_buffer_bytes{};
@@ -5836,8 +6233,10 @@ struct FrameInputResources {
 struct BaseResources {
     bool ready;
     bool software_adapter;
+    bool deferred_submission;
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
+    ComPtr<ID3D11DeviceContext> immediate_context;
     ComPtr<ID3D11VertexShader> vertex_shader;
     ComPtr<ID3D11PixelShader> pixel_shader;
     ComPtr<ID3D11PixelShader> cutout_depth_pixel_shader;
@@ -5891,6 +6290,18 @@ struct BaseResources {
         ComPtr<ID3D11Query>,
         world_gpu_async_readback_pair_capacity * 2>
         async_completion_queries;
+    std::array<
+        ComPtr<ID3D11Texture2D>,
+        world_gpu_direct_output_capacity> direct_output_textures;
+    std::array<
+        ComPtr<ID3D11Query>,
+        world_gpu_direct_output_capacity> direct_completion_queries;
+    std::array<bool,
+        world_gpu_direct_output_capacity> direct_output_in_flight{};
+    std::array<std::uint32_t,
+        world_gpu_direct_output_capacity> direct_output_widths{};
+    std::array<std::uint32_t,
+        world_gpu_direct_output_capacity> direct_output_heights{};
     UINT staging_write_index;
     UINT staging_fill_count;
     UINT async_staging_read_index;
@@ -5927,6 +6338,9 @@ struct BaseResources {
     std::uint32_t screen_grid_width;
     std::uint32_t screen_grid_height;
 };
+
+thread_local BaseResources thread_base_resources;
+thread_local ComPtr<ID3D11Device> thread_presentation_device;
 
 struct LooseReplacementImage {
     std::string name;
@@ -8320,21 +8734,36 @@ bool initialize_base(
     *resources = {};
     resources->software_adapter = software_adapter;
     D3D_FEATURE_LEVEL feature_level{};
-    const D3D_DRIVER_TYPE driver = software_adapter
-        ? D3D_DRIVER_TYPE_WARP
-        : D3D_DRIVER_TYPE_HARDWARE;
-    if (FAILED(D3D11CreateDevice(
-            nullptr,
-            driver,
-            nullptr,
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            nullptr,
-            0,
-            D3D11_SDK_VERSION,
-            resources->device.GetAddressOf(),
-            &feature_level,
-             resources->context.GetAddressOf())))
-        return false;
+    if (thread_presentation_device != nullptr && !software_adapter) {
+        resources->device = thread_presentation_device;
+        resources->device->GetImmediateContext(
+            resources->immediate_context.GetAddressOf());
+        if (
+            resources->immediate_context == nullptr ||
+            FAILED(resources->device->CreateDeferredContext(
+                0, resources->context.GetAddressOf()))
+        )
+            return false;
+        resources->deferred_submission = true;
+        feature_level = resources->device->GetFeatureLevel();
+    } else {
+        const D3D_DRIVER_TYPE driver = software_adapter
+            ? D3D_DRIVER_TYPE_WARP
+            : D3D_DRIVER_TYPE_HARDWARE;
+        if (FAILED(D3D11CreateDevice(
+                nullptr,
+                driver,
+                nullptr,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                nullptr,
+                0,
+                D3D11_SDK_VERSION,
+                resources->device.GetAddressOf(),
+                &feature_level,
+                resources->context.GetAddressOf())))
+            return false;
+        resources->immediate_context = resources->context;
+    }
     ComPtr<ID3DBlob> vertex_blob;
     ComPtr<ID3DBlob> pixel_blob;
     ComPtr<ID3DBlob> cutout_depth_pixel_blob;
@@ -8504,9 +8933,8 @@ bool initialize_base(
 }
 
 BaseResources& base_resources(bool software_adapter) {
-    static thread_local BaseResources resources;
-    initialize_base(&resources, software_adapter);
-    return resources;
+    initialize_base(&thread_base_resources, software_adapter);
+    return thread_base_resources;
 }
 
 void release_readback_resources(BaseResources* resources) {
@@ -8545,6 +8973,8 @@ void release_readback_resources(BaseResources* resources) {
 void release_mutable_frame_resources(FrameInputResources* frame) {
     frame->vertex_buffer.Reset();
     frame->vertex_buffer_bytes = 0;
+    frame->index_buffer.Reset();
+    frame->index_buffer_bytes = 0;
     frame->material_view.Reset();
     frame->material_buffer.Reset();
     frame->material_buffer_bytes = 0;
@@ -8563,7 +8993,8 @@ void release_mutable_frame_resources(BaseResources* resources) {
 void release_frame_generation(BaseResources* resources) {
     if (resources->context != nullptr) {
         resources->context->ClearState();
-        resources->context->Flush();
+        if (!resources->deferred_submission)
+            resources->context->Flush();
     }
     release_readback_resources(resources);
     release_mutable_frame_resources(resources);
@@ -8573,6 +9004,7 @@ bool ensure_mutable_frame_resources(
     BaseResources* resources,
     FrameInputResources* frame,
     std::size_t vertex_count,
+    std::size_t index_count,
     std::size_t material_count
 ) {
     ID3D11Device* device = resources->device.Get();
@@ -8607,6 +9039,34 @@ bool ensure_mutable_frame_resources(
             return false;
         frame->vertex_buffer = std::move(replacement);
         frame->vertex_buffer_bytes = capacity;
+    }
+    const std::size_t required_index_bytes =
+        index_count * sizeof(std::uint32_t);
+    if (required_index_bytes > (std::numeric_limits<UINT>::max)())
+        return false;
+    if (
+        !frame->index_buffer ||
+        frame->index_buffer_bytes < required_index_bytes
+    ) {
+        const UINT requested = static_cast<UINT>(required_index_bytes);
+        const UINT doubled = frame->index_buffer_bytes <=
+                (std::numeric_limits<UINT>::max)() / 2
+            ? frame->index_buffer_bytes * 2
+            : (std::numeric_limits<UINT>::max)();
+        const UINT capacity = (std::max)(requested, doubled);
+        D3D11_BUFFER_DESC description{};
+        description.ByteWidth = capacity;
+        description.Usage = D3D11_USAGE_DYNAMIC;
+        description.BindFlags = D3D11_BIND_INDEX_BUFFER;
+        description.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        ComPtr<ID3D11Buffer> replacement;
+        if (FAILED(device->CreateBuffer(
+                &description,
+                nullptr,
+                replacement.GetAddressOf())))
+            return false;
+        frame->index_buffer = std::move(replacement);
+        frame->index_buffer_bytes = capacity;
     }
     const std::size_t required_material_bytes =
         material_count * sizeof(GpuMaterial);
@@ -8867,6 +9327,82 @@ bool ensure_output_resources(
     return true;
 }
 
+bool ensure_direct_output_texture(
+    BaseResources* resources,
+    std::uint32_t slot,
+    std::uint32_t width,
+    std::uint32_t height
+) {
+    if (
+        slot >= resources->direct_output_textures.size() ||
+        !resources->deferred_submission
+    )
+        return false;
+    if (!resources->direct_completion_queries[slot]) {
+        D3D11_QUERY_DESC completion_description{};
+        completion_description.Query = D3D11_QUERY_EVENT;
+        if (FAILED(resources->device->CreateQuery(
+                &completion_description,
+                resources->direct_completion_queries[slot]
+                    .GetAddressOf())))
+            return false;
+        resources->direct_output_in_flight[slot] = false;
+    }
+    if (
+        resources->direct_output_textures[slot] != nullptr &&
+        resources->direct_output_widths[slot] == width &&
+        resources->direct_output_heights[slot] == height
+    )
+        return true;
+
+    D3D11_TEXTURE2D_DESC description{};
+    description.Width = width;
+    description.Height = height;
+    description.MipLevels = 1;
+    description.ArraySize = 1;
+    description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    description.SampleDesc.Count = 1;
+    description.Usage = D3D11_USAGE_DEFAULT;
+    description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    ComPtr<ID3D11Texture2D> replacement;
+    if (FAILED(resources->device->CreateTexture2D(
+            &description, nullptr, replacement.GetAddressOf())))
+        return false;
+    resources->direct_output_textures[slot] = std::move(replacement);
+    resources->direct_output_widths[slot] = width;
+    resources->direct_output_heights[slot] = height;
+    return true;
+}
+
+bool wait_for_direct_output_slot(
+    BaseResources* resources,
+    std::uint32_t slot
+) {
+    if (slot >= resources->direct_output_in_flight.size())
+        return false;
+    if (!resources->direct_output_in_flight[slot])
+        return true;
+    ID3D11Query* completion =
+        resources->direct_completion_queries[slot].Get();
+    if (completion == nullptr || resources->immediate_context == nullptr)
+        return false;
+    while (true) {
+        BOOL complete = FALSE;
+        const HRESULT result = resources->immediate_context->GetData(
+            completion,
+            &complete,
+            sizeof(complete),
+            D3D11_ASYNC_GETDATA_DONOTFLUSH);
+        if (result == S_OK && complete) {
+            resources->direct_output_in_flight[slot] = false;
+            return true;
+        }
+        if (FAILED(result))
+            return false;
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+}
+
 } // namespace
 
 WorldGpuRenderResult render_world_d3d11(
@@ -8878,11 +9414,15 @@ WorldGpuRenderResult render_world_d3d11(
     WorldGpuRenderOptions options,
     WorldGpuRenderStats* stats
 ) noexcept {
+    using PreparationClock = std::chrono::steady_clock;
+    const auto preparation_started = PreparationClock::now();
+    auto eligibility_finished = preparation_started;
     std::optional<WorldDrawList> conformed_draw_list;
     VehicleReflectionEligibility source_reflections;
     VehicleReflectionEligibility vehicle_reflections;
     try {
         source_reflections = vehicle_reflection_eligibility(source_draw_list);
+        eligibility_finished = PreparationClock::now();
         conformed_draw_list = conform_vehicle_reflection_quads(
             source_draw_list, source_reflections, &vehicle_reflections);
         if (!conformed_draw_list)
@@ -8890,6 +9430,7 @@ WorldGpuRenderResult render_world_d3d11(
     } catch (const std::bad_alloc&) {
         return WorldGpuRenderResult::resource_failed;
     }
+    const auto reflections_finished = PreparationClock::now();
     const WorldDrawList& draw_list = conformed_draw_list ? *conformed_draw_list : source_draw_list;
     const std::uint32_t output_scale = options.output_scale;
     if (
@@ -8948,7 +9489,9 @@ WorldGpuRenderResult render_world_d3d11(
         output_rgba == nullptr ||
         stats == nullptr ||
         vram_word_count < 1024U * 512U ||
-        output_size < required_output
+        (!options.direct_gpu_output && output_size < required_output) ||
+        (options.direct_gpu_output &&
+            options.direct_output_slot >= world_gpu_direct_output_capacity)
     )
         return WorldGpuRenderResult::invalid_argument;
     *stats = {};
@@ -8968,6 +9511,10 @@ WorldGpuRenderResult render_world_d3d11(
     std::vector<AuthoredScreenArc> authored_screen_arcs;
     std::vector<std::uint8_t> opaque_track_surfaces;
     std::vector<std::array<float, 4>> surface_depth_planes;
+    auto opaque_finished = reflections_finished;
+    auto planes_finished = reflections_finished;
+    auto hud_finished = reflections_finished;
+    auto arcs_finished = reflections_finished;
     if (const char* enabled = std::getenv("OPENGT_RENDER_SMOOTH_WHEELS");
         enabled != nullptr && std::strcmp(enabled, "1") == 0) {
         try {
@@ -8979,11 +9526,15 @@ WorldGpuRenderResult render_world_d3d11(
     try {
         opaque_track_surfaces =
             opaque_track_surface_eligibility(draw_list);
+        opaque_finished = PreparationClock::now();
         surface_depth_planes = shared_surface_depth_planes(draw_list,
             vehicle_reflections, horizontal_projection_scale, output_width, output_height);
+        planes_finished = PreparationClock::now();
         hud_horizontal_placements =
             build_hud_horizontal_placements(draw_list);
+        hud_finished = PreparationClock::now();
         authored_screen_arcs = detect_authored_screen_arcs(draw_list);
+        arcs_finished = PreparationClock::now();
         emit_vehicle_diagnostics(
             draw_list, smooth_wheels, options.synthetic_midpoint);
         emit_clip_rect_diagnostics(draw_list);
@@ -9007,6 +9558,7 @@ WorldGpuRenderResult render_world_d3d11(
     } catch (const std::bad_alloc&) {
         return WorldGpuRenderResult::resource_failed;
     }
+    const auto auxiliary_finished = PreparationClock::now();
     static thread_local std::uint64_t wheel_diagnostic_frame = 0;
     std::uint64_t wheel_diagnostic_interval = 120;
     if (const char* configured_interval = std::getenv(
@@ -9156,7 +9708,14 @@ WorldGpuRenderResult render_world_d3d11(
     auto& base = base_resources(options.use_software_adapter);
     if (!base.ready)
         return WorldGpuRenderResult::device_failed;
+    if (options.direct_gpu_output && !base.deferred_submission)
+        return WorldGpuRenderResult::device_failed;
+    if (options.direct_gpu_output &&
+        !wait_for_direct_output_slot(
+            &base, options.direct_output_slot))
+        return WorldGpuRenderResult::render_failed;
     configure_replacement_pack(&base);
+    const auto device_finished = PreparationClock::now();
     ID3D11DeviceContext* context = base.context.Get();
     const std::size_t authored_vertex_count =
         draw_list.commands.size() * 3;
@@ -9165,6 +9724,7 @@ WorldGpuRenderResult render_world_d3d11(
     // caller cannot silently reactivate affine world rendering.
     const std::vector<std::uint8_t> perspective_uv_eligibility =
         perspective_uv_island_eligibility(draw_list);
+    const auto perspective_finished = PreparationClock::now();
     const std::size_t vertex_count = std::max<std::size_t>(
         3,
         authored_vertex_count +
@@ -9176,10 +9736,21 @@ WorldGpuRenderResult render_world_d3d11(
             target_display_width,
             static_cast<std::uint32_t>(draw_list.display_height)))
         return WorldGpuRenderResult::resource_failed;
+    if (
+        options.direct_gpu_output &&
+        !ensure_direct_output_texture(
+            &base,
+            options.direct_output_slot,
+            output_width,
+            output_height)
+    )
+        return WorldGpuRenderResult::resource_failed;
     const UINT staging_write = base.staging_write_index;
     const UINT staging_fill_count = base.staging_fill_count;
     const UINT async_staging_write = base.async_staging_write_index;
-    const UINT frame_input_index = options.asynchronous_readback
+    const UINT frame_input_index = options.direct_gpu_output
+        ? options.direct_output_slot
+        : options.asynchronous_readback
         ? (base.async_staging_count < world_gpu_readback_pair_delay * 2U
             ? async_staging_write %
                 static_cast<UINT>(world_gpu_readback_pair_delay * 2U)
@@ -9190,14 +9761,28 @@ WorldGpuRenderResult render_world_d3d11(
             &base,
             &frame,
             vertex_count,
+            (std::max<std::size_t>)(
+                3U,
+                draw_list.commands.size() * 2U * 3U),
             draw_list.commands.size() + smooth_wheels.size()))
         return WorldGpuRenderResult::resource_failed;
+    const auto resources_finished = PreparationClock::now();
     using PhaseClock = std::chrono::steady_clock;
     const auto render_started = PhaseClock::now();
     std::uint64_t readback_microseconds = 0;
     std::uint64_t completion_wait_microseconds = 0;
     std::uint64_t map_wait_microseconds = 0;
     std::uint64_t copy_microseconds = 0;
+    auto frame_setup_finished = render_started;
+    auto vertex_upload_finished = render_started;
+    auto material_upload_finished = render_started;
+    auto constant_upload_finished = render_started;
+    auto index_upload_finished = render_started;
+    auto world_draw_finished = render_started;
+    auto hud_resolve_finished = render_started;
+    auto command_list_finished = render_started;
+    auto execute_finished = render_started;
+    auto flush_finished = render_started;
     bool output_valid = false;
     const std::size_t row_size =
         static_cast<std::size_t>(output_width) * 4;
@@ -9269,13 +9854,13 @@ WorldGpuRenderResult render_world_d3d11(
     // will overwrite. It was submitted four render calls ago, moving the
     // blocking Map out of the producer's immediate submission path.
     if (
-        !options.asynchronous_readback &&
+        !options.direct_gpu_output && !options.asynchronous_readback &&
         staging_fill_count >= base.staging_textures.size()
     ) {
         if (!read_staging(staging_write))
             return WorldGpuRenderResult::render_failed;
     } else if (
-        !options.asynchronous_readback &&
+        !options.direct_gpu_output && !options.asynchronous_readback &&
         !base.staging_warmup_output.empty()
     ) {
         // During the single-call fill interval, repeat the reset image instead
@@ -9288,7 +9873,7 @@ WorldGpuRenderResult render_world_d3d11(
         output_valid = true;
     }
     if (
-        options.asynchronous_readback &&
+        !options.direct_gpu_output && options.asynchronous_readback &&
         base.async_staging_count >= base.async_staging_textures.size()
     )
         return WorldGpuRenderResult::resource_failed;
@@ -9330,6 +9915,7 @@ WorldGpuRenderResult render_world_d3d11(
     context->IASetInputLayout(base.input_layout.Get());
     context->IASetPrimitiveTopology(
         D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    frame_setup_finished = PhaseClock::now();
 
     D3D11_MAPPED_SUBRESOURCE mapped_vertices{};
     if (FAILED(context->Map(
@@ -9540,6 +10126,7 @@ WorldGpuRenderResult render_world_d3d11(
         }
     }
     context->Unmap(frame.vertex_buffer.Get(), 0);
+    vertex_upload_finished = PhaseClock::now();
 
     {
         D3D11_MAPPED_SUBRESOURCE mapped_materials{};
@@ -9638,6 +10225,7 @@ WorldGpuRenderResult render_world_d3d11(
         }
         context->Unmap(frame.material_buffer.Get(), 0);
     }
+    material_upload_finished = PhaseClock::now();
 
     // Bind only after both dynamic buffers have been populated. This keeps the
     // D3D resource/allocation selected by WRITE_DISCARD identical to the one
@@ -9719,6 +10307,7 @@ WorldGpuRenderResult render_world_d3d11(
         &screen_arc_constants,
         0,
         0);
+    constant_upload_finished = PhaseClock::now();
     static thread_local std::size_t reported_screen_arc_count =
         (std::numeric_limits<std::size_t>::max)();
     if (reported_screen_arc_count != authored_screen_arcs.size()) {
@@ -9773,14 +10362,13 @@ WorldGpuRenderResult render_world_d3d11(
     // Road artwork is composited explicitly after opaque world depth while
     // retaining that physical depth test. Transparent effects follow so they
     // retain ordinary foreground ownership.
-    const auto command_in_render_phase = [horizontal_projection_scale] (
+    const auto command_render_phase_mask = [horizontal_projection_scale] (
         const WorldDrawCommand& command,
-        const WorldMaterial& material,
-        int phase
-    ) noexcept {
+        const WorldMaterial& material
+    ) noexcept -> std::uint8_t {
         if ((material.primitive_flags &
                 world_primitive_screen_space_flag) != 0)
-            return phase == 4;
+            return 1U << 4U;
         // The resident course can retain GTE packets after projection has
         // saturated their authored SXY values. D3D clips ordinary intersecting
         // triangles correctly, but submitting a primitive whose three
@@ -9825,9 +10413,9 @@ WorldGpuRenderResult render_world_d3d11(
                 return vertex.clip_z > vertex.clip_w;
             });
         if (invalid || empty_homogeneous_intersection)
-            return false;
+            return 0U;
         if (command.object_kind == 3U)
-            return phase == 0;
+            return 1U << 0U;
         const bool replacement = command.object_kind == 1U &&
             (material.primitive_flags &
                 world_primitive_track_replacement_flag) != 0;
@@ -9835,17 +10423,17 @@ WorldGpuRenderResult render_world_d3d11(
             // A detailed replacement is still the ordinary road everywhere
             // outside its coarse support. Draw it once with physical depth,
             // then redraw only the typed overlap in the priority phase.
-            return phase == 1 || phase == 2;
+            return (1U << 1U) | (1U << 2U);
         }
         const bool overlay = command.object_kind == 1U &&
             track_overlay_layer(material.primitive_flags) != 0;
         if (overlay)
-            return phase == 2;
+            return 1U << 2U;
         const bool semitransparent =
             (material.primitive_flags & semi_transparent_flag) != 0;
         if (semitransparent)
-            return phase == 3;
-        return phase == 1;
+            return 1U << 3U;
+        return 1U << 1U;
     };
     enum class DebugRenderLayerFilter {
         all,
@@ -10086,6 +10674,75 @@ WorldGpuRenderResult render_world_d3d11(
             reported_track_source = debug_track_source;
         }
     }
+    // Commands for a render phase are often interleaved with commands owned
+    // by another phase. A direct non-indexed walk split an otherwise compatible
+    // batch at every such gap, particularly opaque/transparent vehicle detail.
+    // Preserve the exact source order within each phase while gathering its
+    // vertex triples into one compact index stream. This changes no ordering
+    // relationship that can reach the framebuffer and substantially reduces
+    // D3D11 draw-call pressure in dense fields.
+    static thread_local std::array<std::vector<std::size_t>, 5>
+        render_phase_commands;
+    std::array<std::size_t, 5> render_phase_index_offsets{};
+    static thread_local std::vector<std::uint32_t> render_indices;
+    for (auto& phase_commands : render_phase_commands) {
+        phase_commands.clear();
+        phase_commands.reserve(draw_list.commands.size());
+    }
+    render_indices.clear();
+    render_indices.reserve(draw_list.commands.size() * 2U * 3U);
+    for (std::size_t command_index = 0;
+         command_index < draw_list.commands.size();
+         ++command_index) {
+        const auto& command = draw_list.commands[command_index];
+        if (command.material_index >= draw_list.materials.size())
+            return WorldGpuRenderResult::render_failed;
+        const auto& material = draw_list.materials[command.material_index];
+        if (
+            !debug_command_selected(command_index) ||
+            !debug_identity_selected(command) ||
+            !debug_layer_selected(world_render_layer(command, material)) ||
+            !debug_track_source_selected(command, material) ||
+            (debug_track_overlays_only && command.object_kind == 1U &&
+                track_overlay_layer(material.primitive_flags) == 0)
+        )
+            continue;
+        const std::uint8_t phase_mask =
+            command_render_phase_mask(command, material);
+        for (int render_phase = 0; render_phase < 5; ++render_phase) {
+            if ((phase_mask & (1U << render_phase)) != 0)
+                render_phase_commands[render_phase].push_back(command_index);
+        }
+    }
+    for (int render_phase = 0; render_phase < 5; ++render_phase) {
+        render_phase_index_offsets[render_phase] = render_indices.size();
+        for (const std::size_t command_index :
+             render_phase_commands[render_phase]) {
+            const auto first_vertex = static_cast<std::uint32_t>(
+                command_index * 3U);
+            render_indices.push_back(first_vertex);
+            render_indices.push_back(first_vertex + 1U);
+            render_indices.push_back(first_vertex + 2U);
+        }
+    }
+    D3D11_MAPPED_SUBRESOURCE mapped_indices{};
+    if (FAILED(context->Map(
+            frame.index_buffer.Get(),
+            0,
+            D3D11_MAP_WRITE_DISCARD,
+            0,
+            &mapped_indices)))
+        return WorldGpuRenderResult::render_failed;
+    std::memcpy(
+        mapped_indices.pData,
+        render_indices.data(),
+        render_indices.size() * sizeof(std::uint32_t));
+    context->Unmap(frame.index_buffer.Get(), 0);
+    context->IASetIndexBuffer(
+        frame.index_buffer.Get(),
+        DXGI_FORMAT_R32_UINT,
+        0);
+    index_upload_finished = PhaseClock::now();
     for (int render_phase = 0; render_phase < 5; ++render_phase) {
     if (render_phase == 4 && output_scale > 1) {
         context->OMSetRenderTargets(0, nullptr, nullptr);
@@ -10110,8 +10767,11 @@ WorldGpuRenderResult render_world_d3d11(
     bound_depth_state = nullptr;
     bound_blend_state = nullptr;
     has_bound_scissor = false;
-    for (std::size_t command_index = 0;
-         command_index < draw_list.commands.size();) {
+    const auto& phase_commands = render_phase_commands[render_phase];
+    for (std::size_t phase_position = 0;
+         phase_position < phase_commands.size();) {
+        const std::size_t command_index =
+            phase_commands[phase_position];
         for (std::size_t wheel_index = 0;
              wheel_index < smooth_wheels.size();
              ++wheel_index) {
@@ -10219,21 +10879,6 @@ WorldGpuRenderResult render_world_d3d11(
         const bool command_vehicle_reflection_detail =
             command_index < vehicle_reflections.details.size() &&
             vehicle_reflections.details[command_index] != 0;
-        if (
-            !debug_command_selected(command_index) ||
-            !debug_identity_selected(command) ||
-            !debug_layer_selected(world_render_layer(command, material)) ||
-            !debug_track_source_selected(command, material) ||
-            (debug_track_overlays_only && command.object_kind == 1U &&
-                track_overlay_layer(material.primitive_flags) == 0)
-        ) {
-            ++command_index;
-            continue;
-        }
-        if (!command_in_render_phase(command, material, render_phase)) {
-            ++command_index;
-            continue;
-        }
         const int blend_mode =
             (material.texture_page >> 5) & 3;
         const bool vehicle_shadow =
@@ -10251,11 +10896,10 @@ WorldGpuRenderResult render_world_d3d11(
             : 1;
         std::size_t batch_commands = 1;
         while (
-            command_index + batch_commands <
-                draw_list.commands.size()
+            phase_position + batch_commands < phase_commands.size()
         ) {
             const std::size_t next_index =
-                command_index + batch_commands;
+                phase_commands[phase_position + batch_commands];
             const bool inserts_wheel = std::any_of(
                 smooth_wheels.begin(), smooth_wheels.end(),
                 [&] (const SmoothWheel& wheel) {
@@ -10280,19 +10924,6 @@ WorldGpuRenderResult render_world_d3d11(
             const bool next_opaque_track_surface =
                 next_index < opaque_track_surfaces.size() &&
                 opaque_track_surfaces[next_index] != 0;
-            if (
-                !debug_command_selected(command_index + batch_commands) ||
-                !debug_identity_selected(next_command) ||
-                !debug_layer_selected(
-                    world_render_layer(next_command, next_material)) ||
-                !debug_track_source_selected(next_command, next_material) ||
-                (debug_track_overlays_only && next_command.object_kind == 1U &&
-                    track_overlay_layer(next_material.primitive_flags) == 0)
-            )
-                break;
-            if (!command_in_render_phase(
-                    next_command, next_material, render_phase))
-                break;
             if (!batch_compatible(
                     command,
                     material,
@@ -10310,7 +10941,12 @@ WorldGpuRenderResult render_world_d3d11(
                             next_opaque_track_surface),
                     command_vehicle_reflection_support,
                     next_index < vehicle_reflections.supports.size() &&
-                        vehicle_reflections.supports[next_index] != 0))
+                        vehicle_reflections.supports[next_index] != 0,
+                    command_vehicle_reflection_detail,
+                    next_index < vehicle_reflections.details.size() &&
+                        vehicle_reflections.details[next_index] != 0,
+                    vehicle_shadow,
+                    soft_vehicle_shadow(next_command, next_material)))
                 break;
             ++batch_commands;
         }
@@ -10334,9 +10970,7 @@ WorldGpuRenderResult render_world_d3d11(
         const bool full_main_world_scissor =
             !screen_space &&
             command.channel == WorldViewChannel::main_view &&
-            command.clip_x0 <= draw_list.display_x &&
-            command.clip_x1 >=
-                draw_list.display_x + draw_list.display_width - 1;
+            (command.object_kind == 1U || command.object_kind == 2U);
         const std::int32_t command_horizontal_offset = screen_space
             ? static_cast<std::int32_t>(std::lround(
                 hud_output_offset(
@@ -10381,7 +11015,7 @@ WorldGpuRenderResult render_world_d3d11(
             // than guessed at.
             stats->skipped_empty_scissor_commands +=
                 static_cast<std::uint32_t>(batch_commands);
-            command_index += batch_commands;
+            phase_position += batch_commands;
             continue;
         }
         if (
@@ -10533,17 +11167,21 @@ WorldGpuRenderResult render_world_d3d11(
                 bound_depth_state = depth_state;
                 bound_stencil_reference = stencil_reference;
             }
-            context->Draw(
+            context->DrawIndexed(
                 static_cast<UINT>(batch_commands * 3),
-                static_cast<UINT>(command_index * 3));
+                static_cast<UINT>(
+                    render_phase_index_offsets[render_phase] +
+                    phase_position * 3U),
+                0);
             ++stats->draw_calls;
             if (blended || alpha_tested_cutout_coverage)
                 ++stats->transparent_draw_calls;
         }
-        command_index += batch_commands;
+        phase_position += batch_commands;
     }
     }
 
+    world_draw_finished = PhaseClock::now();
     ID3D11Texture2D* resolved_color_texture = base.color_texture.Get();
     const bool has_screen_commands = std::any_of(
         draw_list.commands.begin(),
@@ -10683,6 +11321,7 @@ WorldGpuRenderResult render_world_d3d11(
         context->PSSetShaderResources(3, 3, empty_grid_views);
         resolved_color_texture = base.screen_grid_texture.Get();
     }
+    hud_resolve_finished = PhaseClock::now();
 
     if (diagnose_batches) {
         std::fprintf(
@@ -10732,7 +11371,37 @@ WorldGpuRenderResult render_world_d3d11(
             emitted_shipping_layer_contract = true;
     }
 
-    if (options.asynchronous_readback) {
+    if (options.direct_gpu_output) {
+        // Finish the native frame as one isolated deferred command list. The
+        // host immediate context executes it atomically with state restore,
+        // so emulation/compositor draws cannot interleave with native state.
+        context->OMSetRenderTargets(0, nullptr, nullptr);
+        ID3D11ShaderResourceView* null_views[3]{};
+        context->PSSetShaderResources(0, 3, null_views);
+        ID3D11Texture2D* direct_output =
+            base.direct_output_textures[options.direct_output_slot].Get();
+        context->CopyResource(direct_output, resolved_color_texture);
+        context->End(base.direct_completion_queries[
+            options.direct_output_slot].Get());
+        ComPtr<ID3D11CommandList> command_list;
+        if (FAILED(context->FinishCommandList(
+                FALSE, command_list.GetAddressOf())))
+            return WorldGpuRenderResult::render_failed;
+        command_list_finished = PhaseClock::now();
+        base.immediate_context->ExecuteCommandList(command_list.Get(), TRUE);
+        base.direct_output_in_flight[
+            options.direct_output_slot] = true;
+        execute_finished = PhaseClock::now();
+        // Headless validation has no Present call to force command submission.
+        // Submit the native command list here so the deferred-context producer
+        // cannot build enough queued work to monopolize the shared D3D11
+        // multithread lock. The visible path still presents normally, while
+        // this Flush remains non-blocking and preserves GPU-side presentation.
+        base.immediate_context->Flush();
+        flush_finished = PhaseClock::now();
+        stats->output_texture = direct_output;
+        output_valid = true;
+    } else if (options.asynchronous_readback) {
         context->CopyResource(
             base.async_staging_textures[async_staging_write].Get(),
             resolved_color_texture);
@@ -10755,8 +11424,10 @@ WorldGpuRenderResult render_world_d3d11(
     // in its driver command buffer until the later staging Map forces a
     // flush. Submit now so the GPU performs this copy during the intentional
     // four-image development readback delay; Flush does not wait for completion.
-    context->Flush();
+    if (!options.direct_gpu_output)
+        context->Flush();
     if (
+        !options.direct_gpu_output &&
         !options.asynchronous_readback &&
         staging_fill_count == 0 &&
         !options.defer_initial_readback
@@ -10767,7 +11438,7 @@ WorldGpuRenderResult render_world_d3d11(
             output_rgba,
             output_rgba + required_output);
     }
-    if (!options.asynchronous_readback) {
+    if (!options.direct_gpu_output && !options.asynchronous_readback) {
         base.staging_fill_count = std::min<UINT>(
             static_cast<UINT>(base.staging_textures.size()),
             staging_fill_count + 1U);
@@ -10780,6 +11451,31 @@ WorldGpuRenderResult render_world_d3d11(
         std::chrono::duration_cast<std::chrono::microseconds>(
             render_finished - render_started).count());
     if (std::getenv("OPENGT_RENDER_PHASE_DIAGNOSTICS") != nullptr) {
+        const auto milliseconds = [] (PreparationClock::duration duration) {
+            return std::chrono::duration<double, std::milli>(
+                duration).count();
+        };
+        std::fprintf(
+            stderr,
+            "[Render-Preparation] totalMs=%.3f reflectionsMs=%.3f "
+            "eligibilityMs=%.3f conformanceMs=%.3f auxiliaryMs=%.3f "
+            "opaqueMs=%.3f planesMs=%.3f hudMs=%.3f arcsMs=%.3f "
+            "diagnosticsMs=%.3f deviceMs=%.3f perspectiveMs=%.3f "
+            "resourcesMs=%.3f commands=%u\n",
+            milliseconds(resources_finished - preparation_started),
+            milliseconds(reflections_finished - preparation_started),
+            milliseconds(eligibility_finished - preparation_started),
+            milliseconds(reflections_finished - eligibility_finished),
+            milliseconds(auxiliary_finished - reflections_finished),
+            milliseconds(opaque_finished - reflections_finished),
+            milliseconds(planes_finished - opaque_finished),
+            milliseconds(hud_finished - planes_finished),
+            milliseconds(arcs_finished - hud_finished),
+            milliseconds(auxiliary_finished - arcs_finished),
+            milliseconds(device_finished - auxiliary_finished),
+            milliseconds(perspective_finished - device_finished),
+            milliseconds(resources_finished - perspective_finished),
+            stats->commands);
         const auto submit_microseconds =
             total_microseconds - readback_microseconds;
         std::fprintf(
@@ -10797,6 +11493,61 @@ WorldGpuRenderResult render_world_d3d11(
             staging_fill_count,
             stats->commands,
             stats->draw_calls);
+    }
+    if (const char* threshold_text =
+            std::getenv("OPENGT_RENDER_SLOW_PHASE_DIAGNOSTICS")) {
+        char* threshold_end = nullptr;
+        const double parsed_threshold = std::strtod(
+            threshold_text, &threshold_end);
+        const double threshold_ms =
+            threshold_end != threshold_text && parsed_threshold > 0.0
+            ? parsed_threshold
+            : 14.0;
+        const auto milliseconds = [] (PhaseClock::duration duration) {
+            return std::chrono::duration<double, std::milli>(
+                duration).count();
+        };
+        if (milliseconds(render_finished - preparation_started) >=
+                threshold_ms) {
+            std::fprintf(
+                stderr,
+                "[Render-Slow-Phases] pipelineMs=%.3f preparationMs=%.3f "
+                "reflectionsMs=%.3f eligibilityMs=%.3f conformanceMs=%.3f "
+                "opaqueMs=%.3f planesMs=%.3f hudPrepMs=%.3f arcsMs=%.3f "
+                "diagnosticsMs=%.3f deviceMs=%.3f perspectiveMs=%.3f "
+                "resourcesMs=%.3f submitMs=%.3f setupMs=%.3f "
+                "verticesMs=%.3f materialsMs=%.3f constantsMs=%.3f "
+                "indicesMs=%.3f drawsMs=%.3f hudMs=%.3f "
+                "finishMs=%.3f executeMs=%.3f flushMs=%.3f tailMs=%.3f "
+                "commands=%u draws=%u\n",
+                milliseconds(render_finished - preparation_started),
+                milliseconds(resources_finished - preparation_started),
+                milliseconds(reflections_finished - preparation_started),
+                milliseconds(eligibility_finished - preparation_started),
+                milliseconds(reflections_finished - eligibility_finished),
+                milliseconds(opaque_finished - reflections_finished),
+                milliseconds(planes_finished - opaque_finished),
+                milliseconds(hud_finished - planes_finished),
+                milliseconds(arcs_finished - hud_finished),
+                milliseconds(auxiliary_finished - arcs_finished),
+                milliseconds(device_finished - auxiliary_finished),
+                milliseconds(perspective_finished - device_finished),
+                milliseconds(resources_finished - perspective_finished),
+                milliseconds(render_finished - render_started),
+                milliseconds(frame_setup_finished - render_started),
+                milliseconds(vertex_upload_finished - frame_setup_finished),
+                milliseconds(material_upload_finished - vertex_upload_finished),
+                milliseconds(constant_upload_finished - material_upload_finished),
+                milliseconds(index_upload_finished - constant_upload_finished),
+                milliseconds(world_draw_finished - index_upload_finished),
+                milliseconds(hud_resolve_finished - world_draw_finished),
+                milliseconds(command_list_finished - hud_resolve_finished),
+                milliseconds(execute_finished - command_list_finished),
+                milliseconds(flush_finished - execute_finished),
+                milliseconds(render_finished - flush_finished),
+                stats->commands,
+                stats->draw_calls);
+        }
     }
     stats->output_valid = output_valid;
     return WorldGpuRenderResult::success;
@@ -10986,6 +11737,42 @@ void reset_world_d3d11_readback(bool use_software_adapter) noexcept {
     release_frame_generation(&base);
 }
 
+void drain_world_d3d11_direct_output() noexcept {
+    try {
+        auto& base = thread_base_resources;
+        if (!base.ready || !base.deferred_submission ||
+            base.immediate_context == nullptr)
+            return;
+        base.immediate_context->Flush();
+        for (std::uint32_t slot = 0;
+             slot < base.direct_output_in_flight.size();
+             ++slot) {
+            if (!wait_for_direct_output_slot(&base, slot))
+                break;
+        }
+    } catch (...) {
+    }
+}
+
+bool set_world_d3d11_presentation_device(void* d3d11_device) noexcept {
+    if (d3d11_device == nullptr)
+        return false;
+    try {
+        if (thread_base_resources.ready)
+            release_frame_generation(&thread_base_resources);
+        thread_base_resources = {};
+        thread_presentation_device.Reset();
+        auto* device = static_cast<ID3D11Device*>(d3d11_device);
+        device->AddRef();
+        thread_presentation_device.Attach(device);
+        return initialize_base(&thread_base_resources, false);
+    } catch (...) {
+        thread_presentation_device.Reset();
+        thread_base_resources = {};
+        return false;
+    }
+}
+
 bool set_world_d3d11_texture_uploads(
     bool use_software_adapter,
     const WorldTextureUpload* uploads,
@@ -11025,6 +11812,12 @@ WorldGpuRenderResult render_world_d3d11(
 }
 
 void reset_world_d3d11_readback(bool) noexcept {}
+
+void drain_world_d3d11_direct_output() noexcept {}
+
+bool set_world_d3d11_presentation_device(void*) noexcept {
+    return false;
+}
 
 bool set_world_d3d11_texture_uploads(
     bool,

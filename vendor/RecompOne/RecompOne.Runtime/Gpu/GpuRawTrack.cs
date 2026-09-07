@@ -2410,7 +2410,9 @@ public sealed partial class Gpu
         BinaryPrimitives.WriteUInt64LittleEndian(
             destination,
             RawTrackResidentMeshMagic);
-        BinaryPrimitives.WriteUInt32LittleEndian(destination[8..], 1);
+        // Mesh v2 identifies object-local auxiliary geometry so native road
+        // annotation cannot mistake a rotated sign's local XY plane for ground.
+        BinaryPrimitives.WriteUInt32LittleEndian(destination[8..], 2);
         BinaryPrimitives.WriteUInt32LittleEndian(
             destination[12..],
             RawTrackResidentMeshHeaderSize);
@@ -2587,6 +2589,8 @@ public sealed partial class Gpu
                 if (gouraud) flags |= 1u << 5;
                 if (key.ProjectionPath == TrackMeshProjectionPath.Primary)
                     flags |= 1u << 6;
+                if (key.AuxiliaryFormat)
+                    flags |= 1u << 7;
                 BinaryPrimitives.WriteUInt32LittleEndian(
                     destination[offset..],
                     primitive);

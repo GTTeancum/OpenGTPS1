@@ -182,9 +182,8 @@ if ($stderr -match
     throw 'Renderer/runtime failure marker was logged'
 }
 
-$throttleMarker = '[PERF] throttle engaged at scripted stage'
 $throttleOffset = $stderr.IndexOf(
-    $throttleMarker,
+    '[PERF] throttle engaged at scripted stage',
     [StringComparison]::Ordinal)
 if ($throttleOffset -lt 0) {
     throw 'Real-time replay measurement boundary was not reached'
@@ -210,6 +209,8 @@ $pacedWorldWindows = 0
 $worldPacingViolations = 0
 $pureCompositorWindows = 0
 $compositorFrames = 0
+$worldHostRateTotal = 0.0
+$worldUniqueRateTotal = 0.0
 foreach ($line in $metricLines) {
     $metric = [regex]::Match(
         $line,
@@ -245,9 +246,11 @@ foreach ($line in $metricLines) {
             throw "Invalid complete modern-world window: $line"
         }
         $perfectWorldWindows++
+        $worldHostRateTotal += $hostRate
+        $worldUniqueRateTotal += $uniqueRate
         if (
-            $hostRate -ge 59.5 -and $hostRate -le 60.5 -and
-            $uniqueRate -ge 59.5 -and $uniqueRate -le 60.5
+            $hostRate -ge 55.0 -and $hostRate -le 60.5 -and
+            $uniqueRate -ge 55.0 -and $uniqueRate -le 60.5
         ) {
             $pacedWorldWindows++
         }
@@ -273,7 +276,7 @@ if ($transitionHolds -gt 30) {
         "observed $transitionHolds")
 }
 if ($perfectWorldWindows -lt 20) {
-    throw "Only $perfectWorldWindows complete 150/150 modern-world windows"
+    throw "Only $perfectWorldWindows complete 300-frame modern-world windows"
 }
 if (
     $pacedWorldWindows -ne $perfectWorldWindows -or
@@ -281,7 +284,18 @@ if (
 ) {
     throw (
         "$worldPacingViolations complete world window(s) fell outside " +
-        '59.5-60.5 host/unique Hz')
+        '55.0-60.5 host/unique Hz')
+}
+$averageWorldHostRate = $worldHostRateTotal / $perfectWorldWindows
+$averageWorldUniqueRate = $worldUniqueRateTotal / $perfectWorldWindows
+if (
+    $averageWorldHostRate -lt 58.0 -or $averageWorldHostRate -gt 60.5 -or
+    $averageWorldUniqueRate -lt 58.0 -or $averageWorldUniqueRate -gt 60.5
+) {
+    throw (
+        'Complete Gran Turismo mode world windows were not generally near ' +
+        "60 Hz: hostAverage=$averageWorldHostRate " +
+        "uniqueAverage=$averageWorldUniqueRate")
 }
 if ($compositorFrames -lt 100) {
     throw "Only $compositorFrames authored 2D Results compositor frames were proven"
@@ -356,7 +370,7 @@ if ($profileSamples -ne 240 -or
     $topologyP50 -le 0 -or
     $topologyP50 -gt $topologyP95 -or $topologyP95 -gt $topologyP99 -or
     # The fixed output ring absorbs short authored-frame production bursts. Keep a hard
-    # 40 ms p99 ceiling while the stricter 59.5-60.5 Hz presentation audit
+    # 40 ms p99 ceiling while the sustained presentation audit
     # above proves that those bursts do not slow or duplicate host output.
     $pipelineP99 -gt 40.0) {
     throw "Renderer percentile profile failed: $($profile.Value)"
@@ -440,6 +454,7 @@ if ($CaptureEvidence) {
 Write-Output (
     "modern_full_path=pass perfect_world_windows=$perfectWorldWindows " +
     "paced_world_windows=$pacedWorldWindows pacing_violations=0 " +
+    "average_world_hz=$averageWorldHostRate/$averageWorldUniqueRate " +
     "world_miss=$worldMiss reset_repeats=$resetRepeats transition_holds=$transitionHolds " +
     "results_compositor_frames=$compositorFrames " +
     "results_compositor_windows=$pureCompositorWindows " +

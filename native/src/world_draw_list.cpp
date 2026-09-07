@@ -311,11 +311,29 @@ ContinuousProjectedPoint project_continuous_view(
     };
 }
 
+bool valid_authored_micro_seam_target(const WorldDrawVertex& vertex) noexcept {
+    // Saturated GTE division, IR or SXY values are not geometric projections.
+    // In particular, rebuilding X/Y from a behind-camera SXY reverses the
+    // homogeneous ray and can bend a road triangle across the sky. Preserve
+    // continuous clip coordinates until the GPU clips these vertices.
+    return
+        vertex.exact_view_z > vertex.projection_plane * 0.5F &&
+        vertex.exact_view_z <= 0xFFFF &&
+        vertex.exact_view_x >= -0x8000 && vertex.exact_view_x <= 0x7FFF &&
+        vertex.exact_view_y >= -0x8000 && vertex.exact_view_y <= 0x7FFF &&
+        vertex.authored_screen_x > -0x400 + vertex.draw_offset_x &&
+        vertex.authored_screen_x < 0x3FF + vertex.draw_offset_x &&
+        vertex.authored_screen_y > -0x400 + vertex.draw_offset_y &&
+        vertex.authored_screen_y < 0x3FF + vertex.draw_offset_y;
+}
+
 bool collapsed_authored_micro_edge(
     const WorldDrawVertex& a,
     const WorldDrawVertex& b
 ) noexcept {
     if (
+        !valid_authored_micro_seam_target(a) ||
+        !valid_authored_micro_seam_target(b) ||
         a.authored_screen_x != b.authored_screen_x ||
         a.authored_screen_y != b.authored_screen_y
     )
@@ -337,9 +355,16 @@ struct AuthoredMicroSeamVertexKey {
     std::uint32_t object_id;
     std::uint32_t model_pointer;
     std::uint64_t transform_id;
-    std::int32_t view_x;
-    std::int32_t view_y;
-    std::int32_t view_z;
+    std::int64_t view_x;
+    std::int64_t view_y;
+    std::int64_t view_z;
+    std::int32_t projection_x;
+    std::int32_t projection_y;
+    std::int32_t projection_plane;
+    std::int32_t draw_x;
+    std::int32_t draw_y;
+    WorldViewChannel channel;
+    bool fixed_position;
 
     bool operator==(
         const AuthoredMicroSeamVertexKey& other
@@ -351,7 +376,12 @@ struct AuthoredMicroSeamVertexKey {
             transform_id == other.transform_id &&
             view_x == other.view_x &&
             view_y == other.view_y &&
-            view_z == other.view_z;
+            view_z == other.view_z &&
+            projection_x == other.projection_x &&
+            projection_y == other.projection_y &&
+            projection_plane == other.projection_plane &&
+            draw_x == other.draw_x && draw_y == other.draw_y &&
+            channel == other.channel && fixed_position == other.fixed_position;
     }
 };
 
@@ -370,9 +400,16 @@ struct AuthoredMicroSeamVertexKeyHash {
         mix(key.object_id);
         mix(key.model_pointer);
         mix(key.transform_id);
-        mix(static_cast<std::uint32_t>(key.view_x));
-        mix(static_cast<std::uint32_t>(key.view_y));
-        mix(static_cast<std::uint32_t>(key.view_z));
+        mix(static_cast<std::uint64_t>(key.view_x));
+        mix(static_cast<std::uint64_t>(key.view_y));
+        mix(static_cast<std::uint64_t>(key.view_z));
+        mix(static_cast<std::uint32_t>(key.projection_x));
+        mix(static_cast<std::uint32_t>(key.projection_y));
+        mix(static_cast<std::uint32_t>(key.projection_plane));
+        mix(static_cast<std::uint32_t>(key.draw_x));
+        mix(static_cast<std::uint32_t>(key.draw_y));
+        mix(static_cast<unsigned>(key.channel));
+        mix(key.fixed_position);
         return hash;
     }
 };
@@ -381,7 +418,7 @@ AuthoredMicroSeamVertexKey authored_micro_seam_key(
     const WorldDrawCommand& command,
     const WorldDrawVertex& vertex
 ) noexcept {
-    return AuthoredMicroSeamVertexKey{
+    AuthoredMicroSeamVertexKey key{
         command.object_kind,
         command.object_id,
         command.model_pointer,
@@ -389,7 +426,37 @@ AuthoredMicroSeamVertexKey authored_micro_seam_key(
         vertex.exact_view_x,
         vertex.exact_view_y,
         vertex.exact_view_z,
+        static_cast<std::int32_t>(vertex.projection_offset_x),
+        static_cast<std::int32_t>(vertex.projection_offset_y),
+        static_cast<std::int32_t>(vertex.projection_plane),
+        static_cast<std::int32_t>(vertex.draw_offset_x),
+        static_cast<std::int32_t>(vertex.draw_offset_y),
+        command.channel,
+        false,
     };
+    if (command.object_kind == 1 && vertex.exact_transform_valid &&
+        vertex.transform_id != 0) {
+        // Course chunks duplicate shared endpoints under different object and
+        // model IDs. Snapping only one copy tears an otherwise exact edge.
+        // Share the existing micro-seam adjustment only at identical fixed-
+        // point positions, transforms and projections, never nearby vertices
+        // which merely round to the same integer GTE coordinate.
+        key.object_id = 0;
+        key.model_pointer = 0;
+        key.transform_id = vertex.transform_id;
+        key.fixed_position = true;
+        const std::int64_t model[3]{
+            vertex.model_x, vertex.model_y, vertex.model_z};
+        std::int64_t* coordinates[3]{&key.view_x, &key.view_y, &key.view_z};
+        for (int row = 0; row < 3; ++row) {
+            *coordinates[row] =
+                static_cast<std::int64_t>(vertex.transform_translation[row]) * 4096;
+            for (int column = 0; column < 3; ++column)
+                *coordinates[row] +=
+                    vertex.transform_rotation[row * 3 + column] * model[column];
+        }
+    }
+    return key;
 }
 
 } // namespace
@@ -805,6 +872,7 @@ WorldDrawListResult build_world_draw_list(
         for (auto& command : result.commands) {
             for (auto& vertex : command.vertices) {
                 if (
+                    !valid_authored_micro_seam_target(vertex) ||
                     authored_micro_seam_vertices.find(
                         authored_micro_seam_key(command, vertex)) ==
                     authored_micro_seam_vertices.end()

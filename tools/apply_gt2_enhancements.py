@@ -371,6 +371,21 @@ def main() -> int:
 """,
         "Simulation stable Timer 1 sample for opening-movie startup",
     )
+    replace_in_function_once(
+        main_executable,
+        "func_80080C94",
+        """    {
+        return;
+""",
+        """    {
+        // This leaf is the false half of the adjacent false/true callback pair.
+        // Its retail MIPS body leaves v0 undefined; static indirect dispatch has
+        // just loaded this function's address into v0, so normalize false here.
+        c.V0 = 0u;
+        return;
+""",
+        "Simulation deterministic false callback return",
+    )
 
     replace_in_function_once(
         main_executable,
@@ -408,6 +423,85 @@ def main() -> int:
         RecompOne.Runtime.WorldCaptureContext.EndObject();
 """,
         "Simulation authored background ownership",
+    )
+    replace_in_function_once(
+        race,
+        "func_800294D4",
+        """        c.RA = 0x800296A8u;
+        GranTurismo2PC.func_800298FC(c, m);
+        c.A0 = 0x800B0000u;
+""",
+        """        RecompOne.Runtime.WorldCaptureContext.BeginScenePass(
+            RecompOne.Runtime.WorldScenePass.Auxiliary);
+        c.RA = 0x800296A8u;
+        GranTurismo2PC.func_800298FC(c, m);
+        RecompOne.Runtime.Sdk.GT2Compat.ActivateVehicleProjectionFromView(
+            c.S1, m);
+        c.A0 = 0x800B0000u;
+""",
+        "Simulation auxiliary-view vehicle projection activation",
+    )
+    replace_in_function_once(
+        race,
+        "func_800294D4",
+        """        c.RA = 0x800296D0u;
+        GranTurismo2PC.func_8002993C(c, m);
+        L800296D0: ;
+""",
+        """        c.RA = 0x800296D0u;
+        GranTurismo2PC.func_8002993C(c, m);
+        RecompOne.Runtime.WorldCaptureContext.EndScenePass();
+        L800296D0: ;
+""",
+        "Simulation auxiliary scene-pass boundary",
+    )
+    replace_in_function_once(
+        race,
+        "func_800294D4",
+        """        c.RA = 0x800296E0u;
+        GranTurismo2PC.func_800298FC(c, m);
+        c.A0 = 0x800B0000u;
+""",
+        """        RecompOne.Runtime.WorldCaptureContext.BeginScenePass(
+            RecompOne.Runtime.WorldScenePass.Main);
+        c.RA = 0x800296E0u;
+        GranTurismo2PC.func_800298FC(c, m);
+        RecompOne.Runtime.Sdk.GT2Compat.ActivateVehicleProjectionFromView(
+            c.S4, m);
+        RecompOne.Runtime.Sdk.GT2Compat.TraceProjectionPhase(
+            "main-before-vehicles", c.S4, m);
+        c.A0 = 0x800B0000u;
+""",
+        "Simulation main-view projection pre-vehicle trace",
+    )
+    replace_in_function_once(
+        race,
+        "func_800294D4",
+        """        c.RA = 0x800296F8u;
+        GranTurismo2PC.func_8001545C(c, m);
+        c.A0 = c.S5 + 0u;
+""",
+        """        c.RA = 0x800296F8u;
+        GranTurismo2PC.func_8001545C(c, m);
+        RecompOne.Runtime.Sdk.GT2Compat.TraceProjectionPhase(
+            "main-after-vehicles", c.S4, m);
+        c.A0 = c.S5 + 0u;
+""",
+        "Simulation main-view projection post-vehicle trace",
+    )
+    replace_in_function_once(
+        race,
+        "func_800294D4",
+        """        c.RA = 0x80029708u;
+        GranTurismo2PC.func_8002993C(c, m);
+        c.RA = m.ReadU32((c.SP + 0x158u));
+""",
+        """        c.RA = 0x80029708u;
+        GranTurismo2PC.func_8002993C(c, m);
+        RecompOne.Runtime.WorldCaptureContext.EndScenePass();
+        c.RA = m.ReadU32((c.SP + 0x158u));
+""",
+        "Simulation main scene-pass boundary",
     )
     replace_in_function_once(
         race,
@@ -1179,7 +1273,7 @@ def main() -> int:
         """        c.RA = 0x80020320u;
         GranTurismo2PC.func_80020EC4(c, m);
         c.V0 = RecompOne.Runtime.Sdk.GT2Compat.ExpandTrackFrustumClassification(
-            c.V0);
+            c.V0, c.V1, m.ReadU32(c.S1 + 0x4u));
         c.V1 = c.V0 + 0u;
 """,
         "modern horizontal track frustum",
@@ -1207,9 +1301,27 @@ def main() -> int:
 """,
         """        c.S0 = m.ReadU32((c.S6 + 0x4u));
         RecompOne.Runtime.WorldCaptureContext.BeginTrackObject(c.S6, c.S0);
+        RecompOne.Runtime.Sdk.GT2Compat.TraceTrackTransformSetup(m, c.S0, 0x1F800000u);
         c.S1 = m.ReadU16((c.S6 + 0xCu));
 """,
         "track world-capture object begin hook",
+    )
+    replace_once(
+        OVERLAY0,
+        """        c.V0 = c.S3 & c.S2;
+        c.V0 = c.S6 + c.V0;
+        c.V1 = (uint)((int)c.V0 >> 10);
+        RecompOne.Runtime.Gte.Write(9, c.A1);
+        RecompOne.Runtime.Gte.Write(10, c.V1);
+        RecompOne.Runtime.Gte.Write(11, c.A2);
+        RecompOne.Runtime.Gte.Execute(0x4A49E012u);
+""",
+        """        c.V0 = c.S3 & c.S2;
+        c.V0 = c.S6 + c.V0;
+        c.V1 = (uint)((int)c.V0 >> 10);
+        RecompOne.Runtime.Gte.ExecuteTrackTranslation(c.A1, c.V1, c.A2);
+""",
+        "wide course translation input",
     )
 
     replace_once(

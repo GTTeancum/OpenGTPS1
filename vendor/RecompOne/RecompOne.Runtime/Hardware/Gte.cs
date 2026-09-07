@@ -384,6 +384,8 @@ public static class Gte
         double cy = Project(c.ViewYFixed, c.ViewZFixed, c.ProjectionPlane);
         double determinant =
             ax * (by - cy) + bx * (cy - ay) + cx * (ay - by);
+        determinant = CorrectVehicleNclipDepthSign(
+            determinant, a.ViewZFixed, b.ViewZFixed, c.ViewZFixed);
         if (!double.IsFinite(determinant))
             return false;
 
@@ -399,6 +401,15 @@ public static class Gte
         VehicleFlagNclipCorrected++;
         return true;
     }
+
+    // Perspective division changes the determinant's sign by z0*z1*z2.
+    // With a vertex behind the camera, that is not the facing of the
+    // surviving homogeneously clipped polygon. Preserve the all-front area
+    // and magnitude, but recover view-space orientation for camera crossings.
+    static double CorrectVehicleNclipDepthSign(
+        double projectedDeterminant, long z0, long z1, long z2) =>
+        ((z0 < 0) ^ (z1 < 0) ^ (z2 < 0))
+            ? -projectedDeterminant : projectedDeterminant;
 
     static void TraceModernVehicleProjectionLimits(
         uint raw,
@@ -1705,6 +1716,24 @@ public static class Gte
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// GT2's course transform rotates a camera-relative 32-bit world offset
+    /// into the translation registers. The original radial gate kept it in
+    /// signed-16 range; the extended horizon does not. Preserve the input
+    /// here without changing general GTE register or instruction semantics.
+    /// The normal MVMVA still supplies its exact MAC, shift and saturation.
+    /// </summary>
+    public static void ExecuteTrackTranslation(uint x, uint y, uint z)
+    {
+        Write(9, x);
+        Write(10, y);
+        Write(11, z);
+        IR1 = unchecked((int)x);
+        IR2 = unchecked((int)y);
+        IR3 = unchecked((int)z);
+        Execute(0x4A49E012u);
     }
 
     public static void Execute(uint cmd)

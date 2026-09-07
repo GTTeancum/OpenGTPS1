@@ -169,15 +169,38 @@ public static class GT2Compat
     /// it is not interchangeable with the inside route. Expanded objects use
     /// that intersecting route so the resident renderer receives the correct
     /// topology and UV association, reconstructs continuous vertices, and
-    /// delegates clipping to D3D at the actual target aspect.
+    /// delegates clipping to D3D at the actual target aspect. Only viewport
+    /// rejection can be expanded: low mask bit 0 is shared near/depth rejection
+    /// and bit 5 is shared GTE projection failure. Admitting those distant or
+    /// behind-camera objects can turn normalized model coordinates into a
+    /// false foreground surface. A box merely intersecting the near plane is
+    /// still retained; this is not per-polygon camera-plane rejection.
     /// </summary>
     public static uint ApplyModernTrackFrustumClassification(
         uint classification,
-        bool enabled) =>
-        enabled && classification == 2u ? 1u : classification;
-
-    public static uint ExpandTrackFrustumClassification(uint classification)
+        uint clipMask,
+        bool enabled)
     {
+        const uint viewportRejection = 0x1Eu;
+        const uint depthOrProjectionRejection = 0x21u;
+        bool onlyViewportOutside =
+            (clipMask & viewportRejection) != 0u &&
+            (clipMask & depthOrProjectionRejection) == 0u;
+        return enabled && classification == 2u && onlyViewportOutside
+            ? 1u
+            : classification;
+    }
+
+    public static uint ExpandTrackFrustumClassification(
+        uint classification, uint clipMask, uint modelAddress)
+    {
+        int tracePoll = Host.InputManager.CurrentPoll;
+        if (TraceTrackFrustum && TraceTrackVisibilityStartPoll >= 0 &&
+            tracePoll >= TraceTrackVisibilityStartPoll &&
+            tracePoll <= TraceTrackVisibilityEndPoll)
+            Console.Error.WriteLine(
+                $"[GT2-Track-Box] poll={tracePoll} model=0x{modelAddress:X8} " +
+                $"classification={classification} mask=0x{clipMask:X8}");
         switch (classification)
         {
             case 0u: _trackFrustumInside++; break;
@@ -186,6 +209,7 @@ public static class GT2Compat
         }
         uint expanded = ApplyModernTrackFrustumClassification(
             classification,
+            clipMask,
             Config.ConfigManager.View.ExtendedDrawDistance &&
                 ExtendedTrackFrustumOverride);
         if (expanded != classification)
@@ -3036,6 +3060,25 @@ public static class GT2Compat
                 ExpandedVisibilityEntries[item]);
         TraceTrackVisibilityLod(m, output, maximumLod);
         return output;
+    }
+
+    public static void TraceTrackTransformSetup(IMemory m, uint model, uint camera)
+    {
+#if !OPENGT_RELEASE_PACKAGE
+        int poll = Host.InputManager.CurrentPoll;
+        if (!TraceTrackRendering || TraceTrackVisibilityStartPoll < 0 ||
+            poll < TraceTrackVisibilityStartPoll ||
+            poll > Math.Max(TraceTrackVisibilityStartPoll, TraceTrackVisibilityEndPoll))
+            return;
+        uint x = m.ReadU32(model + 0x30u), y = m.ReadU32(model + 0x38u), z = m.ReadU32(model + 0x34u);
+        uint cx = m.ReadU32(camera + 0x20u), cy = m.ReadU32(camera + 0x28u), cz = m.ReadU32(camera + 0x24u);
+        int ix = unchecked((int)((x & 0xFFC00000u) + cx)) >> 10;
+        int iy = unchecked((int)((y & 0xFFC00000u) + cy)) >> 10;
+        int iz = unchecked((int)((z & 0xFFC00000u) + cz)) >> 10;
+        Console.Error.WriteLine($"[GT2-Track-Translation] poll={poll} model=0x{model:X8} " +
+            $"center={(int)x}/{(int)y}/{(int)z} camera={(int)cx}/{(int)cy}/{(int)cz} " +
+            $"input={ix}/{iy}/{iz} narrowed={(short)ix}/{(short)iy}/{(short)iz}");
+#endif
     }
 
     static bool TryLocateVisibilitySector(

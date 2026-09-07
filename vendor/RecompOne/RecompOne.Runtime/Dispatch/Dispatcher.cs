@@ -184,6 +184,8 @@ public static class Dispatcher
         _pending = overlay;
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static void NotifyWrite(uint phys)
     {
         var p = _pending;

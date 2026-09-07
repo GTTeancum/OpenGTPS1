@@ -186,6 +186,97 @@ int main() {
             native_degenerate_list.commands[0].vertices[2].screen_y,
         "weld authored zero-width PS1 micro-seams");
 
+    // Grand Valley reverse: a close road endpoint and its near-duplicate
+    // collapse to saturated PS1 SXY. That is not a valid seam target. Keep
+    // the homogeneous ray for behind-camera, divider-overflow, screen-clamp,
+    // IR-clamp and SZ-clamp cases; all road Y values remain below the camera.
+    for (const auto& point : {
+        vertex(-3184, 111, -73, 0, 0),
+        vertex(-3184, 111, 0, 0, 0),
+        vertex(-3184, 111, 16, 0, 0),
+        vertex(-3184, 111, 128, 0, 0),
+        vertex(-3184, 111, 256, 0, 0),
+        vertex(33000, 111, 30000, 0, 0),
+        vertex(100, 111, 70000, 0, 0)}) {
+        WorldCaptureTriangle saturated = native_degenerate;
+        saturated.vertices[0] = point;
+        saturated.vertices[1] = vertex(-2329, 96, 2556, 0, 0);
+        saturated.vertices[2] = point;
+        saturated.vertices[2].view_x += 1;
+        WorldDrawList saturated_list{};
+        okay &= expect(build_world_draw_list(header, &saturated, 1,
+            WorldDrawListOptions{false, false, true}, &saturated_list) ==
+            WorldDrawListResult::success && saturated_list.commands.size() == 1,
+            "build saturated micro-seam fixture");
+        if (saturated_list.commands.size() == 1) {
+            for (int index : {0, 2}) {
+                const auto& input = saturated.vertices[index];
+                const auto& output = saturated_list.commands[0].vertices[index];
+                okay &= expect(
+                    std::fabs(output.clip_x - 1.6F * input.view_x) < 0.01F &&
+                    std::fabs(output.clip_y + (256.0F / 120.0F) * input.view_y) < 0.01F &&
+                    output.clip_w == input.view_z,
+                    "retain homogeneous position for invalid PS1 snap targets");
+            }
+        }
+    }
+
+    // A wall edge belongs to two course chunks. A degenerate joining face
+    // triggers the existing SXY adjustment in one chunk; the other copy of
+    // the exact endpoint must follow it, despite distinct object/model IDs.
+    WorldCaptureTriangle chunk_seams[5]{
+        native_degenerate, native_degenerate, native_degenerate,
+        native_degenerate, native_degenerate};
+    for (int index = 0; index < 5; ++index) {
+        auto& triangle = chunk_seams[index];
+        triangle.object_id = static_cast<std::uint32_t>(index + 1);
+        triangle.model_pointer = static_cast<std::uint32_t>(100 + index);
+        triangle.transform_id = 9;
+        triangle.exact_transform_valid = true;
+        if (index != 0) {
+            triangle.vertices[1] = vertex(300, 0, 4000, 0, 0);
+            triangle.vertices[2] = vertex(0, 300, 4000, 0, 0);
+        }
+        for (auto& point : triangle.vertices) {
+            point.model_x = static_cast<std::int16_t>(point.view_x * 2);
+            point.model_y = static_cast<std::int16_t>(point.view_y);
+            point.model_z = static_cast<std::int16_t>(point.view_z);
+            point.transform_rotation[0] = 2048;
+            point.transform_rotation[4] = 4096;
+            point.transform_rotation[8] = 4096;
+            point.transform_id = 9;
+            point.exact_transform_valid = true;
+        }
+    }
+    // Same integer GTE position, but a different half-unit exact position.
+    chunk_seams[2].vertices[0].model_x += 1;
+    // Same position under a different projection is not a shared raster edge.
+    for (auto& point : chunk_seams[3].vertices)
+        point.projection_offset_x += 65536;
+    // Vehicles are independent objects, not neighboring course chunks.
+    chunk_seams[4].object_kind = 2;
+    WorldDrawList chunk_seam_list{};
+    okay &= expect(build_world_draw_list(
+        header, chunk_seams, 5, WorldDrawListOptions{true, false, true},
+        &chunk_seam_list) == WorldDrawListResult::success &&
+        chunk_seam_list.commands.size() == 5,
+        "build cross-chunk micro-seam fixture");
+    if (chunk_seam_list.commands.size() == 5) {
+        const auto& a = chunk_seam_list.commands[0].vertices[0];
+        const auto& b = chunk_seam_list.commands[1].vertices[0];
+        okay &= expect(a.screen_x == b.screen_x && a.clip_x == b.clip_x &&
+            a.screen_y == b.screen_y && a.clip_y == b.clip_y,
+            "adjust identical shared endpoints across distinct course chunks");
+        for (int index : {2, 3, 4}) {
+            const auto expected = project_continuous_vertex(
+                chunk_seams[index].vertices[0], 0, 0);
+            okay &= expect(std::fabs(
+                chunk_seam_list.commands[index].vertices[0].screen_x - expected.x)
+                < 0.0001F,
+                "preserve fractional neighbors, different projections and vehicles");
+        }
+    }
+
     // GT2 independently normalizes camera translation for each submitted
     // object before the GTE sees it. Raw SZ/view-Z therefore cannot be
     // compared across objects. This fixture deliberately reverses the raw-Z

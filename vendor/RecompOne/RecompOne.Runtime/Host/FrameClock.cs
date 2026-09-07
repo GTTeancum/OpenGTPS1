@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime;
 
 namespace RecompOne.Runtime.Host;
 
@@ -28,6 +29,7 @@ internal static class FrameClock
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_PERFORMANCE") == "1";
     static bool _stageThrottleLatched;
     static bool _pacedThreadPriorityApplied;
+    static bool _pacedGcPolicyApplied;
     static double _nextFrameMs;
     static double _lastThrottleReturnMs;
 
@@ -90,6 +92,7 @@ internal static class FrameClock
             }
         }
         ApplyPacedThreadPriority();
+        ApplyPacedGcPolicy();
         _nextFrameMs += FrameMs;
         double now = _clock.Elapsed.TotalMilliseconds;
         double wait = _nextFrameMs - now;
@@ -137,6 +140,21 @@ internal static class FrameClock
         }
     }
 
+    static void ApplyPacedGcPolicy()
+    {
+        if (_pacedGcPolicyApplied)
+            return;
+        _pacedGcPolicyApplied = true;
+        // The renderer's long-lived pools keep steady-state allocation low.
+        // Ask the workstation GC to avoid foreground gen-2 pauses during
+        // paced play; background collection can then use the vblank margin.
+        if (GCSettings.LatencyMode == GCLatencyMode.Interactive)
+            GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
+        if (_tracePerformance)
+            Console.Error.WriteLine(
+                $"[PERF] GC latency={GCSettings.LatencyMode}");
+    }
+
     static void TraceLongFrame(
         double completedMs,
         double requestedWaitMs,
@@ -148,7 +166,7 @@ internal static class FrameClock
         // A one-frame debt limit can reset after an ordinary scheduler wake-up.
         // Logging every such reset adds enough redirected stderr traffic to
         // perturb the paced run, so retain this trace for genuinely long frames.
-        if (intervalMs < 40.0)
+        if (intervalMs < 40.0 && !resetDeadline)
             return;
         double deadlineLateMs = completedMs - _nextFrameMs;
         Console.Error.WriteLine(

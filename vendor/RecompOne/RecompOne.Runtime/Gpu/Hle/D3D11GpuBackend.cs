@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -56,6 +57,15 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
     const int Width = VramShadow.Width * Scale;
     const int Height = VramShadow.Height * Scale;
     const int MaxVertices = 0x40000;
+    // A single dynamic buffer forces the D3D11 driver to rename an 8 MiB
+    // allocation while the GPU is still consuming its tail. Rotate whole
+    // resources when the append cursor wraps so each buffer has multiple
+    // seconds to retire before it is reused. A resource is discarded only on
+    // its first map; later laps use NO_OVERWRITE after two complete resources
+    // have retired, avoiding another large driver allocation/rename.
+    const int VertexBufferCount = 3;
+    static readonly bool TracePerformance =
+        Environment.GetEnvironmentVariable("RECOMPONE_TRACE_PERFORMANCE") == "1";
 
     const string Shader = """
         cbuffer State : register(b0) {
@@ -231,7 +241,9 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
     ID3D11VertexShader? _vertexShader;
     ID3D11PixelShader? _pixelShader;
     ID3D11InputLayout? _inputLayout;
-    ID3D11Buffer? _vertexBuffer;
+    readonly ID3D11Buffer?[] _vertexBuffers =
+        new ID3D11Buffer?[VertexBufferCount];
+    readonly bool[] _vertexBufferPrimed = new bool[VertexBufferCount];
     ID3D11Buffer? _constantBuffer;
     ID3D11RasterizerState? _rasterizer;
     ID3D11BlendState? _opaqueBlend;
@@ -240,6 +252,7 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
     ID3D11DepthStencilState? _depthStencil;
     HleDrawEnv _environment;
     int _vertexCount;
+    int _vertexBufferIndex;
     int _vertexBufferCursor;
     bool _transparent;
     int _blendMode, _setMask, _checkMask;
@@ -288,9 +301,13 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
             new("PERSPECTIVE", 0, Format.R32_Float, 28, 0),
         ];
         _inputLayout = _renderer.Device.CreateInputLayout(elements, vs.Span);
-        _vertexBuffer = _renderer.Device.CreateBuffer(new BufferDescription(
-            MaxVertices * Unsafe.SizeOf<Vertex>(), BindFlags.VertexBuffer,
-            ResourceUsage.Dynamic, CpuAccessFlags.Write));
+        for (int i = 0; i < _vertexBuffers.Length; i++)
+            _vertexBuffers[i] = _renderer.Device.CreateBuffer(
+                new BufferDescription(
+                    MaxVertices * Unsafe.SizeOf<Vertex>(),
+                    BindFlags.VertexBuffer,
+                    ResourceUsage.Dynamic,
+                    CpuAccessFlags.Write));
         _constantBuffer = _renderer.Device.CreateBuffer(new BufferDescription(
             Unsafe.SizeOf<Constants>(), BindFlags.ConstantBuffer,
             ResourceUsage.Dynamic, CpuAccessFlags.Write));
@@ -618,6 +635,7 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
     public unsafe void Flush()
     {
         if (_vertexCount == 0) return;
+        long started = TracePerformance ? Stopwatch.GetTimestamp() : 0;
         var context = _renderer.Context;
         DisplayTarget? target = _batchTarget;
         D3D11Renderer.Texture destination = target?.Texture ?? _vram;
@@ -662,21 +680,32 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
             Math.Clamp(scissorY1 * Scale, 0, destination.Height));
         int vertexStride = Unsafe.SizeOf<Vertex>();
         if (_vertexBufferCursor + _vertexCount > MaxVertices)
+        {
             _vertexBufferCursor = 0;
+            _vertexBufferIndex =
+                (_vertexBufferIndex + 1) % _vertexBuffers.Length;
+        }
+        ID3D11Buffer vertexBuffer = _vertexBuffers[_vertexBufferIndex]!;
         int vertexBufferOffset = _vertexBufferCursor * vertexStride;
+        MapMode vertexMapMode = _vertexBufferCursor == 0 &&
+            !_vertexBufferPrimed[_vertexBufferIndex]
+            ? MapMode.WriteDiscard
+            : MapMode.WriteNoOverwrite;
+        long beforeVertexMap = TracePerformance ? Stopwatch.GetTimestamp() : 0;
         MappedSubresource vertexMap = context.Map(
-            _vertexBuffer!,
-            _vertexBufferCursor == 0
-                ? MapMode.WriteDiscard
-                : MapMode.WriteNoOverwrite,
+            vertexBuffer,
+            vertexMapMode,
             Vortice.Direct3D11.MapFlags.None);
+        _vertexBufferPrimed[_vertexBufferIndex] = true;
+        long afterVertexMap = TracePerformance ? Stopwatch.GetTimestamp() : 0;
         fixed (Vertex* source = _vertices)
             Buffer.MemoryCopy(
                 source,
                 (void*)(vertexMap.DataPointer + vertexBufferOffset),
                 (MaxVertices - _vertexBufferCursor) * vertexStride,
                 _vertexCount * vertexStride);
-        context.Unmap(_vertexBuffer!);
+        context.Unmap(vertexBuffer);
+        long afterVertexUpload = TracePerformance ? Stopwatch.GetTimestamp() : 0;
         float sourceFactor = _blendMode switch
         {
             0 => 0.5f,
@@ -703,9 +732,10 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
             TextureSmoothing = ConfigManager.View.TextureSmoothing ? 1 : 0,
         };
         UploadConstants(context, in constants);
+        long afterConstants = TracePerformance ? Stopwatch.GetTimestamp() : 0;
         context.IASetInputLayout(_inputLayout);
         context.IASetVertexBuffer(
-            0, _vertexBuffer!, vertexStride, vertexBufferOffset);
+            0, vertexBuffer, vertexStride, vertexBufferOffset);
         context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
         context.VSSetShader(_vertexShader);
         context.VSSetConstantBuffer(0, _constantBuffer);
@@ -723,6 +753,7 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
             context.OMSetBlendState(_dualSourceReverseSubtractBlend);
             context.Draw(_vertexCount, 0);
         }
+        long afterDraw = TracePerformance ? Stopwatch.GetTimestamp() : 0;
         context.PSSetShaderResource(0, null!);
         context.PSSetShaderResource(1, null!);
         context.UnsetRenderTargets();
@@ -741,6 +772,22 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
                 dirtyX0 * Scale, dirtyY0 * Scale,
                 (dirtyX1 - dirtyX0 + 1) * Scale,
                 (dirtyY1 - dirtyY0 + 1) * Scale);
+        long afterCopy = TracePerformance ? Stopwatch.GetTimestamp() : 0;
+        if (TracePerformance &&
+            Stopwatch.GetElapsedTime(started, afterCopy).TotalMilliseconds >= 40.0)
+        {
+            Console.Error.WriteLine(
+                $"[GPU-Long-Flush] poll={Host.InputManager.CurrentPoll} " +
+                $"vertices={_vertexCount} buffer={_vertexBufferIndex} " +
+                $"cursor={_vertexBufferCursor} " +
+                $"mapMode={vertexMapMode} target={destination.Width}x{destination.Height} " +
+                $"setupMs={Stopwatch.GetElapsedTime(started, beforeVertexMap).TotalMilliseconds:F3} " +
+                $"mapMs={Stopwatch.GetElapsedTime(beforeVertexMap, afterVertexMap).TotalMilliseconds:F3} " +
+                $"uploadMs={Stopwatch.GetElapsedTime(afterVertexMap, afterVertexUpload).TotalMilliseconds:F3} " +
+                $"constantsMs={Stopwatch.GetElapsedTime(afterVertexUpload, afterConstants).TotalMilliseconds:F3} " +
+                $"drawMs={Stopwatch.GetElapsedTime(afterConstants, afterDraw).TotalMilliseconds:F3} " +
+                $"copyMs={Stopwatch.GetElapsedTime(afterDraw, afterCopy).TotalMilliseconds:F3}");
+        }
         _batchX0 = VramShadow.Width;
         _batchY0 = VramShadow.Height;
         _batchX1 = -1;
@@ -760,15 +807,29 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
 
     void Writeback(DisplayTarget target)
     {
-        int width = target.W * Scale;
-        int height = target.H * Scale;
-        int sourceX = target.Margin * Scale;
-        int destinationX = target.X * Scale;
-        int destinationY = target.Y * Scale;
+        // A 480-line interlaced display target can extend beyond the 512-line
+        // physical VRAM when its field starts in the lower half.  Keep the
+        // full virtual target for composition, but only synchronize the part
+        // that has physical VRAM backing.
+        int x0 = Math.Max(0, target.X);
+        int y0 = Math.Max(0, target.Y);
+        int x1 = Math.Min(VramShadow.Width, target.X + target.W);
+        int y1 = Math.Min(VramShadow.Height, target.Y + target.H);
+        if (x0 >= x1 || y0 >= y1)
+        {
+            target.Dirty = false;
+            return;
+        }
+        int width = (x1 - x0) * Scale;
+        int height = (y1 - y0) * Scale;
+        int sourceX = (target.Margin + x0 - target.X) * Scale;
+        int sourceY = (y0 - target.Y) * Scale;
+        int destinationX = x0 * Scale;
+        int destinationY = y0 * Scale;
         _renderer.CopyRegion(target.Texture, _vram,
-            sourceX, 0, destinationX, destinationY, width, height);
+            sourceX, sourceY, destinationX, destinationY, width, height);
         _renderer.CopyRegion(target.Texture, _textureVram,
-            sourceX, 0, destinationX, destinationY, width, height);
+            sourceX, sourceY, destinationX, destinationY, width, height);
         target.Dirty = false;
     }
 
@@ -783,10 +844,12 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
     void SyncTargetFromVram(DisplayTarget target,
         int x, int y, int width, int height)
     {
-        int x0 = Math.Max(x, target.X);
-        int y0 = Math.Max(y, target.Y);
-        int x1 = Math.Min(x + width, target.X + target.W);
-        int y1 = Math.Min(y + height, target.Y + target.H);
+        int x0 = Math.Max(0, Math.Max(x, target.X));
+        int y0 = Math.Max(0, Math.Max(y, target.Y));
+        int x1 = Math.Min(VramShadow.Width,
+            Math.Min(x + width, target.X + target.W));
+        int y1 = Math.Min(VramShadow.Height,
+            Math.Min(y + height, target.Y + target.H));
         if (x0 >= x1 || y0 >= y1) return;
         _renderer.CopyRegion(_vram, target.Texture,
             x0 * Scale, y0 * Scale,
@@ -876,22 +939,45 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
 
     public void ReadVram(int x, int y, int width, int height, Span<ushort> pixels)
     {
+        if (width <= 0 || height <= 0 || pixels.IsEmpty) return;
         Flush();
         WritebackDirtyIntersecting(x, y, width, height);
-        int required = Width * Height * 4;
-        if (_readback.Length < required) _readback = new byte[required];
-        _renderer.Readback(_vram, _readback.AsSpan(0, required));
         int rows = Math.Min(height, pixels.Length / Math.Max(1, width));
-        for (int py = 0; py < rows; py++)
-        for (int px = 0; px < width; px++)
+        int destinationRow = 0;
+        while (destinationRow < rows)
         {
-            int sourceX = ((x + px) & 1023) * Scale;
-            int sourceY = ((y + py) & 511) * Scale;
-            int offset = (sourceY * Width + sourceX) * 4;
-            int mask = _readback[offset + 3] >= 128 ? 0x8000 : 0;
-            pixels[py * width + px] = (ushort)((_readback[offset] >> 3) |
-                ((_readback[offset + 1] >> 3) << 5) |
-                ((_readback[offset + 2] >> 3) << 10) | mask);
+            int sourceY = (y + destinationRow) & 511;
+            int chunkRows = Math.Min(rows - destinationRow, 512 - sourceY);
+            int destinationColumn = 0;
+            while (destinationColumn < width)
+            {
+                int sourceX = (x + destinationColumn) & 1023;
+                int chunkColumns = Math.Min(width - destinationColumn,
+                    1024 - sourceX);
+                int scaledWidth = chunkColumns * Scale;
+                int scaledHeight = chunkRows * Scale;
+                int required = checked(scaledWidth * scaledHeight * 4);
+                if (_readback.Length < required)
+                    _readback = new byte[required];
+                _renderer.ReadbackRegion(_vram,
+                    sourceX * Scale, sourceY * Scale,
+                    scaledWidth, scaledHeight,
+                    _readback.AsSpan(0, required));
+                for (int row = 0; row < chunkRows; row++)
+                for (int column = 0; column < chunkColumns; column++)
+                {
+                    int offset = ((row * Scale) * scaledWidth +
+                        column * Scale) * 4;
+                    int mask = _readback[offset + 3] >= 128 ? 0x8000 : 0;
+                    int destination = (destinationRow + row) * width +
+                        destinationColumn + column;
+                    pixels[destination] = (ushort)((_readback[offset] >> 3) |
+                        ((_readback[offset + 1] >> 3) << 5) |
+                        ((_readback[offset + 2] >> 3) << 10) | mask);
+                }
+                destinationColumn += chunkColumns;
+            }
+            destinationRow += chunkRows;
         }
     }
 
@@ -973,7 +1059,8 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
         _opaqueBlend?.Dispose();
         _rasterizer?.Dispose();
         _constantBuffer?.Dispose();
-        _vertexBuffer?.Dispose();
+        foreach (ID3D11Buffer? vertexBuffer in _vertexBuffers)
+            vertexBuffer?.Dispose();
         _inputLayout?.Dispose();
         _pixelShader?.Dispose();
         _vertexShader?.Dispose();

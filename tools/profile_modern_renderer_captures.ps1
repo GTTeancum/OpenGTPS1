@@ -12,6 +12,7 @@ param(
     [int]$Frames = 600,
     [ValidateRange(1, 8)]
     [int]$Scale = 4,
+    [switch]$AboveNormalPriority,
     [double]$MaximumExternal3dPercent = 100.0
 )
 
@@ -22,6 +23,37 @@ $benchmark = Join-Path $repo `
     'build\native\Release\opengt_live_benchmark.exe'
 if (-not (Test-Path -LiteralPath $benchmark -PathType Leaf)) {
     throw "Native benchmark is missing: $benchmark"
+}
+
+function Get-RuntimeExternal3dUse([int]$ExcludedPid) {
+    $result = @()
+    $runtimeSamples = (Get-Counter `
+        '\GPU Engine(*)\Utilization Percentage' `
+        -ErrorAction SilentlyContinue).CounterSamples
+    foreach ($sample in $runtimeSamples) {
+        if ($sample.CookedValue -le 0 -or
+            $sample.InstanceName -notmatch 'pid_(\d+).*engtype_3d$') {
+            continue
+        }
+        $pidValue = [int]$Matches[1]
+        if ($pidValue -eq $ExcludedPid) {
+            continue
+        }
+        $name = try {
+            (Get-Process -Id $pidValue -ErrorAction Stop).ProcessName
+        } catch {
+            "pid-$pidValue"
+        }
+        if ($name -notin @('dwm', 'System', 'Idle')) {
+            $result += [pscustomobject]@{
+                pid = $pidValue
+                process = $name
+                utilizationPercent = [math]::Round(
+                    $sample.CookedValue, 3)
+            }
+        }
+    }
+    return $result
 }
 
 $external3d = @()
@@ -77,20 +109,82 @@ foreach ($captureInput in $Captures) {
     } else {
         (Resolve-Path -LiteralPath (Join-Path $repo $captureInput)).Path
     }
-    $name = [IO.Path]::GetFileNameWithoutExtension($capture)
+    # Prefix the source basename with its stable input index.  Track reviews
+    # commonly name captures scene-1.ogtwcap, scene-2.ogtwcap, and so on in
+    # separate directories; a basename-only log silently overwrote earlier
+    # evidence when more than one course used the same scene number.
+    $name = '{0:D2}-{1}' -f $results.Count,
+        [IO.Path]::GetFileNameWithoutExtension($capture)
     $logPath = Join-Path $artifact "$name.log"
-    $output = @(& $benchmark $capture $Frames $Scale 2>&1)
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $benchmark
+    $start.WorkingDirectory = $repo
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    foreach ($argument in @($capture, $Frames.ToString(), $Scale.ToString())) {
+        $start.ArgumentList.Add($argument)
+    }
+    $process = [Diagnostics.Process]::Start($start)
+    if ($AboveNormalPriority) {
+        $process.PriorityClass =
+            [Diagnostics.ProcessPriorityClass]::AboveNormal
+    }
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $runtimeContamination = ''
+    while (-not $process.WaitForExit(1000)) {
+        $runtimeExternal = @(Get-RuntimeExternal3dUse $process.Id)
+        $runtimeExternalTotal = @($runtimeExternal | Measure-Object `
+            utilizationPercent -Sum).Sum
+        if ($null -eq $runtimeExternalTotal) {
+            $runtimeExternalTotal = 0.0
+        }
+        if ($runtimeExternalTotal -gt $MaximumExternal3dPercent) {
+            $runtimeContamination =
+                "External 3D use reached " +
+                "$([math]::Round($runtimeExternalTotal, 3))%: " +
+                (($runtimeExternal | ForEach-Object {
+                    "$($_.process)[$($_.pid)]=$($_.utilizationPercent)%"
+                }) -join ', ')
+            $process.Kill()
+            $process.WaitForExit()
+            break
+        }
+    }
+    $process.WaitForExit()
+    $output = @(
+        ($stdoutTask.Result -split "`r?`n") |
+            Where-Object { $_ -ne '' }
+        ($stderrTask.Result -split "`r?`n") |
+            Where-Object { $_ -ne '' }
+    )
     $output | Set-Content -LiteralPath $logPath -Encoding ASCII
-    if ($LASTEXITCODE -ne 0) {
-        throw "Benchmark failed for $capture with exit code $LASTEXITCODE"
+    if (-not [string]::IsNullOrWhiteSpace($runtimeContamination)) {
+        throw "Benchmark rejected for ${capture}: $runtimeContamination"
+    }
+    if ($process.ExitCode -ne 0) {
+        throw "Benchmark failed for $capture with exit code $($process.ExitCode)"
     }
     if ($output[0] -notmatch
         'gpuMetric=driver-submit-completion-readback$') {
         throw "Benchmark did not identify its GPU-driver metric: $capture"
     }
-    $match = $resultPattern.Match([string]$output[-1])
+    # Renderer diagnostics can legitimately follow the benchmark summary
+    # (for example the shutdown classification audit).  Select the summary by
+    # schema instead of assuming it is the final output line.
+    $summaryLines = @($output | Where-Object {
+        $resultPattern.IsMatch([string]$_)
+    })
+    $summaryLine = if ($summaryLines.Count -gt 0) {
+        [string]$summaryLines[-1]
+    } else {
+        ''
+    }
+    $match = $resultPattern.Match($summaryLine)
     if (-not $match.Success -or [int]$match.Groups[1].Value -ne $Frames) {
-        throw "Benchmark summary is malformed: $($output[-1])"
+        throw "Benchmark summary is missing or malformed: $summaryLine"
     }
     $numbers = @(2..14 | ForEach-Object {
         [double]::Parse(
@@ -100,7 +194,7 @@ foreach ($captureInput in $Captures) {
     foreach ($start in @(1, 4, 7, 10)) {
         if ($numbers[$start] -gt $numbers[$start + 1] -or
             $numbers[$start + 1] -gt $numbers[$start + 2]) {
-            throw "Unordered percentile summary: $($output[-1])"
+            throw "Unordered percentile summary: $summaryLine"
         }
     }
     $results.Add([ordered]@{
@@ -128,6 +222,11 @@ $summary = [ordered]@{
     createdUtc = [DateTime]::UtcNow.ToString('o')
     framesPerCapture = $Frames
     scale = $Scale
+    processPriority = $(if ($AboveNormalPriority) {
+        'AboveNormal'
+    } else {
+        'inherited'
+    })
     external3dPreflightPercent = [math]::Round($external3dTotal, 3)
     external3dPreflight = @($external3d)
     adapters = @(Get-CimInstance Win32_VideoController | ForEach-Object {

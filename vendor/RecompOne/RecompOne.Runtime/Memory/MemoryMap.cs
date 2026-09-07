@@ -25,5 +25,7 @@ public static class MemoryMap
     public const uint Kseg1Base = 0xA0000000;
     public const uint PhysicalMask = 0x1FFFFFFF;
 
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static uint ToPhysical(uint vaddr) => vaddr & PhysicalMask;
 }

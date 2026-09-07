@@ -959,7 +959,7 @@ int main(int argc, char** argv) {
         "topologySplitSources=%u topologySplitTriangles=%u "
         "topologyCoplanarPairs=%u topologyMaterialPairs=%u "
         "topologyDuplicatePairs=%u topologyOwnershipGroups=%u "
-        "topologyReorders=%u "
+        "topologyReorders=%u backgroundMidpointJunctions=%u "
         "drawCalls=%u transparentDrawCalls=%u "
         "gpuHash=%016llx oracleHash=%016llx "
         "compatibilityRms=%.6f compatibilityPsnr=%.3f "
@@ -1013,6 +1013,7 @@ int main(int argc, char** argv) {
         topology_stats.exact_duplicate_pairs,
         topology_stats.ownership_components,
         topology_stats.ownership_reorders,
+        topology_stats.background_midpoint_junctions,
         gpu_stats.draw_calls,
         gpu_stats.transparent_draw_calls,
         static_cast<unsigned long long>(

@@ -11,6 +11,7 @@ add_library(opengt_renderer_core STATIC
     src/world_draw_list.cpp
     src/world_gpu_renderer_d3d11.cpp
     src/world_topology.cpp
+    src/background_seams.cpp
 )
 
 # Synthetic midpoint reconstruction remains available only to explicitly
@@ -86,6 +87,13 @@ endif()
 
 if(OPENGT_BUILD_TESTS)
     enable_testing()
+
+    # Exercise the bridge's private resident classifier without exporting
+    # diagnostic APIs from the live DLL.
+    add_executable(opengt_resident_overlay_tests tests/resident_overlay_tests.cpp)
+    target_link_libraries(opengt_resident_overlay_tests PRIVATE opengt_renderer_core)
+    target_compile_features(opengt_resident_overlay_tests PRIVATE cxx_std_17)
+    add_test(NAME opengt_resident_overlay_tests COMMAND opengt_resident_overlay_tests)
 
     add_executable(opengt_renderer_core_tests
         tests/geometry_stitcher_tests.cpp

@@ -149,6 +149,11 @@ internal sealed class D3D11Renderer : IDisposable
         result.CheckError();
         Device = device;
         Context = context;
+        using (ID3D11Multithread multithread =
+            Context.QueryInterface<ID3D11Multithread>())
+        {
+            multithread.SetMultithreadProtected(true);
+        }
 
         _factory = CreateDXGIFactory1<IDXGIFactory2>();
         var description = new SwapChainDescription1(
@@ -234,6 +239,12 @@ internal sealed class D3D11Renderer : IDisposable
     {
         if (present)
             SwapChain.Present(0, PresentFlags.None).CheckError();
+        else
+            // Hidden/headless validation has no swap-chain Present to submit
+            // the shared immediate-context queue. Flush once after both the
+            // native command list and compositor copy are recorded so dynamic
+            // rings cannot accumulate dozens of unsubmitted frames.
+            Context.Flush();
     }
 
     public Texture CreateTexture(int width = 1, int height = 1,
@@ -307,6 +318,18 @@ internal sealed class D3D11Renderer : IDisposable
             rowPitch: width * 4);
     }
 
+    public void CopyNativeTexture(Texture destination, nint sourcePointer,
+        int width, int height)
+    {
+        if (sourcePointer == 0)
+            throw new ArgumentException(
+                "Native texture pointer is null.", nameof(sourcePointer));
+        EnsureTexture(destination, width, height);
+        Marshal.AddRef(sourcePointer);
+        using var source = new ID3D11Texture2D(sourcePointer);
+        Context.CopyResource(destination.Resource, source);
+    }
+
     public void UploadRegion(Texture texture, int x, int y,
         int width, int height, ReadOnlySpan<byte> rgba)
     {
@@ -373,14 +396,28 @@ internal sealed class D3D11Renderer : IDisposable
 
     public unsafe void Readback(Texture texture, Span<byte> rgba)
     {
-        int required = checked(texture.Width * texture.Height * 4);
+        ReadbackRegion(texture, 0, 0, texture.Width, texture.Height, rgba);
+    }
+
+    public unsafe void ReadbackRegion(Texture texture, int x, int y,
+        int width, int height, Span<byte> rgba)
+    {
+        if (width <= 0 || height <= 0) return;
+        if (x < 0 || y < 0 || x + width > texture.Width ||
+            y + height > texture.Height)
+            throw new ArgumentOutOfRangeException(nameof(x),
+                $"Readback region {width}x{height}@{x},{y} exceeds " +
+                $"texture {texture.Width}x{texture.Height}.");
+        int required = checked(width * height * 4);
         if (rgba.Length < required)
             throw new ArgumentException("Readback span is too small.", nameof(rgba));
         using ID3D11Texture2D staging = Device.CreateTexture2D(
             new Texture2DDescription(Format.R8G8B8A8_UNorm,
-                texture.Width, texture.Height, 1, 1, BindFlags.None,
+                width, height, 1, 1, BindFlags.None,
                 ResourceUsage.Staging, CpuAccessFlags.Read));
-        Context.CopyResource(staging, texture.Resource);
+        var sourceRegion = new Box(x, y, 0, x + width, y + height, 1);
+        Context.CopySubresourceRegion(staging, 0, 0, 0, 0,
+            texture.Resource, 0, sourceRegion);
         MappedSubresource mapped = Context.Map(staging, 0,
             MapMode.Read, Vortice.Direct3D11.MapFlags.None);
         try
@@ -388,10 +425,10 @@ internal sealed class D3D11Renderer : IDisposable
             fixed (byte* destinationBase = rgba)
             {
                 byte* sourceBase = (byte*)mapped.DataPointer;
-                int rowBytes = texture.Width * 4;
-                for (int y = 0; y < texture.Height; y++)
-                    Buffer.MemoryCopy(sourceBase + y * mapped.RowPitch,
-                        destinationBase + y * rowBytes, rowBytes, rowBytes);
+                int rowBytes = width * 4;
+                for (int row = 0; row < height; row++)
+                    Buffer.MemoryCopy(sourceBase + row * mapped.RowPitch,
+                        destinationBase + row * rowBytes, rowBytes, rowBytes);
             }
         }
         finally

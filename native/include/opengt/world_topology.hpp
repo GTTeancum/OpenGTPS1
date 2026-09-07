@@ -57,6 +57,7 @@ struct WorldTopologyStats {
     std::uint32_t exact_duplicate_pairs;
     std::uint32_t ownership_components;
     std::uint32_t ownership_reorders;
+    std::uint32_t background_midpoint_junctions;
 };
 
 enum class WorldTopologyResult {

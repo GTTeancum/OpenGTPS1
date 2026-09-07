@@ -384,6 +384,8 @@ internal static class HostWindow
         };
         nint hwnd = _window!.Native?.Win32?.Hwnd ?? 0;
         _d3d = new D3D11Renderer(hwnd, fb.X, fb.Y);
+        Runtime.Gpu?.ConfigureLiveWorldPresentationDevice(
+            _d3d.Device.NativePointer);
         _displayTex = _d3d.CreateTexture();
         _nativeWorldTex = _d3d.CreateTexture();
         _vramTex = _d3d.CreateTexture();
@@ -728,7 +730,13 @@ internal static class HostWindow
             realTimeThrottleActive && !_nativeRealTimeThrottleWasActive;
         _nativeRealTimeThrottleWasActive = realTimeThrottleActive;
         if (realTimeThrottleStarted)
+        {
             _nativeInitialPrebufferPending = true;
+            Console.Error.WriteLine(
+                $"[Native-World-Paced-Baseline] " +
+                $"poll={InputManager.CurrentPoll} " +
+                $"dropped={gpu.LiveWorldDroppedFrames}");
+        }
         if (!worldExpected)
         {
             if (_nativeWorldHandoffExitArmed && !worldRecentlySeen)
@@ -834,13 +842,10 @@ internal static class HostWindow
                 $"reserved={rejected.Stats.Reserved} " +
                 $"frame={rejected.Frame} poll={rejected.InputPoll}");
         }
-        // Prime one output for presentation and retain two completed outputs
-        // as the scheduling reserve. The former one-output reserve exhausted
-        // on measured 21--36 ms D3D completion tails even though the steady
-        // pipeline p99 remained below one 60 Hz interval. Three completed
-        // outputs raise steady input-to-presentation age by one poll while
-        // covering those two-presentation tails. The retired eight-output
-        // reserve measured eleven polls and merely manufactured latency.
+        // Prime one output and retain two completed images for a bounded CPU
+        // or scheduler tail. Direct same-device presentation no longer needs
+        // a deep GPU-readback reserve; keeping five images here would add
+        // about 33 ms of input-to-display latency without more throughput.
         if (
             _nativeWorldPrebuffering &&
             gpu.LiveWorldOutputCount < _nativeWorldPrebufferTarget
@@ -901,18 +906,30 @@ internal static class HostWindow
                 if (
                     output.Width > 0 &&
                     output.Height > 0 &&
-                    needed <= output.Pixels.Length
+                    (output.NativeTexture != 0 ||
+                        needed <= output.Pixels.Length)
                 )
                 {
-                    CaptureNativeWorldReadback(in output, needed);
                     if (d3d != null)
                     {
-                        d3d.Upload(_nativeWorldTex!,
-                            output.Width, output.Height,
-                            output.Pixels.AsSpan(0, needed));
+                        if (output.NativeTexture != 0)
+                        {
+                            d3d.CopyNativeTexture(
+                                _nativeWorldTex!,
+                                output.NativeTexture,
+                                output.Width,
+                                output.Height);
+                        }
+                        else
+                        {
+                            d3d.Upload(_nativeWorldTex!,
+                                output.Width, output.Height,
+                                output.Pixels.AsSpan(0, needed));
+                        }
                         _nativeWorldAllocatedWidth = output.Width;
                         _nativeWorldAllocatedHeight = output.Height;
                     }
+                    CaptureNativeWorldReadback(d3d, in output, needed);
                     _nativeWorldWidth = output.Width;
                     _nativeWorldHeight = output.Height;
                     _nativeWorldFrame = output.Frame;
@@ -1049,6 +1066,7 @@ internal static class HostWindow
     }
 
     static void CaptureNativeWorldReadback(
+        D3D11Renderer? d3d,
         in Hle.LiveWorldOutput output,
         int needed)
     {
@@ -1066,15 +1084,29 @@ internal static class HostWindow
             directory,
             $"native_readback_{label}_source_{output.Frame}_" +
             $"poll_{output.InputPoll}_{output.Width}x{output.Height}.ppm");
+        ReadOnlySpan<byte> rgba;
+        byte[]? directReadback = null;
+        if (output.NativeTexture != 0)
+        {
+            if (d3d == null || _nativeWorldTex == null)
+                return;
+            directReadback = new byte[needed];
+            d3d.Readback(_nativeWorldTex, directReadback);
+            rgba = directReadback;
+        }
+        else
+        {
+            rgba = output.Pixels.AsSpan(0, needed);
+        }
         int pixelCount = checked(output.Width * output.Height);
         byte[] rgb = new byte[checked(pixelCount * 3)];
         for (int source = 0, destination = 0;
             source < needed;
             source += 4)
         {
-            rgb[destination++] = output.Pixels[source];
-            rgb[destination++] = output.Pixels[source + 1];
-            rgb[destination++] = output.Pixels[source + 2];
+            rgb[destination++] = rgba[source];
+            rgb[destination++] = rgba[source + 1];
+            rgb[destination++] = rgba[source + 2];
         }
         using var dump = File.Create(path);
         byte[] header = System.Text.Encoding.ASCII.GetBytes(
@@ -1254,6 +1286,7 @@ internal static class HostWindow
             $"compositor={_nativePerfCompositorFrames} " +
             $"worldMiss={_nativePerfWorldMissFrames} " +
             $"transitionHold={_nativePerfTransitionHolds} " +
+            $"dropped={_gpu?.LiveWorldDroppedFrames ?? 0} " +
             $"ageAvg={_nativePerfAgeTotal / (double)Math.Max(1, nativePresents):F2} " +
             $"ageMax={_nativePerfAgeMaximum}");
         ResetNativePerformanceCounters(now);

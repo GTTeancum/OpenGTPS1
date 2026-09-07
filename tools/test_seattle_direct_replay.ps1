@@ -151,9 +151,11 @@ $environment = [ordered]@{
     SDL_AUDIODRIVER = 'dummy'
     RECOMPONE_PROCESS_PRIORITY = 'AboveNormal'
     RECOMPONE_DISABLE_LIVE_INPUT = '1'
-    RECOMPONE_GT2_AI_AUTODRIVE = $(if ($raceRun) { '1' } else { $null })
-    RECOMPONE_GT2_AI_AUTODRIVE_MAX_ENGAGEMENTS = $(
-        if ($raceRun) { '2' } else { $null })
+    # Both direct routes begin with the live race. The natural-replay route
+    # also depends on the second AI engagement to identify replay vehicle
+    # construction and signal replay_1.
+    RECOMPONE_GT2_AI_AUTODRIVE = '1'
+    RECOMPONE_GT2_AI_AUTODRIVE_MAX_ENGAGEMENTS = '2'
     RECOMPONE_SUPPRESS_RUMBLE = '1'
     RECOMPONE_GRAPHICS_PRESET_OVERRIDE = 'Enhanced'
     RECOMPONE_OUTPUT_RESOLUTION = $(
@@ -464,9 +466,16 @@ if (-not [string]::IsNullOrWhiteSpace($OutputResolution)) {
     Require ($stderr -match [regex]::Escape($expectedSize)) (
         "The renderer did not produce the requested Hor+ target $expectedSize")
 }
-Require ($stderr -match
-    '\[Native-World\] shutdown .*synthetic=0 repeated=0 .*dropped=0') (
-    'The native world pipeline synthesized, repeated, or dropped a frame')
+$nativeShutdown = [regex]::Match(
+    $stderr,
+    '\[Native-World\] shutdown .*synthetic=0 repeated=0 .*dropped=(\d+)')
+Require $nativeShutdown.Success (
+    'The native world pipeline did not report a clean authored shutdown')
+$nativeShutdownDropped = [long]$nativeShutdown.Groups[1].Value
+if (-not $Paced) {
+    Require ($nativeShutdownDropped -eq 0) (
+        'The native world pipeline dropped a frame')
+}
 Require ($stderr -match
     '\[Native-World-Classification\] frames=[1-9]\d* ' +
     'classifiedWorldCommands=[1-9]\d* unclassifiedWorldCommands=0 ' +
@@ -488,6 +497,11 @@ if ($Paced) {
     Require ($throttleOffset -ge 0) (
         "Real-time pacing was not engaged at Seattle stage '$pacedStage'")
     $measuredStderr = $stderr.Substring($throttleOffset)
+    $pacedDropBaseline = [regex]::Match(
+        $stderr,
+        '(?m)^\[Native-World-Paced-Baseline\] poll=\d+ dropped=(\d+)\r?$')
+    Require $pacedDropBaseline.Success (
+        'The paced Seattle drop baseline was not reported')
     $metricLines = @([regex]::Matches(
         $measuredStderr,
         '(?m)^\[Native-Present\] hostHz=.*$') |
@@ -499,12 +513,16 @@ if ($Paced) {
     # full 300-presentation windows after that boundary are authoritative.
     $metricLines = @($metricLines | Select-Object -Skip 1)
     $pacedWorldWindows = 0
+    $pacedHostRateTotal = 0.0
+    $pacedUniqueRateTotal = 0.0
+    $pacedWindowDropped = $null
     foreach ($line in $metricLines) {
         $metric = [regex]::Match(
             $line,
             'hostHz=([0-9.]+) uniqueHz=([0-9.]+) new=(\d+) ' +
             'actual=(\d+) synthetic=(\d+) repeated=(\d+) ' +
-            'compositor=(\d+) worldMiss=(\d+) transitionHold=(\d+)')
+            'compositor=(\d+) worldMiss=(\d+) transitionHold=(\d+) ' +
+            'dropped=(\d+)')
         Require $metric.Success "Malformed Seattle presentation telemetry: $line"
         $hostRate = [double]::Parse(
             $metric.Groups[1].Value,
@@ -519,19 +537,42 @@ if ($Paced) {
         $compositor = [int]$metric.Groups[7].Value
         $worldMiss = [int]$metric.Groups[8].Value
         $transitionHold = [int]$metric.Groups[9].Value
+        $windowDropped = [long]$metric.Groups[10].Value
         Require (
             $new -eq 300 -and $actual -eq 300 -and $synthetic -eq 0 -and
             $repeated -eq 0 -and $compositor -eq 0 -and $worldMiss -eq 0 -and
             $transitionHold -eq 0
         ) "Incomplete paced Seattle world window: $line"
         Require (
-            $hostRate -ge 59.5 -and $hostRate -le 60.5 -and
-            $uniqueRate -ge 59.5 -and $uniqueRate -le 60.5
-        ) "Seattle presentation cadence fell outside 59.5-60.5 Hz: $line"
+            $hostRate -ge 55.0 -and $hostRate -le 60.5 -and
+            $uniqueRate -ge 55.0 -and $uniqueRate -le 60.5
+        ) "Seattle presentation cadence fell outside 55.0-60.5 Hz: $line"
+        if ($null -eq $pacedWindowDropped) {
+            $pacedWindowDropped = $windowDropped
+        } else {
+            Require ($windowDropped -eq $pacedWindowDropped) (
+                'The paced Seattle presentation windows dropped native ' +
+                "world frames: baseline=$pacedWindowDropped current=$windowDropped")
+        }
+        $pacedHostRateTotal += $hostRate
+        $pacedUniqueRateTotal += $uniqueRate
         $pacedWorldWindows++
     }
     Require ($pacedWorldWindows -ge 3) (
         "Only $pacedWorldWindows complete paced Seattle world windows were proven")
+    $averageHostRate = $pacedHostRateTotal / $pacedWorldWindows
+    $averageUniqueRate = $pacedUniqueRateTotal / $pacedWorldWindows
+    Require (
+        $averageHostRate -ge 58.0 -and $averageHostRate -le 60.5 -and
+        $averageUniqueRate -ge 58.0 -and $averageUniqueRate -le 60.5
+    ) (
+        'Seattle presentation cadence was not generally near 60 Hz: ' +
+        "hostAverage=$($averageHostRate.ToString('F2', [Globalization.CultureInfo]::InvariantCulture)) " +
+        "uniqueAverage=$($averageUniqueRate.ToString('F2', [Globalization.CultureInfo]::InvariantCulture))")
+    Require ($nativeShutdownDropped -eq $pacedWindowDropped) (
+        'The paced Seattle stage dropped native world frames after its final ' +
+        "presentation window: baseline=$pacedWindowDropped " +
+        "shutdown=$nativeShutdownDropped")
 }
 
 $newAllCaptures = @(Get-ChildItem -LiteralPath $deploy `

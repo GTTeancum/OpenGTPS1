@@ -18,12 +18,13 @@ constexpr std::size_t world_gpu_readback_pair_delay = 2;
 constexpr std::size_t world_gpu_async_readback_pair_capacity = 8;
 constexpr std::size_t world_gpu_async_readback_image_capacity =
     world_gpu_async_readback_pair_capacity * 2;
-// Live 60 Hz presentation keeps one completed copy in flight. On the next
-// authored image that copy has had a full NTSC interval to finish, avoiding
-// the synchronous GPU/CPU stall which cannot sustain Seattle's 60 Hz capture
-// workload. The larger ring remains available for diagnostics and reset
-// isolation; a future direct GPU presentation path can bypass readback.
-constexpr std::size_t world_gpu_realtime_readback_image_delay = 2;
+constexpr std::size_t world_gpu_direct_output_capacity = 5;
+// Live 60 Hz presentation retains four chronological copies. The oldest has
+// three submission gaps to retire before it can stop the producer; Seattle's
+// densest opening field demonstrated isolated 28--31 ms scheduler tails after
+// a three-image queue. The completed-output reserve independently protects CPU
+// preparation tails. A future direct GPU presentation path can bypass readback.
+constexpr std::size_t world_gpu_realtime_readback_image_delay = 4;
 static_assert(
     world_gpu_realtime_readback_image_delay >= 1 &&
     world_gpu_realtime_readback_image_delay <=
@@ -58,6 +59,11 @@ struct WorldGpuRenderOptions {
     // initializers retain their meaning.
     std::uint32_t target_aspect_width = 0;
     std::uint32_t target_aspect_height = 0;
+    // Same-device presentation bypasses staging readback. The selected slot
+    // is caller-lifetime-managed and cannot be reused while its texture is
+    // still pending presentation.
+    bool direct_gpu_output = false;
+    std::uint32_t direct_output_slot = 0;
 };
 
 inline std::uint32_t world_gpu_target_display_width(
@@ -93,6 +99,7 @@ struct WorldGpuRenderStats {
     std::uint32_t skipped_empty_scissor_commands;
     bool software_adapter;
     bool output_valid;
+    void* output_texture;
 };
 
 struct WorldTextureUpload {
@@ -170,6 +177,15 @@ std::size_t pending_world_d3d11_readback_pairs(
 // Begins a new temporal stream. All mutable resources from the prior stream are
 // detached so an unfinished GPU tail cannot be mistaken for new readback work.
 void reset_world_d3d11_readback(bool use_software_adapter) noexcept;
+
+// Complete direct-output command lists before their shared presentation
+// device and renderer worker are destroyed.
+void drain_world_d3d11_direct_output() noexcept;
+
+// Must be called from the renderer thread before its first render. Passing a
+// non-null D3D11 device switches that thread to deferred command recording on
+// the host's presentation device.
+bool set_world_d3d11_presentation_device(void* d3d11_device) noexcept;
 
 bool set_world_d3d11_texture_uploads(
     bool use_software_adapter,

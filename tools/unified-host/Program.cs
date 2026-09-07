@@ -209,7 +209,7 @@ try
     PreloadBundledNative("glfw3.dll");
     PreloadBundledNative("cimgui.dll");
     PreloadBundledNative("SDL2.dll");
-    if (directArcadeRace != null)
+    if (startArcade || directArcadeRace != null)
         PrepareDirectArcadeRenderer();
     var memory = new PSMemory();
     UnifiedEntry.Run(

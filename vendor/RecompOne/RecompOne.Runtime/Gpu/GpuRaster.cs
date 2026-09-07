@@ -36,6 +36,36 @@ public sealed partial class Gpu
         bool raw = (cmd & (1u << 24)) != 0;
         int n = quad ? 4 : 3;
 
+        // Resident track and authored-background replacement records the
+        // native geometry before GT2 emits its compatibility packet. Every
+        // vertex in one polygon belongs to the same guest draw object, so the
+        // first coordinate's exact origin is sufficient to identify that
+        // redundant packet. Preserve the packet's texture-page side effect,
+        // then avoid decoding the remaining vertices and invoking capture for
+        // triangles that cannot reach either shipping renderer.
+        if (fifoSources.Length > 1)
+        {
+            uint firstCoordinate = fifo[1];
+            if (Gte.TryGetPacketProjection(
+                    fifoSources[1],
+                    CoordX(firstCoordinate),
+                    CoordY(firstCoordinate),
+                    out _,
+                    out _,
+                    out _,
+                    out GteProjectionOrigin firstOrigin) &&
+                CanSkipRawReplacementPolygon(in firstOrigin))
+            {
+                if (tex)
+                {
+                    int secondUvIndex = gouraud ? 5 : 4;
+                    SetTexpageFromWord(
+                        (fifo[secondUvIndex] >> 16) & 0xFFFF);
+                }
+                return;
+            }
+        }
+
         Span<Vert> v = stackalloc Vert[4];
         Span<GteProjectionOrigin> origins =
             stackalloc GteProjectionOrigin[4];

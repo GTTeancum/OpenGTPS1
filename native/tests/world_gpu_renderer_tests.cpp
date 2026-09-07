@@ -1,4 +1,5 @@
 #include "opengt/world_gpu_renderer.hpp"
+#include "opengt/world_topology.hpp"
 
 #include <array>
 #include <cmath>
@@ -214,6 +215,87 @@ bool resident_billboard_uses_metric_depth(bool tree_first, bool tree_nearer,
             ? output[center] < 120 && output[center + 1] > 80
             : output[center] < 16 && output[center + 1] > 150)
         : output[center] > 150 && output[center + 1] < 16;
+}
+
+bool rounded_background_midpoint_fills_only_missing_coverage() {
+    using namespace opengt::render;
+    // Measured Smokey Mountain sky coordinates; M.y rounds 774.5 to 774.
+    // Exercise several subpixel camera offsets without relying on a capture
+    // file, texture, specific course address, or screen-space repair rule.
+    constexpr short points[5][3]{{-593,941,4031},{-1799,608,3661},
+        {-589,1286,4004},{-1196,774,3846},{-1214,-70,3907}};
+    for (int gradient=0;gradient<3;++gradient)
+    for (float offset : {0.0F, 0.3F, 0.7F}) {
+        WorldDrawList original{};
+        original.display_width=1280; original.display_height=720;
+        original.materials.resize(1);
+        std::array<WorldDrawVertex,5> vertices{};
+        for (unsigned i=0;i<vertices.size();++i) {
+            auto& v=vertices[i];
+            v=vertex((points[i][0]+1200.0F)/800.0F,
+                (points[i][1]-600.0F)/800.0F + offset/360.0F,
+                points[i][0],points[i][1],points[i][2]);
+            v.r=154; v.g=180; v.b=195;
+            v.source_vertex_identity=i+1;
+            v.provenance_flags=world_vertex_source_identity_flag;
+            v.exact_transform_valid=true; v.transform_id=42;
+            v.transform_rotation[0]=v.transform_rotation[4]=v.transform_rotation[8]=4096;
+        }
+        if (gradient) vertices[2].r=180;
+        if (gradient==2) {
+            vertices[0].r=175; vertices[0].g=185; vertices[0].b=214;
+            vertices[3].r=165; vertices[3].g=183; vertices[3].b=205;
+        }
+        constexpr unsigned indices[3][3]{{0,1,2},{3,0,4},{1,3,4}};
+        for (unsigned i=0;i<3;++i) {
+            WorldDrawCommand command{};
+            for(unsigned j=0;j<3;++j) command.vertices[j]=vertices[indices[i][j]];
+            command.object_kind=3; command.object_id=7;
+            command.model_pointer=0x80001000U; command.source_command_index=i;
+            command.clip_x1=1279; command.clip_y1=719;
+            original.commands.push_back(command);
+        }
+        original.background_commands=3;
+        auto repaired=original;
+        WorldTopologyStats topology{};
+        if (apply_world_topology(&repaired,{true,false,false},&topology)!=
+                WorldTopologyResult::success || topology.background_midpoint_junctions!=1)
+            return false;
+        auto repeated=repaired;
+        WorldTopologyStats again{};
+        if (apply_world_topology(&repeated,{true,false,false},&again)!=
+                WorldTopologyResult::success || again.background_midpoint_junctions!=0 ||
+                repeated.commands.size()!=repaired.commands.size()) return false;
+        std::vector<std::uint16_t> vram(1024U*512U);
+        std::array<std::vector<std::uint8_t>,2> images;
+        for (unsigned i=0;i<2;++i) {
+            images[i].resize(1280U*720U*4U);
+            WorldGpuRenderStats stats{};
+            reset_world_d3d11_readback(false);
+            if (render_world_d3d11(i==0?original:repaired,vram.data(),vram.size(),
+                    images[i].data(),images[i].size(),
+                    WorldGpuRenderOptions{false,true,false,true,false,false,1,clear_rgba},
+                    &stats)!=WorldGpuRenderResult::success || !stats.output_valid)
+                return false;
+        }
+        unsigned filled=0;
+        for (std::size_t p=0;p<images[0].size();p+=4) {
+            bool same=true;
+            for (unsigned c=0;c<4;++c) same &= images[0][p+c]==images[1][p+c];
+            if (same) continue;
+            if (images[0][p]!=255 || images[0][p+1]!=0 || images[0][p+2]!=0)
+                return false;
+            if (gradient==2) {
+                if (images[1][p]<154 || images[1][p]>175 ||
+                    images[1][p+1]<180 || images[1][p+1]>185 ||
+                    images[1][p+2]<195 || images[1][p+2]>214) return false;
+            } else if (images[1][p]!=154 || images[1][p+1]!=180 || images[1][p+2]!=195)
+                return false;
+            ++filled;
+        }
+        if (filled==0) return false; // negative control must expose the crack
+    }
+    return true;
 }
 
 bool fully_behind_world_triangle_is_rejected_before_submit() {
@@ -1780,6 +1862,58 @@ std::array<std::uint8_t, 4> render_vehicle_reflection_center(
     };
 }
 
+bool near_crossing_surface_color_stays_within_authored_range(bool constant_color) {
+    using namespace opengt::render;
+    // Measured Pikes Peak road quad. Two vertices lie behind the camera.
+    // Screen-linear color interpolation can extrapolate through clipped W=0
+    // and produce black, although every authored channel is at least 35.
+    for (int offset : {-80, 0, 80}) {
+        WorldDrawList list{};
+        list.display_width = list.display_height = 64;
+        WorldMaterial material{};
+        material.primitive_flags = 1U;
+        material.texture_page = 2U << 7U;
+        list.materials.push_back(material);
+        const std::array<std::array<int, 6>, 4> points{{
+            {{688,211,-2463,91,79,62}}, {{544,191,4084,52,45,35}},
+            {{-710,262,3832,45,45,45}}, {{-587,243,-2504,66,66,66}}}};
+        for (const auto indices : {std::array<int,3>{0,1,3}, std::array<int,3>{1,3,2}}) {
+            WorldDrawCommand command{};
+            command.object_kind = 1;
+            command.object_id = 1;
+            command.clip_x1 = command.clip_y1 = 63;
+            for (int corner = 0; corner < 3; ++corner) {
+                const auto& p = points[indices[corner]];
+                auto& v = command.vertices[corner];
+                v = vertex(p[0]*1.35F, -p[1]*1.8F, 0, 0, 0);
+                v.clip_z = 16.0F;
+                v.clip_w = static_cast<float>(p[2]+offset);
+                v.r = constant_color ? 64 : static_cast<std::uint8_t>(p[3]);
+                v.g = constant_color ? 64 : static_cast<std::uint8_t>(p[4]);
+                v.b = constant_color ? 64 : static_cast<std::uint8_t>(p[5]);
+            }
+            list.commands.push_back(command);
+        }
+        list.track_commands = 2;
+        std::vector<std::uint16_t> vram(1024U*512U, 0x7FFFU);
+        std::vector<std::uint8_t> output(64U*64U*4U);
+        WorldGpuRenderStats stats{};
+        reset_world_d3d11_readback(false);
+        if (render_world_d3d11(list, vram.data(), vram.size(), output.data(), output.size(),
+                WorldGpuRenderOptions{false,true,false,false,false,false,1,clear_rgba}, &stats)
+                != WorldGpuRenderResult::success || !stats.output_valid)
+            return false;
+        for (int y = 40; y < 60; ++y)
+            for (int x = 20; x < 44; ++x)
+                for (int channel = 0; channel < 3; ++channel) {
+                    const auto value = output[(y*64+x)*4+channel];
+                    if (constant_color ? value < 126 || value > 130 : value < 68 || value > 184)
+                        return false;
+                }
+    }
+    return true;
+}
+
 bool broad_vehicle_reflection_keeps_authored_strength() {
     const auto pixel = render_vehicle_reflection_center(8U);
     const auto ordinary_additive = render_vehicle_reflection_center(1U);
@@ -2261,6 +2395,9 @@ std::array<int, 2> mirror_shell_coverage(
 } // namespace
 
 int main() {
+    if (!expect(rounded_background_midpoint_fills_only_missing_coverage(),
+            "fill rounded source sky midpoint cracks without changing existing pixels"))
+        return 1;
     using opengt::render::WorldTextureUpload;
     using opengt::render::world_texture_upload_contains_clut;
     bool okay = true;
@@ -2509,6 +2646,10 @@ int main() {
         !shallow_legacy_request.empty() &&
             shallow_legacy_request == shallow_modern_request,
         "ignore legacy affine requests for shallow 3D UV islands");
+    okay &= expect(near_crossing_surface_color_stays_within_authored_range(false),
+        "retain authored color bounds on a road quad crossing the camera plane");
+    okay &= expect(near_crossing_surface_color_stays_within_authored_range(true),
+        "preserve constant authored lighting through near clipping");
     if (!okay)
         return 1;
     std::puts("world GPU renderer tests passed");

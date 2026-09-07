@@ -547,6 +547,23 @@ def apply_renderer_enhancements() -> None:
     )
     replace_once(
         OVERLAY0,
+        """        c.V0 = c.S3 & c.S2;
+        c.V0 = c.S6 + c.V0;
+        c.V1 = (uint)((int)c.V0 >> 10);
+        RecompOne.Runtime.Gte.Write(9, c.A1);
+        RecompOne.Runtime.Gte.Write(10, c.V1);
+        RecompOne.Runtime.Gte.Write(11, c.A2);
+        RecompOne.Runtime.Gte.Execute(0x4A49E012u);
+""",
+        """        c.V0 = c.S3 & c.S2;
+        c.V0 = c.S6 + c.V0;
+        c.V1 = (uint)((int)c.V0 >> 10);
+        RecompOne.Runtime.Gte.ExecuteTrackTranslation(c.A1, c.V1, c.A2);
+""",
+        "Arcade wide course translation input",
+    )
+    replace_once(
+        OVERLAY0,
         """        c.RA = 0x800202ACu;
         GranTurismo2ArcadePC.func_80020E50(c, m);
         c.V1 = c.V0 + 0u;
@@ -554,7 +571,7 @@ def apply_renderer_enhancements() -> None:
         """        c.RA = 0x800202ACu;
         GranTurismo2ArcadePC.func_80020E50(c, m);
         c.V0 = RecompOne.Runtime.Sdk.GT2Compat.ExpandTrackFrustumClassification(
-            c.V0);
+            c.V0, c.V1, m.ReadU32(c.S1 + 0x4u));
         c.V1 = c.V0 + 0u;
 """,
         "Arcade modern horizontal track frustum",
@@ -580,6 +597,7 @@ def apply_renderer_enhancements() -> None:
 """,
         """        c.S0 = m.ReadU32((c.S6 + 0x4u));
         RecompOne.Runtime.WorldCaptureContext.BeginTrackObject(c.S6, c.S0);
+        RecompOne.Runtime.Sdk.GT2Compat.TraceTrackTransformSetup(m, c.S0, 0x1F800000u);
         c.S1 = m.ReadU16((c.S6 + 0xCu));
 """,
         "Arcade track world-capture object begin",
@@ -1113,6 +1131,21 @@ def main() -> int:
         c.V1 = c.V0;
 """,
         "Arcade stable Timer 1 sample for opening-movie startup",
+    )
+    replace_in_function_once(
+        MAIN,
+        "func_80080BA4",
+        """    {
+        return;
+""",
+        """    {
+        // This leaf is the false half of the adjacent false/true callback pair.
+        // Its retail MIPS body leaves v0 undefined; static indirect dispatch has
+        // just loaded this function's address into v0, so normalize false here.
+        c.V0 = 0u;
+        return;
+""",
+        "Arcade deterministic false callback return",
     )
 
     replace_once(
