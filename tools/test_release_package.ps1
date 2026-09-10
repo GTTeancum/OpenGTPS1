@@ -5,6 +5,7 @@ param(
     [string]$SimulationImagePath,
     [Parameter(Mandatory = $true)]
     [string]$ArcadeImagePath,
+    [string]$Gt1ImagePath = '',
     [string]$ArtifactName = 'release-package-validation',
     [ValidateRange(600, 50000)]
     [int]$ExitPoll = 17000,
@@ -17,6 +18,11 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $archivePath = (Resolve-Path -LiteralPath $Archive).Path
 $simulationImage = (Resolve-Path -LiteralPath $SimulationImagePath).Path
 $arcadeImage = (Resolve-Path -LiteralPath $ArcadeImagePath).Path
+$gt1Image = if ([string]::IsNullOrWhiteSpace($Gt1ImagePath)) {
+    $null
+} else {
+    (Resolve-Path -LiteralPath $Gt1ImagePath).Path
+}
 $artifact = Join-Path $repo "artifacts\$ArtifactName"
 $scratchRoot = Join-Path $repo 'work\release-audit-scratch'
 $scratchRootFull = [IO.Path]::GetFullPath($scratchRoot).TrimEnd('\')
@@ -76,24 +82,50 @@ try {
     }
 
     $readme = Join-Path $install 'README.md'
-    $setup = Join-Path $install 'Setup-From-GT2-Discs.ps1'
+    $setup = Join-Path $install 'OpenGTPS1-Setup.exe'
     if (-not (Test-Path -LiteralPath $readme) -or
         -not (Test-Path -LiteralPath $setup)) {
-        throw 'Release archive is missing its README or unified GT2 setup utility'
+        throw 'Release archive is missing its README or GUI setup executable'
     }
     $readmeText = Get-Content -LiteralPath $readme -Raw
     if ($readmeText -notmatch '0\.9b' -or
-        $readmeText -notmatch 'Authoritative NTSC-U two-disc build' -or
+        $readmeText -notmatch 'byte-exact US Gran Turismo 2 two-disc set' -or
         $readmeText -notmatch 'SCUS-94488' -or
-        $readmeText -notmatch 'SCUS-94455') {
+        $readmeText -notmatch 'SCUS-94455' -or
+        $readmeText -notmatch 'SCUS-94194' -or
+        $readmeText -notmatch 'graphical first-run installer') {
         throw 'Release README does not clearly identify version and supported discs'
     }
 
-    $setupOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-        -File $setup `
-        -SimulationImagePath $simulationImage `
-        -ArcadeImagePath $arcadeImage 2>&1
-    $setupExit = $LASTEXITCODE
+    $setupStart = [Diagnostics.ProcessStartInfo]::new()
+    $setupStart.FileName = $setup
+    $setupStart.WorkingDirectory = $install
+    $setupStart.UseShellExecute = $false
+    $setupStart.CreateNoWindow = $true
+    foreach ($argument in @(
+            '--headless',
+            '--simulation', $simulationImage,
+            '--arcade', $arcadeImage,
+            '--install-root', $install)) {
+        $setupStart.ArgumentList.Add($argument)
+    }
+    if ($null -ne $gt1Image) {
+        $setupStart.ArgumentList.Add('--gt1')
+        $setupStart.ArgumentList.Add($gt1Image)
+    }
+    $setupProcess = [Diagnostics.Process]::Start($setupStart)
+    if (-not $setupProcess.WaitForExit($TimeoutSeconds * 1000)) {
+        $setupProcess.Kill($true)
+        $setupProcess.WaitForExit()
+        throw "GUI setup headless validation exceeded ${TimeoutSeconds}s"
+    }
+    $setupExit = $setupProcess.ExitCode
+    $setupLog = Join-Path $install 'OpenGTPS1-Setup.log'
+    $setupOutput = if (Test-Path -LiteralPath $setupLog) {
+        Get-Content -LiteralPath $setupLog
+    } else {
+        @()
+    }
     [IO.File]::WriteAllLines(
         (Join-Path $artifact 'setup.log'),
         [string[]]$setupOutput)
@@ -101,7 +133,22 @@ try {
         throw "Unified GT2 setup exited with code $setupExit"
     }
     if (($setupOutput -join "`n") -notmatch 'Installation complete') {
-        throw 'Unified GT2 setup did not report completion'
+        throw 'Self-contained setup did not report completion'
+    }
+    if ($null -ne $gt1Image) {
+        if (($setupOutput -join "`n") -notmatch
+                'Gran Turismo 1 merge complete' -or
+            -not (Test-Path -LiteralPath (
+                Join-Path $install 'GT1_CONTENT.json') -PathType Leaf) -or
+            -not (Test-Path -LiteralPath (
+                Join-Path $install 'GTLIVERY.BIN') -PathType Leaf)) {
+            throw 'Optional Gran Turismo 1 content was not merged completely'
+        }
+    } elseif ((Test-Path -LiteralPath (
+            Join-Path $install 'GT1_CONTENT.json')) -or
+        (Test-Path -LiteralPath (
+            Join-Path $install 'GTLIVERY.BIN'))) {
+        throw 'GT2-only setup retained optional Gran Turismo 1 content'
     }
 
     $arcadeManifest = Get-Content -LiteralPath (
@@ -326,7 +373,9 @@ try {
     Write-Output "archive_sha256=$archiveHash"
     Write-Output (
         'discs=SCUS-94488-NTSC-U-revision-2+' +
-        'SCUS-94455-NTSC-U audio=dummy direct=seattle-replay')
+        'SCUS-94455-NTSC-U' +
+        $(if ($null -ne $gt1Image) { '+SCUS-94194-NTSC-U' } else { '' }) +
+        ' audio=dummy direct=seattle-replay')
     Write-Output "evidence=$artifact"
 }
 finally {

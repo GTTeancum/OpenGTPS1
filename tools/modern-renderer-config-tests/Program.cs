@@ -631,6 +631,7 @@ string releasePolicy = ReadRepoFile(
 string nativeProject = ReadRepoFile(@"native\CMakeLists.txt");
 string releasePackager = ReadRepoFile(@"tools\package_release.ps1");
 string releaseSetup = ReadRepoFile(@"release\Setup-From-GT2-Discs.ps1");
+string releaseInstaller = ReadRepoFile(@"tools\release_setup.py");
 string releaseReadme = ReadRepoFile(@"release\README.md");
 string releasePackageTest = ReadRepoFile(@"tools\test_release_package.ps1");
 string seattleReleaseSmoke = ReadRepoFile(
@@ -742,6 +743,12 @@ Require(
         @"tools\unified-host\GranTurismo2PC.csproj",
         StringComparison.Ordinal) &&
     releasePackager.Contains(
+        "OpenGTPS1-Setup.exe",
+        StringComparison.Ordinal) &&
+    releasePackager.Contains(
+        "--windowed",
+        StringComparison.Ordinal) &&
+    releasePackager.Contains(
         "Setup-From-GT2-Discs.ps1",
         StringComparison.Ordinal) &&
     releasePackager.Contains(
@@ -774,6 +781,35 @@ Require(
         "--headless --arcade-replay seattle-circuit",
         StringComparison.Ordinal),
     "release packaging no longer proves the authoritative unified Seattle path");
+Require(
+    unifiedHostProgram.Contains(
+        "OpenGTPS1-Setup.exe",
+        StringComparison.Ordinal) &&
+    unifiedHostProgram.Contains(
+        "Arguments = \"--return-to-game\"",
+        StringComparison.Ordinal) &&
+    releaseInstaller.Contains(
+        "OpenGTPS1 0.9b First-Run Setup",
+        StringComparison.Ordinal) &&
+    releaseInstaller.Contains(
+        "Merge supported Gran Turismo 1 cars",
+        StringComparison.Ordinal) &&
+    releaseInstaller.Contains(
+        "if not args.return_to_game:",
+        StringComparison.Ordinal) &&
+    releaseInstaller.Contains(
+        "GTPATCH.GT1CARS.SIMULATION.VOL",
+        StringComparison.Ordinal) &&
+    releaseInstaller.Contains(
+        "GTPATCH.LIVERY.ARCADE.VOL",
+        StringComparison.Ordinal) &&
+    releaseInstaller.Contains(
+        "765A748C4F2975A063A47BA9E42708A4882954D765F9E352C5AF3C0950EAEFB6",
+        StringComparison.Ordinal) &&
+    releasePackageTest.Contains(
+        "GT1_CONTENT.json",
+        StringComparison.Ordinal),
+    "release first-run GUI or optional GT1 merge is missing");
 Require(
     releaseSetup.Contains(
         "BEF591A382F4DCEC1990F5DB01B43CD42ED9CBDFE504BCB47E3FDB4013495A0E",

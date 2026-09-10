@@ -105,16 +105,19 @@ and original-Xbox direction.
 
 ## Unified installation and GT1 conversion status
 
-The 0.9b release includes a self-contained two-disc preparation tool. It
-validates the exact supported GT2 Simulation and Arcade raw IMG files,
-extracts only the required native data, and creates the unified loose
-installation. It never copies or retains either source image.
+The 0.9b release includes a self-contained graphical first-run installer.
+Launching `GranTurismo2PC.exe` without prepared data opens it automatically.
+It searches nearby folders and removable drives for the exact supported disc
+images, provides ordinary Browse buttons when they are elsewhere, validates
+the complete images, and builds the unified installation locally. No command
+line, PowerShell window, Python installation, or PlayStation BIOS is needed.
 
-The repository also contains substantial Gran Turismo 1 conversion and
-validation work, including Special Stage Route 11, native car/body conversion,
-and paint/livery folding. That development pipeline requires the user's own
-matching GT1 disc and remains source-side work; the public 0.9b installer does
-not distribute or generate proprietary GT1 content.
+**Gran Turismo 1 merging is an optional installer feature.** Select your own
+supported US Gran Turismo image (`SCUS-94194`) to add Special Stage Route 11,
+the completed native GT1 car imports, GT1-only paints and liveries, and the
+converted Racing Modification body/paint families to both applicable GT2
+modes. Conversion happens locally from the user's image; the source image is
+never copied, modified, or retained, and the release contains no GT1 data.
 
 The development conversion pipeline now validates the US Gran Turismo image
 and imports Special Stage Route 11, all three GT1-exclusive EUNOS ROADSTER
@@ -163,9 +166,9 @@ and livery families are the next content milestone.
 The prebuilt release requires:
 
 - Windows 10 or 11, x64
-- PowerShell
 - Your own supported US Gran Turismo 2 **Simulation Disc**, revision 2
 - Your own supported US Gran Turismo 2 **Arcade Disc**
+- Optionally, your own US **Gran Turismo** disc to merge supported GT1 content
 
 Other regions and revisions are not supported. The required raw Mode 2/2352
 images are:
@@ -178,6 +181,11 @@ SHA-256: D0AB6E70539601057590A36299543C0ADAD219254D712F7D4273219094ED5031
 Serial:  SCUS-94455
 Size:    729,423,408 bytes
 SHA-256: C2E97D6B0C847CA4336D9D84D8D98C349D1240ED075E81AB3FD5C977E9A45075
+
+Optional Gran Turismo content source
+Serial:  SCUS-94194
+Size:    693,668,304 bytes
+SHA-256: 765A748C4F2975A063A47BA9E42708A4882954D765F9E352C5AF3C0950EAEFB6
 ```
 
 The release contains no game data. To install:
@@ -185,23 +193,19 @@ The release contains no game data. To install:
 1. Download `OpenGTPS1-0.9b-win-x64.zip` from the GitHub release.
 2. Extract the entire `OpenGTPS1-0.9b-win-x64` folder to a writable
    location. Do not run it from inside the ZIP.
-3. Rip both matching discs as raw Mode 2/2352 `.img` files.
-4. Open PowerShell in the extracted folder and run:
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File `
-    .\Setup-From-GT2-Discs.ps1 `
-    -SimulationImagePath "D:\Rips\GT2 Simulation.img" `
-    -ArcadeImagePath "D:\Rips\GT2 Arcade.img"
-   ```
-
-5. When setup reports `Installation complete`, run `GranTurismo2PC.exe`.
+3. Rip both matching GT2 discs as raw Mode 2/2352 `.img` files. Rip the
+   optional matching GT1 disc too if you want its converted content merged.
+4. Run `GranTurismo2PC.exe`. The first-run setup window searches for the
+   images and lets you Browse to any it does not find.
+5. Choose whether to merge GT1 content, select **Install and play**, and wait
+   for the completion message. Later launches go straight to the game.
 
 Setup validates both complete disc hashes before writing anything, extracts
-only the required loose runtime files beside the executable, and does not copy
-or retain either IMG. The game creates blank `carda.sav` and `cardb.sav`
-memory cards on first launch. The executable is self-contained; users do not
-need Python, the .NET runtime/SDK, CMake, Visual Studio, or a PlayStation BIOS.
+only the required runtime files beside the executable, and does not copy or
+retain any source IMG. When selected, GT1 conversion and merging are performed
+by the same setup window. The game creates blank `carda.sav` and `cardb.sav`
+memory cards on first launch. The package is self-contained; users do not need
+Python, the .NET runtime/SDK, CMake, Visual Studio, or a PlayStation BIOS.
 
 Keep the installation in a writable folder because saves, settings, and the
 latest diagnostic log are stored beside the executable. Windows SmartScreen

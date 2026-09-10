@@ -16,6 +16,8 @@ $nativeBuild = Join-Path $scratchRootFull (
     'OpenGTPS1-release-native-' + [guid]::NewGuid().ToString('N'))
 $managedBuild = Join-Path $scratchRootFull (
     'OpenGTPS1-release-managed-' + [guid]::NewGuid().ToString('N'))
+$setupBuild = Join-Path $scratchRootFull (
+    'OpenGTPS1-release-setup-' + [guid]::NewGuid().ToString('N'))
 
 if (Test-Path -LiteralPath $artifact) {
     throw "Refusing to overwrite an existing release artifact: $artifact"
@@ -112,6 +114,35 @@ try {
         throw "Release publish failed: $LASTEXITCODE"
     }
 
+    $setupDist = Join-Path $setupBuild 'dist'
+    $setupWork = Join-Path $setupBuild 'work'
+    $setupSpec = Join-Path $setupBuild 'spec'
+    New-Item -ItemType Directory -Path $setupDist,$setupWork,$setupSpec `
+        -Force | Out-Null
+    python -m PyInstaller `
+        --noconfirm `
+        --clean `
+        --onefile `
+        --windowed `
+        --noupx `
+        --name OpenGTPS1-Setup `
+        --distpath $setupDist `
+        --workpath $setupWork `
+        --specpath $setupSpec `
+        --paths (Join-Path $repo 'tools') `
+        --add-data (
+            (Join-Path $repo 'release\Setup-From-GT2-Discs.ps1') + ';.') `
+        (Join-Path $repo 'tools\release_setup.py')
+    if ($LASTEXITCODE -ne 0) {
+        throw "Self-contained GUI setup build failed: $LASTEXITCODE"
+    }
+    $setupExe = Join-Path $setupDist 'OpenGTPS1-Setup.exe'
+    if (-not (Test-Path -LiteralPath $setupExe -PathType Leaf)) {
+        throw "Self-contained GUI setup output is missing: $setupExe"
+    }
+    Copy-Item -LiteralPath $setupExe -Destination (
+        Join-Path $stage 'OpenGTPS1-Setup.exe')
+
     Copy-Item -LiteralPath (Join-Path $repo 'interface.ini') `
         -Destination (Join-Path $stage 'interface.ini')
     $manifestStage = Join-Path $stage 'manifests'
@@ -122,9 +153,6 @@ try {
         -Destination (Join-Path $manifestStage 'arcade.json')
     Copy-Item -LiteralPath (Join-Path $repo 'release\README.md') `
         -Destination (Join-Path $stage 'README.md')
-    Copy-Item -LiteralPath (
-        Join-Path $repo 'release\Setup-From-GT2-Discs.ps1') `
-        -Destination (Join-Path $stage 'Setup-From-GT2-Discs.ps1')
     Copy-Item -LiteralPath (Join-Path $repo 'release\RELEASE_NOTES.md') `
         -Destination (Join-Path $stage 'RELEASE_NOTES.md')
     Copy-Item -LiteralPath (Join-Path $repo 'vendor\RecompOne\LICENSE') `
@@ -137,7 +165,7 @@ try {
         'manifests\arcade.json',
         'README.md',
         'RELEASE_NOTES.md',
-        'Setup-From-GT2-Discs.ps1',
+        'OpenGTPS1-Setup.exe',
         'RECOMPONE-LICENSE.txt'
     )
     foreach ($name in $required) {
@@ -224,8 +252,23 @@ finally {
                 if ($_.IsReadOnly) {
                     $_.IsReadOnly = $false
                 }
-            }
+        }
         [IO.Directory]::Delete($managedBuildFull, $true)
+    }
+    $setupBuildFull = [IO.Path]::GetFullPath($setupBuild).TrimEnd('\')
+    $expectedSetupPrefix = $scratchRootFull + '\OpenGTPS1-release-setup-'
+    if ($setupBuildFull.StartsWith(
+            $expectedSetupPrefix,
+            [StringComparison]::OrdinalIgnoreCase) -and
+        (Test-Path -LiteralPath $setupBuildFull)) {
+        Get-ChildItem -LiteralPath $setupBuildFull -File -Recurse -Force `
+            -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                if ($_.IsReadOnly) {
+                    $_.IsReadOnly = $false
+                }
+            }
+        [IO.Directory]::Delete($setupBuildFull, $true)
     }
     if ((Test-Path -LiteralPath $scratchRootFull) -and
         @(Get-ChildItem -LiteralPath $scratchRootFull -Force).Count -eq 0) {

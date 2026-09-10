@@ -10,6 +10,23 @@ static-recompilation port.
 > **[New issue](https://github.com/GTTeancum/OpenGTPS1/issues/new)** and attach
 > `logs\OpenGTPS1-latest.log` with your hardware and reproduction steps.
 
+## Same-version installer hotfix
+
+The 0.9b archive was replaced without a version increment to correct an
+undocumented packaging omission:
+
+- Running `GranTurismo2PC.exe` on a fresh extraction now opens a graphical
+  first-run installer automatically.
+- Setup searches nearby folders and removable drives, supplies normal Browse
+  buttons, validates the supported images, shows progress, and continues into
+  the game without requiring a PowerShell command.
+- The GUI also accepts the optional US Gran Turismo disc (`SCUS-94194`) and
+  locally merges the completed GT1 content conversion into the installation.
+  This includes Special Stage Route 11, native car imports, GT1-only
+  paints/liveries, and supported Racing Modification body/paint families.
+- The setup executable contains its conversion runtime and dependencies. It
+  never modifies, copies, or retains the source disc images.
+
 ## Where the game is now
 
 - One executable boots the original GT2 opening and presents a unified title
@@ -51,10 +68,11 @@ static-recompilation port.
   replacement.
 - Fixed unified-title save loading and full-save transfer into Arcade Home
   Garage.
-- Added extensive source-side GT1 conversion infrastructure and validation for
+- Added GT1 conversion and validation for
   Special Stage Route 11, native cars, Racing Modification bodies, wheels,
-  paints, and alternate-body liveries. The public installer does not distribute
-  or generate proprietary GT1 content.
+  paints, and alternate-body liveries. The optional GUI setup path now creates
+  and merges this content locally from the user's validated US GT1 image; the
+  release does not distribute proprietary GT1 content.
 - Added bounded release-policy, renderer, race, replay, save, audio, and package
   verification tools.
 
@@ -73,7 +91,8 @@ The live list is the
 
 ## What needs testing
 
-- Fresh installation from both exact supported raw disc images.
+- Fresh GUI installation from both exact supported GT2 images, with and
+  without the optional supported GT1 image.
 - First title-menu input and long controller/keyboard sessions.
 - New and existing save creation, loading, updating, backup/restore, and Arcade
   Home Garage behavior.
@@ -91,7 +110,7 @@ reports are the best way to preserve useful next steps.
 
 ## Supported discs and installation
 
-Only this byte-exact NTSC-U pair is supported:
+The two GT2 images are required. The GT1 image is optional:
 
 ```text
 Simulation Disc
@@ -104,13 +123,18 @@ Arcade Disc
   Serial:  SCUS-94455
   IMG size: 729,423,408 bytes
   IMG SHA-256: C2E97D6B0C847CA4336D9D84D8D98C349D1240ED075E81AB3FD5C977E9A45075
+
+Optional Gran Turismo content source
+  Serial:  SCUS-94194
+  IMG size: 693,668,304 bytes
+  IMG SHA-256: 765A748C4F2975A063A47BA9E42708A4882954D765F9E352C5AF3C0950EAEFB6
 ```
 
-Extract `OpenGTPS1-0.9b-win-x64.zip`, run
-`Setup-From-GT2-Discs.ps1` with both IMG paths, wait for
-`Installation complete`, and launch `GranTurismo2PC.exe`. Complete instructions
-are in the packaged `README.md`.
+Extract `OpenGTPS1-0.9b-win-x64.zip` and run `GranTurismo2PC.exe`. Its
+graphical first-run setup finds or asks for both GT2 images and offers the GT1
+merge as an optional checkbox. Complete instructions are in the packaged
+`README.md`.
 
 The release contains no Gran Turismo game data, Sony BIOS, save files, or
-music. Both source images are validated, read without modification, and are
-not copied into or retained by the installed game.
+music. Every selected source image is validated, read without modification,
+and is not copied into or retained by the installed game.

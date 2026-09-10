@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$SimulationImagePath,
     [Parameter(Mandatory = $true)]
-    [string]$ArcadeImagePath
+    [string]$ArcadeImagePath,
+    [string]$InstallRoot = $PSScriptRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,7 +13,28 @@ $expectedSimulationHash =
 $expectedArcadeBytes = 729423408L
 $expectedArcadeHash =
     'C2E97D6B0C847CA4336D9D84D8D98C349D1240ED075E81AB3FD5C977E9A45075'
-$install = $PSScriptRoot
+$install = [IO.Path]::GetFullPath($InstallRoot)
+
+function Get-Sha256 {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '')
+        }
+        finally {
+            $sha.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
 
 function Resolve-AuthoritativeImage {
     param(
@@ -40,7 +62,7 @@ function Resolve-AuthoritativeImage {
     }
 
     Write-Host "Validating the complete $Label disc image..."
-    $actualHash = (Get-FileHash -LiteralPath $resolved -Algorithm SHA256).Hash
+    $actualHash = Get-Sha256 -Path $resolved
     if ($actualHash -ne $ExpectedHash) {
         throw (
             "$Label disc image SHA-256 mismatch. Expected $ExpectedHash; " +
@@ -768,6 +790,15 @@ New-Item -ItemType Directory -Path (Join-Path $install 'music') -Force |
     Out-Null
 New-Item -ItemType Directory -Path (Join-Path $install 'mods') -Force |
     Out-Null
+
+# A two-disc reinstall must not retain an alternate-body resolver from an
+# earlier optional GT1 merge.
+foreach ($optionalGt1File in @('GTLIVERY.BIN', 'GT1_CONTENT.json')) {
+    $optionalGt1Path = Join-Path $install $optionalGt1File
+    if (Test-Path -LiteralPath $optionalGt1Path -PathType Leaf) {
+        Remove-Item -LiteralPath $optionalGt1Path -Force
+    }
+}
 
 Write-Output ''
 Write-Output 'Installation complete.'

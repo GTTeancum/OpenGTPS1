@@ -12,7 +12,7 @@ issues.
 > and save problems. Include your hardware, reproduction steps, and
 > `logs\OpenGTPS1-latest.log`.
 
-## Authoritative NTSC-U two-disc build
+## Supported NTSC-U discs
 
 This build supports one byte-exact US Gran Turismo 2 two-disc set:
 
@@ -34,6 +34,17 @@ Arcade Disc
 Both images are required. Other regions and revisions are not supported. Setup
 rejects any image that does not match the exact size and SHA-256 above.
 
+The matching US Gran Turismo disc is optional and enables the local GT1
+content merge:
+
+```text
+Gran Turismo
+  Serial:  SCUS-94194
+  Region:  NTSC-U
+  IMG size: 693,668,304 bytes
+  IMG SHA-256: 765A748C4F2975A063A47BA9E42708A4882954D765F9E352C5AF3C0950EAEFB6
+```
+
 This release contains no Gran Turismo 2 disc data, Sony BIOS, music, or save
 files. You must supply your own matching disc image.
 
@@ -41,24 +52,24 @@ files. You must supply your own matching disc image.
 
 1. Extract the entire `OpenGTPS1-0.9b-win-x64` folder to a writable
    location, such as `C:\Games\OpenGTPS1-0.9b-win-x64`.
-2. Rip both matching discs as raw Mode 2/2352 `.img` files.
-3. Open PowerShell in this folder.
-4. Run:
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File `
-     .\Setup-From-GT2-Discs.ps1 `
-     -SimulationImagePath "D:\Rips\GT2 Simulation.img" `
-     -ArcadeImagePath "D:\Rips\GT2 Arcade.img"
-   ```
-
-5. Wait for `Installation complete`.
-6. Start `GranTurismo2PC.exe`.
+2. Rip both matching GT2 discs as raw Mode 2/2352 `.img` files. Rip the
+   optional matching GT1 disc too if you want its supported content merged.
+3. Start `GranTurismo2PC.exe`.
+4. The graphical first-run installer searches nearby folders and removable
+   drives. Use its Browse buttons for any image it does not find.
+5. Choose whether to merge GT1 content, then select **Install and play**.
+   Later game launches reuse the prepared installation.
 
 The setup utility verifies both complete images, extracts each original native
 program and data set, and writes bounded Simulation and Arcade manifests over a
-single byte-exact two-member `GT2.VOL`. It does not copy or retain either disc
-image. After setup, the images are not required to play.
+single native two-member `GT2.VOL`. It does not copy or retain any disc image.
+After setup, the images are not required to play.
+
+When the optional GT1 image is selected, the same self-contained installer
+converts and merges Special Stage Route 11, the completed native car imports,
+GT1-only paints/liveries, and supported Racing Modification body/paint
+families. The conversion happens locally and the release contains no GT1
+game data.
 
 No Python, .NET SDK, mounted image, or original PlayStation BIOS is required.
 The Windows runtime is self-contained.
@@ -98,7 +109,8 @@ Track current reports through the
 
 ## What needs testing
 
-- Fresh two-disc setup and first launch.
+- Fresh graphical setup and first launch, both with and without the optional
+  GT1 content merge.
 - Controller and keyboard input, especially the first title-menu press.
 - Save creation, reload, updates, backup/restore, and Arcade Home Garage.
 - Full races and replays on every course: watch starting grids, reflections,
@@ -120,8 +132,8 @@ cardb.sav
 settings.json
 ```
 
-Extract the new release, run its setup utility against your matching IMG, then
-copy the backed-up files into the new folder.
+Extract the new release, run `GranTurismo2PC.exe` and complete its graphical
+setup, then copy the backed-up files into the new folder.
 
 ## Controls
 

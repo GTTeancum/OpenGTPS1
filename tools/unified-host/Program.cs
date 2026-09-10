@@ -154,12 +154,38 @@ RecompOne.Runtime.Runtime.SetMode(RecompOne.Runtime.RunMode.Devkit);
 string? looseRoot = positionalArgs.Length > 0
     ? Path.GetFullPath(positionalArgs[0], launchDirectory)
     : ResolveUnifiedGameRoot(AppContext.BaseDirectory, launchDirectory);
+if (looseRoot is null && positionalArgs.Length == 0 && !headless)
+{
+    string installer = Path.Combine(
+        AppContext.BaseDirectory,
+        "OpenGTPS1-Setup.exe");
+    if (File.Exists(installer))
+    {
+        Console.WriteLine("[Host] prepared game data is absent; starting first-run setup");
+        using var setup = System.Diagnostics.Process.Start(
+            new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = installer,
+                Arguments = "--return-to-game",
+                WorkingDirectory = AppContext.BaseDirectory,
+                UseShellExecute = true,
+            });
+        if (setup is not null)
+        {
+            setup.WaitForExit();
+            if (setup.ExitCode == 0)
+                looseRoot = ResolveUnifiedGameRoot(
+                    AppContext.BaseDirectory,
+                    launchDirectory);
+        }
+    }
+}
 if (looseRoot is null)
 {
     return StartupFailure(
-        "Gran Turismo 2 game data was not found. Run " +
-        "Setup-From-GT2-Discs.ps1 in a release package, or pass the " +
-        "prepared unified game-data directory on the command line.",
+        "Gran Turismo game data was not found or setup was canceled. Run " +
+        "OpenGTPS1-Setup.exe, or pass the prepared unified game-data " +
+        "directory on the command line.",
         headless);
 }
 if (!Directory.Exists(looseRoot))
