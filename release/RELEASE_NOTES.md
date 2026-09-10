@@ -10,23 +10,6 @@ static-recompilation port.
 > **[New issue](https://github.com/GTTeancum/OpenGTPS1/issues/new)** and attach
 > `logs\OpenGTPS1-latest.log` with your hardware and reproduction steps.
 
-## Same-version installer hotfix
-
-The 0.9b archive was replaced without a version increment to correct an
-undocumented packaging omission:
-
-- Running `GranTurismo2PC.exe` on a fresh extraction now opens a graphical
-  first-run installer automatically.
-- Setup searches nearby folders and removable drives, supplies normal Browse
-  buttons, validates the supported images, shows progress, and continues into
-  the game without requiring a PowerShell command.
-- The GUI also accepts the optional US Gran Turismo disc (`SCUS-94194`) and
-  locally merges the completed GT1 content conversion into the installation.
-  This includes Special Stage Route 11, native car imports, GT1-only
-  paints/liveries, and supported Racing Modification body/paint families.
-- The setup executable contains its conversion runtime and dependencies. It
-  never modifies, copies, or retains the source disc images.
-
 ## Where the game is now
 
 - One executable boots the original GT2 opening and presents a unified title
@@ -53,7 +36,10 @@ undocumented packaging omission:
 
 ## Major changes since 0.8beta
 
-- Added the unified native Arcade/Simulation host and exact two-disc setup.
+- Added the unified native Arcade/Simulation host and self-contained graphical
+  setup for the exact supported discs. It searches common locations, accepts
+  ordinary Browse selections, validates every source image, and installs
+  without command-line tools.
 - Restored the original Arcade-disc opening before the seamless unified title,
   while retaining native Start skipping and responsive first-menu input.
 - Added direct native Arcade race/replay paths and deterministic bounded test
