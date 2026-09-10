@@ -26,6 +26,12 @@ modern PCs and, in a future port, the original Xbox through
 > files, or other copyrighted game assets. You must supply your own matching
 > disc. Do not open an issue asking for game files.
 
+<p align="center">
+  <img src="docs/images/opengtps1-0.9b-main-menu.png" alt="OpenGTPS1 unified Gran Turismo 2 main menu" width="960">
+</p>
+
+<p align="center"><em>The unified main menu launches Arcade Mode, Gran Turismo Mode, Replay Theater, and options from one executable.</em></p>
+
 ## Project status
 
 OpenGTPS1 0.9b is playable on Windows x64, but it is not a finished 1.0
@@ -54,6 +60,14 @@ reports are especially valuable while work is paused.
 - True horizontal-plus widescreen and the fixed authored-world renderer are
   implemented, but visual defects and hardware-specific problems may remain.
 - Original Xbox support has not landed yet.
+
+## Screenshots
+
+| Gran Turismo Mode | Arcade Mode |
+| --- | --- |
+| ![Gran Turismo Mode home map](docs/images/opengtps1-0.9b-gran-turismo-mode.png) | ![Arcade Mode game selection](docs/images/opengtps1-0.9b-arcade-mode.png) |
+| Red Rock Valley starting grid | Red Rock Valley race |
+| ![Red Rock Valley starting grid](docs/images/opengtps1-0.9b-red-rock-grid.png) | ![Red Rock Valley race](docs/images/opengtps1-0.9b-red-rock-race.png) |
 
 ## Open issues and testing priorities
 
