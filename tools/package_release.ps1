@@ -154,7 +154,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $repo 'release\README.md') `
         -Destination (Join-Path $stage 'README.md')
     Copy-Item -LiteralPath (Join-Path $repo 'release\RELEASE_NOTES.md') `
-        -Destination (Join-Path $stage 'RELEASE_NOTES.md')
+        -Destination (Join-Path $stage 'RELEASE_NOTES.txt')
     Copy-Item -LiteralPath (Join-Path $repo 'vendor\RecompOne\LICENSE') `
         -Destination (Join-Path $stage 'RECOMPONE-LICENSE.txt')
 
@@ -164,7 +164,7 @@ try {
         'manifests\simulation.json',
         'manifests\arcade.json',
         'README.md',
-        'RELEASE_NOTES.md',
+        'RELEASE_NOTES.txt',
         'OpenGTPS1-Setup.exe',
         'RECOMPONE-LICENSE.txt'
     )

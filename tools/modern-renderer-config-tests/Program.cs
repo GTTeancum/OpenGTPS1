@@ -746,6 +746,12 @@ Require(
         "OpenGTPS1-Setup.exe",
         StringComparison.Ordinal) &&
     releasePackager.Contains(
+        "RELEASE_NOTES.txt",
+        StringComparison.Ordinal) &&
+    !releasePackager.Contains(
+        "Join-Path $stage 'RELEASE_NOTES.md'",
+        StringComparison.Ordinal) &&
+    releasePackager.Contains(
         "--windowed",
         StringComparison.Ordinal) &&
     releasePackager.Contains(
