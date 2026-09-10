@@ -63,11 +63,11 @@ reports are especially valuable while work is paused.
 
 ## Screenshots
 
-| Gran Turismo Mode | Arcade Mode |
+| Red Rock Valley starting grid | Seattle Circuit |
 | --- | --- |
-| ![Gran Turismo Mode home map](docs/images/opengtps1-0.9b-gran-turismo-mode.png) | ![Arcade Mode game selection](docs/images/opengtps1-0.9b-arcade-mode.png) |
-| Red Rock Valley starting grid | Red Rock Valley race |
-| ![Red Rock Valley starting grid](docs/images/opengtps1-0.9b-red-rock-grid.png) | ![Red Rock Valley race](docs/images/opengtps1-0.9b-red-rock-race.png) |
+| ![Red Rock Valley starting grid](docs/images/opengtps1-0.9b-red-rock-grid.png) | ![Racing through Seattle Circuit](docs/images/opengtps1-0.9b-seattle-circuit.png) |
+| Midfield Raceway | Trial Mountain |
+| ![Racing at Midfield Raceway](docs/images/opengtps1-0.9b-midfield-raceway.png) | ![Racing at Trial Mountain](docs/images/opengtps1-0.9b-trial-mountain.png) |
 
 ## Open issues and testing priorities
 
