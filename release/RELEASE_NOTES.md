@@ -1,68 +1,116 @@
-# OpenGTPS1 0.8beta
+# OpenGTPS1 0.9b
 
-This is the first public beta of the Windows x64 static-recompilation port.
+OpenGTPS1 0.9b is the current Windows x64 release of the Gran Turismo 2
+static-recompilation port.
 
-## Important
+> [!IMPORTANT]
+> **Please test this release and report problems through the
+> [public issue tracker](https://github.com/GTTeancum/OpenGTPS1/issues).**
+> Search existing reports first, then use
+> **[New issue](https://github.com/GTTeancum/OpenGTPS1/issues/new)** and attach
+> `logs\OpenGTPS1-latest.log` with your hardware and reproduction steps.
 
-OpenGTPS1 0.8beta supports only the byte-exact US Gran Turismo 2 Simulation
-Disc (`SCUS-94488`, NTSC-U revision 2) and Arcade Disc (`SCUS-94455`) pair.
-Other regions and revisions are not supported.
+## Where the game is now
 
-The release contains no game data. The included setup utility validates and
-extracts the required loose files from the user's own matching raw IMG.
+- One executable boots the original GT2 opening and presents a unified title
+  menu for the native US Arcade and Simulation programs.
+- Gran Turismo Mode supports its original home map, dealers, garage, upgrades,
+  licenses, events, championships, Results, and replay flow.
+- Arcade Mode supports its native menus, classes, cars, courses, races,
+  two-player flow, guest garage, Results, and replay flow.
+- Memory cards load before the unified title. The complete native save payload,
+  including credits, licenses, garage, current car, settings, and records, is
+  preserved when entering Arcade Mode so Home Garage remains available.
+- Authored menus, video, HUD, and transitions use GT2's original 2D command
+  compositor. Race and replay worlds use one bundled D3D11 renderer with
+  perspective-correct textures, stabilized authored topology, extended draw
+  distance, maximum vehicle LOD, horizontal-plus widescreen, and roughly
+  59.94/60 Hz presentation without synthetic frames.
+- Sound effects, XA audio, external OGG music, keyboard input,
+  Xbox-compatible controllers, configurable output presentation, bounded logs,
+  and local mods are available.
+- The archive is self-contained. Its single executable bundles the .NET
+  runtime, native renderer, windowing, input, audio, and UI dependencies. Users
+  do not need Python, a .NET installation, CMake, Visual Studio, or a
+  PlayStation BIOS.
 
-## Highlights
+## Major changes since 0.8beta
 
-- Early unified-title input is buffered through native initialization. Arcade
-  handoff omits redundant hidden boot-panel waits and lets the confirmation
-  voice and queued tail finish before switching guests.
-- The already-final unified title no longer waits through the stock 16-update
-  reveal countdown; required list finalization completes on its first input
-  update, and a first-poll confirmation is committed one poll later.
-- The original GT2 opening now plays from the Arcade disc's intact `STREAM.DAT`
-  before the normal Simulation bootstrap. Native Start skipping is retained;
-  duplicate Simulation legal panels are omitted after the movie.
-- Filtered foliage fringes no longer write opaque depth; solid foliage retains
-  depth ownership over farther terrain.
-- Resident foliage uses normalized camera depth, fixing distant Midfield trees
-  drawing through buildings and tunnel walls due to reversed ordering indices.
+- Added the unified native Arcade/Simulation host and exact two-disc setup.
+- Restored the original Arcade-disc opening before the seamless unified title,
+  while retaining native Start skipping and responsive first-menu input.
+- Added direct native Arcade race/replay paths and deterministic bounded test
+  harnesses.
+- Replaced the selectable compatibility graphics paths with one fail-closed
+  authored-world D3D11 path shared by development and release builds.
+- Added genuine 59.94 Hz game/render timing, 60 FPS output, horizontal-plus
+  widescreen, perspective-correct world textures, stabilized seams, extended
+  visibility, maximum vehicle LOD, and bundled native rendering.
+- Restored starting-grid visibility and retained stable authored vehicle
+  reflections without the earlier flicker or fundamental reflection-style
+  replacement.
+- Fixed unified-title save loading and full-save transfer into Arcade Home
+  Garage.
+- Added extensive source-side GT1 conversion infrastructure and validation for
+  Special Stage Route 11, native cars, Racing Modification bodies, wheels,
+  paints, and alternate-body liveries. The public installer does not distribute
+  or generate proprietary GT1 content.
+- Added bounded release-policy, renderer, race, replay, save, audio, and package
+  verification tools.
 
-- One Direct3D 11/DXGI graphics path now owns authored menus, HUD, loading,
-  Results, MDEC video, native 3D, scaling/FXAA, capture, and the desktop wrapper;
-  the Windows release no longer carries an OpenGL renderer dependency.
-- Native unified Simulation and Arcade programs with direct Seattle Circuit
-  manual-race and natural-replay entry points.
-- Native Windows race/replay renderer with perspective-correct resident-course texture mapping,
-  exact track-seam handling, extended draw distance, maximum vehicle LOD, and
-  configurable dithering.
-- True horizontal-plus widescreen with HUD groups anchored to the corresponding
-  left and right margins.
-- Authored 60 Hz output with no synthetic presentation frames and no shipping
-  compatibility renderer or runtime downgrade control.
-- Keyboard and Xbox-compatible controller input.
-- Memory-card persistence, sound effects, XA audio, external OGG music, mods,
-  graphics presets, and structured logs.
-- Unified and direct Arcade entry skip the Arcade-disc title, land on the
-  native `ARCADE MODE` menu, and retain the authored confirmation sound. Back
-  (`Triangle`) from the Arcade root returns directly to the unified title, and
-  Arcade Single Player remains in the Arcade Game Selection flow. `Triangle`
-  at the idle Gran Turismo world-map root also returns to that unified title;
-  nested menus keep their original Back behavior. Course selection supports
-  both stock GT2-disc data and expanded GT1-content overlays without blank or
-  immovable course lists.
-- Data-first Seattle Circuit qualification with a bounded no-pop sector
-  horizon, authored mutually exclusive course selection, explicit background/
-  world depth layers, and structured renderer diagnostics in development builds.
-- Deterministic automatic replays reset 60 Hz physics carry at every race/
-  replay boundary and verify the original recorded controller stream and
-  resulting vehicle trajectory through bounded structured log oracles.
+## Known open issues
 
-## Known beta limitations
+- The generated prize/LM development smoke-test save gives some cars incorrect
+  wheel widths.
+- At least the black JGTC Castrol Supra in that test save can revert to white
+  when a race begins.
+- Original-Xbox support remains future work.
+- Hardware- and driver-specific graphical, input, audio, and performance
+  problems may still exist outside the systems used during development.
 
-- Windows x64 only.
-- Seattle Circuit is the sole renderer qualification course for this beta.
-- Some graphics and hardware-specific compatibility issues may remain.
-- The executable is not code-signed, so Windows SmartScreen may warn.
+The live list is the
+**[OpenGTPS1 issue tracker](https://github.com/GTTeancum/OpenGTPS1/issues)**.
 
-See the `README.md` inside the ZIP for complete installation instructions,
-controls, updating guidance, and troubleshooting.
+## What needs testing
+
+- Fresh installation from both exact supported raw disc images.
+- First title-menu input and long controller/keyboard sessions.
+- New and existing save creation, loading, updating, backup/restore, and Arcade
+  Home Garage behavior.
+- Complete races and replays across every course, including starting grids,
+  vehicle reflections, flicker, texture seams, pop-in, wheel placement, and
+  paint/livery persistence.
+- Sustained performance on a broad range of GPUs and CPUs. Normal gameplay is
+  intended to remain around 55–60 FPS; report repeatable material drops below
+  that range.
+- XA music, sound effects, external OGG playback, and unusual audio-device
+  configurations.
+
+Active development is entering a hiatus, so concise reproducible community
+reports are the best way to preserve useful next steps.
+
+## Supported discs and installation
+
+Only this byte-exact NTSC-U pair is supported:
+
+```text
+Simulation Disc
+  Serial:  SCUS-94488
+  Revision: 2
+  IMG size: 691,850,208 bytes
+  IMG SHA-256: D0AB6E70539601057590A36299543C0ADAD219254D712F7D4273219094ED5031
+
+Arcade Disc
+  Serial:  SCUS-94455
+  IMG size: 729,423,408 bytes
+  IMG SHA-256: C2E97D6B0C847CA4336D9D84D8D98C349D1240ED075E81AB3FD5C977E9A45075
+```
+
+Extract `OpenGTPS1-0.9b-win-x64.zip`, run
+`Setup-From-GT2-Discs.ps1` with both IMG paths, wait for
+`Installation complete`, and launch `GranTurismo2PC.exe`. Complete instructions
+are in the packaged `README.md`.
+
+The release contains no Gran Turismo game data, Sony BIOS, save files, or
+music. Both source images are validated, read without modification, and are
+not copied into or retained by the installed game.

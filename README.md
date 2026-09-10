@@ -1,7 +1,8 @@
 # OpenGTPS1
 
-OpenGTPS1 0.8beta is an experimental static-recompilation port of the US
-Gran Turismo 2 **Simulation Disc** (`SCUS-94488`, NTSC-U revision 2), built with
+OpenGTPS1 0.9b is an experimental static-recompilation port of the US
+Gran Turismo 2 **Simulation Disc** (`SCUS-94488`, NTSC-U revision 2) and
+**Arcade Disc** (`SCUS-94455`, NTSC-U), built with
 [RecompOne](vendor/RecompOne/UPSTREAM.md).
 
 The project currently targets Windows x64. It boots through the original game
@@ -12,17 +13,33 @@ modern PCs and, in a future port, the original Xbox through
 [NXDK](https://github.com/XboxDev/nxdk).
 
 > [!IMPORTANT]
+> **0.9b needs broad community testing.** Please play both modes, try your
+> controllers and existing saves, and report crashes, visual defects, audio
+> problems, and performance regressions through the
+> **[public issue tracker](https://github.com/GTTeancum/OpenGTPS1/issues)**.
+> Use **[New issue](https://github.com/GTTeancum/OpenGTPS1/issues/new)** to
+> include your hardware, reproduction steps, and
+> `logs\OpenGTPS1-latest.log`.
+
+> [!IMPORTANT]
 > This repository contains no Gran Turismo 2 disc data, Sony BIOS, music, save
 > files, or other copyrighted game assets. You must supply your own matching
 > disc. Do not open an issue asking for game files.
 
 ## Project status
 
-OpenGTPS1 0.8beta is a public beta, not a finished 1.0 release.
+OpenGTPS1 0.9b is playable on Windows x64, but it is not a finished 1.0
+release. Active development is entering a hiatus; testing and detailed issue
+reports are especially valuable while work is paused.
 
-- The core Windows port is playable from boot through a complete race.
+- The unified Windows port boots the original GT2 opening and offers native
+  Arcade Mode and Gran Turismo Mode from one title menu.
+- Complete races, championships, results, and native replays are playable.
 - Menus, videos, input, memory-card persistence, sound effects, and XA audio
   are implemented.
+- Valid Simulation saves are loaded before the unified title, and their full
+  native payload—including credits, licenses, garage, current car, and
+  records—follows the handoff into Arcade Mode's Home Garage.
 - The distributable runtime uses loose files only; it never needs a mounted or
   adjacent BIN/CUE/CCD/IMG/SUB image after preparation.
 - External OGG music, fixed modern graphics settings, structured logging, and
@@ -34,10 +51,37 @@ OpenGTPS1 0.8beta is a public beta, not a finished 1.0 release.
   compositor remains in use for menus, videos, HUD layers, Results, and
   world-free transitions; it is the 2D layer of the modern presentation path,
   not a selectable legacy 3D renderer.
-- Graphics work remains active; visual defects and hardware-specific problems
-  may still exist.
-- True horizontal-plus widescreen is under active renderer validation.
+- True horizontal-plus widescreen and the fixed authored-world renderer are
+  implemented, but visual defects and hardware-specific problems may remain.
 - Original Xbox support has not landed yet.
+
+## Open issues and testing priorities
+
+The current known defects are tracked in [`TO-DO.MD`](TO-DO.MD):
+
+- The generated prize/LM development smoke-test save gives some cars incorrect
+  wheel widths.
+- At least the black JGTC Castrol Supra can revert to white when a race begins.
+- The planned original-Xbox port has not been implemented.
+
+The 0.9b Windows release needs user testing across more hardware and ordinary
+play patterns. The highest-value reports cover:
+
+- fresh setup with the exact supported two-disc set;
+- Xbox-compatible controllers and keyboard input from the first title-menu
+  press through full races;
+- creating, loading, updating, and backing up memory cards, including Arcade
+  Home Garage use;
+- full races and replays on every course, with attention to starting grids,
+  vehicle reflections, flicker, seams, pop-in, and paint/livery persistence;
+- sustained performance, especially cases that fall materially below the
+  intended roughly 55–60 FPS range;
+- XA music, sound effects, external OGG playback, and device-specific audio
+  behavior.
+
+Please search the **[open issues](https://github.com/GTTeancum/OpenGTPS1/issues)**
+before filing, then use **[New issue](https://github.com/GTTeancum/OpenGTPS1/issues/new)**
+and attach the latest bounded log whenever possible.
 
 [`TO-DO.MD`](TO-DO.MD) is the detailed implementation and validation record.
 [`docs/PORT_PLAN.md`](docs/PORT_PLAN.md) documents the playable vertical slice
@@ -45,32 +89,18 @@ and the RecompOne-specific discoveries behind it. The
 [`modern renderer architecture`](docs/MODERN_RENDERER.md) defines the shared PC
 and original-Xbox direction.
 
-## Planned unified first-run installation
+## Unified installation and GT1 conversion status
 
-The completed unified release will include a first-run preparation tool. It
-may be built into `GranTurismo2PC.exe` or shipped as a separate installer
-executable. Before either game mode can run, it will ask the user to locate
-images of all three supported US discs:
+The 0.9b release includes a self-contained two-disc preparation tool. It
+validates the exact supported GT2 Simulation and Arcade raw IMG files,
+extracts only the required native data, and creates the unified loose
+installation. It never copies or retains either source image.
 
-- Gran Turismo 2 Simulation Disc (`SCUS-94488`, NTSC-U revision 2)
-- Gran Turismo 2 Arcade Mode Disc (`SCUS-94455`, NTSC-U)
-- Gran Turismo (`SCUS-94194`, NTSC-U)
-
-The preparation tool will validate all three images, extract the required
-files, convert Gran Turismo 1-exclusive cars, liveries, and tracks to the
-native Gran Turismo 2 formats, and build the deterministic unified `GT2.VOL`
-and loose-file installation. Source disc images are treated as read-only and
-are not copied into the completed installation.
-
-`GranTurismo2PC.exe` must validate the prepared installation on startup and
-must not open the game or either mode until conversion and merging have
-succeeded. If preparation is incomplete, missing, or damaged, it directs the
-user to the preparation tool instead. Later launches use the validated
-prepared data and do not request the discs again.
-
-This is a product requirement for the unified release, not the behavior of the
-current 0.8beta package described below. The current package still uses its
-separate Simulation-Disc setup script.
+The repository also contains substantial Gran Turismo 1 conversion and
+validation work, including Special Stage Route 11, native car/body conversion,
+and paint/livery folding. That development pipeline requires the user's own
+matching GT1 disc and remains source-side work; the public 0.9b installer does
+not distribute or generate proprietary GT1 content.
 
 The development conversion pipeline now validates the US Gran Turismo image
 and imports Special Stage Route 11, all three GT1-exclusive EUNOS ROADSTER
@@ -114,43 +144,50 @@ without an
 unmapped call, managed exception, or software fault. Remaining exclusive cars
 and livery families are the next content milestone.
 
-## Install the 0.8beta Windows release
+## Install the 0.9b Windows release
 
 The prebuilt release requires:
 
 - Windows 10 or 11, x64
 - PowerShell
-- Your own US Gran Turismo 2 **Simulation Disc**, revision 2
+- Your own supported US Gran Turismo 2 **Simulation Disc**, revision 2
+- Your own supported US Gran Turismo 2 **Arcade Disc**
 
-The Arcade Disc, other regions, and earlier US revisions are not supported.
-The required raw Mode 2 IMG has:
+Other regions and revisions are not supported. The required raw Mode 2/2352
+images are:
 
 ```text
 Serial:  SCUS-94488
 Size:    691,850,208 bytes
 SHA-256: D0AB6E70539601057590A36299543C0ADAD219254D712F7D4273219094ED5031
+
+Serial:  SCUS-94455
+Size:    729,423,408 bytes
+SHA-256: C2E97D6B0C847CA4336D9D84D8D98C349D1240ED075E81AB3FD5C977E9A45075
 ```
 
 The release contains no game data. To install:
 
-1. Download `OpenGTPS1-0.8beta-win-x64.zip` from the GitHub release.
-2. Extract the entire `OpenGTPS1-0.8beta-win-x64` folder to a writable
+1. Download `OpenGTPS1-0.9b-win-x64.zip` from the GitHub release.
+2. Extract the entire `OpenGTPS1-0.9b-win-x64` folder to a writable
    location. Do not run it from inside the ZIP.
-3. Rip your matching Simulation Disc as a raw Mode 2/2352 `.img` file.
+3. Rip both matching discs as raw Mode 2/2352 `.img` files.
 4. Open PowerShell in the extracted folder and run:
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File `
-     .\Setup-From-Simulation-Disc.ps1 `
-     -ImagePath "D:\Rips\Gran Turismo 2 [Simulation Disc] [U] [SCUS-94488].img"
+    .\Setup-From-GT2-Discs.ps1 `
+    -SimulationImagePath "D:\Rips\GT2 Simulation.img" `
+    -ArcadeImagePath "D:\Rips\GT2 Arcade.img"
    ```
 
 5. When setup reports `Installation complete`, run `GranTurismo2PC.exe`.
 
-Setup validates the complete disc hash before writing anything, extracts only
-the required loose runtime files beside the executable, and does not copy or
-retain the original IMG. The game creates blank `carda.sav` and `cardb.sav`
-memory cards on first launch.
+Setup validates both complete disc hashes before writing anything, extracts
+only the required loose runtime files beside the executable, and does not copy
+or retain either IMG. The game creates blank `carda.sav` and `cardb.sav`
+memory cards on first launch. The executable is self-contained; users do not
+need Python, the .NET runtime/SDK, CMake, Visual Studio, or a PlayStation BIOS.
 
 Keep the installation in a writable folder because saves, settings, and the
 latest diagnostic log are stored beside the executable. Windows SmartScreen
@@ -168,11 +205,13 @@ Building from source additionally requires:
 - .NET 10 SDK
 - CMake and a Visual Studio C++ x64 toolchain
 
-The archival input must use these exact names in the repository root:
+The archival inputs must use these exact names in the repository root:
 
 ```text
 Gran Turismo 2 [Simulation Disc] [U] [SCUS-94488].cue
 Gran Turismo 2 [Simulation Disc] [U] [SCUS-94488].img
+SCUS_944.55.cue
+SCUS_944.55.img
 ```
 
 Other dump formats and game revisions are not currently supported. Disc files
@@ -180,7 +219,7 @@ and all extracted/generated data are excluded by `.gitignore`.
 
 ## Build from source
 
-Clone the repository, place the matching CUE/IMG pair in its root, and run:
+Clone the repository, place both matching CUE/IMG pairs in its root, and run:
 
 ```powershell
 python tools\extract_disc.py
@@ -194,9 +233,13 @@ creates the one-folder installation under `OpenGTPS1\`:
 OpenGTPS1\
   GranTurismo2PC.exe
   interface.ini
-  recompone.loose.json
+  GT2.VOL
+  manifests\
+    arcade.json
+    simulation.json
+  arcade\
+  simulation\
   music\
-  ...loose game files...
 ```
 
 After the first regeneration, ordinary rebuilds do not read the archival disc

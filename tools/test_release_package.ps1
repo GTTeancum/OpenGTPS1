@@ -82,7 +82,7 @@ try {
         throw 'Release archive is missing its README or unified GT2 setup utility'
     }
     $readmeText = Get-Content -LiteralPath $readme -Raw
-    if ($readmeText -notmatch '0\.8beta' -or
+    if ($readmeText -notmatch '0\.9b' -or
         $readmeText -notmatch 'Authoritative NTSC-U two-disc build' -or
         $readmeText -notmatch 'SCUS-94488' -or
         $readmeText -notmatch 'SCUS-94455') {

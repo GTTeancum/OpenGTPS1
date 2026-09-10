@@ -1,8 +1,16 @@
-# OpenGTPS1 0.8beta for Windows x64
+# OpenGTPS1 0.9b for Windows x64
 
 OpenGTPS1 is an experimental static-recompilation port of Gran Turismo 2.
-Version 0.8beta is a public beta and may still contain compatibility or visual
+Version 0.9b is playable but may still contain compatibility or visual
 issues.
+
+> [!IMPORTANT]
+> **Please test 0.9b and report what you find.** Search the
+> **[public issue tracker](https://github.com/GTTeancum/OpenGTPS1/issues)**,
+> then use **[New issue](https://github.com/GTTeancum/OpenGTPS1/issues/new)**
+> for crashes, graphical glitches, performance, input, audio, installation,
+> and save problems. Include your hardware, reproduction steps, and
+> `logs\OpenGTPS1-latest.log`.
 
 ## Authoritative NTSC-U two-disc build
 
@@ -31,8 +39,8 @@ files. You must supply your own matching disc image.
 
 ## Installation
 
-1. Extract the entire `OpenGTPS1-0.8beta-win-x64` folder to a writable
-   location, such as `C:\Games\OpenGTPS1-0.8beta-win-x64`.
+1. Extract the entire `OpenGTPS1-0.9b-win-x64` folder to a writable
+   location, such as `C:\Games\OpenGTPS1-0.9b-win-x64`.
 2. Rip both matching discs as raw Mode 2/2352 `.img` files.
 3. Open PowerShell in this folder.
 4. Run:
@@ -61,6 +69,46 @@ settings, external music, mods, and logs beside the executable. Blank
 
 Windows SmartScreen may display a warning because this beta is not
 code-signed.
+
+## Current state
+
+- The original opening leads to one unified title menu for native Arcade Mode
+  and Gran Turismo Mode.
+- Complete races, championships, Results, and native replays are playable.
+- Simulation saves load their full native payload. Credits, licenses, garage,
+  current car, and records also reach Arcade Mode's Home Garage.
+- The sole 3D renderer is the bundled D3D11 authored-world path with
+  perspective-correct textures, stabilized topology, extended draw distance,
+  maximum vehicle LOD, horizontal-plus widescreen, and roughly 59.94/60 Hz
+  output without synthetic frames.
+- The package is self-contained and includes its managed and native runtime
+  dependencies. It contains no game data, save, BIOS, or music.
+- Original-Xbox support is planned but not implemented.
+
+## Known issues
+
+- The generated prize/LM development smoke-test save gives some cars incorrect
+  wheel widths.
+- At least the black JGTC Castrol Supra in that test save can revert to white
+  when a race begins.
+- Other visual defects and hardware-specific compatibility problems may remain.
+
+Track current reports through the
+**[OpenGTPS1 issues page](https://github.com/GTTeancum/OpenGTPS1/issues)**.
+
+## What needs testing
+
+- Fresh two-disc setup and first launch.
+- Controller and keyboard input, especially the first title-menu press.
+- Save creation, reload, updates, backup/restore, and Arcade Home Garage.
+- Full races and replays on every course: watch starting grids, reflections,
+  flicker, seams, pop-in, wheel placement, and paint/livery persistence.
+- Sustained performance; report hardware and situations materially below the
+  intended roughly 55–60 FPS range.
+- XA music, sound effects, external OGG music, and audio-device behavior.
+
+Reports are welcome while active development is on hiatus. Please search for
+duplicates, attach the latest log, and describe the shortest reliable repro.
 
 ## Updating
 

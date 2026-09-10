@@ -149,8 +149,12 @@ static PSMemory VerifyArcadeFrontendContracts()
         "Arcade title handoff was not immediate and can race Simulation overlay 4");
 
     RecompOne.Runtime.Sdk.GT2Compat.SetUnifiedArcadeTransition(true);
-    // Eligibility follows the loaded save through the BSS reset. Test mixed
-    // locked/unlocked results, full license records, and one-shot restoration.
+    // The complete loaded save follows the unified handoff through the BSS
+    // reset. Test garage/profile data, mixed locked/unlocked results, full
+    // license records, and one-shot restoration.
+    memory.WriteU32(0x801D1568u, 100000u);
+    memory.WriteU8(0x801CD554u, 67);
+    memory.WriteU8(0x801D156Cu, 3);
     memory.WriteU8(0x801C9998u, 4);
     memory.WriteU8(0x801C9999u, 0);
     memory.WriteU8(0x801CACF9u, 4);
@@ -166,10 +170,12 @@ static PSMemory VerifyArcadeFrontendContracts()
     Require(
         RecompOne.Runtime.Sdk.GT2Compat.InitialArcadeOverlayIndex(memory) == 2u,
         "unified Arcade handoff did not skip the redundant disc title");
-    Require(memory.ReadU8(0x801C93F8u) == 4 && memory.ReadU8(0x801C93F9u) == 0 &&
+    Require(memory.ReadU32(0x801D0FC8u) == 100000u &&
+        memory.ReadU8(0x801CCFB4u) == 67 && memory.ReadU8(0x801D0FCCu) == 3 &&
+        memory.ReadU8(0x801C93F8u) == 4 && memory.ReadU8(0x801C93F9u) == 0 &&
         memory.ReadU8(0x801CA759u) == 4 && memory.ReadU8(0x801CA7FDu) == 0 &&
         memory.ReadU32(0x801CA75Cu) == 12345u,
-        "loaded course/license progress did not survive the handoff exactly");
+        "loaded save did not survive the Arcade handoff exactly");
     memory.WriteU8(0x801C93F8u, 1);
     RecompOne.Runtime.Sdk.GT2Compat.InitialArcadeOverlayIndex(memory);
     Require(memory.ReadU8(0x801C93F8u) == 1, "stale handoff overwrote new Arcade progress");

@@ -60,6 +60,18 @@ for (int index = 0; index < args.Length; index++)
                         SupportedDirectArcadeCourses) + ".",
                 headless);
         directArcadeRace = args[index].Trim().ToLowerInvariant();
+        directArcadeReplay = replay;
+        if (directArcadeReplay)
+        {
+            // GT2Compat's automation settings are captured when its type is
+            // first initialized. Set them before course validation touches it.
+            Environment.SetEnvironmentVariable(
+                "RECOMPONE_GT2_AI_AUTODRIVE", "1");
+            Environment.SetEnvironmentVariable(
+                "RECOMPONE_GT2_AI_AUTODRIVE_MAX_ENGAGEMENTS", "2");
+            Environment.SetEnvironmentVariable(
+                "RECOMPONE_GT2_SOAK_QUICK_WIN_AFTER_AI_TICKS", null);
+        }
         if (!RecompOne.Runtime.Sdk.GT2Compat.
                 IsSupportedDirectArcadeCourse(directArcadeRace))
             return StartupFailure(
@@ -70,7 +82,6 @@ for (int index = 0; index < args.Length; index++)
                     RecompOne.Runtime.Sdk.GT2Compat.
                         SupportedDirectArcadeCourses) + ".",
                 headless);
-        directArcadeReplay = replay;
         startArcade = true;
     }
     else if (argument.StartsWith("--", StringComparison.Ordinal))
@@ -104,11 +115,6 @@ if (directArcadeReplay)
     // through GT2's original CPU driver dispatch. Stage-relative confirmations
     // then advance Results; no synthetic finish, replay state, or camera is
     // used.
-    Environment.SetEnvironmentVariable("RECOMPONE_GT2_AI_AUTODRIVE", "1");
-    Environment.SetEnvironmentVariable(
-        "RECOMPONE_GT2_AI_AUTODRIVE_MAX_ENGAGEMENTS", "2");
-    Environment.SetEnvironmentVariable(
-        "RECOMPONE_GT2_SOAK_QUICK_WIN_AFTER_AI_TICKS", null);
     Environment.SetEnvironmentVariable("RECOMPONE_DISABLE_LIVE_INPUT", "1");
     // Direct replay is a user-facing launch path, not an image-producing QA
     // fixture. Development gates opt into one labelled stage capture through

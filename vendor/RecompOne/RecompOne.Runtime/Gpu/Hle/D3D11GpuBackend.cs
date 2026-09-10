@@ -60,9 +60,9 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
     // A single dynamic buffer forces the D3D11 driver to rename an 8 MiB
     // allocation while the GPU is still consuming its tail. Rotate whole
     // resources when the append cursor wraps so each buffer has multiple
-    // seconds to retire before it is reused. A resource is discarded only on
-    // its first map; later laps use NO_OVERWRITE after two complete resources
-    // have retired, avoiding another large driver allocation/rename.
+    // seconds to retire before it is reused. Starting again at offset zero
+    // must use DISCARD; NO_OVERWRITE is valid only while appending beyond all
+    // vertices submitted from the current resource generation.
     const int VertexBufferCount = 3;
     static readonly bool TracePerformance =
         Environment.GetEnvironmentVariable("RECOMPONE_TRACE_PERFORMANCE") == "1";
@@ -243,7 +243,6 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
     ID3D11InputLayout? _inputLayout;
     readonly ID3D11Buffer?[] _vertexBuffers =
         new ID3D11Buffer?[VertexBufferCount];
-    readonly bool[] _vertexBufferPrimed = new bool[VertexBufferCount];
     ID3D11Buffer? _constantBuffer;
     ID3D11RasterizerState? _rasterizer;
     ID3D11BlendState? _opaqueBlend;
@@ -687,8 +686,7 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
         }
         ID3D11Buffer vertexBuffer = _vertexBuffers[_vertexBufferIndex]!;
         int vertexBufferOffset = _vertexBufferCursor * vertexStride;
-        MapMode vertexMapMode = _vertexBufferCursor == 0 &&
-            !_vertexBufferPrimed[_vertexBufferIndex]
+        MapMode vertexMapMode = _vertexBufferCursor == 0
             ? MapMode.WriteDiscard
             : MapMode.WriteNoOverwrite;
         long beforeVertexMap = TracePerformance ? Stopwatch.GetTimestamp() : 0;
@@ -696,7 +694,6 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
             vertexBuffer,
             vertexMapMode,
             Vortice.Direct3D11.MapFlags.None);
-        _vertexBufferPrimed[_vertexBufferIndex] = true;
         long afterVertexMap = TracePerformance ? Stopwatch.GetTimestamp() : 0;
         fixed (Vertex* source = _vertices)
             Buffer.MemoryCopy(

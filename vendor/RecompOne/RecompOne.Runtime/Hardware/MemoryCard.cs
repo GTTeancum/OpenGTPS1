@@ -10,10 +10,11 @@ public sealed class MemoryCard
     readonly byte[] _d = new byte[CardSize];
     readonly string _path;
     public bool Enabled = true;
+    public string Path => _path;
 
     public MemoryCard(string path)
     {
-        _path = path;
+        _path = System.IO.Path.GetFullPath(path);
         if (File.Exists(path))
         {
             var b = File.ReadAllBytes(path);

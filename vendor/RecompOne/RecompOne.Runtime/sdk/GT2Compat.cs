@@ -618,6 +618,7 @@ public static class GT2Compat
     static uint _overlayIndex;
     static string _overlayPrefix = "gt2_overlay";
     static bool _unifiedTitleInstalled;
+    static bool _unifiedSimulationSaveImported;
     static bool _unifiedArcadeTransition;
     static bool _unifiedOpeningPrelude;
     static bool _unifiedOpeningCompleted;
@@ -1418,41 +1419,39 @@ public static class GT2Compat
             $"guestLba={guestBase} manifestLba={lba} bytes={size}");
     }
 
-    // Both NTSC-U guests use the same progress-record layout, at different
-    // working-data bases. The seamless path skips the disc title's card load;
-    // preserve the progress already loaded by Simulation before Arcade clears
-    // its BSS, then restore it AFTER the native new-game initializer. Copy the
-    // records, not course-table gates: a locked card must remain locked.
-    static byte[]? _pendingUnifiedArcadeProgress;
+    // Both NTSC-U guests use the same save-data layout at different working
+    // bases. The seamless path skips Arcade's disc-title card load, so carry
+    // the complete retail payload across its BSS reset and restore it AFTER
+    // the native new-game initializer. This is the same 0x7C9C-byte copy made
+    // by each disc's original load routine; it includes the garage, current
+    // car, credits, licenses, records, and their native lock state.
+    static byte[]? _pendingUnifiedArcadeSave;
     const uint SimulationProgressBase = 0x801C98E0u;
     const uint ArcadeProgressBase = 0x801C9340u;
-    static readonly (uint Offset, int Length)[] UnifiedProgressRanges =
-    [
-        (0xB8u, 0x160), // Arcade results, unlock flags and records.
-        (0x1418u, 60 * 0xA4), // Complete license-test records.
-    ];
+    const int UnifiedSavePayloadLength = 0x7C9C;
 
     public static void PreserveUnifiedArcadeProgress(IMemory m)
     {
-        var progress = new byte[0x160 + 60 * 0xA4];
-        int index = 0;
-        foreach (var range in UnifiedProgressRanges)
-            for (uint offset = 0; offset < range.Length; offset++)
-                progress[index++] = m.ReadU8(
-                    SimulationProgressBase + range.Offset + offset);
-        _pendingUnifiedArcadeProgress = progress;
+        var save = new byte[UnifiedSavePayloadLength];
+        for (int offset = 0; offset < save.Length; offset++)
+            save[offset] = m.ReadU8(
+                SimulationProgressBase + (uint)offset);
+        _pendingUnifiedArcadeSave = save;
     }
 
     static void RestoreUnifiedArcadeProgress(IMemory m)
     {
-        if (_pendingUnifiedArcadeProgress is not { } progress)
+        if (_pendingUnifiedArcadeSave is not { } save)
             return;
-        int index = 0;
-        foreach (var range in UnifiedProgressRanges)
-            for (uint offset = 0; offset < range.Length; offset++)
-                m.WriteU8(ArcadeProgressBase + range.Offset + offset,
-                    progress[index++]);
-        _pendingUnifiedArcadeProgress = null;
+        for (int offset = 0; offset < save.Length; offset++)
+            m.WriteU8(
+                ArcadeProgressBase + (uint)offset,
+                save[offset]);
+        _pendingUnifiedArcadeSave = null;
+
+        // Match SCUS-94455 func_8006A258 after its payload copy.
+        MirrorLoadedSettings(m, ArcadeProgressBase + 0x48u, 0x800A6BE4u);
+        MirrorLoadedSettings(m, ArcadeProgressBase + 0x9Au, 0x800A6BF8u);
         int licenses = 0;
         int courses = 0;
         for (uint test = 0; test < 60; test++)
@@ -1462,7 +1461,10 @@ public static class GT2Compat
             if (m.ReadU8(ArcadeProgressBase + 0xB8u + course) != 0)
                 courses++;
         Console.WriteLine(
-            $"[GT2] Arcade progress preserved from loaded Simulation save: " +
+            $"[GT2] Arcade save preserved from loaded Simulation save: " +
+            $"credits={m.ReadU32(ArcadeProgressBase + 0x7C88u)} " +
+            $"garageCars={m.ReadU8(ArcadeProgressBase + 0x3C74u)} " +
+            $"currentCar={m.ReadU8(ArcadeProgressBase + 0x7C8Cu)} " +
             $"licenseTests={licenses}/60 courseResults={courses}/21");
     }
 
@@ -1989,6 +1991,7 @@ public static class GT2Compat
     /// </summary>
     public static void InstallUnifiedTitleMenu(IMemory m)
     {
+        ImportUnifiedSimulationSave(m);
         _unifiedTitleMenuActive = true;
         EnableExactTitleDisplay();
         // Two sentinels plus the four complete Sony-authored demo entries:
@@ -2052,6 +2055,93 @@ public static class GT2Compat
             "Arcade Mode, Gran Turismo, Replay Theater, Option; " +
             $"language={m.ReadU8(0x801C98E0u)} 16bpp " +
             $"palette={palette}");
+    }
+
+    /// <summary>
+    /// The unified title replaces the retail START/LOAD menu, so import the
+    /// first valid NTSC-U Simulation save before its Gran Turismo and Arcade
+    /// destinations are exposed. The payload copy and the two settings mirrors
+    /// are the operations performed by SCUS-94488 func_8006A278/func_8006A348.
+    /// Run this only on the initial title; returning from either mode must keep
+    /// the live session instead of reloading the card.
+    /// </summary>
+    static void ImportUnifiedSimulationSave(IMemory m)
+    {
+        if (_unifiedSimulationSaveImported)
+            return;
+        _unifiedSimulationSaveImported = true;
+
+        Hardware.MemoryCard[] cards = [Runtime.CardA, Runtime.CardB];
+        string[] names = ["BASCUS-94455GAME", "BASCUS-94488GAME"];
+        foreach (Hardware.MemoryCard card in cards)
+        {
+            if (!card.Enabled)
+                continue;
+            foreach (string name in names)
+            {
+                int firstBlock = card.Find(name);
+                if (firstBlock == 0 || card.FileSize(firstBlock) != 0x8000)
+                    continue;
+                int[] chain = card.Chain(firstBlock);
+                if (chain.Length != 4)
+                    continue;
+
+                var save = new byte[0x8000];
+                for (int offset = 0; offset < save.Length; offset++)
+                    save[offset] = card.ReadByte(chain, offset);
+                uint storedCrc = BinaryPrimitives.ReadUInt32LittleEndian(
+                    save.AsSpan(0x7E9C, 4));
+                uint actualCrc = Gt2SaveCrc32(save.AsSpan(0, 0x7E9C));
+                if (save[0] != (byte)'S' || save[1] != (byte)'C' ||
+                    save[2] != 0x13 || save[3] != 4 ||
+                    storedCrc != actualCrc)
+                {
+                    Console.Error.WriteLine(
+                        $"[GT2-Save] rejected {name} from {card.Path}: " +
+                        $"header={save[0]:X2}{save[1]:X2}{save[2]:X2}{save[3]:X2} " +
+                        $"storedCrc=0x{storedCrc:X8} actualCrc=0x{actualCrc:X8}");
+                    continue;
+                }
+
+                const uint workingData = 0x801C98E0u;
+                for (int offset = 0; offset < 0x7C9C; offset++)
+                    m.WriteU8(
+                        workingData + (uint)offset,
+                        save[0x200 + offset]);
+                MirrorLoadedSettings(m, workingData + 0x48u, 0x800A6EECu);
+                MirrorLoadedSettings(m, workingData + 0x9Au, 0x800A6F00u);
+
+                Console.WriteLine(
+                    $"[GT2-Save] loaded {name} from {card.Path}: " +
+                    $"credits={m.ReadU32(workingData + 0x7C88u)} " +
+                    $"garageCars={m.ReadU8(workingData + 0x3C74u)} " +
+                    $"currentCar={m.ReadU8(workingData + 0x7C8Cu)} " +
+                    $"crc32=0x{actualCrc:X8}");
+                return;
+            }
+        }
+        Console.WriteLine(
+            "[GT2-Save] no valid NTSC-U save found; starting a new game");
+    }
+
+    static void MirrorLoadedSettings(IMemory m, uint source, uint destination)
+    {
+        for (uint offset = 0; offset < 20u; offset++)
+            m.WriteU8(destination + offset, m.ReadU8(source + offset));
+    }
+
+    static uint Gt2SaveCrc32(ReadOnlySpan<byte> data)
+    {
+        uint crc = uint.MaxValue;
+        foreach (byte value in data)
+        {
+            crc ^= value;
+            for (int bit = 0; bit < 8; bit++)
+                crc = (crc & 1u) != 0u
+                    ? 0xEDB88320u ^ (crc >> 1)
+                    : crc >> 1;
+        }
+        return ~crc;
     }
 
     static void EnableExactTitleDisplay()

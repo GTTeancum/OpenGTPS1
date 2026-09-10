@@ -1,7 +1,7 @@
 param(
-    [ValidatePattern('^0\.8beta$')]
-    [string]$Version = '0.8beta',
-    [string]$ArtifactName = 'release-0.8beta'
+    [ValidatePattern('^0\.9b$')]
+    [string]$Version = '0.9b',
+    [string]$ArtifactName = 'release-0.9b'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -104,7 +104,7 @@ try {
         -p:PublishReadyToRun=true `
         -p:OpenGTReleasePackage=true `
         "-p:OpenGTNativeLibraryPath=$nativeRenderer" `
-        -p:Version=0.8.0-beta `
+        -p:Version=0.9.0 `
         -p:DebugType=None `
         -p:DebugSymbols=false `
         -o $stage

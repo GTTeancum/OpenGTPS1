@@ -24,6 +24,7 @@ Require ($hostWindow.Contains('GraphicsAPI.None')) 'Silk still creates a graphic
 Require ($hostWindow.Contains('new D3D11Renderer')) 'D3D11 host device is missing.'
 Require ($hostWindow.Contains('new Hle.D3D11GpuBackend')) 'D3D11 compositor is missing.'
 Require ($hostWindow.Contains('new D3D11ImGuiController')) 'D3D11 ImGui path is missing.'
+Require ($hostWindow.Contains('d3d.EndFrame(present: false)')) 'Silent D3D11 submission flush is missing.'
 Require ($presentation.Contains('api=D3D11')) 'D3D11 presentation identity is missing.'
 Require ($compositor.Contains('WritebackFeedbackRegion')) 'Texture feedback barrier is missing.'
 Require ($compositor.Contains('BlendOperation.ReverseSubtract')) 'PS1 reverse-subtract blend is missing.'

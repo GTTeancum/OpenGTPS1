@@ -477,9 +477,12 @@ internal static class HostWindow
         {
             // Silent performance/soak runs consume native-world output
             // without allocating or presenting an invisible wrapper frame.
+            // The authored compositor still records work on the shared
+            // immediate context, so submit that queue before returning.
             Runtime.RamLog.Tick();
             if (_gpu is { } headlessGpu)
                 PresentNativeWorld(null, headlessGpu);
+            d3d.EndFrame(present: false);
             return;
         }
         _imgui!.Update((float)dt);
