@@ -62,7 +62,7 @@ try
 
     const uint payloadAddress = 0x80010000u;
     const int payloadLength = 0x7F00;
-    var memory = new PSMemory();
+    var memory = new TestMemory();
     byte[] payload = new byte[payloadLength];
     payload[0] = (byte)'S';
     payload[1] = (byte)'C';
@@ -149,6 +149,69 @@ finally
         Directory.Delete(root, recursive: true);
     }
     catch
+    {
+    }
+}
+
+
+sealed class TestMemory : IMemory
+{
+    readonly Dictionary<uint, byte> _bytes = new();
+
+    public byte ReadU8(uint address) =>
+        _bytes.TryGetValue(address, out byte value) ? value : (byte)0;
+
+    public ushort ReadU16(uint address) =>
+        (ushort)(ReadU8(address) | (ReadU8(address + 1u) << 8));
+
+    public uint ReadU32(uint address) =>
+        (uint)(
+            ReadU8(address) |
+            (ReadU8(address + 1u) << 8) |
+            (ReadU8(address + 2u) << 16) |
+            (ReadU8(address + 3u) << 24));
+
+    public void WriteU8(uint address, byte value) => _bytes[address] = value;
+
+    public void WriteU16(uint address, ushort value)
+    {
+        WriteU8(address, (byte)value);
+        WriteU8(address + 1u, (byte)(value >> 8));
+    }
+
+    public void WriteU32(uint address, uint value)
+    {
+        WriteU8(address, (byte)value);
+        WriteU8(address + 1u, (byte)(value >> 8));
+        WriteU8(address + 2u, (byte)(value >> 16));
+        WriteU8(address + 3u, (byte)(value >> 24));
+    }
+
+    public uint ReadWordLeft(uint current, uint address) =>
+        throw new NotSupportedException();
+
+    public uint ReadWordRight(uint current, uint address) =>
+        throw new NotSupportedException();
+
+    public void WriteWordLeft(uint address, uint value) =>
+        throw new NotSupportedException();
+
+    public void WriteWordRight(uint address, uint value) =>
+        throw new NotSupportedException();
+
+    public void LoadBytes(uint address, byte[] data)
+    {
+        for (int offset = 0; offset < data.Length; offset++)
+            WriteU8(address + (uint)offset, data[offset]);
+    }
+
+    public void ZeroRange(uint address, uint length)
+    {
+        for (uint offset = 0; offset < length; offset++)
+            WriteU8(address + offset, 0);
+    }
+
+    public void SetCd(RecompOne.Runtime.Cdrom.CdController cd)
     {
     }
 }
