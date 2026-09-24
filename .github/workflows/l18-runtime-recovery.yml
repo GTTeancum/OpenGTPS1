@@ -10,9 +10,9 @@ permissions:
   contents: read
 
 jobs:
-  managed-linux:
+  recover-linux-build-inputs:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -24,15 +24,17 @@ jobs:
       - name: Record SDK
         shell: bash
         run: |
-          mkdir -p artifacts/logs
+          mkdir -p artifacts/logs artifacts/runtime artifacts/sdk artifacts/nuget-feed
           dotnet --version | tee artifacts/logs/dotnet-version.txt
           dotnet --info > artifacts/logs/dotnet-info.txt
 
-      - name: Restore managed projects
+      - name: Restore L18 package graph
         shell: bash
         run: |
           set -euxo pipefail
           projects=(
+            vendor/RecompOne/RecompOne.Runtime/RecompOne.Runtime.csproj
+            vendor/RecompOne/RecompOne.Recompiler/RecompOne.Recompiler.csproj
             tools/unified-host/GranTurismo2PC.csproj
             tools/LinuxHostRegression/LinuxHostRegression.csproj
             tools/VehicleShadowRegression/VehicleShadowRegression.csproj
@@ -42,12 +44,34 @@ jobs:
             dotnet restore "$p" -p:NuGetAudit=false -p:PublishReadyToRun=false
           done
 
-      - name: Build managed projects
+      - name: Recover exact SDK archive and NuGet feed
         shell: bash
         run: |
           set -euxo pipefail
+          sdk=artifacts/sdk/dotnet-sdk-10.0.401-linux-x64.tar.gz
+          curl -fL --retry 3 --retry-delay 2 \
+            -o "$sdk" \
+            https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.401/dotnet-sdk-10.0.401-linux-x64.tar.gz
+          echo "137268c8ad939c064ff1ee2a6fdf0899d8725377114ea012fbd1ad5fa2550418  $sdk" | sha256sum -c -
+          sha256sum "$sdk" > artifacts/sdk/SHA256SUMS.txt
+
+          while IFS= read -r -d '' pkg; do
+            cp -n "$pkg" artifacts/nuget-feed/
+          done < <(find "$HOME/.nuget/packages" -type f -name '*.nupkg' -print0)
+          test -n "$(find artifacts/nuget-feed -maxdepth 1 -name '*.nupkg' -print -quit)"
+          find artifacts/nuget-feed -maxdepth 1 -type f -name '*.nupkg' -printf '%f\n' | sort > artifacts/nuget-feed/PACKAGES.txt
+          (cd artifacts/nuget-feed && sha256sum *.nupkg > SHA256SUMS.txt)
+
+      - name: Build L18 managed runtime surface
+        shell: bash
+        run: |
+          set -euxo pipefail
+          dotnet build vendor/RecompOne/RecompOne.Runtime/RecompOne.Runtime.csproj \
+            -c Release --no-restore \
+            -p:OpenGTLinuxHost=true \
+            -p:PublishReadyToRun=false \
+            -p:UseSharedCompilation=false -m:1
           projects=(
-            tools/unified-host/GranTurismo2PC.csproj
             tools/LinuxHostRegression/LinuxHostRegression.csproj
             tools/VehicleShadowRegression/VehicleShadowRegression.csproj
             tools/WorldCameraRegression/WorldCameraRegression.csproj
@@ -56,29 +80,38 @@ jobs:
             dotnet build "$p" -c Release --no-restore \
               -p:OpenGTLinuxHost=true \
               -p:PublishReadyToRun=false \
-              -p:UseSharedCompilation=false \
-              -m:1
+              -p:UseSharedCompilation=false -m:1
           done
+          cp vendor/RecompOne/RecompOne.Runtime/bin/Release/net10.0/RecompOne.Runtime.dll artifacts/runtime/
+          cp vendor/RecompOne/RecompOne.Runtime/bin/Release/net10.0/RecompOne.Runtime.pdb artifacts/runtime/
+          sha256sum artifacts/runtime/* > artifacts/runtime/SHA256SUMS.txt
 
-      - name: Publish Linux host
-        shell: bash
-        run: |
-          set -euxo pipefail
-          dotnet publish tools/unified-host/GranTurismo2PC.csproj \
-            -c Release \
-            -r linux-x64 \
-            --self-contained false \
-            -p:OpenGTLinuxHost=true \
-            -p:PublishReadyToRun=false \
-            -p:UseSharedCompilation=false \
-            -o artifacts/l18-managed
-          find artifacts/l18-managed -maxdepth 1 -type f -printf '%f %s\n' | sort > artifacts/logs/publish-files.txt
-          sha256sum artifacts/l18-managed/* > artifacts/logs/publish-sha256.txt
-
-      - name: Upload managed recovery artifact
+      - name: Upload exact SDK
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: OpenGT-L18-managed-linux
-          path: artifacts/
+          name: OpenGT-dotnet-sdk-10.0.401
+          path: artifacts/sdk/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload reconstructed NuGet feed
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenGT-L18-nuget-feed
+          path: artifacts/nuget-feed/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload managed runtime proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenGT-L18-managed-runtime
+          path: |
+            artifacts/runtime/
+            artifacts/logs/
           if-no-files-found: error
           retention-days: 7
