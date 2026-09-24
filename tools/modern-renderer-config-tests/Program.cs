@@ -898,6 +898,43 @@ foreach (string courseOverlay in new[] {
         "generated course translation hook is absent or duplicated");
 string generatedArcadeFrontend = ReadRepoFile(
     @"generated\arcade-recompiled\gt2_arcade_overlay_2.cs");
+int arcadeSaveCapture = generatedArcadeFrontend.IndexOf(
+    "GT2Compat.CaptureArcadeSaveWrite(", StringComparison.Ordinal);
+int arcadeSaveSubmit = arcadeSaveCapture >= 0
+    ? generatedArcadeFrontend.IndexOf(
+        "GranTurismo2ArcadePC.func_8006A0C4(c, m);",
+        arcadeSaveCapture,
+        StringComparison.Ordinal)
+    : -1;
+int arcadeSaveComplete = generatedArcadeFrontend.IndexOf(
+    "GT2Compat.CompleteArcadeSaveWrite();", StringComparison.Ordinal);
+int arcadeSaveCleanup = arcadeSaveComplete >= 0
+    ? generatedArcadeFrontend.IndexOf(
+        "GranTurismo2ArcadePC.func_8006A1C4(c, m);",
+        arcadeSaveComplete,
+        StringComparison.Ordinal)
+    : -1;
+Require(
+    Occurrences(
+        generatedArcadeFrontend,
+        "GT2Compat.CaptureArcadeSaveWrite(") == 1 &&
+    Occurrences(
+        generatedArcadeFrontend,
+        "GT2Compat.CompleteArcadeSaveWrite();") == 1 &&
+    arcadeSaveCapture >= 0 &&
+    arcadeSaveSubmit > arcadeSaveCapture &&
+    arcadeSaveComplete > arcadeSaveSubmit &&
+    arcadeSaveCleanup > arcadeSaveComplete &&
+    gt2CompatSource.Contains(
+        "RECOMPONE_GT2_ARCADE_SAVE_BRIDGE", StringComparison.Ordinal) &&
+    gt2CompatSource.Contains(
+        "PendingArcadeSaveWrites", StringComparison.Ordinal) &&
+    gt2CompatSource.Contains("card.Flush();", StringComparison.Ordinal) &&
+    Occurrences(
+        arcadeEnhancements,
+        "GranTurismo2ArcadePC.func_8006A124(c, m);") == 0,
+    "Arcade Save Game persistence bridge no longer snapshots before op 6 " +
+    "and commits only after native success without forcing the serializer");
 string generatedSimulationTitle = ReadRepoFile(
     @"generated\recompiled\gt2_overlay_1.cs");
 string unifiedModeHarness = ReadRepoFile(
