@@ -1,4 +1,4 @@
-name: L18 exact font export
+name: L18 runtime dependency export
 
 on:
   push:
@@ -10,11 +10,15 @@ permissions:
   contents: read
 
 jobs:
-  export-fonts:
+  export-runtime-dependencies:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.401
 
       - name: Verify exact historical font resources
         shell: bash
@@ -23,13 +27,40 @@ jobs:
           echo "ed9bee1f62504a8e263eaebfac2077f88ff5a05b2efeaefa724a7103e533b15c  vendor/RecompOne/RecompOne.Runtime/Bios/Fonts/font1.raw" | sha256sum -c -
           echo "cd248f7d47a37ce0338e59320675e3595698c7512f969d8ac38cb34ecc80619f  vendor/RecompOne/RecompOne.Runtime/Bios/Fonts/font2.raw" | sha256sum -c -
 
-      - name: Upload exact fonts
+      - name: Restore exact Linux runtime packs
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/opengt-ridpack artifacts/selfcontained-feed
+          cat > /tmp/opengt-ridpack/RidPack.csproj <<'EOF'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <TargetFramework>net10.0</TargetFramework>
+              <RuntimeIdentifier>linux-x64</RuntimeIdentifier>
+              <SelfContained>true</SelfContained>
+            </PropertyGroup>
+            <ItemGroup>
+              <FrameworkReference Include="Microsoft.AspNetCore.App" />
+            </ItemGroup>
+          </Project>
+          EOF
+          dotnet restore /tmp/opengt-ridpack/RidPack.csproj -r linux-x64 -p:NuGetAudit=false
+          for spec in             "microsoft.netcore.app.runtime.linux-x64/10.0.12"             "microsoft.aspnetcore.app.runtime.linux-x64/10.0.12"             "microsoft.netcore.app.host.linux-x64/10.0.12"; do
+            dir="$HOME/.nuget/packages/$spec"
+            test -d "$dir"
+            pkg="$(find "$dir" -maxdepth 1 -type f -name '*.nupkg' -print -quit)"
+            test -n "$pkg"
+            cp "$pkg" artifacts/selfcontained-feed/
+          done
+          (cd artifacts/selfcontained-feed && sha256sum *.nupkg | sort > SHA256SUMS.txt)
+          ls -lh artifacts/selfcontained-feed
+          cat artifacts/selfcontained-feed/SHA256SUMS.txt
+
+      - name: Upload Linux self-contained runtime packs
         uses: actions/upload-artifact@v4
         with:
-          name: OpenGT-L18-exact-fonts
-          path: |
-            vendor/RecompOne/RecompOne.Runtime/Bios/Fonts/font1.raw
-            vendor/RecompOne/RecompOne.Runtime/Bios/Fonts/font2.raw
+          name: OpenGT-L18-linux-selfcontained-packs
+          path: artifacts/selfcontained-feed/
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
