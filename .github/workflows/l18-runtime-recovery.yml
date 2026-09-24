@@ -45,7 +45,7 @@ jobs:
           </Project>
           EOF
           dotnet restore /tmp/opengt-ridpack/RidPack.csproj -r linux-x64 -p:NuGetAudit=false
-          for spec in             "microsoft.netcore.app.runtime.linux-x64/10.0.12"             "microsoft.aspnetcore.app.runtime.linux-x64/10.0.12"             "microsoft.netcore.app.host.linux-x64/10.0.12"; do
+          for spec in             "microsoft.netcore.app.runtime.linux-x64/10.0.12"             "microsoft.aspnetcore.app.runtime.linux-x64/10.0.12"; do
             dir="$HOME/.nuget/packages/$spec"
             test -d "$dir"
             pkg="$(find "$dir" -maxdepth 1 -type f -name '*.nupkg' -print -quit)"
