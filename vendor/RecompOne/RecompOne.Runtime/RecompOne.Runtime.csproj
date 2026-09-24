@@ -18,13 +18,19 @@
     <ItemGroup>
       <PackageReference Include="NVorbis" Version="0.10.5" />
       <PackageReference Include="ImGui.NET" Version="1.90.8.1" />
-      <PackageReference Include="Silk.NET.Input" Version="2.23.0" />
+      <PackageReference Include="Silk.NET.Input" Version="2.23.0" Condition="'$(OpenGTLinuxHost)' != 'true'" />
+      <PackageReference Include="Silk.NET.Input" Version="2.22.0" Condition="'$(OpenGTLinuxHost)' == 'true'" />
       <PackageReference Include="Silk.NET.Maths" Version="2.23.0" />
-      <PackageReference Include="Silk.NET.Windowing" Version="2.23.0" />
+      <PackageReference Include="Silk.NET.Windowing" Version="2.23.0" Condition="'$(OpenGTLinuxHost)' != 'true'" />
+      <PackageReference Include="Silk.NET.Windowing" Version="2.22.0" Condition="'$(OpenGTLinuxHost)' == 'true'" />
+      <PackageReference Include="Silk.NET.OpenGL" Version="2.22.0" Condition="'$(OpenGTLinuxHost)' == 'true'" />
       <PackageReference Include="Silk.NET.SDL" Version="2.23.0" />
-      <PackageReference Include="Vortice.Direct3D11" Version="2.4.2" />
-      <PackageReference Include="Vortice.D3DCompiler" Version="2.4.2" />
-      <PackageReference Include="Vortice.DXGI" Version="2.4.2" />
+      <PackageReference Include="Vortice.Direct3D11" Version="2.4.2" Condition="'$(OpenGTLinuxHost)' != 'true'" />
+      <PackageReference Include="Vortice.D3DCompiler" Version="2.4.2" Condition="'$(OpenGTLinuxHost)' != 'true'" />
+      <PackageReference Include="Vortice.DXGI" Version="2.4.2" Condition="'$(OpenGTLinuxHost)' != 'true'" />
     </ItemGroup>
 
+  <ItemGroup Condition="'$(OpenGTLinuxHost)' == 'true'">
+    <Compile Remove="Host/Window/HostWindow.cs;Host/Window/D3D11Renderer.cs;Host/Window/D3D11ImGuiController.cs;Host/Window/PresentationRenderer.cs;Gpu/Hle/D3D11GpuBackend.cs" />
+  </ItemGroup>
 </Project>
