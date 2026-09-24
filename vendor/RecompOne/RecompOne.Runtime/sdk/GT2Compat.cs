@@ -2198,6 +2198,29 @@ public static class GT2Compat
             return false;
         }
 
+        // GT2's serializer (0x8006A124) copies the live Arcade save model
+        // 0x801C9340..+0x7C9B directly into payload +0x200 before computing
+        // the CRC. A valid CRC alone is insufficient: an older payload can
+        // remain internally valid after gameplay has changed the live model.
+        // Refuse that stale image instead of reporting a successful old save.
+        const uint liveArcadeStateAddress = 0x801C9340u;
+        const int payloadStateOffset = 0x200;
+        const int liveArcadeStateLength = 0x7C9C;
+        for (int offset = 0; offset < liveArcadeStateLength; offset++)
+        {
+            byte live = memory.ReadU8(
+                liveArcadeStateAddress + (uint)offset);
+            byte serialized = data[payloadStateOffset + offset];
+            if (live == serialized)
+                continue;
+
+            Console.Error.WriteLine(
+                $"[GT2-Save] Arcade persistence bridge refused stale payload: " +
+                $"stateOffset=0x{offset:X4} live=0x{live:X2} " +
+                $"serialized=0x{serialized:X2}");
+            return false;
+        }
+
         PendingArcadeSaveWrites[slot] = data;
         return true;
     }
