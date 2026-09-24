@@ -1,0 +1,84 @@
+name: L18 runtime recovery
+
+on:
+  push:
+    branches:
+      - chatgpt/l18-runtime-recovery
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  managed-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install exact .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.401
+
+      - name: Record SDK
+        shell: bash
+        run: |
+          mkdir -p artifacts/logs
+          dotnet --version | tee artifacts/logs/dotnet-version.txt
+          dotnet --info > artifacts/logs/dotnet-info.txt
+
+      - name: Restore managed projects
+        shell: bash
+        run: |
+          set -euxo pipefail
+          projects=(
+            tools/unified-host/GranTurismo2PC.csproj
+            tools/LinuxHostRegression/LinuxHostRegression.csproj
+            tools/VehicleShadowRegression/VehicleShadowRegression.csproj
+            tools/WorldCameraRegression/WorldCameraRegression.csproj
+          )
+          for p in "${projects[@]}"; do
+            dotnet restore "$p" -p:NuGetAudit=false -p:PublishReadyToRun=false
+          done
+
+      - name: Build managed projects
+        shell: bash
+        run: |
+          set -euxo pipefail
+          projects=(
+            tools/unified-host/GranTurismo2PC.csproj
+            tools/LinuxHostRegression/LinuxHostRegression.csproj
+            tools/VehicleShadowRegression/VehicleShadowRegression.csproj
+            tools/WorldCameraRegression/WorldCameraRegression.csproj
+          )
+          for p in "${projects[@]}"; do
+            dotnet build "$p" -c Release --no-restore \
+              -p:OpenGTLinuxHost=true \
+              -p:PublishReadyToRun=false \
+              -p:UseSharedCompilation=false \
+              -m:1
+          done
+
+      - name: Publish Linux host
+        shell: bash
+        run: |
+          set -euxo pipefail
+          dotnet publish tools/unified-host/GranTurismo2PC.csproj \
+            -c Release \
+            -r linux-x64 \
+            --self-contained false \
+            -p:OpenGTLinuxHost=true \
+            -p:PublishReadyToRun=false \
+            -p:UseSharedCompilation=false \
+            -o artifacts/l18-managed
+          find artifacts/l18-managed -maxdepth 1 -type f -printf '%f %s\n' | sort > artifacts/logs/publish-files.txt
+          sha256sum artifacts/l18-managed/* > artifacts/logs/publish-sha256.txt
+
+      - name: Upload managed recovery artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenGT-L18-managed-linux
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
