@@ -41,6 +41,17 @@ static byte[] ReadSavePayload(MemoryCard card, int length)
     return data;
 }
 
+static void LoadLiveArcadeState(IMemory memory, byte[] payload)
+{
+    const uint liveArcadeStateAddress = 0x801C9340u;
+    const int payloadStateOffset = 0x200;
+    const int liveArcadeStateLength = 0x7C9C;
+    for (int offset = 0; offset < liveArcadeStateLength; offset++)
+        memory.WriteU8(
+            liveArcadeStateAddress + (uint)offset,
+            payload[payloadStateOffset + offset]);
+}
+
 string root = Path.Combine(
     Path.GetTempPath(),
     "opengt-arcade-save-bridge-" + Guid.NewGuid().ToString("N"));
@@ -74,6 +85,7 @@ try
 
     for (int offset = 0; offset < payload.Length; offset++)
         memory.WriteU8(payloadAddress + (uint)offset, payload[offset]);
+    LoadLiveArcadeState(memory, payload);
 
     Require(
         GT2Compat.CaptureArcadeSaveWrite(
@@ -125,6 +137,24 @@ try
     // A corrupt outgoing payload must be rejected even when the bridge is on.
     Environment.SetEnvironmentVariable(
         "RECOMPONE_GT2_ARCADE_SAVE_BRIDGE", "1");
+
+    // The disabled candidate still has a valid CRC, but it describes Arcade
+    // state 5 while the live working model remains at state 4. It must not
+    // be accepted merely because the old serialized image is self-consistent.
+    Require(
+        !GT2Compat.CaptureArcadeSaveWrite(
+            memory, 0, payloadAddress, payloadLength) &&
+        !GT2Compat.CompleteArcadeSaveWrite(),
+        "CRC-valid stale Arcade save payload was accepted");
+    reloaded = new MemoryCard(cardAPath) { Enabled = true };
+    Require(
+        ReadSavePayload(reloaded, payloadLength).AsSpan().SequenceEqual(payload),
+        "rejected stale payload changed the card");
+
+    // A corrupt outgoing payload must also be rejected even when live state
+    // itself is still current.
+    for (int offset = 0; offset < payload.Length; offset++)
+        memory.WriteU8(payloadAddress + (uint)offset, payload[offset]);
     memory.WriteU8(payloadAddress + 0x2B8u, 6);
     Require(
         !GT2Compat.CaptureArcadeSaveWrite(
