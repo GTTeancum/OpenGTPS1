@@ -47,6 +47,9 @@ jobs:
       - name: Build renderer contract tests
         run: dotnet build tools/modern-renderer-config-tests/ModernRendererConfigTests.csproj -c Release -p:OpenGTLinuxHost=true
 
+      - name: Run Arcade save bridge persistence regression
+        run: dotnet run --project tools/arcade-save-bridge-tests/ArcadeSaveBridgeTests.csproj -c Release -p:OpenGTLinuxHost=true
+
       - name: Publish success status
         if: ${{ success() }}
         env:
