@@ -1,0 +1,55 @@
+name: ChatGPT L18 save freshness validation
+
+on:
+  push:
+    branches:
+      - chatgpt/l18-runtime-recovery
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build RecompOne runtime
+        run: dotnet build vendor/RecompOne/RecompOne.Runtime/RecompOne.Runtime.csproj -c Release -p:OpenGTLinuxHost=true
+
+      - name: Run Arcade save bridge regression
+        run: dotnet run --project tools/arcade-save-bridge-tests/ArcadeSaveBridgeTests.csproj -c Release -p:OpenGTLinuxHost=true
+
+      - name: Build renderer contract tests
+        run: dotnet build tools/modern-renderer-config-tests/ModernRendererConfigTests.csproj -c Release -p:OpenGTLinuxHost=true
+
+      - name: Publish success status
+        if: ${{ success() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/statuses/$SHA" \
+            -d '{"state":"success","context":"chatgpt/l18-save-freshness","description":"L18 save freshness build and regression passed"}'
+
+      - name: Publish failure status
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/statuses/$SHA" \
+            -d '{"state":"failure","context":"chatgpt/l18-save-freshness","description":"L18 save freshness validation failed"}'
