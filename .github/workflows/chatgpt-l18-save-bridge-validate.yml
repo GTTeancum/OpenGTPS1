@@ -48,30 +48,60 @@ jobs:
         run: dotnet build tools/modern-renderer-config-tests/ModernRendererConfigTests.csproj -c Release -p:OpenGTLinuxHost=true
 
       - name: Run Arcade save bridge persistence regression
-        run: dotnet run --project tools/arcade-save-bridge-tests/ArcadeSaveBridgeTests.csproj -c Release -p:OpenGTLinuxHost=true
+        id: bridge_test
+        shell: bash
+        run: |
+          set +e
+          dotnet run --project tools/arcade-save-bridge-tests/ArcadeSaveBridgeTests.csproj -c Release -p:OpenGTLinuxHost=true > bridge-test.log 2>&1
+          rc=$?
+          cat bridge-test.log
+          message=$(grep -E 'error CS|Unhandled exception|InvalidOperationException|Exception:' bridge-test.log | tail -n 1 | tr '\n' ' ' | cut -c1-105)
+          if [ -z "$message" ]; then
+            message=$(tail -n 1 bridge-test.log | tr '\n' ' ' | cut -c1-105)
+          fi
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "message=$message" >> "$GITHUB_OUTPUT"
+          exit 0
 
-      - name: Publish success status
-        if: ${{ success() }}
+      - name: Publish validation status
+        if: ${{ always() }}
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}
           REPO: ${{ github.repository }}
+          BRIDGE_RC: ${{ steps.bridge_test.outputs.rc }}
+          BRIDGE_MESSAGE: ${{ steps.bridge_test.outputs.message }}
         run: |
-          curl -fsS -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$REPO/statuses/$SHA" \
-            -d '{"state":"success","context":"chatgpt/l18-save-bridge","description":"L18 save bridge source and compile validation passed"}'
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
 
-      - name: Publish failure status
-        if: ${{ failure() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.sha }}
-          REPO: ${{ github.repository }}
-        run: |
-          curl -fsS -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$REPO/statuses/$SHA" \
-            -d '{"state":"failure","context":"chatgpt/l18-save-bridge","description":"L18 save bridge validation failed"}'
+          rc = os.environ.get("BRIDGE_RC", "")
+          if rc == "0":
+              state = "success"
+              description = "L18 save bridge compile and persistence regression passed"
+          elif rc:
+              state = "failure"
+              detail = os.environ.get("BRIDGE_MESSAGE", "").strip()
+              description = ("save bridge test: " + detail)[:140]
+          else:
+              state = "failure"
+              description = "L18 save bridge validation stopped before persistence test"
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}",
+              data=json.dumps({
+                  "state": state,
+                  "context": "chatgpt/l18-save-bridge",
+                  "description": description,
+              }).encode(),
+              headers={
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Accept": "application/vnd.github+json",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+          with urllib.request.urlopen(request) as response:
+              print(response.read().decode())
+          PY
