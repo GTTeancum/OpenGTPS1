@@ -78,21 +78,27 @@ jobs:
           import urllib.request
 
           rc = os.environ.get("BRIDGE_RC", "")
+          import re
+
           if rc == "0":
               state = "success"
+              context = "chatgpt/l18-save-bridge"
               description = "L18 save bridge compile and persistence regression passed"
           elif rc:
               state = "failure"
               detail = os.environ.get("BRIDGE_MESSAGE", "").strip()
+              signature = re.sub(r"[^A-Za-z0-9_.-]+", "-", detail).strip("-")[:64]
+              context = "chatgpt/l18-save-bridge/" + (signature or "test-failed")
               description = ("save bridge test: " + detail)[:140]
           else:
               state = "failure"
+              context = "chatgpt/l18-save-bridge/pre-test-failure"
               description = "L18 save bridge validation stopped before persistence test"
           request = urllib.request.Request(
               f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}",
               data=json.dumps({
                   "state": state,
-                  "context": "chatgpt/l18-save-bridge",
+                  "context": context,
                   "description": description,
               }).encode(),
               headers={
