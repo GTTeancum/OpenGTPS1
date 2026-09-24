@@ -1,0 +1,44 @@
+name: ChatGPT L18 save bridge validation
+
+on:
+  push:
+    branches:
+      - chatgpt/l18-runtime-recovery
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Python syntax
+        run: python3 -m py_compile tools/apply_gt2_arcade_enhancements.py
+
+      - name: Save bridge source contract
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          compat = Path("vendor/RecompOne/RecompOne.Runtime/sdk/GT2Compat.cs").read_text()
+          patcher = Path("tools/apply_gt2_arcade_enhancements.py").read_text()
+          tests = Path("tools/modern-renderer-config-tests/Program.cs").read_text()
+          assert compat.count("public static bool CaptureArcadeSaveWrite(") == 1
+          assert compat.count("public static bool CompleteArcadeSaveWrite()") == 1
+          assert "RECOMPONE_GT2_ARCADE_SAVE_BRIDGE" in compat
+          assert "card.Flush();" in compat
+          assert patcher.count("GT2Compat.CaptureArcadeSaveWrite(") == 1
+          assert patcher.count("GT2Compat.CompleteArcadeSaveWrite();") == 1
+          assert "GranTurismo2ArcadePC.func_8006A124(c, m);" not in patcher
+          assert "Arcade Save Game persistence bridge no longer" in tests
+          print("Arcade save bridge source contract: PASS")
+          PY
+
+      - name: Build RecompOne runtime
+        run: dotnet build vendor/RecompOne/RecompOne.Runtime/RecompOne.Runtime.csproj -c Release -p:OpenGTLinuxHost=true
+
+      - name: Build renderer contract tests
+        run: dotnet build tools/modern-renderer-config-tests/ModernRendererConfigTests.csproj -c Release -p:OpenGTLinuxHost=true
