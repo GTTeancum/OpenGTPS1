@@ -977,6 +977,44 @@ def apply_renderer_enhancements() -> None:
     )
 
 
+def apply_arcade_save_persistence_bridge() -> None:
+    # GT2's retained Arcade Save Game state reaches async operation 6 and
+    # reports native success, but that low-level SIO-style path never enters
+    # RecompOne's persistent MemoryCard APIs. Capture GT2's already-built,
+    # CRC-valid payload immediately before operation 6 can replace the buffer,
+    # then commit only on the existing native success branch. Do not call the
+    # serializer here: ordinary gameplay must supply the payload naturally.
+    replace_in_function_once(
+        OVERLAY2,
+        "func_800247D0",
+        """        c.A2 = c.A0 + 0u;
+        c.RA = 0x80024838u;
+        GranTurismo2ArcadePC.func_8006A0C4(c, m);
+""",
+        """        c.A2 = c.A0 + 0u;
+        RecompOne.Runtime.Sdk.GT2Compat.CaptureArcadeSaveWrite(
+            m, c.A1, c.A0, 0x00007F00u);
+        c.RA = 0x80024838u;
+        GranTurismo2ArcadePC.func_8006A0C4(c, m);
+""",
+        "Arcade Save Game payload snapshot before async operation 6",
+    )
+    replace_in_function_once(
+        OVERLAY2,
+        "func_800247D0",
+        """        c.A1 = c.A0 + 0u;
+        c.RA = 0x800248E0u;
+        GranTurismo2ArcadePC.func_8006A1C4(c, m);
+""",
+        """        RecompOne.Runtime.Sdk.GT2Compat.CompleteArcadeSaveWrite();
+        c.A1 = c.A0 + 0u;
+        c.RA = 0x800248E0u;
+        GranTurismo2ArcadePC.func_8006A1C4(c, m);
+""",
+        "Arcade Save Game persistence commit after native async success",
+    )
+
+
 def apply_livery_preview_reload() -> None:
     replace_once(
         OVERLAY2,
@@ -1569,6 +1607,7 @@ def main() -> int:
 """,
         "Arcade showroom and replay alternate native livery body and palette",
     )
+    apply_arcade_save_persistence_bridge()
     apply_livery_preview_reload()
     replace_once(
         OVERLAY0,
