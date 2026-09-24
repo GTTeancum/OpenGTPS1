@@ -2144,6 +2144,100 @@ public static class GT2Compat
         return ~crc;
     }
 
+
+    static readonly byte[]?[] PendingArcadeSaveWrites = new byte[]?[2];
+
+    static bool ArcadeSavePersistenceBridgeEnabled =>
+        Environment.GetEnvironmentVariable("RECOMPONE_GT2_ARCADE_SAVE_BRIDGE") == "1";
+
+    static void ClearPendingArcadeSaveWrites()
+    {
+        PendingArcadeSaveWrites[0] = null;
+        PendingArcadeSaveWrites[1] = null;
+    }
+
+    public static bool CaptureArcadeSaveWrite(
+        IMemory memory, uint slot, uint payloadAddress, uint length)
+    {
+        if (!ArcadeSavePersistenceBridgeEnabled)
+        {
+            ClearPendingArcadeSaveWrites();
+            return false;
+        }
+
+        ClearPendingArcadeSaveWrites();
+        if (slot > 1u || length < 0x7EA0u)
+            return false;
+
+        Hardware.MemoryCard card = slot == 0u ? Runtime.CardA : Runtime.CardB;
+        if (!card.Enabled)
+            return false;
+
+        const string name = "BASCUS-94455GAME";
+        int first = card.Find(name);
+        if (first == 0)
+            return false;
+
+        int fileSize = card.FileSize(first);
+        int count = (int)Math.Min(length, (uint)Math.Max(0, fileSize));
+        if (count < 0x7EA0)
+            return false;
+
+        byte[] data = new byte[count];
+        for (int offset = 0; offset < count; offset++)
+            data[offset] = memory.ReadU8(payloadAddress + (uint)offset);
+
+        uint storedCrc = BinaryPrimitives.ReadUInt32LittleEndian(
+            data.AsSpan(0x7E9C, 4));
+        uint actualCrc = Gt2SaveCrc32(data.AsSpan(0, 0x7E9C));
+        if (storedCrc != actualCrc)
+        {
+            Console.Error.WriteLine(
+                $"[GT2-Save] Arcade persistence bridge refused invalid payload: " +
+                $"storedCrc=0x{storedCrc:X8} actualCrc=0x{actualCrc:X8}");
+            return false;
+        }
+
+        PendingArcadeSaveWrites[slot] = data;
+        return true;
+    }
+
+    public static bool CompleteArcadeSaveWrite()
+    {
+        if (!ArcadeSavePersistenceBridgeEnabled)
+        {
+            ClearPendingArcadeSaveWrites();
+            return false;
+        }
+
+        bool pendingA = PendingArcadeSaveWrites[0] != null;
+        bool pendingB = PendingArcadeSaveWrites[1] != null;
+        if (pendingA == pendingB)
+        {
+            ClearPendingArcadeSaveWrites();
+            return false;
+        }
+
+        int slot = pendingA ? 0 : 1;
+        byte[] data = PendingArcadeSaveWrites[slot]!;
+        ClearPendingArcadeSaveWrites();
+
+        Hardware.MemoryCard card = slot == 0 ? Runtime.CardA : Runtime.CardB;
+        if (!card.Enabled)
+            return false;
+
+        const string name = "BASCUS-94455GAME";
+        int first = card.Find(name);
+        if (first == 0 || card.FileSize(first) < data.Length)
+            return false;
+
+        int[] chain = card.Chain(first);
+        for (int offset = 0; offset < data.Length; offset++)
+            card.WriteByte(chain, offset, data[offset]);
+        card.Flush();
+        return true;
+    }
+
     static void EnableExactTitleDisplay()
     {
         var gpu = Runtime.Gpu;
