@@ -55,9 +55,9 @@ jobs:
           dotnet run --project tools/arcade-save-bridge-tests/ArcadeSaveBridgeTests.csproj -c Release -p:OpenGTLinuxHost=true > bridge-test.log 2>&1
           rc=$?
           cat bridge-test.log
-          message=$(grep -E 'error CS|Unhandled exception|InvalidOperationException|Exception:' bridge-test.log | tail -n 1 | tr '\n' ' ' | cut -c1-105)
+          message=$(grep -E 'error CS|Unhandled exception|InvalidOperationException|Exception:' bridge-test.log | tail -n 1 | tr '\n' ' ' | cut -c1-300)
           if [ -z "$message" ]; then
-            message=$(tail -n 1 bridge-test.log | tr '\n' ' ' | cut -c1-105)
+            message=$(tail -n 1 bridge-test.log | tr '\n' ' ' | cut -c1-300)
           fi
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           echo "message=$message" >> "$GITHUB_OUTPUT"
@@ -94,20 +94,31 @@ jobs:
               state = "failure"
               context = "chatgpt/l18-save-bridge/pre-test-failure"
               description = "L18 save bridge validation stopped before persistence test"
-          request = urllib.request.Request(
-              f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}",
-              data=json.dumps({
-                  "state": state,
-                  "context": context,
-                  "description": description,
-              }).encode(),
-              headers={
-                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
-                  "Accept": "application/vnd.github+json",
-                  "Content-Type": "application/json",
-              },
-              method="POST",
-          )
-          with urllib.request.urlopen(request) as response:
-              print(response.read().decode())
+          def post_status(status_context, status_description):
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}",
+                  data=json.dumps({
+                      "state": state,
+                      "context": status_context,
+                      "description": status_description,
+                  }).encode(),
+                  headers={
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "Accept": "application/vnd.github+json",
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              with urllib.request.urlopen(request) as response:
+                  print(response.read().decode())
+
+          post_status(context, description)
+          if state == "failure" and rc:
+              detail = re.sub(r"[^A-Za-z0-9_.:-]+", "-", os.environ.get("BRIDGE_MESSAGE", "").strip())
+              for index in range(0, min(len(detail), 240), 72):
+                  chunk = detail[index:index + 72]
+                  post_status(
+                      f"gt2-bridge-err{index // 72 + 1}/{chunk}",
+                      "Arcade save bridge diagnostic chunk",
+                  )
           PY
