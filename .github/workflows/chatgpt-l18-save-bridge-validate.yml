@@ -5,6 +5,10 @@ on:
     branches:
       - chatgpt/l18-runtime-recovery
 
+permissions:
+  contents: read
+  statuses: write
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -42,3 +46,29 @@ jobs:
 
       - name: Build renderer contract tests
         run: dotnet build tools/modern-renderer-config-tests/ModernRendererConfigTests.csproj -c Release -p:OpenGTLinuxHost=true
+
+      - name: Publish success status
+        if: ${{ success() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/statuses/$SHA" \
+            -d '{"state":"success","context":"chatgpt/l18-save-bridge","description":"L18 save bridge source and compile validation passed"}'
+
+      - name: Publish failure status
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/statuses/$SHA" \
+            -d '{"state":"failure","context":"chatgpt/l18-save-bridge","description":"L18 save bridge validation failed"}'
