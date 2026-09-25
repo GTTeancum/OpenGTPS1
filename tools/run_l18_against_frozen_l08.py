@@ -34,6 +34,16 @@ MANIFEST_DIRS = {
     "redrock-camera-stress": "redrock-L08-camera-stress",
 }
 
+FROZEN_BASELINE_NAMES = (
+    "GT2.VOL",
+    "MUSIC.DAT",
+    "TITLE_EXACT.DAT",
+    "settings.json",
+    "carda.sav",
+    "cardb.sav",
+    "GTLIVERY.BIN",
+)
+
 
 def require(path: Path) -> Path:
     if not path.is_file():
@@ -46,13 +56,35 @@ def manifest_path(checkpoint: Path, scenario: str) -> Path:
 
 
 def validate_inputs(data: Path, l18: Path, l08_checkpoint: Path, scenarios: list[str]) -> dict:
+    identities_path = require(
+        l08_checkpoint / "recovery/manifests/prepared-game-input-identities.json"
+    )
+    identity_rows = json.loads(identities_path.read_text())
+    expected_by_name = {row["name"]: row for row in identity_rows}
+
     data_rows = {}
     for rel in REQUIRED_DATA:
         p = require(data / rel)
         data_rows[rel] = {"bytes": p.stat().st_size, "sha256": sha256_file(p)}
-    optional = data / "GTLIVERY.BIN"
-    if optional.is_file():
-        data_rows["GTLIVERY.BIN"] = {"bytes": optional.stat().st_size, "sha256": sha256_file(optional)}
+
+    # Frozen-L08 mode is intentionally strict: the game payload and mutable
+    # settings/card state must be byte-identical to the historical acceptance
+    # baseline, otherwise visual differences are not attributable to L18.
+    baseline_checks = {}
+    for name in FROZEN_BASELINE_NAMES:
+        expected = expected_by_name.get(name)
+        if expected is None:
+            raise ValueError(f"L08 checkpoint is missing historical identity for {name}")
+        p = require(data / name)
+        actual = {"size": p.stat().st_size, "sha256": sha256_file(p)}
+        baseline_checks[name] = {"expected": expected, "actual": actual}
+        if actual["size"] != expected["size"] or actual["sha256"] != expected["sha256"]:
+            raise RuntimeError(
+                f"prepared GT2 baseline mismatch for {name}: "
+                f"expected {expected['size']} bytes {expected['sha256']}, "
+                f"got {actual['size']} bytes {actual['sha256']}"
+            )
+        data_rows[name] = {"bytes": actual["size"], "sha256": actual["sha256"]}
 
     runner_rows = {}
     for rel in RUNNER_FILES:
@@ -75,6 +107,11 @@ def validate_inputs(data: Path, l18: Path, l08_checkpoint: Path, scenarios: list
         frozen["manifests"][scenario] = {
             "path": str(p), "count": len(rows), "sha256": sha256_file(p)
         }
+    frozen["preparedBaselineIdentityFile"] = {
+        "path": str(identities_path),
+        "sha256": sha256_file(identities_path),
+    }
+    frozen["preparedBaselineChecks"] = baseline_checks
     return {"baseline": data_rows, "L18": runner_rows, "frozenL08": frozen}
 
 
@@ -221,12 +258,24 @@ def self_test() -> None:
             p = data / rel
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes((rel + "\n").encode())
+        (data / "GTLIVERY.BIN").write_bytes(b"GTLIVERY.BIN\n")
         l18 = root / "l18"
         make_fake_runner(l18)
         checkpoint = root / "l08-checkpoint"
         shader = checkpoint / "recovery/source/lighting/in-game-L05.shader"
         shader.parent.mkdir(parents=True)
         shutil.copy2(l18 / "lighting/in-game-L05.shader", shader)
+        identities = []
+        for name in FROZEN_BASELINE_NAMES:
+            p = data / name
+            identities.append({
+                "name": name,
+                "size": p.stat().st_size,
+                "sha256": sha256_file(p),
+            })
+        identity_path = checkpoint / "recovery/manifests/prepared-game-input-identities.json"
+        identity_path.parent.mkdir(parents=True, exist_ok=True)
+        identity_path.write_text(json.dumps(identities, indent=2) + "\n")
 
         expected_out = root / "expected"
         expected_out.mkdir()
