@@ -1,0 +1,26 @@
+name: ChatGPT test L18 updates
+
+on:
+  push:
+    branches:
+      - chatgpt/l18-runtime-recovery
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile acceptance tools
+        run: |
+          python3 -m py_compile \
+            tools/run_l08_l18_visual_acceptance.py \
+            tools/run_l18_against_frozen_l08.py \
+            tools/restore_l08_visual_baseline.py \
+            tools/run_l18_frozen_acceptance_from_archive.py
+      - name: Dual-run harness self-test
+        run: python3 tools/run_l08_l18_visual_acceptance.py --self-test
+      - name: Frozen-L08 harness self-test
+        run: python3 tools/run_l18_against_frozen_l08.py --self-test
