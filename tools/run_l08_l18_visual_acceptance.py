@@ -57,6 +57,7 @@ BASE_ENV = {
     "RECOMPONE_OUTPUT_RESOLUTION": "1280x720",
     "RECOMPONE_DISABLE_LIVE_INPUT": "1",
     "RECOMPONE_CAPTURE_AUTOMATIC_STAGE": "0",
+    "RECOMPONE_GRAPHICS_PRESET_OVERRIDE": "Enhanced",
     "OPENGT_LINUX_RENDER_SCALE": "3",
     "OPENGT_LINUX_WAIT_FOR_RENDER": "1",
     "OPENGT_LINUX_CAPTURE_LIMIT": "400",
@@ -69,12 +70,10 @@ REQUIRED_DATA = (
     "GT2.VOL",
     "MUSIC.DAT",
     "TITLE_EXACT.DAT",
-    "settings.json",
-    "carda.sav",
-    "cardb.sav",
     "manifests/simulation.json",
     "manifests/arcade.json",
 )
+HOST_STATE_FILES = ("settings.json", "carda.sav", "cardb.sav")
 RUNNER_FILES = (
     "runtime/dotnet",
     "bin/GranTurismo2PC.dll",
@@ -200,7 +199,8 @@ def run_one(
     ]
     launch_env = {k: env[k] for k in sorted(set(BASE_ENV) | {
         "DOTNET_ROOT", "LD_LIBRARY_PATH", "RECOMPONE_EXIT_AFTER_INPUT_POLL",
-        "RECOMPONE_INPUT_SCRIPT", "OPENGT_LINUX_CAPTURE_DIR",
+        "RECOMPONE_INPUT_SCRIPT", "RECOMPONE_GRAPHICS_PRESET_OVERRIDE",
+        "OPENGT_LINUX_CAPTURE_DIR",
         "OPENGT_LINUX_CAPTURE_EVERY", "OPENGT_LINUX_CAPTURE_START_POLL",
         "OPENGT_LIGHTING_SCRIPT",
     })}
@@ -209,23 +209,51 @@ def run_one(
         + "\n"
     )
 
+    # Runtime settings/cards live beside the managed host, not in the loose
+    # game-data tree. L08's historical scratch copies are not an acceptance
+    # dependency. Start every checkpoint run with a clean host state, retain
+    # the generated state as evidence, then restore any pre-existing runner
+    # files so the acceptance harness is non-destructive.
+    host_root = runner / "bin"
+    original_host_state: dict[str, bytes | None] = {}
+    for name in HOST_STATE_FILES:
+        path = host_root / name
+        original_host_state[name] = path.read_bytes() if path.is_file() else None
+        if path.is_file():
+            path.unlink()
+
     started = time.monotonic()
     timed_out = False
     log_path = run_root / "runtime.log"
-    with log_path.open("w", encoding="utf-8", errors="replace") as log:
-        try:
-            proc = subprocess.run(
-                cmd,
-                env=env,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                timeout=deadline,
-                check=False,
-            )
-            exit_code = proc.returncode
-        except subprocess.TimeoutExpired:
-            exit_code = 124
-            timed_out = True
+    host_state_evidence = run_root / "generated-host-state"
+    host_state_evidence.mkdir()
+    try:
+        with log_path.open("w", encoding="utf-8", errors="replace") as log:
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    env=env,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    timeout=deadline,
+                    check=False,
+                )
+                exit_code = proc.returncode
+            except subprocess.TimeoutExpired:
+                exit_code = 124
+                timed_out = True
+        for name in HOST_STATE_FILES:
+            generated = host_root / name
+            if generated.is_file():
+                shutil.copy2(generated, host_state_evidence / name)
+    finally:
+        for name, payload in original_host_state.items():
+            path = host_root / name
+            if path.is_file():
+                path.unlink()
+            if payload is not None:
+                path.write_bytes(payload)
+
     elapsed = time.monotonic() - started
     capture_files = sorted(captures.glob("*.ppm"))
     result = {
