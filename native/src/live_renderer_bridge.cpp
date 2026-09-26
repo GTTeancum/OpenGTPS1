@@ -2005,6 +2005,11 @@ void resident_calculate_world(
     const opengt::render::WorldCaptureHeader& header,
     opengt::render::WorldCaptureVertex* vertex
 ) noexcept {
+    if (opengt::render::reconstruct_primary_world(
+            header, vertex->view_x, vertex->view_y, vertex->view_z,
+            &vertex->world_x, &vertex->world_y, &vertex->world_z))
+        return;
+
     const float x = static_cast<float>(
         vertex->view_x - header.camera_translation[0]);
     const float y = static_cast<float>(
