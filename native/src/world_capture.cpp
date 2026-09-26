@@ -351,20 +351,24 @@ bool reconstruct_primary_world(
             return false;
 
     // The primary camera matrix is depth-normalized together with the GTE
-    // view vector. Reconstruct in source-primary coordinates using the exact
-    // inverse; camera_translation is sector/normalization state and is not a
-    // stable world origin. camera_world_offset is the independently captured
-    // negative source-camera position in raw common units.
+    // view vector. Match shadow_camera_transform exactly: GT2's primary R
+    // registers encode canonical source-world axes as X,-Z,Y, not direct XYZ.
+    // camera_translation is sector/normalization state, not a world origin.
     const double matrix_scale =
         std::ldexp(1.0, header.camera_depth_scale_exponent) /
         (4096.0 * 1024.0);
     double a[3][3]{};
-    for (int row = 0; row < 3; ++row)
-        for (int column = 0; column < 3; ++column)
-            a[row][column] =
-                static_cast<double>(
-                    header.camera_rotation[row * 3 + column]) *
-                matrix_scale;
+    for (int row = 0; row < 3; ++row) {
+        a[row][0] =
+            static_cast<double>(header.camera_rotation[row * 3]) *
+            matrix_scale;
+        a[row][1] =
+            -static_cast<double>(header.camera_rotation[row * 3 + 2]) *
+            matrix_scale;
+        a[row][2] =
+            static_cast<double>(header.camera_rotation[row * 3 + 1]) *
+            matrix_scale;
+    }
     const double determinant =
         a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) -
         a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
@@ -398,10 +402,14 @@ bool reconstruct_primary_world(
         static_cast<double>(view_y) * view_scale,
         static_cast<double>(view_z) * view_scale,
     };
+    const double origin[3] = {
+        -static_cast<double>(header.camera_world_offset[0]),
+        static_cast<double>(header.camera_world_offset[2]),
+        -static_cast<double>(header.camera_world_offset[1]),
+    };
     double source[3]{};
     for (int row = 0; row < 3; ++row) {
-        source[row] =
-            -static_cast<double>(header.camera_world_offset[row]);
+        source[row] = origin[row];
         for (int column = 0; column < 3; ++column)
             source[row] += inverse[row][column] * view[column];
     }
