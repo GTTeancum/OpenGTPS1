@@ -49,15 +49,31 @@
 +    out.world_normal=authoredNormal;
      out.eligible=out.primitive_key!=0;return out;
  }
+ 
 @@ -419,7 +424,7 @@
+     // accumulates coarse source-camera orientation diversity. The offline
+     // analyzer can therefore reject a dark primitive seen only in one narrow
+     // view without turning every visible triangle on every frame into log traffic.
 -    using AuditKey=std::tuple<std::string,std::uint64_t,std::uint32_t,std::uint64_t,std::uint32_t,std::uint64_t>;
 +    using AuditKey=std::tuple<std::string,std::uint64_t,std::uint32_t,std::uint64_t,std::uint32_t,std::uint64_t,std::uint32_t,std::uint32_t>;
+     struct AuditState {
+         std::uint64_t first_frame{};
+         std::uint64_t last_distinct_frame{};
 @@ -460,7 +465,7 @@
+     have_last_frame=true;last_frame=list.frame_index;
+     const std::uint32_t authoredColor=static_cast<std::uint32_t>(record.color[0])|
+         (static_cast<std::uint32_t>(record.color[1])<<8)|(static_cast<std::uint32_t>(record.color[2])<<16);
 -    const AuditKey key{track,record.source_mesh_key,record.source_primitive_address,record.primitive_key,authoredColor,record.resident_content_key};
 +    const AuditKey key{track,record.source_mesh_key,record.source_primitive_address,record.primitive_key,authoredColor,record.resident_content_key,record.object_id,record.model_pointer};
+     auto it=observations.find(key);
+     bool first=false;
+     if(it==observations.end()){
 --- a/native/tests/lighting_tests.cpp
 +++ b/native/tests/lighting_tests.cpp
 @@ -104,12 +104,33 @@
+     check(audit.primitive_key==expected&&audit.source_mesh_key==c.source_mesh_key&&audit.source_primitive_address==c.source_primitive_address&&audit.resident_content_key==c.resident_content_key,"audit carries exact destructive-rule/content provenance");
+     check(audit.texture_page==12&&audit.clut==0x7e21&&audit.color[0]==96&&audit.color[1]==88&&audit.color[2]==72,"audit carries authored material/color evidence");
+     check(audit.uv[0]==32&&audit.uv[1]==64&&audit.uv[4]==64&&audit.uv[5]==80,"audit carries all source UV corners");
 -    check(audit.world_scale>1&&std::isfinite(audit.world_centroid.x)&&std::isfinite(audit.world_normal.y),"audit carries finite reconstructed world-plane evidence");
 +    check(audit.world_scale>1&&std::isfinite(audit.world_centroid.x)&&std::isfinite(audit.world_normal.y),"audit carries finite authored model-plane evidence");
 +    auto moved_view=c;
@@ -82,22 +98,37 @@
 +    const float plane_angle=std::acos(plane_cosine)*57.29577951308232F;
 +    check(centroid_drift>.10F||plane_offset>.05F||plane_angle>5.0F,
 +        "real authored vertex change passed resident geometry stability thresholds");
-@@ -110,8 +131,7 @@
+     auto bad=c;bad.source_mesh_key=0;check(!inspect_unbake_candidate(bad,m,Surface::road,.99F).eligible,"capture without exact resident source identity is never an unbake candidate");
+     bad=c;bad.resident_content_key=0;check(!inspect_unbake_candidate(bad,m,Surface::road,.99F).eligible,"capture without immutable resident content identity is never an unbake candidate");
+     bad=c;bad.vertices[1].r++;check(!inspect_unbake_candidate(bad,m,Surface::road,.99F).eligible,"gouraud/tinted triangle is not confused with uniform baked shadow evidence");
 -    bad=c;bad.vertices[1].world_x=std::numeric_limits<float>::quiet_NaN();check(!inspect_unbake_candidate(bad,m,Surface::road,.99F).eligible,"invalid reconstructed world geometry is excluded from unbake audit");
 -    bad=c;for(auto& v:bad.vertices)v.world_x=bad.vertices[0].world_x, v.world_y=bad.vertices[0].world_y, v.world_z=bad.vertices[0].world_z;check(!inspect_unbake_candidate(bad,m,Surface::road,.99F).eligible,"degenerate reconstructed world geometry is excluded from unbake audit");
 +    bad=c;for(auto& v:bad.vertices)v.model_x=bad.vertices[0].model_x, v.model_y=bad.vertices[0].model_y, v.model_z=bad.vertices[0].model_z;check(!inspect_unbake_candidate(bad,m,Surface::road,.99F).eligible,"degenerate authored model geometry is excluded from unbake audit");
+     check(!inspect_unbake_candidate(c,m,Surface::road,.95F).eligible,"non-horizontal surface is excluded from conservative audit");
+     auto flags=m;flags.primitive_flags|=2U;check(!inspect_unbake_candidate(c,flags,Surface::road,.99F).eligible,"semi-transparent source is excluded from audit");
+     flags=m;flags.primitive_flags|=world_primitive_track_billboard_flag;check(!inspect_unbake_candidate(c,flags,Surface::track,.99F).eligible,"camera-facing billboard is excluded from unbake audit");
 --- a/tools/analyze_unbake_audit.py
 +++ b/tools/analyze_unbake_audit.py
 @@ -85,7 +85,7 @@
+ def identity(record):
      return (
          record["track"], record["primitiveKey"], record["sourceMeshKey"],
 -        record["sourcePrimitiveAddress"],
 +        record["sourcePrimitiveAddress"], record["object"], record["model"],
      )
+ 
+ 
 @@ -348,7 +348,7 @@
+         "groups": len(groups),
+         "candidateGroups": candidate_groups,
+         "candidates": candidates,
 -        "warning": "Candidates require repeated cross-frame evidence, immutable resident-content provenance, cross-view confirmation, and stable reconstructed world geometry. They remain authored-color contrast evidence only. Visually/source-verify each exact primitive before enabling bakedGain or removeShadowOverlay.",
 +        "warning": "Candidates require repeated cross-frame evidence, immutable resident-content provenance, cross-view confirmation, and stable authored resident geometry. They remain authored-color contrast evidence only. Visually/source-verify each exact primitive before enabling bakedGain or removeShadowOverlay.",
+     }
+ 
+ 
 @@ -395,6 +395,15 @@
+     # Duplicate exact confirmation cannot inflate group support.
      dup = analyze(parsed + [parsed[0]])
      assert dup["records"] == result["records"] and len(dup["candidates"]) == 4
 +    # The same source definition observed through a different resident object/model
@@ -109,3 +140,6 @@
 +    instance_result = analyze(parsed + [instance_variant])
 +    assert instance_result["records"] == result["records"] + 1
 +    assert instance_result["ambiguousIdentitiesCount"] == 0
+     # First-sighting-only records are preserved for diagnostics but cannot
+     # become candidates until the runtime emits temporal confirmation.
+     transient = [parse_line(line(i, (60,55,45) if i < 4 else (120,110,90), stage=0, seen=1, span=0)) for i in range(10)]
