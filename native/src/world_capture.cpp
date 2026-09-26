@@ -1,5 +1,6 @@
 #include "opengt/world_capture.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -160,6 +161,11 @@ void calculate_world(
     const WorldCaptureHeader& header,
     WorldCaptureVertex* vertex
 ) {
+    if (reconstruct_primary_world(
+            header, vertex->view_x, vertex->view_y, vertex->view_z,
+            &vertex->world_x, &vertex->world_y, &vertex->world_z))
+        return;
+
     const float x =
         static_cast<float>(vertex->view_x - header.camera_translation[0]);
     const float y =
@@ -323,6 +329,88 @@ void parse_triangle(
 }
 
 } // namespace
+
+bool reconstruct_primary_world(
+    const WorldCaptureHeader& header,
+    std::int32_t view_x,
+    std::int32_t view_y,
+    std::int32_t view_z,
+    float* world_x,
+    float* world_y,
+    float* world_z
+) noexcept {
+    if (world_x == nullptr || world_y == nullptr || world_z == nullptr ||
+        header.version < 6 ||
+        (header.flags & world_capture_primary_camera_axes_flag) == 0 ||
+        (header.flags & world_capture_world_anchor_flag) == 0 ||
+        header.camera_depth_scale_exponent < 8 ||
+        header.camera_depth_scale_exponent > 10)
+        return false;
+    for (const auto value : header.camera_world_offset)
+        if ((value & 1023) != 0)
+            return false;
+
+    // The primary camera matrix is depth-normalized together with the GTE
+    // view vector. Reconstruct in source-primary coordinates using the exact
+    // inverse; camera_translation is sector/normalization state and is not a
+    // stable world origin. camera_world_offset is the independently captured
+    // negative source-camera position in raw common units.
+    const double matrix_scale =
+        std::ldexp(1.0, header.camera_depth_scale_exponent) /
+        (4096.0 * 1024.0);
+    double a[3][3]{};
+    for (int row = 0; row < 3; ++row)
+        for (int column = 0; column < 3; ++column)
+            a[row][column] =
+                static_cast<double>(
+                    header.camera_rotation[row * 3 + column]) *
+                matrix_scale;
+    const double determinant =
+        a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) -
+        a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
+        a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+    if (!std::isfinite(determinant) || std::abs(determinant) < 1e-5)
+        return false;
+    double inverse[3][3]{};
+    inverse[0][0] =
+        (a[1][1] * a[2][2] - a[1][2] * a[2][1]) / determinant;
+    inverse[0][1] =
+        (a[0][2] * a[2][1] - a[0][1] * a[2][2]) / determinant;
+    inverse[0][2] =
+        (a[0][1] * a[1][2] - a[0][2] * a[1][1]) / determinant;
+    inverse[1][0] =
+        (a[1][2] * a[2][0] - a[1][0] * a[2][2]) / determinant;
+    inverse[1][1] =
+        (a[0][0] * a[2][2] - a[0][2] * a[2][0]) / determinant;
+    inverse[1][2] =
+        (a[0][2] * a[1][0] - a[0][0] * a[1][2]) / determinant;
+    inverse[2][0] =
+        (a[1][0] * a[2][1] - a[1][1] * a[2][0]) / determinant;
+    inverse[2][1] =
+        (a[0][1] * a[2][0] - a[0][0] * a[2][1]) / determinant;
+    inverse[2][2] =
+        (a[0][0] * a[1][1] - a[0][1] * a[1][0]) / determinant;
+
+    const double view_scale =
+        std::ldexp(1.0, header.camera_depth_scale_exponent);
+    const double view[3] = {
+        static_cast<double>(view_x) * view_scale,
+        static_cast<double>(view_y) * view_scale,
+        static_cast<double>(view_z) * view_scale,
+    };
+    double source[3]{};
+    for (int row = 0; row < 3; ++row) {
+        source[row] =
+            -static_cast<double>(header.camera_world_offset[row]);
+        for (int column = 0; column < 3; ++column)
+            source[row] += inverse[row][column] * view[column];
+    }
+    *world_x = static_cast<float>(source[0] / 1024.0);
+    *world_y = static_cast<float>(source[1] / 1024.0);
+    *world_z = static_cast<float>(source[2] / 1024.0);
+    return std::isfinite(*world_x) && std::isfinite(*world_y) &&
+        std::isfinite(*world_z);
+}
 
 WorldCaptureReadResult read_world_capture_header(
     const char* path,
