@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <vector>
 
 namespace {
@@ -140,6 +141,61 @@ bool write_fixture(const char* path) {
     return okay;
 }
 
+bool write_depth_normalized_fixture(
+    const char* path,
+    std::int16_t exponent,
+    std::int16_t matrix_scale,
+    std::int32_t view_scale
+) {
+    if (!write_fixture(path))
+        return false;
+    std::fstream file(path, std::ios::in | std::ios::out | std::ios::binary);
+    if (!file)
+        return false;
+    auto patch_u16 = [&](std::streamoff offset, std::uint16_t value) {
+        std::uint8_t bytes[2]{};
+        put_u16(bytes, value);
+        file.seekp(offset);
+        file.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+    };
+    auto patch_u32 = [&](std::streamoff offset, std::uint32_t value) {
+        std::uint8_t bytes[4]{};
+        put_u32(bytes, value);
+        file.seekp(offset);
+        file.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+    };
+    patch_u32(
+        84,
+        (1U << 2) |
+            opengt::render::world_capture_primary_camera_axes_flag |
+            opengt::render::world_capture_world_anchor_flag);
+    for (int index = 0; index < 9; ++index)
+        patch_u16(
+            96 + index * 2,
+            (index % 4) == 0 ? matrix_scale : 0);
+    patch_u16(114, static_cast<std::uint16_t>(exponent));
+    for (int index = 0; index < 3; ++index) {
+        patch_u32(116 + index * 4, 0);
+        patch_u32(148 + index * 4, 0);
+    }
+    const std::streamoff triangle =
+        opengt::render::world_capture_header_size;
+    const std::int32_t points[3][3] = {
+        {100, 200, 300},
+        {400, 500, 600},
+        {700, 800, 900},
+    };
+    for (int vertex = 0; vertex < 3; ++vertex) {
+        const std::streamoff base = triangle + 88 + vertex * 96;
+        for (int axis = 0; axis < 3; ++axis)
+            patch_u32(
+                base + 28 + axis * 4,
+                static_cast<std::uint32_t>(
+                    points[vertex][axis] * view_scale));
+    }
+    return bool(file);
+}
+
 bool write_v5_fixture(const char* path) {
     constexpr std::size_t prefix_size =
         opengt::render::world_capture_header_size +
@@ -213,6 +269,10 @@ bool expect(bool value, const char* message) {
 int main() {
     const char* path = "opengt_world_capture_test.ogtwcap";
     const char* v5_path = "opengt_world_capture_v5_test.ogtwcap";
+    const char* depth10_path =
+        "opengt_world_capture_depth10_test.ogtwcap";
+    const char* depth8_path =
+        "opengt_world_capture_depth8_test.ogtwcap";
     bool okay = expect(write_fixture(path), "write fixture");
     opengt::render::WorldCaptureHeader header{};
     okay &= expect(
@@ -276,6 +336,41 @@ int main() {
         std::fabs(vertex.world_y - 2.0F) < 0.001F &&
         std::fabs(vertex.world_z - 3.0F) < 0.001F,
         "recover world coordinates");
+
+    // The same fixed source triangle viewed through GT2's two valid primary
+    // depth-normalization states must reconstruct to the same world position.
+    // This guards the independent primary world-anchor/depth inverse against
+    // normalization-scale drift.
+    okay &= expect(
+        write_depth_normalized_fixture(depth10_path, 10, 4096, 1) &&
+        write_depth_normalized_fixture(depth8_path, 8, 16384, 4),
+        "write depth-normalization regression fixtures");
+    std::array<opengt::render::WorldCaptureTriangle, 1> depth10{};
+    std::array<opengt::render::WorldCaptureTriangle, 1> depth8{};
+    opengt::render::WorldCaptureHeader depth10_header{}, depth8_header{};
+    okay &= expect(
+        opengt::render::load_world_capture(
+            depth10_path, &depth10_header, depth10.data(), 1,
+            vram.data(), vram.size()) ==
+                opengt::render::WorldCaptureReadResult::success &&
+        opengt::render::load_world_capture(
+            depth8_path, &depth8_header, depth8.data(), 1,
+            vram.data(), vram.size()) ==
+                opengt::render::WorldCaptureReadResult::success,
+        "load depth-normalization regression fixtures");
+    const auto& stable10 = depth10[0].vertices[0];
+    const auto& stable8 = depth8[0].vertices[0];
+    std::fprintf(
+        stderr,
+        "depth-normalization reconstruction: "
+        "exp10=(%.3f,%.3f,%.3f) exp8=(%.3f,%.3f,%.3f)\n",
+        stable10.world_x, stable10.world_y, stable10.world_z,
+        stable8.world_x, stable8.world_y, stable8.world_z);
+    okay &= expect(
+        std::fabs(stable10.world_x - stable8.world_x) < 0.001F &&
+        std::fabs(stable10.world_y - stable8.world_y) < 0.001F &&
+        std::fabs(stable10.world_z - stable8.world_z) < 0.001F,
+        "fixed world triangle drifts across valid depth-normalization states");
 
     okay &= expect(write_v5_fixture(v5_path), "write v5 fixture");
     std::array<opengt::render::WorldCaptureTriangle, 1> v5_triangles{};
