@@ -169,10 +169,15 @@ bool write_depth_normalized_fixture(
         (1U << 2) |
             opengt::render::world_capture_primary_camera_axes_flag |
             opengt::render::world_capture_world_anchor_flag);
+    const std::int16_t raw[9] = {
+        matrix_scale, 0, 0,
+        0, 0, static_cast<std::int16_t>(-matrix_scale),
+        0, matrix_scale, 0,
+    };
     for (int index = 0; index < 9; ++index)
         patch_u16(
             96 + index * 2,
-            (index % 4) == 0 ? matrix_scale : 0);
+            static_cast<std::uint16_t>(raw[index]));
     patch_u16(114, static_cast<std::uint16_t>(exponent));
     for (int index = 0; index < 3; ++index) {
         patch_u32(116 + index * 4, 0);
@@ -371,6 +376,42 @@ int main() {
         std::fabs(stable10.world_y - stable8.world_y) < 0.001F &&
         std::fabs(stable10.world_z - stable8.world_z) < 0.001F,
         "fixed world triangle drifts across valid depth-normalization states");
+
+    // Nonzero anchor + rotated primary camera catches the X,-Z,Y convention
+    // that an identity-only normalization fixture cannot exercise.
+    opengt::render::WorldCaptureHeader rotated_header{};
+    rotated_header.version = 6;
+    rotated_header.flags =
+        opengt::render::world_capture_primary_camera_axes_flag |
+        opengt::render::world_capture_world_anchor_flag;
+    rotated_header.camera_depth_scale_exponent = 9;
+    const std::int16_t rotated_raw[9] = {
+        0, 8192, 0,
+        0, 0, -8192,
+        -8192, 0, 0,
+    };
+    for (int index = 0; index < 9; ++index)
+        rotated_header.camera_rotation[index] = rotated_raw[index];
+    rotated_header.camera_world_offset[0] = -10 * 1024;
+    rotated_header.camera_world_offset[1] = -30 * 1024;
+    rotated_header.camera_world_offset[2] = 20 * 1024;
+    float rotated_x = 0.0F;
+    float rotated_y = 0.0F;
+    float rotated_z = 0.0F;
+    okay &= expect(
+        opengt::render::reconstruct_primary_world(
+            rotated_header, 540, 360, -180,
+            &rotated_x, &rotated_y, &rotated_z),
+        "reconstruct rotated primary camera");
+    std::fprintf(
+        stderr,
+        "rotated canonical reconstruction: (%.3f,%.3f,%.3f)\n",
+        rotated_x, rotated_y, rotated_z);
+    okay &= expect(
+        std::fabs(rotated_x - 100.0F) < 0.001F &&
+        std::fabs(rotated_y - 200.0F) < 0.001F &&
+        std::fabs(rotated_z - 300.0F) < 0.001F,
+        "rotated primary camera lost canonical X,-Z,Y world coordinates");
 
     okay &= expect(write_v5_fixture(v5_path), "write v5 fixture");
     std::array<opengt::render::WorldCaptureTriangle, 1> v5_triangles{};
