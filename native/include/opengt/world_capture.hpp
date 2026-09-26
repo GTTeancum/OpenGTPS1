@@ -42,6 +42,16 @@ struct WorldCaptureHeader {
     std::int32_t draw_offset_y;
 };
 
+bool reconstruct_primary_world(
+    const WorldCaptureHeader&,
+    std::int32_t view_x,
+    std::int32_t view_y,
+    std::int32_t view_z,
+    float* world_x,
+    float* world_y,
+    float* world_z
+) noexcept;
+
 struct WorldCaptureVertex {
     float screen_x;
     float screen_y;
