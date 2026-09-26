@@ -1,0 +1,111 @@
+--- a/native/include/opengt/lighting.hpp
++++ b/native/include/opengt/lighting.hpp
+@@ -112,10 +112,10 @@
+     std::uint16_t clut{};
+     std::array<float,6> uv{};
+     std::array<std::uint8_t,3> color{};
+-    // Camera-independent reconstructed world geometry used only by the
+-    // non-destructive audit. These values never participate in rendering or
+-    // destructive-rule matching. They let the analyzer reject a source
+-    // identity whose apparent receiver plane drifts as the camera changes.
++    // Camera-independent authored resident geometry used only by the
++    // non-destructive audit. Field names remain world_* for log-format
++    // compatibility, but resident-course stability is measured from exact
++    // model_x/y/z source vertices, never camera-derived coordinates.
+     Vec3 world_centroid{};
+     Vec3 world_normal{};
+     float world_scale{};
+--- a/native/src/lighting.cpp
++++ b/native/src/lighting.cpp
+@@ -383,17 +383,22 @@
+         out.uv[i*2]=v.u;out.uv[i*2+1]=v.v;
+     }
+     out.color={first.r,first.g,first.b};out.primitive_key=primitive_key(c,m);
+-    Vec3 world[3];
+-    for(int i=0;i<3;++i){
+-        world[i]={c.vertices[i].world_x,c.vertices[i].world_y,c.vertices[i].world_z};
+-        if(!finite(world[i]))return out;
+-    }
+-    const Vec3 ab=world[1]-world[0],ac=world[2]-world[0],bc=world[2]-world[1];
+-    const Vec3 worldNormal=normalized(cross(ab,ac));
++    // Resident-course source vertices are immutable authored geometry. Use
++    // them for the audit stability plane instead of camera-derived world/view
++    // coordinates; the resident exact transform is model->view/GTE and moves
++    // with the camera. Exact object/model/source/content identity below keeps
++    // separate resident instances from sharing stability history.
++    Vec3 authored[3];
++    for(int i=0;i<3;++i)
++        authored[i]={static_cast<float>(c.vertices[i].model_x),
++            static_cast<float>(c.vertices[i].model_y),
++            static_cast<float>(c.vertices[i].model_z)};
++    const Vec3 ab=authored[1]-authored[0],ac=authored[2]-authored[0],bc=authored[2]-authored[1];
++    const Vec3 authoredNormal=normalized(cross(ab,ac));
+     out.world_scale=std::max({length(ab),length(ac),length(bc)});
+-    if(length(worldNormal)<.99F||!std::isfinite(out.world_scale)||out.world_scale<=1e-6F)return out;
+-    out.world_centroid=(world[0]+world[1]+world[2])*(1.0F/3.0F);
+-    out.world_normal=worldNormal;
++    if(length(authoredNormal)<.99F||!std::isfinite(out.world_scale)||out.world_scale<=1e-6F)return out;
++    out.world_centroid=(authored[0]+authored[1]+authored[2])*(1.0F/3.0F);
++    out.world_normal=authoredNormal;
+     out.eligible=out.primitive_key!=0;return out;
+ }
+@@ -419,7 +424,7 @@
+-    using AuditKey=std::tuple<std::string,std::uint64_t,std::uint32_t,std::uint64_t,std::uint32_t,std::uint64_t>;
++    using AuditKey=std::tuple<std::string,std::uint64_t,std::uint32_t,std::uint64_t,std::uint32_t,std::uint64_t,std::uint32_t,std::uint32_t>;
+@@ -460,7 +465,7 @@
+-    const AuditKey key{track,record.source_mesh_key,record.source_primitive_address,record.primitive_key,authoredColor,record.resident_content_key};
++    const AuditKey key{track,record.source_mesh_key,record.source_primitive_address,record.primitive_key,authoredColor,record.resident_content_key,record.object_id,record.model_pointer};
+--- a/native/tests/lighting_tests.cpp
++++ b/native/tests/lighting_tests.cpp
+@@ -104,12 +104,33 @@
+-    check(audit.world_scale>1&&std::isfinite(audit.world_centroid.x)&&std::isfinite(audit.world_normal.y),"audit carries finite reconstructed world-plane evidence");
++    check(audit.world_scale>1&&std::isfinite(audit.world_centroid.x)&&std::isfinite(audit.world_normal.y),"audit carries finite authored model-plane evidence");
++    auto moved_view=c;
++    for(auto& v:moved_view.vertices){v.world_x+=5000;v.world_y-=7000;v.world_z+=9000;v.view_x+=1234;v.view_y-=567;v.view_z+=890;}
++    const auto moved_view_audit=inspect_unbake_candidate(moved_view,m,Surface::road,.99F);
++    check(moved_view_audit.eligible&&
++        std::abs(moved_view_audit.world_centroid.x-audit.world_centroid.x)<.001F&&
++        std::abs(moved_view_audit.world_centroid.y-audit.world_centroid.y)<.001F&&
++        std::abs(moved_view_audit.world_centroid.z-audit.world_centroid.z)<.001F&&
++        std::abs(dot(moved_view_audit.world_normal,audit.world_normal))>.9999F,
++        "camera/view movement changed resident authored audit geometry");
++    auto changed_model=c;changed_model.vertices[1].model_y+=200;
++    const auto changed_model_audit=inspect_unbake_candidate(changed_model,m,Surface::road,.99F);
++    check(changed_model_audit.eligible,"changed authored triangle remains measurable audit evidence");
++    const Vec3 model_delta=changed_model_audit.world_centroid-audit.world_centroid;
++    float model_scale=audit.world_scale>changed_model_audit.world_scale?audit.world_scale:changed_model_audit.world_scale;
++    if(model_scale<1e-6F)model_scale=1e-6F;
++    const float centroid_drift=std::sqrt(dot(model_delta,model_delta))/model_scale;
++    const float plane_offset=std::abs(dot(audit.world_normal,model_delta))/model_scale;
++    float plane_cosine=std::abs(dot(audit.world_normal,changed_model_audit.world_normal));
++    if(plane_cosine>1.0F)plane_cosine=1.0F;
++    const float plane_angle=std::acos(plane_cosine)*57.29577951308232F;
++    check(centroid_drift>.10F||plane_offset>.05F||plane_angle>5.0F,
++        "real authored vertex change passed resident geometry stability thresholds");
+@@ -110,8 +131,7 @@
+-    bad=c;bad.vertices[1].world_x=std::numeric_limits<float>::quiet_NaN();check(!inspect_unbake_candidate(bad,m,Surface::road,.99F).eligible,"invalid reconstructed world geometry is excluded from unbake audit");
+-    bad=c;for(auto& v:bad.vertices)v.world_x=bad.vertices[0].world_x, v.world_y=bad.vertices[0].world_y, v.world_z=bad.vertices[0].world_z;check(!inspect_unbake_candidate(bad,m,Surface::road,.99F).eligible,"degenerate reconstructed world geometry is excluded from unbake audit");
++    bad=c;for(auto& v:bad.vertices)v.model_x=bad.vertices[0].model_x, v.model_y=bad.vertices[0].model_y, v.model_z=bad.vertices[0].model_z;check(!inspect_unbake_candidate(bad,m,Surface::road,.99F).eligible,"degenerate authored model geometry is excluded from unbake audit");
+--- a/tools/analyze_unbake_audit.py
++++ b/tools/analyze_unbake_audit.py
+@@ -85,7 +85,7 @@
+     return (
+         record["track"], record["primitiveKey"], record["sourceMeshKey"],
+-        record["sourcePrimitiveAddress"],
++        record["sourcePrimitiveAddress"], record["object"], record["model"],
+     )
+@@ -348,7 +348,7 @@
+-        "warning": "Candidates require repeated cross-frame evidence, immutable resident-content provenance, cross-view confirmation, and stable reconstructed world geometry. They remain authored-color contrast evidence only. Visually/source-verify each exact primitive before enabling bakedGain or removeShadowOverlay.",
++        "warning": "Candidates require repeated cross-frame evidence, immutable resident-content provenance, cross-view confirmation, and stable authored resident geometry. They remain authored-color contrast evidence only. Visually/source-verify each exact primitive before enabling bakedGain or removeShadowOverlay.",
+@@ -395,6 +395,15 @@
+     dup = analyze(parsed + [parsed[0]])
+     assert dup["records"] == result["records"] and len(dup["candidates"]) == 4
++    # The same source definition observed through a different resident object/model
++    # instance must retain separate stability history instead of being folded
++    # into the first instance.
++    instance_variant = dict(parsed[0])
++    instance_variant["object"] = 999
++    instance_variant["model"] = 0x800c0000
++    instance_result = analyze(parsed + [instance_variant])
++    assert instance_result["records"] == result["records"] + 1
++    assert instance_result["ambiguousIdentitiesCount"] == 0
