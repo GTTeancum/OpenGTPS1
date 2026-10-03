@@ -1,0 +1,3564 @@
+using RecompOne.Runtime.Context;
+using RecompOne.Runtime.Dispatch;
+using RecompOne.Runtime.Memory;
+
+namespace Recompiled.Simulation;
+
+public static partial class GranTurismo2PC
+{
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void func_80010000_gt2_overlay_3(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x18u;
+        c.A1 = 0xFFFFFFFFu;
+        MemoryAccess.WriteU32(m, (c.SP + 0x10u), c.RA);
+        c.A2 = 0x000017E8u;
+        c.RA = 0x80010014u;
+        GranTurismo2PC.func_8008CE30(c, m);
+        c.RA = MemoryAccess.ReadU32(m, (c.SP + 0x10u));
+        c.SP = c.SP + 0x18u;
+        return;
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void func_80010024(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0xC8u;
+        MemoryAccess.WriteU32(m, (c.SP + 0xB0u), c.S4);
+        c.S4 = c.A0 + 0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0xCCu), c.A1);
+        c.A0 = c.A1 + 0u;
+        c.A1 = c.SP + 0x10u;
+        MemoryAccess.WriteU32(m, (c.SP + 0xC4u), c.RA);
+        MemoryAccess.WriteU32(m, (c.SP + 0xC0u), c.FP);
+        MemoryAccess.WriteU32(m, (c.SP + 0xBCu), c.S7);
+        MemoryAccess.WriteU32(m, (c.SP + 0xB8u), c.S6);
+        MemoryAccess.WriteU32(m, (c.SP + 0xB4u), c.S5);
+        MemoryAccess.WriteU32(m, (c.SP + 0xACu), c.S3);
+        MemoryAccess.WriteU32(m, (c.SP + 0xA8u), c.S2);
+        MemoryAccess.WriteU32(m, (c.SP + 0xA4u), c.S1);
+        MemoryAccess.WriteU32(m, (c.SP + 0xA0u), c.S0);
+        c.RA = 0x80010064u;
+        GranTurismo2PC.func_80076954(c, m);
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x22u));
+        c.A0 = 0x00000012u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010074u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.A1 = c.V1 + 0x40u;
+        c.V0 = c.A0 << 2;
+        c.V0 = c.V0 + c.A0;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.V0 - c.A0;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.S4 + c.V0;
+        c.V0 = c.V0 + 0x988u;
+        L8001009C: ;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V1 + 0xCu));
+        MemoryAccess.WriteU32(m, c.V0, c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V0 + 0xCu), c.T2);
+        c.V1 = c.V1 + 0x10u;
+        if (c.V1 != c.A1) {
+            c.V0 = c.V0 + 0x10u;
+            goto L8001009C;
+        }
+        c.V0 = c.V0 + 0x10u;
+        c.S2 = 0u + 0u;
+        c.S3 = 0x00000004u;
+        c.S0 = 0x0000004Cu;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        MemoryAccess.WriteU32(m, c.V0, c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x8u), c.T1);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0xAB8u), c.S1);
+        L800100F8: ;
+        c.A0 = c.S2 + 0x23u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x80010108u;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x00000012u;
+            goto L80010174;
+        }
+        c.A0 = 0x00000012u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x8001011Cu;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.V1 = c.V1 + 0x988u;
+        c.A0 = c.V0 + 0x40u;
+        L80010128: ;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V0 + 0xCu));
+        MemoryAccess.WriteU32(m, c.V1, c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V1 + 0xCu), c.T2);
+        c.V0 = c.V0 + 0x10u;
+        if (c.V0 != c.A0) {
+            c.V1 = c.V1 + 0x10u;
+            goto L80010128;
+        }
+        c.V1 = c.V1 + 0x10u;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU32(m, c.V1, c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x8u), c.T1);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0xAB8u), c.S1);
+        L80010174: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        c.V0 = (int)c.S2 < 3 ? 1u : 0u;
+        if (c.V0 != 0u) {
+            c.S0 = c.S0 + 0x4Cu;
+            goto L800100F8;
+        }
+        c.S0 = c.S0 + 0x4Cu;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x14u));
+        c.A0 = 0u + 0u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010198u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.S2 = 0u + 0u;
+        c.V0 = c.A0 << 1;
+        c.V0 = c.V0 + c.A0;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V0 + 0xAC8u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0xACCu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0xAD0u), c.T1);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0xAE0u), c.S1);
+        c.S0 = c.S2 + 0x1u;
+        L800101DC: ;
+        c.A0 = c.S0 + 0u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x800101ECu;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0u + 0u;
+            goto L80010234;
+        }
+        c.A0 = 0u + 0u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010200u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S0 << 1;
+        c.V1 = c.V1 + c.S0;
+        c.V1 = c.V1 << 2;
+        c.V1 = c.S4 + c.V1;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V1 + 0xAC8u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0xACCu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0xAD0u), c.T1);
+        c.V0 = c.S0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0xAE0u), c.S1);
+        L80010234: ;
+        c.S2 = c.S0 + 0u;
+        if ((int)c.S2 <= 0) {
+            c.S0 = c.S2 + 0x1u;
+            goto L800101DC;
+        }
+        c.S0 = c.S2 + 0x1u;
+        c.A0 = 0x00000001u;
+        c.S2 = 0u + 0u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x16u));
+        c.S3 = 0x00000004u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010258u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.S0 = 0x00000010u;
+        c.V0 = c.A0 << (int)(c.S3 & 31u);
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V1 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.V0 + 0xAE8u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0xAECu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0xAF0u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V0 + 0xAF4u), c.T2);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0xB08u), c.S1);
+        L80010298: ;
+        c.A0 = c.S2 + 0x2u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x800102A8u;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x00000001u;
+            goto L800102E8;
+        }
+        c.A0 = 0x00000001u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x800102BCu;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V0 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.V1 + 0xAE8u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0xAECu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0xAF0u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V1 + 0xAF4u), c.T2);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0xB08u), c.S1);
+        L800102E8: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        if ((int)c.S2 <= 0) {
+            c.S0 = c.S0 + 0x10u;
+            goto L80010298;
+        }
+        c.S0 = c.S0 + 0x10u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x26u));
+        c.A0 = 0x00000016u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010308u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.S3 = c.V0 + 0u;
+        c.A3 = MemoryAccess.ReadU32(m, c.S3);
+        c.T0 = MemoryAccess.ReadU32(m, (c.S3 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.S3 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.S3 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.S4 + 0xB10u), c.A3);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xB14u), c.T0);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xB18u), c.T1);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xB1Cu), c.T2);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xBB0u), c.S1);
+        c.A3 = MemoryAccess.ReadU32(m, c.S3);
+        c.T0 = MemoryAccess.ReadU32(m, (c.S3 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.S3 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.S3 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.S4 + 0xB90u), c.A3);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xB94u), c.T0);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xB98u), c.T1);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xB9Cu), c.T2);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xBD0u), c.S1);
+        c.A3 = MemoryAccess.ReadU32(m, c.S3);
+        c.T0 = MemoryAccess.ReadU32(m, (c.S3 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.S3 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.S3 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.S4 + 0xBA0u), c.A3);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xBA4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xBA8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xBACu), c.T2);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xBD4u), c.S1);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S3 + 0xAu));
+        c.A0 = 0x00000018u;
+        c.RA = 0x80010384u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.V0 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.V0);
+        MemoryAccess.WriteWordLeft(m, (c.S4 + 0xBDBu), c.A3);
+        MemoryAccess.WriteWordRight(m, (c.S4 + 0xBD8u), c.A3);
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.V0 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.V0);
+        MemoryAccess.WriteWordLeft(m, (c.S4 + 0xBFBu), c.A3);
+        MemoryAccess.WriteWordRight(m, (c.S4 + 0xBF8u), c.A3);
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.V0 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.V0);
+        MemoryAccess.WriteWordLeft(m, (c.S4 + 0xBFFu), c.A3);
+        MemoryAccess.WriteWordRight(m, (c.S4 + 0xBFCu), c.A3);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S3 + 0xCu));
+        c.A0 = 0x00000019u;
+        c.RA = 0x800103CCu;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.A1 = c.S4 + 0xC00u;
+        c.V1 = c.V0 + 0u;
+        c.V0 = c.V1 | c.A1;
+        c.V0 = c.V0 & 0x0003u;
+        if (c.V0 == 0u) {
+            c.A0 = c.V1 + 0u;
+            goto L8001043C;
+        }
+        c.A0 = c.V1 + 0u;
+        c.V0 = c.V1 + 0x40u;
+        L800103E8: ;
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.A0 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.A0);
+        c.T0 = MemoryAccess.ReadWordLeft(m, c.T0, (c.A0 + 0x7u));
+        c.T0 = MemoryAccess.ReadWordRight(m, c.T0, (c.A0 + 0x4u));
+        c.T1 = MemoryAccess.ReadWordLeft(m, c.T1, (c.A0 + 0xBu));
+        c.T1 = MemoryAccess.ReadWordRight(m, c.T1, (c.A0 + 0x8u));
+        c.T2 = MemoryAccess.ReadWordLeft(m, c.T2, (c.A0 + 0xFu));
+        c.T2 = MemoryAccess.ReadWordRight(m, c.T2, (c.A0 + 0xCu));
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0x3u), c.A3);
+        MemoryAccess.WriteWordRight(m, c.A1, c.A3);
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0x7u), c.T0);
+        MemoryAccess.WriteWordRight(m, (c.A1 + 0x4u), c.T0);
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0xBu), c.T1);
+        MemoryAccess.WriteWordRight(m, (c.A1 + 0x8u), c.T1);
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0xFu), c.T2);
+        MemoryAccess.WriteWordRight(m, (c.A1 + 0xCu), c.T2);
+        c.A0 = c.A0 + 0x10u;
+        if (c.A0 != c.V0) {
+            c.A1 = c.A1 + 0x10u;
+            goto L800103E8;
+        }
+        c.A1 = c.A1 + 0x10u;
+        c.A0 = 0x0000001Au;
+        goto L80010470;
+        L8001043C: ;
+        c.V0 = c.V1 + 0x40u;
+        L80010440: ;
+        c.A3 = MemoryAccess.ReadU32(m, c.A0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.A0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.A0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.A0 + 0xCu));
+        MemoryAccess.WriteU32(m, c.A1, c.A3);
+        MemoryAccess.WriteU32(m, (c.A1 + 0x4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.A1 + 0x8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.A1 + 0xCu), c.T2);
+        c.A0 = c.A0 + 0x10u;
+        if (c.A0 != c.V0) {
+            c.A1 = c.A1 + 0x10u;
+            goto L80010440;
+        }
+        c.A1 = c.A1 + 0x10u;
+        c.A0 = 0x0000001Au;
+        L80010470: ;
+        c.S2 = 0u + 0u;
+        c.FP = 0x00000008u;
+        c.S7 = 0x00000040u;
+        c.S6 = 0x00000004u;
+        c.A1 = MemoryAccess.ReadU16(m, (c.S3 + 0xEu));
+        c.S5 = 0x00000010u;
+        c.RA = 0x8001048Cu;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.V0 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.V0);
+        c.T0 = MemoryAccess.ReadWordLeft(m, c.T0, (c.V0 + 0x7u));
+        c.T0 = MemoryAccess.ReadWordRight(m, c.T0, (c.V0 + 0x4u));
+        MemoryAccess.WriteWordLeft(m, (c.S4 + 0xE83u), c.A3);
+        MemoryAccess.WriteWordRight(m, (c.S4 + 0xE80u), c.A3);
+        MemoryAccess.WriteWordLeft(m, (c.S4 + 0xE87u), c.T0);
+        MemoryAccess.WriteWordRight(m, (c.S4 + 0xE84u), c.T0);
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.V0 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.V0);
+        c.T0 = MemoryAccess.ReadWordLeft(m, c.T0, (c.V0 + 0x7u));
+        c.T0 = MemoryAccess.ReadWordRight(m, c.T0, (c.V0 + 0x4u));
+        MemoryAccess.WriteWordLeft(m, (c.S4 + 0xEC3u), c.A3);
+        MemoryAccess.WriteWordRight(m, (c.S4 + 0xEC0u), c.A3);
+        MemoryAccess.WriteWordLeft(m, (c.S4 + 0xEC7u), c.T0);
+        MemoryAccess.WriteWordRight(m, (c.S4 + 0xEC4u), c.T0);
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.V0 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.V0);
+        c.T0 = MemoryAccess.ReadWordLeft(m, c.T0, (c.V0 + 0x7u));
+        c.T0 = MemoryAccess.ReadWordRight(m, c.T0, (c.V0 + 0x4u));
+        MemoryAccess.WriteWordLeft(m, (c.S4 + 0xECBu), c.A3);
+        MemoryAccess.WriteWordRight(m, (c.S4 + 0xEC8u), c.A3);
+        MemoryAccess.WriteWordLeft(m, (c.S4 + 0xECFu), c.T0);
+        MemoryAccess.WriteWordRight(m, (c.S4 + 0xECCu), c.T0);
+        L800104EC: ;
+        c.A0 = c.S2 + 0x27u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x800104FCu;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            goto L8001063C;
+        }
+        c.A0 = 0x00000016u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010514u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.S3 = c.V0 + 0u;
+        c.V0 = c.S4 + c.S5;
+        c.S0 = c.S4 + c.S6;
+        c.A3 = MemoryAccess.ReadU32(m, c.S3);
+        c.T0 = MemoryAccess.ReadU32(m, (c.S3 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.S3 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.S3 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.V0 + 0xB10u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0xB14u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0xB18u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V0 + 0xB1Cu), c.T2);
+        MemoryAccess.WriteU32(m, (c.S0 + 0xBB0u), c.S1);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S3 + 0xAu));
+        c.A0 = 0x00000018u;
+        c.RA = 0x80010550u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.V0 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.V0);
+        MemoryAccess.WriteWordLeft(m, (c.S0 + 0xBDBu), c.A3);
+        MemoryAccess.WriteWordRight(m, (c.S0 + 0xBD8u), c.A3);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S3 + 0xCu));
+        c.A0 = 0x00000019u;
+        c.RA = 0x80010570u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S7;
+        c.V1 = c.V1 + 0xC00u;
+        c.A0 = c.V0 + 0u;
+        c.V0 = c.A0 | c.V1;
+        c.V0 = c.V0 & 0x0003u;
+        if (c.V0 == 0u) {
+            c.V0 = c.A0 + 0x40u;
+            goto L800105E0;
+        }
+        c.V0 = c.A0 + 0x40u;
+        L8001058C: ;
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.A0 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.A0);
+        c.T0 = MemoryAccess.ReadWordLeft(m, c.T0, (c.A0 + 0x7u));
+        c.T0 = MemoryAccess.ReadWordRight(m, c.T0, (c.A0 + 0x4u));
+        c.T1 = MemoryAccess.ReadWordLeft(m, c.T1, (c.A0 + 0xBu));
+        c.T1 = MemoryAccess.ReadWordRight(m, c.T1, (c.A0 + 0x8u));
+        c.T2 = MemoryAccess.ReadWordLeft(m, c.T2, (c.A0 + 0xFu));
+        c.T2 = MemoryAccess.ReadWordRight(m, c.T2, (c.A0 + 0xCu));
+        MemoryAccess.WriteWordLeft(m, (c.V1 + 0x3u), c.A3);
+        MemoryAccess.WriteWordRight(m, c.V1, c.A3);
+        MemoryAccess.WriteWordLeft(m, (c.V1 + 0x7u), c.T0);
+        MemoryAccess.WriteWordRight(m, (c.V1 + 0x4u), c.T0);
+        MemoryAccess.WriteWordLeft(m, (c.V1 + 0xBu), c.T1);
+        MemoryAccess.WriteWordRight(m, (c.V1 + 0x8u), c.T1);
+        MemoryAccess.WriteWordLeft(m, (c.V1 + 0xFu), c.T2);
+        MemoryAccess.WriteWordRight(m, (c.V1 + 0xCu), c.T2);
+        c.A0 = c.A0 + 0x10u;
+        if (c.A0 != c.V0) {
+            c.V1 = c.V1 + 0x10u;
+            goto L8001058C;
+        }
+        c.V1 = c.V1 + 0x10u;
+        goto L8001060C;
+        L800105E0: ;
+        c.A3 = MemoryAccess.ReadU32(m, c.A0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.A0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.A0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.A0 + 0xCu));
+        MemoryAccess.WriteU32(m, c.V1, c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V1 + 0xCu), c.T2);
+        c.A0 = c.A0 + 0x10u;
+        if (c.A0 != c.V0) {
+            c.V1 = c.V1 + 0x10u;
+            goto L800105E0;
+        }
+        c.V1 = c.V1 + 0x10u;
+        L8001060C: ;
+        c.A1 = MemoryAccess.ReadU16(m, (c.S3 + 0xEu));
+        c.A0 = 0x0000001Au;
+        c.RA = 0x80010618u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.FP;
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.V0 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.V0);
+        c.T0 = MemoryAccess.ReadWordLeft(m, c.T0, (c.V0 + 0x7u));
+        c.T0 = MemoryAccess.ReadWordRight(m, c.T0, (c.V0 + 0x4u));
+        MemoryAccess.WriteWordLeft(m, (c.V1 + 0xE83u), c.A3);
+        MemoryAccess.WriteWordRight(m, (c.V1 + 0xE80u), c.A3);
+        MemoryAccess.WriteWordLeft(m, (c.V1 + 0xE87u), c.T0);
+        MemoryAccess.WriteWordRight(m, (c.V1 + 0xE84u), c.T0);
+        L8001063C: ;
+        c.FP = c.FP + 0x8u;
+        c.S7 = c.S7 + 0x40u;
+        c.S6 = c.S6 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        c.V0 = (int)c.S2 < 7 ? 1u : 0u;
+        if (c.V0 != 0u) {
+            c.S5 = c.S5 + 0x10u;
+            goto L800104EC;
+        }
+        c.S5 = c.S5 + 0x10u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x28u));
+        c.A0 = 0x00000017u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010668u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.S3 = c.V0 + 0u;
+        c.A3 = MemoryAccess.ReadU32(m, c.S3);
+        c.T0 = MemoryAccess.ReadU32(m, (c.S3 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.S3 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.S4 + 0xED0u), c.A3);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xED4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xED8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xF48u), c.S1);
+        c.A3 = MemoryAccess.ReadU32(m, c.S3);
+        c.T0 = MemoryAccess.ReadU32(m, (c.S3 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.S3 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.S4 + 0xF30u), c.A3);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xF34u), c.T0);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xF38u), c.T1);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xF68u), c.S1);
+        c.A3 = MemoryAccess.ReadU32(m, c.S3);
+        c.T0 = MemoryAccess.ReadU32(m, (c.S3 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.S3 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.S4 + 0xF3Cu), c.A3);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xF40u), c.T0);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xF44u), c.T1);
+        MemoryAccess.WriteU32(m, (c.S4 + 0xF6Cu), c.S1);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S3 + 0x6u));
+        c.A0 = 0x00000018u;
+        c.RA = 0x800106CCu;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.V0 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.V0);
+        MemoryAccess.WriteWordLeft(m, (c.S4 + 0xF73u), c.A3);
+        MemoryAccess.WriteWordRight(m, (c.S4 + 0xF70u), c.A3);
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.V0 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.V0);
+        MemoryAccess.WriteWordLeft(m, (c.S4 + 0xF93u), c.A3);
+        MemoryAccess.WriteWordRight(m, (c.S4 + 0xF90u), c.A3);
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.V0 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.V0);
+        MemoryAccess.WriteWordLeft(m, (c.S4 + 0xF97u), c.A3);
+        MemoryAccess.WriteWordRight(m, (c.S4 + 0xF94u), c.A3);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S3 + 0x8u));
+        c.A0 = 0x00000019u;
+        c.RA = 0x80010714u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.A1 = c.S4 + 0xF98u;
+        c.A0 = c.V0 + 0u;
+        c.V0 = c.A0 | c.A1;
+        c.V0 = c.V0 & 0x0003u;
+        if (c.V0 == 0u) {
+            c.V1 = c.A0 + 0u;
+            goto L80010784;
+        }
+        c.V1 = c.A0 + 0u;
+        c.V0 = c.A0 + 0x40u;
+        L80010730: ;
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.V1 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.V1);
+        c.T0 = MemoryAccess.ReadWordLeft(m, c.T0, (c.V1 + 0x7u));
+        c.T0 = MemoryAccess.ReadWordRight(m, c.T0, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadWordLeft(m, c.T1, (c.V1 + 0xBu));
+        c.T1 = MemoryAccess.ReadWordRight(m, c.T1, (c.V1 + 0x8u));
+        c.T2 = MemoryAccess.ReadWordLeft(m, c.T2, (c.V1 + 0xFu));
+        c.T2 = MemoryAccess.ReadWordRight(m, c.T2, (c.V1 + 0xCu));
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0x3u), c.A3);
+        MemoryAccess.WriteWordRight(m, c.A1, c.A3);
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0x7u), c.T0);
+        MemoryAccess.WriteWordRight(m, (c.A1 + 0x4u), c.T0);
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0xBu), c.T1);
+        MemoryAccess.WriteWordRight(m, (c.A1 + 0x8u), c.T1);
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0xFu), c.T2);
+        MemoryAccess.WriteWordRight(m, (c.A1 + 0xCu), c.T2);
+        c.V1 = c.V1 + 0x10u;
+        if (c.V1 != c.V0) {
+            c.A1 = c.A1 + 0x10u;
+            goto L80010730;
+        }
+        c.A1 = c.A1 + 0x10u;
+        c.A1 = c.S4 + 0x1198u;
+        goto L800107B8;
+        L80010784: ;
+        c.V0 = c.A0 + 0x40u;
+        L80010788: ;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V1 + 0xCu));
+        MemoryAccess.WriteU32(m, c.A1, c.A3);
+        MemoryAccess.WriteU32(m, (c.A1 + 0x4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.A1 + 0x8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.A1 + 0xCu), c.T2);
+        c.V1 = c.V1 + 0x10u;
+        if (c.V1 != c.V0) {
+            c.A1 = c.A1 + 0x10u;
+            goto L80010788;
+        }
+        c.A1 = c.A1 + 0x10u;
+        c.A1 = c.S4 + 0x1198u;
+        L800107B8: ;
+        c.V0 = c.A0 | c.A1;
+        c.V0 = c.V0 & 0x0003u;
+        if (c.V0 == 0u) {
+            c.V1 = c.A0 + 0u;
+            goto L80010820;
+        }
+        c.V1 = c.A0 + 0u;
+        c.V0 = c.A0 + 0x40u;
+        L800107CC: ;
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.V1 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.V1);
+        c.T0 = MemoryAccess.ReadWordLeft(m, c.T0, (c.V1 + 0x7u));
+        c.T0 = MemoryAccess.ReadWordRight(m, c.T0, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadWordLeft(m, c.T1, (c.V1 + 0xBu));
+        c.T1 = MemoryAccess.ReadWordRight(m, c.T1, (c.V1 + 0x8u));
+        c.T2 = MemoryAccess.ReadWordLeft(m, c.T2, (c.V1 + 0xFu));
+        c.T2 = MemoryAccess.ReadWordRight(m, c.T2, (c.V1 + 0xCu));
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0x3u), c.A3);
+        MemoryAccess.WriteWordRight(m, c.A1, c.A3);
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0x7u), c.T0);
+        MemoryAccess.WriteWordRight(m, (c.A1 + 0x4u), c.T0);
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0xBu), c.T1);
+        MemoryAccess.WriteWordRight(m, (c.A1 + 0x8u), c.T1);
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0xFu), c.T2);
+        MemoryAccess.WriteWordRight(m, (c.A1 + 0xCu), c.T2);
+        c.V1 = c.V1 + 0x10u;
+        if (c.V1 != c.V0) {
+            c.A1 = c.A1 + 0x10u;
+            goto L800107CC;
+        }
+        c.A1 = c.A1 + 0x10u;
+        c.A1 = c.S4 + 0x11D8u;
+        goto L80010854;
+        L80010820: ;
+        c.V0 = c.A0 + 0x40u;
+        L80010824: ;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V1 + 0xCu));
+        MemoryAccess.WriteU32(m, c.A1, c.A3);
+        MemoryAccess.WriteU32(m, (c.A1 + 0x4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.A1 + 0x8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.A1 + 0xCu), c.T2);
+        c.V1 = c.V1 + 0x10u;
+        if (c.V1 != c.V0) {
+            c.A1 = c.A1 + 0x10u;
+            goto L80010824;
+        }
+        c.A1 = c.A1 + 0x10u;
+        c.A1 = c.S4 + 0x11D8u;
+        L80010854: ;
+        c.V0 = c.A0 | c.A1;
+        c.V0 = c.V0 & 0x0003u;
+        if (c.V0 == 0u) {
+            c.V1 = c.A0 + 0u;
+            goto L800108BC;
+        }
+        c.V1 = c.A0 + 0u;
+        c.V0 = c.A0 + 0x40u;
+        L80010868: ;
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.V1 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.V1);
+        c.T0 = MemoryAccess.ReadWordLeft(m, c.T0, (c.V1 + 0x7u));
+        c.T0 = MemoryAccess.ReadWordRight(m, c.T0, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadWordLeft(m, c.T1, (c.V1 + 0xBu));
+        c.T1 = MemoryAccess.ReadWordRight(m, c.T1, (c.V1 + 0x8u));
+        c.T2 = MemoryAccess.ReadWordLeft(m, c.T2, (c.V1 + 0xFu));
+        c.T2 = MemoryAccess.ReadWordRight(m, c.T2, (c.V1 + 0xCu));
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0x3u), c.A3);
+        MemoryAccess.WriteWordRight(m, c.A1, c.A3);
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0x7u), c.T0);
+        MemoryAccess.WriteWordRight(m, (c.A1 + 0x4u), c.T0);
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0xBu), c.T1);
+        MemoryAccess.WriteWordRight(m, (c.A1 + 0x8u), c.T1);
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0xFu), c.T2);
+        MemoryAccess.WriteWordRight(m, (c.A1 + 0xCu), c.T2);
+        c.V1 = c.V1 + 0x10u;
+        if (c.V1 != c.V0) {
+            c.A1 = c.A1 + 0x10u;
+            goto L80010868;
+        }
+        c.A1 = c.A1 + 0x10u;
+        c.S2 = 0u + 0u;
+        goto L800108F0;
+        L800108BC: ;
+        c.V0 = c.A0 + 0x40u;
+        L800108C0: ;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V1 + 0xCu));
+        MemoryAccess.WriteU32(m, c.A1, c.A3);
+        MemoryAccess.WriteU32(m, (c.A1 + 0x4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.A1 + 0x8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.A1 + 0xCu), c.T2);
+        c.V1 = c.V1 + 0x10u;
+        if (c.V1 != c.V0) {
+            c.A1 = c.A1 + 0x10u;
+            goto L800108C0;
+        }
+        c.A1 = c.A1 + 0x10u;
+        c.S2 = 0u + 0u;
+        L800108F0: ;
+        c.S7 = 0x00000040u;
+        c.S6 = 0x00000004u;
+        c.S5 = 0x0000000Cu;
+        L800108FC: ;
+        c.A0 = c.S2 + 0x27u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x8001090Cu;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x00000017u;
+            goto L80010A10;
+        }
+        c.A0 = 0x00000017u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010920u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.S3 = c.V0 + 0u;
+        c.V0 = c.S4 + c.S5;
+        c.S0 = c.S4 + c.S6;
+        c.A3 = MemoryAccess.ReadU32(m, c.S3);
+        c.T0 = MemoryAccess.ReadU32(m, (c.S3 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.S3 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V0 + 0xED0u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0xED4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0xED8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.S0 + 0xF48u), c.S1);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S3 + 0x6u));
+        c.A0 = 0x00000018u;
+        c.RA = 0x80010954u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.V0 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.V0);
+        MemoryAccess.WriteWordLeft(m, (c.S0 + 0xF73u), c.A3);
+        MemoryAccess.WriteWordRight(m, (c.S0 + 0xF70u), c.A3);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S3 + 0x8u));
+        c.A0 = 0x00000019u;
+        c.RA = 0x80010974u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S7;
+        c.V1 = c.V1 + 0xF98u;
+        c.A0 = c.V0 + 0u;
+        c.V0 = c.A0 | c.V1;
+        c.V0 = c.V0 & 0x0003u;
+        if (c.V0 == 0u) {
+            c.V0 = c.A0 + 0x40u;
+            goto L800109E4;
+        }
+        c.V0 = c.A0 + 0x40u;
+        L80010990: ;
+        c.A3 = MemoryAccess.ReadWordLeft(m, c.A3, (c.A0 + 0x3u));
+        c.A3 = MemoryAccess.ReadWordRight(m, c.A3, c.A0);
+        c.T0 = MemoryAccess.ReadWordLeft(m, c.T0, (c.A0 + 0x7u));
+        c.T0 = MemoryAccess.ReadWordRight(m, c.T0, (c.A0 + 0x4u));
+        c.T1 = MemoryAccess.ReadWordLeft(m, c.T1, (c.A0 + 0xBu));
+        c.T1 = MemoryAccess.ReadWordRight(m, c.T1, (c.A0 + 0x8u));
+        c.T2 = MemoryAccess.ReadWordLeft(m, c.T2, (c.A0 + 0xFu));
+        c.T2 = MemoryAccess.ReadWordRight(m, c.T2, (c.A0 + 0xCu));
+        MemoryAccess.WriteWordLeft(m, (c.V1 + 0x3u), c.A3);
+        MemoryAccess.WriteWordRight(m, c.V1, c.A3);
+        MemoryAccess.WriteWordLeft(m, (c.V1 + 0x7u), c.T0);
+        MemoryAccess.WriteWordRight(m, (c.V1 + 0x4u), c.T0);
+        MemoryAccess.WriteWordLeft(m, (c.V1 + 0xBu), c.T1);
+        MemoryAccess.WriteWordRight(m, (c.V1 + 0x8u), c.T1);
+        MemoryAccess.WriteWordLeft(m, (c.V1 + 0xFu), c.T2);
+        MemoryAccess.WriteWordRight(m, (c.V1 + 0xCu), c.T2);
+        c.A0 = c.A0 + 0x10u;
+        if (c.A0 != c.V0) {
+            c.V1 = c.V1 + 0x10u;
+            goto L80010990;
+        }
+        c.V1 = c.V1 + 0x10u;
+        c.S7 = c.S7 + 0x40u;
+        goto L80010A14;
+        L800109E4: ;
+        c.A3 = MemoryAccess.ReadU32(m, c.A0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.A0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.A0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.A0 + 0xCu));
+        MemoryAccess.WriteU32(m, c.V1, c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V1 + 0xCu), c.T2);
+        c.A0 = c.A0 + 0x10u;
+        if (c.A0 != c.V0) {
+            c.V1 = c.V1 + 0x10u;
+            goto L800109E4;
+        }
+        c.V1 = c.V1 + 0x10u;
+        L80010A10: ;
+        c.S7 = c.S7 + 0x40u;
+        L80010A14: ;
+        c.S6 = c.S6 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        c.V0 = (int)c.S2 < 7 ? 1u : 0u;
+        if (c.V0 != 0u) {
+            c.S5 = c.S5 + 0xCu;
+            goto L800108FC;
+        }
+        c.S5 = c.S5 + 0xCu;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x20u));
+        c.A0 = 0x00000011u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010A38u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.A1 = c.V1 + 0x20u;
+        c.V0 = c.A0 << 3;
+        c.V0 = c.V0 + c.A0;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.S4 + c.V0;
+        c.V0 = c.V0 + 0x1218u;
+        L80010A58: ;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V1 + 0xCu));
+        MemoryAccess.WriteU32(m, c.V0, c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V0 + 0xCu), c.T2);
+        c.V1 = c.V1 + 0x10u;
+        if (c.V1 != c.A1) {
+            c.V0 = c.V0 + 0x10u;
+            goto L80010A58;
+        }
+        c.V0 = c.V0 + 0x10u;
+        c.S2 = 0u + 0u;
+        c.S3 = 0x00000004u;
+        c.S0 = 0x00000024u;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        MemoryAccess.WriteU32(m, c.V0, c.A3);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x12A8u), c.S1);
+        L80010AA8: ;
+        c.A0 = c.S2 + 0xDu;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x80010AB8u;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x00000011u;
+            goto L80010B18;
+        }
+        c.A0 = 0x00000011u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010ACCu;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.V1 = c.V1 + 0x1218u;
+        c.A0 = c.V0 + 0x20u;
+        L80010AD8: ;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V0 + 0xCu));
+        MemoryAccess.WriteU32(m, c.V1, c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V1 + 0xCu), c.T2);
+        c.V0 = c.V0 + 0x10u;
+        if (c.V0 != c.A0) {
+            c.V1 = c.V1 + 0x10u;
+            goto L80010AD8;
+        }
+        c.V1 = c.V1 + 0x10u;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        MemoryAccess.WriteU32(m, c.V1, c.A3);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x12A8u), c.S1);
+        L80010B18: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        c.V0 = (int)c.S2 < 3 ? 1u : 0u;
+        if (c.V0 != 0u) {
+            c.S0 = c.S0 + 0x24u;
+            goto L80010AA8;
+        }
+        c.S0 = c.S0 + 0x24u;
+        c.A0 = 0x0000000Fu;
+        c.S2 = 0u + 0u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x3Cu));
+        c.S3 = 0x00000004u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010B44u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.S0 = 0x00000010u;
+        c.V0 = c.A0 << (int)(c.S3 & 31u);
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V1 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x12B8u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x12BCu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x12C0u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x12C4u), c.T2);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x12F8u), c.S1);
+        L80010B84: ;
+        c.A0 = c.S2 + 0x3u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x80010B94u;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x0000000Fu;
+            goto L80010BD4;
+        }
+        c.A0 = 0x0000000Fu;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010BA8u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V0 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x12B8u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x12BCu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x12C0u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x12C4u), c.T2);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x12F8u), c.S1);
+        L80010BD4: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        c.V0 = (int)c.S2 < 3 ? 1u : 0u;
+        if (c.V0 != 0u) {
+            c.S0 = c.S0 + 0x10u;
+            goto L80010B84;
+        }
+        c.S0 = c.S0 + 0x10u;
+        c.A0 = 0x0000000Eu;
+        c.S2 = 0u + 0u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x3Au));
+        c.S3 = 0x00000004u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010C00u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.S0 = 0x0000000Cu;
+        c.V0 = c.A0 << 1;
+        c.V0 = c.V0 + c.A0;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1308u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x130Cu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1310u), c.T1);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1338u), c.S1);
+        L80010C40: ;
+        c.A0 = c.S2 + 0xAu;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x80010C50u;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x0000000Eu;
+            goto L80010C88;
+        }
+        c.A0 = 0x0000000Eu;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010C64u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1308u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x130Cu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1310u), c.T1);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1338u), c.S1);
+        L80010C88: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        c.V0 = (int)c.S2 < 3 ? 1u : 0u;
+        if (c.V0 != 0u) {
+            c.S0 = c.S0 + 0xCu;
+            goto L80010C40;
+        }
+        c.S0 = c.S0 + 0xCu;
+        c.A0 = 0x00000010u;
+        c.S2 = 0u + 0u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x3Eu));
+        c.S3 = 0x00000004u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010CB4u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.S0 = 0x0000000Cu;
+        c.V0 = c.A0 << 1;
+        c.V0 = c.V0 + c.A0;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1348u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x134Cu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1350u), c.T1);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1360u), c.S1);
+        L80010CF4: ;
+        c.A0 = c.S2 + 0x21u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x80010D04u;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x00000010u;
+            goto L80010D3C;
+        }
+        c.A0 = 0x00000010u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010D18u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1348u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x134Cu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1350u), c.T1);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1360u), c.S1);
+        L80010D3C: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        if ((int)c.S2 <= 0) {
+            c.S0 = c.S0 + 0xCu;
+            goto L80010CF4;
+        }
+        c.S0 = c.S0 + 0xCu;
+        c.A0 = 0x0000000Au;
+        c.S2 = 0u + 0u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x34u));
+        c.S3 = 0x00000004u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010D64u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.S0 = 0x0000000Cu;
+        c.V0 = c.A0 << 1;
+        c.V0 = c.V0 + c.A0;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1368u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x136Cu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1370u), c.T1);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1380u), c.S1);
+        L80010DA4: ;
+        c.A0 = c.S2 + 0x6u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x80010DB4u;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x0000000Au;
+            goto L80010DEC;
+        }
+        c.A0 = 0x0000000Au;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010DC8u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1368u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x136Cu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1370u), c.T1);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1380u), c.S1);
+        L80010DEC: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        if ((int)c.S2 <= 0) {
+            c.S0 = c.S0 + 0xCu;
+            goto L80010DA4;
+        }
+        c.S0 = c.S0 + 0xCu;
+        c.A0 = 0x00000007u;
+        c.S2 = 0u + 0u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x2Eu));
+        c.S3 = 0x00000004u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010E14u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.S0 = 0x0000000Cu;
+        c.V0 = c.A0 << 1;
+        c.V0 = c.V0 + c.A0;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1388u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x138Cu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1390u), c.T1);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x13A0u), c.S1);
+        L80010E54: ;
+        c.A0 = c.S2 + 0x20u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x80010E64u;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x00000007u;
+            goto L80010E9C;
+        }
+        c.A0 = 0x00000007u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010E78u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1388u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x138Cu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1390u), c.T1);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x13A0u), c.S1);
+        L80010E9C: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        if ((int)c.S2 <= 0) {
+            c.S0 = c.S0 + 0xCu;
+            goto L80010E54;
+        }
+        c.S0 = c.S0 + 0xCu;
+        c.A0 = 0x00000008u;
+        c.S2 = 0u + 0u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x30u));
+        c.S3 = 0x00000004u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010EC4u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.S0 = 0x0000000Cu;
+        c.V0 = c.A0 << 1;
+        c.V0 = c.V0 + c.A0;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x13A8u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x13ACu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x13B0u), c.T1);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x13C0u), c.S1);
+        L80010F04: ;
+        c.A0 = c.S2 + 0x9u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x80010F14u;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x00000008u;
+            goto L80010F4C;
+        }
+        c.A0 = 0x00000008u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010F28u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x13A8u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x13ACu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x13B0u), c.T1);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x13C0u), c.S1);
+        L80010F4C: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        if ((int)c.S2 <= 0) {
+            c.S0 = c.S0 + 0xCu;
+            goto L80010F04;
+        }
+        c.S0 = c.S0 + 0xCu;
+        c.A0 = 0x0000000Bu;
+        c.S2 = 0u + 0u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x36u));
+        c.S3 = 0x00000004u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010F74u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.S0 = 0x0000000Cu;
+        c.V0 = c.A0 << 1;
+        c.V0 = c.V0 + c.A0;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x13C8u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x13CCu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x13D0u), c.T1);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x13F8u), c.S1);
+        L80010FB4: ;
+        c.A0 = c.S2 + 0x1Du;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x80010FC4u;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x0000000Bu;
+            goto L80010FFC;
+        }
+        c.A0 = 0x0000000Bu;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80010FD8u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x13C8u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x13CCu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x13D0u), c.T1);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x13F8u), c.S1);
+        L80010FFC: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        c.V0 = (int)c.S2 < 3 ? 1u : 0u;
+        if (c.V0 != 0u) {
+            c.S0 = c.S0 + 0xCu;
+            goto L80010FB4;
+        }
+        c.S0 = c.S0 + 0xCu;
+        c.A0 = 0x00000009u;
+        c.S2 = 0u + 0u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x32u));
+        c.S3 = 0x00000004u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80011028u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.S0 = 0x0000000Cu;
+        c.V0 = c.A0 << 1;
+        c.V0 = c.V0 + c.A0;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1408u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x140Cu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1410u), c.T1);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1420u), c.S1);
+        L80011068: ;
+        c.A0 = c.S2 + 0x7u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x80011078u;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x00000009u;
+            goto L800110B0;
+        }
+        c.A0 = 0x00000009u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x8001108Cu;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1408u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x140Cu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1410u), c.T1);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1420u), c.S1);
+        L800110B0: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        if ((int)c.S2 <= 0) {
+            c.S0 = c.S0 + 0xCu;
+            goto L80011068;
+        }
+        c.S0 = c.S0 + 0xCu;
+        c.A0 = 0x0000000Cu;
+        c.S2 = 0u + 0u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x38u));
+        c.S3 = 0x00000014u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x800110D8u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.A1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.A1 + 0x8u));
+        c.S0 = 0x00000004u;
+        c.V1 = c.A0 << 2;
+        c.V0 = c.V1 + c.A0;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.S4 + c.V0;
+        c.V1 = c.S4 + c.V1;
+        c.A3 = MemoryAccess.ReadU32(m, c.A1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.A1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.A1 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.A1 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1428u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x142Cu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1430u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1434u), c.T2);
+        c.A3 = MemoryAccess.ReadU32(m, (c.A1 + 0x10u));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1438u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x148Cu), c.S1);
+        L80011128: ;
+        c.A0 = c.S2 + 0x2Eu;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x80011138u;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x0000000Cu;
+            goto L80011184;
+        }
+        c.A0 = 0x0000000Cu;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x8001114Cu;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S3;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V0 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1428u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x142Cu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1430u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1434u), c.T2);
+        c.A3 = MemoryAccess.ReadU32(m, (c.V0 + 0x10u));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1438u), c.A3);
+        c.V0 = c.S4 + c.S0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x148Cu), c.S1);
+        L80011184: ;
+        c.S3 = c.S3 + 0x14u;
+        c.S2 = c.S2 + 0x1u;
+        c.V0 = (int)c.S2 < 4 ? 1u : 0u;
+        if (c.V0 != 0u) {
+            c.S0 = c.S0 + 0x4u;
+            goto L80011128;
+        }
+        c.S0 = c.S0 + 0x4u;
+        c.A0 = 0x00000013u;
+        c.S2 = 0u + 0u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x42u));
+        c.S3 = 0x00000004u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x800111B0u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.S0 = 0x0000000Cu;
+        c.V0 = c.A0 << 1;
+        c.V0 = c.V0 + c.A0;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x14A0u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x14A4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x14A8u), c.T1);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x14C4u), c.S1);
+        L800111F0: ;
+        c.A0 = c.S2 + 0x10u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x80011200u;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x00000013u;
+            goto L80011238;
+        }
+        c.A0 = 0x00000013u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80011214u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x14A0u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x14A4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x14A8u), c.T1);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x14C4u), c.S1);
+        L80011238: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        c.V0 = (int)c.S2 < 2 ? 1u : 0u;
+        if (c.V0 != 0u) {
+            c.S0 = c.S0 + 0xCu;
+            goto L800111F0;
+        }
+        c.S0 = c.S0 + 0xCu;
+        c.A0 = 0x00000014u;
+        c.S2 = 0u + 0u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x40u));
+        c.S3 = 0x00000004u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80011264u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.S0 = 0x0000000Cu;
+        c.V0 = c.A0 << 1;
+        c.V0 = c.V0 + c.A0;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x14D0u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x14D4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x14D8u), c.T1);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1500u), c.S1);
+        L800112A4: ;
+        c.A0 = c.S2 + 0x1Au;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x800112B4u;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x00000014u;
+            goto L800112EC;
+        }
+        c.A0 = 0x00000014u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x800112C8u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x14D0u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x14D4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x14D8u), c.T1);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1500u), c.S1);
+        L800112EC: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        c.V0 = (int)c.S2 < 3 ? 1u : 0u;
+        if (c.V0 != 0u) {
+            c.S0 = c.S0 + 0xCu;
+            goto L800112A4;
+        }
+        c.S0 = c.S0 + 0xCu;
+        c.A0 = 0x00000004u;
+        c.S2 = 0u + 0u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x2Au));
+        c.S3 = c.A0 + 0u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80011318u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0xBu));
+        c.S0 = 0x0000000Cu;
+        c.V0 = c.A0 << 1;
+        c.V0 = c.V0 + c.A0;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1510u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1514u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1518u), c.T1);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1540u), c.S1);
+        L80011358: ;
+        c.A0 = c.S2 + 0x12u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x80011368u;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x00000004u;
+            goto L800113A0;
+        }
+        c.A0 = 0x00000004u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x8001137Cu;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1510u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1514u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1518u), c.T1);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1540u), c.S1);
+        L800113A0: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        c.V0 = (int)c.S2 < 3 ? 1u : 0u;
+        if (c.V0 != 0u) {
+            c.S0 = c.S0 + 0xCu;
+            goto L80011358;
+        }
+        c.S0 = c.S0 + 0xCu;
+        c.A0 = 0x00000005u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x2Cu));
+        c.S2 = 0x00000001u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x800113C8u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.S3 = c.S4 + 0x4u;
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0xEu));
+        c.S0 = c.S4 + 0x1Cu;
+        c.V0 = c.A0 << 3;
+        c.V0 = c.V0 - c.A0;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V1 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1550u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1554u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1558u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x155Cu), c.T2);
+        c.A3 = MemoryAccess.ReadU32(m, (c.V1 + 0x10u));
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x14u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x18u));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1560u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1564u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1568u), c.T1);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x15DCu), c.S1);
+        L8001142C: ;
+        c.V0 = (int)c.S2 < 5 ? 1u : 0u;
+        if (c.V0 == 0u) {
+            c.A1 = c.S2 & 0x00FFu;
+            goto L800114A4;
+        }
+        c.A1 = c.S2 & 0x00FFu;
+        c.A0 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = c.SP + 0x98u;
+        c.RA = 0x80011444u;
+        GranTurismo2PC.func_80076500(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x00000005u;
+            goto L80011494;
+        }
+        c.A0 = 0x00000005u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80011458u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V0 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.S0 + 0x1550u), c.A3);
+        MemoryAccess.WriteU32(m, (c.S0 + 0x1554u), c.T0);
+        MemoryAccess.WriteU32(m, (c.S0 + 0x1558u), c.T1);
+        MemoryAccess.WriteU32(m, (c.S0 + 0x155Cu), c.T2);
+        c.A3 = MemoryAccess.ReadU32(m, (c.V0 + 0x10u));
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x14u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x18u));
+        MemoryAccess.WriteU32(m, (c.S0 + 0x1560u), c.A3);
+        MemoryAccess.WriteU32(m, (c.S0 + 0x1564u), c.T0);
+        MemoryAccess.WriteU32(m, (c.S0 + 0x1568u), c.T1);
+        MemoryAccess.WriteU32(m, (c.S3 + 0x15DCu), c.S1);
+        L80011494: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S0 = c.S0 + 0x1Cu;
+        c.S2 = c.S2 + 0x1u;
+        goto L8001142C;
+        L800114A4: ;
+        c.A0 = 0x0000001Bu;
+        c.S2 = 0u + 0u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x44u));
+        c.S3 = 0x00000004u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x800114BCu;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.S0 = 0x00000010u;
+        c.V0 = c.A0 << (int)(c.S3 & 31u);
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V1 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x15F0u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x15F4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x15F8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x15FCu), c.T2);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1610u), c.S1);
+        L800114FC: ;
+        c.A0 = c.S2 + 0u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x8001150Cu;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x0000001Bu;
+            goto L8001154C;
+        }
+        c.A0 = 0x0000001Bu;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80011520u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V0 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x15F0u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x15F4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x15F8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x15FCu), c.T2);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1610u), c.S1);
+        L8001154C: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        if ((int)c.S2 <= 0) {
+            c.S0 = c.S0 + 0x10u;
+            goto L800114FC;
+        }
+        c.S0 = c.S0 + 0x10u;
+        c.A0 = 0x0000001Cu;
+        c.S2 = 0u + 0u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x46u));
+        c.S3 = 0x00000004u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80011574u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.S0 = 0x00000010u;
+        c.V0 = c.A0 << (int)(c.S3 & 31u);
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V1 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1618u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x161Cu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1620u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1624u), c.T2);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1638u), c.S1);
+        L800115B4: ;
+        c.A0 = c.S2 + 0x26u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x800115C4u;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x0000001Cu;
+            goto L80011604;
+        }
+        c.A0 = 0x0000001Cu;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x800115D8u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V0 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1618u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x161Cu), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1620u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1624u), c.T2);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1638u), c.S1);
+        L80011604: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        if ((int)c.S2 <= 0) {
+            c.S0 = c.S0 + 0x10u;
+            goto L800115B4;
+        }
+        c.S0 = c.S0 + 0x10u;
+        c.A0 = 0x00000015u;
+        c.S2 = 0u + 0u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x24u));
+        c.S3 = 0x00000004u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x8001162Cu;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.A0 = MemoryAccess.ReadU8(m, (c.V1 + 0x8u));
+        c.S0 = 0x00000020u;
+        c.V0 = c.A0 << 5;
+        c.V0 = c.S4 + c.V0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V1);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V1 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1640u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1644u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1648u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x164Cu), c.T2);
+        c.A3 = MemoryAccess.ReadU32(m, (c.V1 + 0x10u));
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0x14u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x18u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V1 + 0x1Cu));
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1650u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1654u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1658u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x165Cu), c.T2);
+        c.V0 = c.A0 << 2;
+        c.V0 = c.S4 + c.V0;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1700u), c.S1);
+        L8001168C: ;
+        c.A0 = c.S2 + 0x15u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0xCCu));
+        c.A2 = 0u + 0u;
+        c.RA = 0x8001169Cu;
+        GranTurismo2PC.func_80076570(c, m);
+        c.S1 = c.V0 + 0u;
+        if ((int)c.S1 < 0) {
+            c.A0 = 0x00000015u;
+            goto L800116FC;
+        }
+        c.A0 = 0x00000015u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x800116B0u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + c.S0;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V0 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1640u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1644u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1648u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x164Cu), c.T2);
+        c.A3 = MemoryAccess.ReadU32(m, (c.V0 + 0x10u));
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x14u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x18u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V0 + 0x1Cu));
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1650u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1654u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x1658u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x165Cu), c.T2);
+        c.V0 = c.S4 + c.S3;
+        MemoryAccess.WriteU32(m, (c.V0 + 0x1700u), c.S1);
+        L800116FC: ;
+        c.S3 = c.S3 + 0x4u;
+        c.S2 = c.S2 + 0x1u;
+        c.V0 = (int)c.S2 < 5 ? 1u : 0u;
+        if (c.V0 != 0u) {
+            c.S0 = c.S0 + 0x20u;
+            goto L8001168C;
+        }
+        c.S0 = c.S0 + 0x20u;
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x18u));
+        c.A0 = 0x00000002u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80011720u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V0 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.S4 + 0x1718u), c.A3);
+        MemoryAccess.WriteU32(m, (c.S4 + 0x171Cu), c.T0);
+        MemoryAccess.WriteU32(m, (c.S4 + 0x1720u), c.T1);
+        MemoryAccess.WriteU32(m, (c.S4 + 0x1724u), c.T2);
+        c.A3 = MemoryAccess.ReadU32(m, (c.V0 + 0x10u));
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x14u));
+        MemoryAccess.WriteU32(m, (c.S4 + 0x1728u), c.A3);
+        MemoryAccess.WriteU32(m, (c.S4 + 0x172Cu), c.T0);
+        MemoryAccess.WriteU32(m, (c.S4 + 0x1730u), c.S1);
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x1Au));
+        c.A0 = 0x00000003u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80011764u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V0 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.S4 + 0x1734u), c.A3);
+        MemoryAccess.WriteU32(m, (c.S4 + 0x1738u), c.T0);
+        MemoryAccess.WriteU32(m, (c.S4 + 0x173Cu), c.T1);
+        MemoryAccess.WriteU32(m, (c.S4 + 0x1740u), c.T2);
+        c.A3 = MemoryAccess.ReadU32(m, (c.V0 + 0x10u));
+        MemoryAccess.WriteU32(m, (c.S4 + 0x1744u), c.A3);
+        MemoryAccess.WriteU32(m, (c.S4 + 0x1748u), c.S1);
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x1Cu));
+        c.A0 = 0x00000006u;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x800117A4u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.S4 + 0x174Cu;
+        c.A0 = c.V0 + 0x40u;
+        L800117AC: ;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V0 + 0xCu));
+        MemoryAccess.WriteU32(m, c.V1, c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V1 + 0xCu), c.T2);
+        c.V0 = c.V0 + 0x10u;
+        if (c.V0 != c.A0) {
+            c.V1 = c.V1 + 0x10u;
+            goto L800117AC;
+        }
+        c.V1 = c.V1 + 0x10u;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU32(m, c.V1, c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.S4 + 0x1798u), c.S1);
+        c.S1 = MemoryAccess.ReadU16(m, (c.SP + 0x1Eu));
+        c.A0 = 0x0000000Du;
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80011804u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V0 + 0xCu));
+        MemoryAccess.WriteU32(m, (c.S4 + 0x179Cu), c.A3);
+        MemoryAccess.WriteU32(m, (c.S4 + 0x17A0u), c.T0);
+        MemoryAccess.WriteU32(m, (c.S4 + 0x17A4u), c.T1);
+        MemoryAccess.WriteU32(m, (c.S4 + 0x17A8u), c.T2);
+        MemoryAccess.WriteU32(m, (c.S4 + 0x17ACu), c.S1);
+        c.RA = MemoryAccess.ReadU32(m, (c.SP + 0xC4u));
+        c.FP = MemoryAccess.ReadU32(m, (c.SP + 0xC0u));
+        c.S7 = MemoryAccess.ReadU32(m, (c.SP + 0xBCu));
+        c.S6 = MemoryAccess.ReadU32(m, (c.SP + 0xB8u));
+        c.S5 = MemoryAccess.ReadU32(m, (c.SP + 0xB4u));
+        c.S4 = MemoryAccess.ReadU32(m, (c.SP + 0xB0u));
+        c.S3 = MemoryAccess.ReadU32(m, (c.SP + 0xACu));
+        c.S2 = MemoryAccess.ReadU32(m, (c.SP + 0xA8u));
+        c.S1 = MemoryAccess.ReadU32(m, (c.SP + 0xA4u));
+        c.S0 = MemoryAccess.ReadU32(m, (c.SP + 0xA0u));
+        c.SP = c.SP + 0xC8u;
+        return;
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void func_80011858(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x20u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x10u), c.S0);
+        c.S0 = c.A0 + 0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x14u), c.S1);
+        c.S1 = c.A1 + 0u;
+        c.V1 = c.S0 + 0u;
+        c.V0 = c.S1 + 0u;
+        c.A0 = c.S1 + 0x80u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x18u), c.RA);
+        L8001187C: ;
+        c.A2 = MemoryAccess.ReadU32(m, c.V0);
+        c.A3 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0xCu));
+        MemoryAccess.WriteU32(m, c.V1, c.A2);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x4u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x8u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0xCu), c.T1);
+        c.V0 = c.V0 + 0x10u;
+        if (c.V0 != c.A0) {
+            c.V1 = c.V1 + 0x10u;
+            goto L8001187C;
+        }
+        c.V1 = c.V1 + 0x10u;
+        c.A2 = MemoryAccess.ReadU32(m, c.V0);
+        MemoryAccess.WriteU32(m, c.V1, c.A2);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x12u));
+        c.A0 = 0x00000012u;
+        c.RA = 0x800118C0u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17B0u), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x4u));
+        c.A0 = 0u + 0u;
+        c.RA = 0x800118D8u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17B2u), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x6u));
+        c.A0 = 0x00000001u;
+        c.RA = 0x800118F0u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17B4u), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x16u));
+        c.A0 = 0x00000016u;
+        c.RA = 0x80011908u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17B6u), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x18u));
+        c.A0 = 0x00000017u;
+        c.RA = 0x80011920u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x4u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17B8u), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x10u));
+        c.A0 = 0x00000011u;
+        c.RA = 0x80011938u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17BCu), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x2Cu));
+        c.A0 = 0x0000000Fu;
+        c.RA = 0x80011950u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17BEu), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x2Au));
+        c.A0 = 0x0000000Eu;
+        c.RA = 0x80011968u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17C0u), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x2Eu));
+        c.A0 = 0x00000010u;
+        c.RA = 0x80011980u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17C2u), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x24u));
+        c.A0 = 0x0000000Au;
+        c.RA = 0x80011998u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17C4u), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x1Eu));
+        c.A0 = 0x00000007u;
+        c.RA = 0x800119B0u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17C6u), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x20u));
+        c.A0 = 0x00000008u;
+        c.RA = 0x800119C8u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17C8u), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x26u));
+        c.A0 = 0x0000000Bu;
+        c.RA = 0x800119E0u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17CAu), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x22u));
+        c.A0 = 0x00000009u;
+        c.RA = 0x800119F8u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17CCu), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x28u));
+        c.A0 = 0x0000000Cu;
+        c.RA = 0x80011A10u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17CEu), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x32u));
+        c.A0 = 0x00000013u;
+        c.RA = 0x80011A28u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17D0u), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x30u));
+        c.A0 = 0x00000014u;
+        c.RA = 0x80011A40u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17D2u), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x1Au));
+        c.A0 = 0x00000004u;
+        c.RA = 0x80011A58u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0xBu));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17D4u), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x1Cu));
+        c.A0 = 0x00000005u;
+        c.RA = 0x80011A70u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0xEu));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17D6u), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x34u));
+        c.A0 = 0x0000001Bu;
+        c.RA = 0x80011A88u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17D8u), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x36u));
+        c.A0 = 0x0000001Cu;
+        c.RA = 0x80011AA0u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17DAu), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x14u));
+        c.A0 = 0x00000015u;
+        c.RA = 0x80011AB8u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17DCu), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0x8u));
+        c.A0 = 0x00000002u;
+        c.RA = 0x80011AD0u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x8u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17E0u), (ushort)0u);
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17E2u), (ushort)0u);
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17DEu), (ushort)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S1 + 0xEu));
+        c.A0 = 0x0000000Du;
+        c.RA = 0x80011AECu;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.V0 + 0x4u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x17E4u), (ushort)c.V0);
+        c.RA = MemoryAccess.ReadU32(m, (c.SP + 0x18u));
+        c.S1 = MemoryAccess.ReadU32(m, (c.SP + 0x14u));
+        c.S0 = MemoryAccess.ReadU32(m, (c.SP + 0x10u));
+        c.SP = c.SP + 0x20u;
+        return;
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void func_80011B0C(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x28u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x18u), c.S0);
+        c.S0 = c.A0 + 0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x1Cu), c.S1);
+        c.S1 = c.A1 + 0u;
+        c.V1 = c.S0 + 0x8u;
+        c.V0 = c.S1 + 0u;
+        c.A0 = c.S1 + 0x80u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x20u), c.RA);
+        L80011B30: ;
+        c.A2 = MemoryAccess.ReadU32(m, c.V0);
+        c.A3 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0xCu));
+        MemoryAccess.WriteU32(m, c.V1, c.A2);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x4u), c.A3);
+        MemoryAccess.WriteU32(m, (c.V1 + 0x8u), c.T0);
+        MemoryAccess.WriteU32(m, (c.V1 + 0xCu), c.T1);
+        c.V0 = c.V0 + 0x10u;
+        if (c.V0 != c.A0) {
+            c.V1 = c.V1 + 0x10u;
+            goto L80011B30;
+        }
+        c.V1 = c.V1 + 0x10u;
+        c.A0 = c.S1 + 0u;
+        c.A1 = c.SP + 0x10u;
+        c.A2 = MemoryAccess.ReadU32(m, c.V0);
+        MemoryAccess.WriteU32(m, c.V1, c.A2);
+        c.RA = 0x80011B70u;
+        GranTurismo2PC.func_8005F958(c, m);
+        c.V0 = MemoryAccess.ReadU16(m, (c.S0 + 0x98u));
+        c.V1 = MemoryAccess.ReadU16(m, (c.SP + 0x12u));
+        c.V0 = c.V0 & 0xC000u;
+        c.V0 = c.V0 | c.V1;
+        MemoryAccess.WriteU16(m, (c.S0 + 0x98u), (ushort)c.V0);
+        c.V0 = MemoryAccess.ReadU16(m, (c.SP + 0x14u));
+        MemoryAccess.WriteU16(m, (c.S0 + 0x96u), (ushort)c.V0);
+        c.V0 = MemoryAccess.ReadU16(m, (c.S0 + 0x94u));
+        c.V1 = MemoryAccess.ReadU16(m, (c.SP + 0x10u));
+        c.V0 = c.V0 & 0xE000u;
+        c.V0 = c.V0 | c.V1;
+        MemoryAccess.WriteU16(m, (c.S0 + 0x94u), (ushort)c.V0);
+        c.V1 = MemoryAccess.ReadU8(m, (c.SP + 0x16u));
+        c.V0 = c.V0 & 0x1FFFu;
+        c.V1 = c.V1 << 13;
+        c.V0 = c.V0 | c.V1;
+        MemoryAccess.WriteU16(m, (c.S0 + 0x94u), (ushort)c.V0);
+        c.V0 = (uint)(short)MemoryAccess.ReadU16(m, (c.S1 + 0x17D6u));
+        c.V1 = MemoryAccess.ReadU16(m, (c.S0 + 0x98u));
+        c.V0 = (int)0u < (int)c.V0 ? 1u : 0u;
+        c.V1 = c.V1 & 0x7FFFu;
+        c.V0 = c.V0 << 15;
+        c.V1 = c.V1 | c.V0;
+        MemoryAccess.WriteU16(m, (c.S0 + 0x98u), (ushort)c.V1);
+        c.RA = MemoryAccess.ReadU32(m, (c.SP + 0x20u));
+        c.S1 = MemoryAccess.ReadU32(m, (c.SP + 0x1Cu));
+        c.S0 = MemoryAccess.ReadU32(m, (c.SP + 0x18u));
+        c.SP = c.SP + 0x28u;
+        return;
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void func_80011BE8(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x20u;
+        c.A3 = c.A0 + 0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x10u), c.S0);
+        c.S0 = c.A2 + 0u;
+        c.V0 = 0x80170000u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x14u), c.S1);
+        c.S1 = c.V0 + 0x1034u;
+        c.A0 = c.S1 + 0u;
+        c.V0 = 0x801D0000u;
+        c.V0 = c.V0 - 0x6720u;
+        c.V1 = c.A3 << 9;
+        c.V1 = c.V1 + c.A3;
+        c.V1 = c.V1 << 2;
+        c.V1 = c.V1 + c.A3;
+        c.V1 = c.V1 << 3;
+        c.V1 = c.V1 + 0x3C74u;
+        c.V1 = c.V1 + c.V0;
+        c.V0 = c.A1 << 2;
+        c.V0 = c.V0 + c.A1;
+        c.V0 = c.V0 << 3;
+        c.V0 = c.V0 + c.A1;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.V0 + 0x4u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x18u), c.S2);
+        MemoryAccess.WriteU32(m, (c.SP + 0x1Cu), c.RA);
+        c.S2 = c.V1 + c.V0;
+        c.RA = 0x80011C54u;
+        Dispatcher.Call(c, m, 0x80010000u);
+        c.A1 = MemoryAccess.ReadU32(m, c.S2);
+        c.A0 = c.S1 + 0u;
+        c.RA = 0x80011C60u;
+        GranTurismo2PC.func_80010024(c, m);
+        c.A0 = c.S1 + 0u;
+        c.A1 = c.S2 + 0x8u;
+        c.RA = 0x80011C6Cu;
+        GranTurismo2PC.func_80011858(c, m);
+        if (c.S0 == 0u) {
+            c.A0 = c.S1 + 0u;
+            goto L80011C90;
+        }
+        c.A0 = c.S1 + 0u;
+        c.A1 = 0x00000003u;
+        c.A2 = 0x00000007u;
+        c.RA = 0x80011C80u;
+        GranTurismo2PC.func_8005EAC0(c, m);
+        c.A0 = c.S1 + 0u;
+        c.A1 = 0x00000004u;
+        c.A2 = 0x00000007u;
+        goto L80011CCC;
+        L80011C90: ;
+        c.V0 = (uint)(short)MemoryAccess.ReadU16(m, (c.S1 + 0x17B6u));
+        c.V1 = (uint)(short)MemoryAccess.ReadU16(m, (c.S1 + 0x17B8u));
+        c.V0 = c.V0 ^ 0x0007u;
+        c.V0 = c.V0 < 0x00000001u ? 1u : 0u;
+        c.V1 = c.V1 ^ 0x0007u;
+        c.V1 = c.V1 < 0x00000001u ? 1u : 0u;
+        c.V0 = c.V0 | c.V1;
+        if (c.V0 == 0u) {
+            goto L80011CD4;
+        }
+        c.A1 = 0x00000003u;
+        c.A2 = 0u + 0u;
+        c.RA = 0x80011CC0u;
+        GranTurismo2PC.func_8005EAC0(c, m);
+        c.A0 = c.S1 + 0u;
+        c.A1 = 0x00000004u;
+        c.A2 = 0u + 0u;
+        L80011CCC: ;
+        c.RA = 0x80011CD4u;
+        GranTurismo2PC.func_8005EAC0(c, m);
+        L80011CD4: ;
+        c.A0 = c.S2 + 0u;
+        c.A1 = 0x80170000u;
+        c.A1 = c.A1 + 0x1034u;
+        c.RA = 0x80011CE4u;
+        GranTurismo2PC.func_80011B0C(c, m);
+        c.RA = MemoryAccess.ReadU32(m, (c.SP + 0x1Cu));
+        c.S2 = MemoryAccess.ReadU32(m, (c.SP + 0x18u));
+        c.S1 = MemoryAccess.ReadU32(m, (c.SP + 0x14u));
+        c.S0 = MemoryAccess.ReadU32(m, (c.SP + 0x10u));
+        c.SP = c.SP + 0x20u;
+        return;
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void func_80011CFC(CpuContext c, IMemory m)
+    {
+        c.V0 = (int)c.A1 < (int)c.A0 ? 1u : 0u;
+        if (c.V0 == 0u) {
+            c.V0 = (int)c.A0 < (int)c.A2 ? 1u : 0u;
+            goto L80011D18;
+        }
+        c.V0 = (int)c.A0 < (int)c.A2 ? 1u : 0u;
+        if (c.V0 == 0u) {
+            c.V0 = c.A0 + 0u;
+            goto L80011D30;
+        }
+        c.V0 = c.A0 + 0u;
+        c.V0 = c.A2 + 0u;
+        return;
+        L80011D18: ;
+        c.V0 = c.A2 + 0u;
+        c.V1 = (int)c.A1 < (int)c.V0 ? 1u : 0u;
+        if (c.V1 != 0u) {
+            goto L80011D30;
+        }
+        c.V0 = c.A1 + 0u;
+        return;
+        L80011D30: ;
+        return;
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void func_80011D38(CpuContext c, IMemory m)
+    {
+        c.V0 = (int)c.A0 < (int)c.A1 ? 1u : 0u;
+        if (c.V0 == 0u) {
+            c.V0 = (int)c.A2 < (int)c.A0 ? 1u : 0u;
+            goto L80011D54;
+        }
+        c.V0 = (int)c.A2 < (int)c.A0 ? 1u : 0u;
+        if (c.V0 == 0u) {
+            c.V0 = c.A0 + 0u;
+            goto L80011D6C;
+        }
+        c.V0 = c.A0 + 0u;
+        c.V0 = c.A2 + 0u;
+        return;
+        L80011D54: ;
+        c.V0 = c.A2 + 0u;
+        c.V1 = (int)c.V0 < (int)c.A1 ? 1u : 0u;
+        if (c.V1 != 0u) {
+            goto L80011D6C;
+        }
+        c.V0 = c.A1 + 0u;
+        return;
+        L80011D6C: ;
+        return;
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void func_80011D74_gt2_overlay_3(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x28u;
+        c.V1 = c.A0 + 0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x20u), c.S4);
+        c.S4 = c.A1 + 0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x1Cu), c.S3);
+        c.S3 = c.V1 & 0x001Fu;
+        c.A0 = c.S3 + 0u;
+        c.V0 = c.V1 & 0x03E0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x14u), c.S1);
+        c.S1 = c.V0 >> 5;
+        c.A1 = c.S1 + 0u;
+        c.V1 = c.V1 & 0x7C00u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x18u), c.S2);
+        c.S2 = c.V1 >> 10;
+        c.A2 = c.S2 + 0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x24u), c.RA);
+        MemoryAccess.WriteU32(m, (c.SP + 0x10u), c.S0);
+        c.RA = 0x80011DBCu;
+        GranTurismo2PC.func_80011CFC(c, m);
+        c.A0 = c.S3 + 0u;
+        c.A1 = c.S1 + 0u;
+        c.A2 = c.S2 + 0u;
+        c.S0 = c.V0 + 0u;
+        c.RA = 0x80011DD0u;
+        GranTurismo2PC.func_80011D38(c, m);
+        if (c.S0 != 0u) {
+            c.V1 = c.V0 + 0u;
+            goto L80011DE0;
+        }
+        c.V1 = c.V0 + 0u;
+        c.A2 = 0u + 0u;
+        goto L80011DF0;
+        L80011DE0: ;
+        c.V0 = c.S0 - c.V1;
+        c.V0 = c.V0 << 5;
+        if (c.S0 != 0u) { if ((int)c.V0 == int.MinValue && (int)c.S0 == -1) { c.LO = 0x80000000u; c.HI = 0u; } else { c.LO = (uint)((int)c.V0 / (int)c.S0); c.HI = (uint)((int)c.V0 % (int)c.S0); } }
+        c.A2 = c.LO;
+        L80011DF0: ;
+        if (c.A2 == 0u) {
+            c.A0 = 0u + 0u;
+            goto L80011E90;
+        }
+        c.A0 = 0u + 0u;
+        c.V0 = c.S0 - c.S3;
+        c.V0 = c.V0 << 5;
+        c.V1 = c.S0 - c.V1;
+        if (c.V1 != 0u) { if ((int)c.V0 == int.MinValue && (int)c.V1 == -1) { c.LO = 0x80000000u; c.HI = 0u; } else { c.LO = (uint)((int)c.V0 / (int)c.V1); c.HI = (uint)((int)c.V0 % (int)c.V1); } }
+        c.A3 = c.LO;
+        c.V0 = c.S0 - c.S1;
+        c.V0 = c.V0 << 5;
+        if (c.V1 != 0u) { if ((int)c.V0 == int.MinValue && (int)c.V1 == -1) { c.LO = 0x80000000u; c.HI = 0u; } else { c.LO = (uint)((int)c.V0 / (int)c.V1); c.HI = (uint)((int)c.V0 % (int)c.V1); } }
+        c.A1 = c.LO;
+        c.V0 = c.S0 - c.S2;
+        c.V0 = c.V0 << 5;
+        if (c.V1 != 0u) { if ((int)c.V0 == int.MinValue && (int)c.V1 == -1) { c.LO = 0x80000000u; c.HI = 0u; } else { c.LO = (uint)((int)c.V0 / (int)c.V1); c.HI = (uint)((int)c.V0 % (int)c.V1); } }
+        c.V1 = c.LO;
+        if (c.S3 != c.S0) {
+            goto L80011E38;
+        }
+        c.A0 = c.V1 - c.A1;
+        L80011E38: ;
+        if (c.S1 != c.S0) {
+            c.V0 = c.V1 - 0x40u;
+            goto L80011E44;
+        }
+        c.V0 = c.V1 - 0x40u;
+        c.A0 = c.A3 - c.V0;
+        L80011E44: ;
+        if (c.S2 != c.S0) {
+            c.V0 = c.A0 << 4;
+            goto L80011E58;
+        }
+        c.V0 = c.A0 << 4;
+        c.V0 = c.A3 - 0x80u;
+        c.A0 = c.A1 - c.V0;
+        c.V0 = c.A0 << 4;
+        L80011E58: ;
+        c.V0 = c.V0 - c.A0;
+        c.A0 = c.V0 << 2;
+        if ((int)c.A0 >= 0) {
+            c.V0 = (int)c.A0 < 11520 ? 1u : 0u;
+            goto L80011E84;
+        }
+        c.V0 = (int)c.A0 < 11520 ? 1u : 0u;
+        c.A0 = c.A0 + 0x2D00u;
+        L80011E6C: ;
+        if ((int)c.A0 < 0) {
+            c.A0 = c.A0 + 0x2D00u;
+            goto L80011E6C;
+        }
+        c.A0 = c.A0 + 0x2D00u;
+        c.A0 = c.A0 - 0x2D00u;
+        c.V0 = (int)c.A0 < 11520 ? 1u : 0u;
+        goto L80011E84;
+        L80011E80: ;
+        c.V0 = (int)c.A0 < 11520 ? 1u : 0u;
+        L80011E84: ;
+        if (c.V0 == 0u) {
+            c.A0 = c.A0 - 0x2D00u;
+            goto L80011E80;
+        }
+        c.A0 = c.A0 - 0x2D00u;
+        c.A0 = c.A0 + 0x2D00u;
+        L80011E90: ;
+        c.V0 = (uint)((int)c.A0 >> 5);
+        MemoryAccess.WriteU16(m, c.S4, (ushort)c.V0);
+        MemoryAccess.WriteU16(m, (c.S4 + 0x2u), (ushort)c.A2);
+        MemoryAccess.WriteU16(m, (c.S4 + 0x4u), (ushort)c.S0);
+        c.RA = MemoryAccess.ReadU32(m, (c.SP + 0x24u));
+        c.S4 = MemoryAccess.ReadU32(m, (c.SP + 0x20u));
+        c.S3 = MemoryAccess.ReadU32(m, (c.SP + 0x1Cu));
+        c.S2 = MemoryAccess.ReadU32(m, (c.SP + 0x18u));
+        c.S1 = MemoryAccess.ReadU32(m, (c.SP + 0x14u));
+        c.S0 = MemoryAccess.ReadU32(m, (c.SP + 0x10u));
+        c.SP = c.SP + 0x28u;
+        return;
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void func_80011EC0(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x50u;
+        c.V0 = 0x80090000u;
+        c.V0 = MemoryAccess.ReadU32(m, (c.V0 + 0x2878u));
+        c.V1 = 0x00000002u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x4Cu), c.RA);
+        MemoryAccess.WriteU32(m, (c.SP + 0x48u), c.FP);
+        MemoryAccess.WriteU32(m, (c.SP + 0x44u), c.S7);
+        MemoryAccess.WriteU32(m, (c.SP + 0x40u), c.S6);
+        MemoryAccess.WriteU32(m, (c.SP + 0x3Cu), c.S5);
+        MemoryAccess.WriteU32(m, (c.SP + 0x38u), c.S4);
+        MemoryAccess.WriteU32(m, (c.SP + 0x34u), c.S3);
+        MemoryAccess.WriteU32(m, (c.SP + 0x30u), c.S2);
+        MemoryAccess.WriteU32(m, (c.SP + 0x2Cu), c.S1);
+        MemoryAccess.WriteU32(m, (c.SP + 0x28u), c.S0);
+        MemoryAccess.WriteU32(m, (c.SP + 0x50u), c.A0);
+        MemoryAccess.WriteU32(m, (c.SP + 0x58u), c.A2);
+        if (c.V0 != c.V1) {
+            MemoryAccess.WriteU32(m, (c.SP + 0x5Cu), c.A3);
+            goto L80011F18;
+        }
+        MemoryAccess.WriteU32(m, (c.SP + 0x5Cu), c.A3);
+        c.V0 = 0x80090000u;
+        c.V0 = MemoryAccess.ReadU32(m, (c.V0 + 0x2870u));
+        c.V0 = c.V0 + 0x10u;
+        goto L80011F1C;
+        L80011F18: ;
+        c.V0 = c.A1 + 0x100u;
+        L80011F1C: ;
+        c.S7 = 0x00000040u;
+        c.A0 = MemoryAccess.ReadU32(m, (c.SP + 0x58u));
+        c.S4 = c.V0 + 0u;
+        c.RA = 0x80011F2Cu;
+        GranTurismo2PC.func_80078138(c, m);
+        c.S6 = c.V0 + 0u;
+        if ((int)c.S6 > 0) {
+            c.V0 = 0u + 0u;
+            goto L80011F44;
+        }
+        c.V0 = 0u + 0u;
+        goto L80012100;
+        L80011F40: ;
+        c.S7 = c.S7 - 0x1u;
+        L80011F44: ;
+        c.A0 = MemoryAccess.ReadU32(m, (c.SP + 0x5Cu));
+        c.RA = 0x80011F50u;
+        GranTurismo2PC.func_80083AE0(c, m);
+        if (c.S6 != 0u) { c.LO = c.V0 / c.S6; c.HI = c.V0 % c.S6; }
+        c.S0 = c.HI;
+        c.T0 = MemoryAccess.ReadU32(m, (c.SP + 0x58u));
+        c.V0 = c.S0 << 2;
+        c.V0 = c.T0 + c.V0;
+        c.V0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.A0 = c.S4 + 0u;
+        c.T0 = c.V0 >> 26;
+        c.S5 = c.V0 + 0u;
+        c.S0 = c.S5 & 0xFFFFu;
+        c.A1 = c.S0 - 0x1u;
+        MemoryAccess.WriteU16(m, (c.SP + 0x20u), (ushort)c.T0);
+        c.RA = 0x80011F84u;
+        GranTurismo2PC.func_80078038(c, m);
+        c.A0 = MemoryAccess.ReadU32(m, c.V0);
+        c.RA = 0x80011F90u;
+        GranTurismo2PC.func_80060B70(c, m);
+        c.V0 = c.V0 ^ 0x0001u;
+        if (c.V0 != 0u) {
+            c.S2 = 0u + 0u;
+            goto L80011F44;
+        }
+        c.S2 = 0u + 0u;
+        c.S3 = c.S0 + 0u;
+        c.FP = (int)c.S2 < (int)c.S7 ? 1u : 0u;
+        c.S1 = MemoryAccess.ReadU32(m, (c.SP + 0x60u));
+        L80011FA8: ;
+        c.T0 = MemoryAccess.ReadU32(m, (c.SP + 0x64u));
+        c.V0 = (int)c.S2 < (int)c.T0 ? 1u : 0u;
+        if (c.V0 == 0u) {
+            c.A0 = c.S4 + 0u;
+            goto L8001201C;
+        }
+        c.A0 = c.S4 + 0u;
+        c.S0 = MemoryAccess.ReadU16(m, (c.S1 + 0x8u));
+        c.A1 = c.S3 - 0x1u;
+        c.S0 = c.S0 ^ c.S3;
+        c.S0 = c.S0 < 0x00000001u ? 1u : 0u;
+        c.RA = 0x80011FD0u;
+        GranTurismo2PC.func_80078038(c, m);
+        c.V1 = MemoryAccess.ReadU32(m, c.V0);
+        c.V0 = MemoryAccess.ReadU32(m, c.S1);
+        c.V0 = c.V0 ^ c.V1;
+        c.V0 = c.V0 < 0x00000001u ? 1u : 0u;
+        c.S0 = c.S0 | c.V0;
+        if (c.S0 == 0u) {
+            goto L80012010;
+        }
+        c.A0 = MemoryAccess.ReadU32(m, (c.SP + 0x5Cu));
+        c.RA = 0x80011FFCu;
+        GranTurismo2PC.func_80083AE0(c, m);
+        c.V0 = c.V0 & 0x001Fu;
+        c.V0 = (int)c.V0 < 29 ? 1u : 0u;
+        c.V0 = c.V0 & c.FP;
+        if (c.V0 != 0u) {
+            goto L80011F40;
+        }
+        L80012010: ;
+        c.S1 = c.S1 + 0xCu;
+        c.S2 = c.S2 + 0x1u;
+        goto L80011FA8;
+        L8001201C: ;
+        c.A1 = c.S5 & 0xFFFFu;
+        c.A1 = c.A1 - 0x1u;
+        c.RA = 0x80012028u;
+        GranTurismo2PC.func_80078038(c, m);
+        c.V1 = MemoryAccess.ReadU16(m, (c.SP + 0x20u));
+        c.S4 = MemoryAccess.ReadU32(m, c.V0);
+        if (c.V1 == 0u) {
+            c.V0 = 0x80090000u;
+            goto L80012060;
+        }
+        c.V0 = 0x80090000u;
+        c.V0 = c.V0 + 0x1620u;
+        c.V0 = c.V1 + c.V0;
+        c.A1 = MemoryAccess.ReadU8(m, c.V0);
+        c.A0 = c.S4 + 0u;
+        c.S0 = c.A1 + 0u;
+        c.A1 = c.A1 << 24;
+        c.A1 = (uint)((int)c.A1 >> 24);
+        c.RA = 0x80012058u;
+        GranTurismo2PC.func_80060D28(c, m);
+        c.V1 = c.V0 + 0u;
+        goto L800120DC;
+        L80012060: ;
+        c.A0 = c.S4 + 0u;
+        c.A1 = c.SP + 0x18u;
+        c.A2 = c.SP + 0x1Cu;
+        c.RA = 0x80012070u;
+        GranTurismo2PC.func_80060BEC(c, m);
+        c.S3 = c.V0 + 0u;
+        c.S2 = 0u + 0u;
+        L80012078: ;
+        c.A0 = MemoryAccess.ReadU32(m, (c.SP + 0x5Cu));
+        c.RA = 0x80012084u;
+        GranTurismo2PC.func_80083AE0(c, m);
+        if (c.S3 != 0u) { c.LO = c.V0 / c.S3; c.HI = c.V0 % c.S3; }
+        c.S0 = c.HI;
+        c.V0 = MemoryAccess.ReadU32(m, (c.SP + 0x18u));
+        c.S1 = c.S0 << 1;
+        c.V0 = c.S1 + c.V0;
+        c.A0 = MemoryAccess.ReadU16(m, c.V0);
+        c.A1 = c.SP + 0x10u;
+        c.RA = 0x800120A4u;
+        Dispatcher.Call(c, m, 0x80011D74u);
+        c.V0 = (uint)(short)MemoryAccess.ReadU16(m, (c.SP + 0x12u));
+        c.V0 = (int)c.V0 < 6 ? 1u : 0u;
+        if (c.V0 == 0u) {
+            c.S2 = c.S2 + 0x1u;
+            goto L800120C4;
+        }
+        c.S2 = c.S2 + 0x1u;
+        c.V0 = (int)c.S2 < 2 ? 1u : 0u;
+        if (c.V0 != 0u) {
+            goto L80012078;
+        }
+        L800120C4: ;
+        c.V0 = MemoryAccess.ReadU32(m, (c.SP + 0x1Cu));
+        c.V1 = MemoryAccess.ReadU32(m, (c.SP + 0x18u));
+        c.V0 = c.V0 + c.S0;
+        c.V1 = c.S1 + c.V1;
+        c.S0 = MemoryAccess.ReadU8(m, c.V0);
+        c.V1 = MemoryAccess.ReadU16(m, c.V1);
+        L800120DC: ;
+        c.T0 = MemoryAccess.ReadU16(m, (c.SP + 0x20u));
+        c.V0 = c.T0 + 0u;
+        c.T0 = MemoryAccess.ReadU32(m, (c.SP + 0x50u));
+        MemoryAccess.WriteU32(m, c.T0, c.S4);
+        MemoryAccess.WriteU8(m, (c.T0 + 0x5u), (byte)c.S0);
+        MemoryAccess.WriteU16(m, (c.T0 + 0x6u), (ushort)c.V1);
+        MemoryAccess.WriteU16(m, (c.T0 + 0x8u), (ushort)c.S5);
+        L80012100: ;
+        c.RA = MemoryAccess.ReadU32(m, (c.SP + 0x4Cu));
+        c.FP = MemoryAccess.ReadU32(m, (c.SP + 0x48u));
+        c.S7 = MemoryAccess.ReadU32(m, (c.SP + 0x44u));
+        c.S6 = MemoryAccess.ReadU32(m, (c.SP + 0x40u));
+        c.S5 = MemoryAccess.ReadU32(m, (c.SP + 0x3Cu));
+        c.S4 = MemoryAccess.ReadU32(m, (c.SP + 0x38u));
+        c.S3 = MemoryAccess.ReadU32(m, (c.SP + 0x34u));
+        c.S2 = MemoryAccess.ReadU32(m, (c.SP + 0x30u));
+        c.S1 = MemoryAccess.ReadU32(m, (c.SP + 0x2Cu));
+        c.S0 = MemoryAccess.ReadU32(m, (c.SP + 0x28u));
+        c.SP = c.SP + 0x50u;
+        return;
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void func_80012130(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x28u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x1Cu), c.S1);
+        c.S1 = c.A0 + 0u;
+        c.A0 = c.A1 + 0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x18u), c.S0);
+        c.S0 = c.A3 + 0u;
+        if (c.A2 == 0u) {
+            MemoryAccess.WriteU32(m, (c.SP + 0x20u), c.RA);
+            goto L80012180;
+        }
+        MemoryAccess.WriteU32(m, (c.SP + 0x20u), c.RA);
+        c.V0 = 0x80090000u;
+        c.V0 = c.V0 + 0x1620u;
+        c.V1 = c.A2 & 0x003Fu;
+        c.V1 = c.V1 + c.V0;
+        c.A1 = MemoryAccess.ReadU8(m, c.V1);
+        c.S0 = c.A1 + 0u;
+        c.A1 = c.A1 << 24;
+        c.A1 = (uint)((int)c.A1 >> 24);
+        c.RA = 0x80012178u;
+        GranTurismo2PC.func_80060D28(c, m);
+        MemoryAccess.WriteU8(m, (c.S1 + 0x5u), (byte)c.S0);
+        goto L800121C4;
+        L80012180: ;
+        c.A1 = c.SP + 0x10u;
+        c.A2 = c.SP + 0x14u;
+        c.RA = 0x8001218Cu;
+        GranTurismo2PC.func_80060BEC(c, m);
+        c.A0 = c.S0 + 0u;
+        c.S0 = c.V0 + 0u;
+        c.RA = 0x80012198u;
+        GranTurismo2PC.func_80083AE0(c, m);
+        if (c.S0 != 0u) { c.LO = c.V0 / c.S0; c.HI = c.V0 % c.S0; }
+        c.V1 = c.HI;
+        c.V0 = MemoryAccess.ReadU32(m, (c.SP + 0x14u));
+        c.V0 = c.V0 + c.V1;
+        c.S0 = MemoryAccess.ReadU8(m, c.V0);
+        c.V0 = MemoryAccess.ReadU32(m, (c.SP + 0x10u));
+        c.V1 = c.V1 << 1;
+        c.V1 = c.V1 + c.V0;
+        c.V0 = MemoryAccess.ReadU16(m, c.V1);
+        MemoryAccess.WriteU8(m, (c.S1 + 0x5u), (byte)c.S0);
+        L800121C4: ;
+        MemoryAccess.WriteU16(m, (c.S1 + 0x6u), (ushort)c.V0);
+        c.RA = MemoryAccess.ReadU32(m, (c.SP + 0x20u));
+        c.S1 = MemoryAccess.ReadU32(m, (c.SP + 0x1Cu));
+        c.S0 = MemoryAccess.ReadU32(m, (c.SP + 0x18u));
+        c.SP = c.SP + 0x28u;
+        return;
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void func_800121DC(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0xA0u;
+        c.V1 = c.A0 + 0u;
+        c.V0 = 0x80090000u;
+        c.A0 = MemoryAccess.ReadU32(m, (c.V0 + 0x2E6Cu));
+        c.V0 = 0x801D0000u;
+        c.V0 = c.V0 - 0x6720u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x78u), c.S0);
+        c.S0 = c.V0 + 0u;
+        c.V0 = 0u | 0xBF7Cu;
+        MemoryAccess.WriteU32(m, (c.SP + 0x8Cu), c.S5);
+        c.S5 = c.S0 + c.V0;
+        c.V0 = 0x80090000u;
+        c.V0 = MemoryAccess.ReadU32(m, (c.V0 + 0x2E70u));
+        MemoryAccess.WriteU32(m, (c.SP + 0x98u), c.FP);
+        c.FP = c.A2 + 0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x9Cu), c.RA);
+        MemoryAccess.WriteU32(m, (c.SP + 0x94u), c.S7);
+        MemoryAccess.WriteU32(m, (c.SP + 0x90u), c.S6);
+        MemoryAccess.WriteU32(m, (c.SP + 0x88u), c.S4);
+        MemoryAccess.WriteU32(m, (c.SP + 0x84u), c.S3);
+        MemoryAccess.WriteU32(m, (c.SP + 0x80u), c.S2);
+        MemoryAccess.WriteU32(m, (c.SP + 0x7Cu), c.S1);
+        MemoryAccess.WriteU32(m, (c.SP + 0xA4u), c.A1);
+        if (c.A1 == 0u) {
+            MemoryAccess.WriteU32(m, (c.SP + 0xACu), c.A3);
+            goto L80012244;
+        }
+        MemoryAccess.WriteU32(m, (c.SP + 0xACu), c.A3);
+        c.A0 = c.V0 + 0u;
+        L80012244: ;
+        if (c.V1 != 0u) {
+            MemoryAccess.WriteU32(m, (c.SP + 0x64u), c.A0);
+            goto L80012594;
+        }
+        MemoryAccess.WriteU32(m, (c.SP + 0x64u), c.A0);
+        c.A0 = 0u + 0u;
+        MemoryAccess.WriteU16(m, (c.S5 + 0x58u), (ushort)0u);
+        MemoryAccess.WriteU32(m, (c.SP + 0x68u), c.FP);
+        c.RA = 0x8001225Cu;
+        GranTurismo2PC.func_8007D23C(c, m);
+        c.A0 = c.S5 + 0u;
+        c.A1 = 0u + 0u;
+        c.A2 = 0x0000058Cu;
+        MemoryAccess.WriteU32(m, (c.SP + 0x60u), c.V0);
+        c.RA = 0x80012270u;
+        GranTurismo2PC.func_8008CE30(c, m);
+        c.V0 = 0x00000002u;
+        c.T0 = MemoryAccess.ReadWordLeft(m, c.T0, (c.S0 + 0x4u));
+        c.T0 = MemoryAccess.ReadWordRight(m, c.T0, (c.S0 + 0x1u));
+        c.T1 = MemoryAccess.ReadWordLeft(m, c.T1, (c.S0 + 0x8u));
+        c.T1 = MemoryAccess.ReadWordRight(m, c.T1, (c.S0 + 0x5u));
+        MemoryAccess.WriteWordLeft(m, (c.S5 + 0x3u), c.T0);
+        MemoryAccess.WriteWordRight(m, c.S5, c.T0);
+        MemoryAccess.WriteWordLeft(m, (c.S5 + 0x7u), c.T1);
+        MemoryAccess.WriteWordRight(m, (c.S5 + 0x4u), c.T1);
+        MemoryAccess.WriteU8(m, (c.S5 + 0x8u), (byte)c.V0);
+        MemoryAccess.WriteU8(m, (c.S5 + 0x9u), (byte)c.V0);
+        c.V0 = 0x00000004u;
+        MemoryAccess.WriteU8(m, (c.S5 + 0xAu), (byte)c.V0);
+        c.V0 = 0x00000005u;
+        MemoryAccess.WriteU8(m, (c.S5 + 0xBu), (byte)c.V0);
+        MemoryAccess.WriteU8(m, (c.S5 + 0xCu), (byte)0u);
+        c.V0 = MemoryAccess.ReadU8(m, (c.FP + 0x44u));
+        MemoryAccess.WriteU8(m, (c.S5 + 0xEu), (byte)0u);
+        c.V0 = c.V0 < 0x00000001u ? 1u : 0u;
+        MemoryAccess.WriteU8(m, (c.S5 + 0xDu), (byte)c.V0);
+        c.V0 = MemoryAccess.ReadU8(m, (c.FP + 0x45u));
+        c.A0 = MemoryAccess.ReadU32(m, (c.SP + 0x64u));
+        MemoryAccess.WriteU8(m, (c.S5 + 0xFu), (byte)c.V0);
+        c.A1 = MemoryAccess.ReadU16(m, c.FP);
+        c.S4 = 0u + 0u;
+        c.RA = 0x800122D8u;
+        GranTurismo2PC.func_8007816C(c, m);
+        c.A0 = c.S5 + 0u;
+        c.A1 = c.V0 + 0u;
+        c.RA = 0x800122E4u;
+        GranTurismo2PC.func_8005E548(c, m);
+        c.A1 = MemoryAccess.ReadU16(m, (c.FP + 0x2u));
+        c.A0 = MemoryAccess.ReadU32(m, (c.SP + 0x64u));
+        c.RA = 0x800122F4u;
+        GranTurismo2PC.func_8007816C(c, m);
+        c.A0 = c.S5 + 0u;
+        c.A1 = c.V0 + 0u;
+        c.RA = 0x80012300u;
+        GranTurismo2PC.func_8005E5F0(c, m);
+        c.A1 = MemoryAccess.ReadU16(m, (c.FP + 0x94u));
+        c.A0 = MemoryAccess.ReadU32(m, (c.SP + 0x64u));
+        c.RA = 0x80012310u;
+        GranTurismo2PC.func_8007816C(c, m);
+        c.A0 = c.S5 + 0x44u;
+        c.A1 = c.V0 + 0u;
+        c.RA = 0x8001231Cu;
+        GranTurismo2PC.func_8008CEDC(c, m);
+        c.V1 = MemoryAccess.ReadU32(m, (c.S5 + 0x588u));
+        c.V0 = 0xFFFFFFFFu;
+        MemoryAccess.WriteU16(m, (c.S5 + 0x57Cu), (ushort)c.V0);
+        MemoryAccess.WriteU16(m, (c.S5 + 0x582u), (ushort)c.V0);
+        MemoryAccess.WriteU16(m, (c.S5 + 0x584u), (ushort)c.V0);
+        c.V0 = 0xFFFFFFF9u;
+        MemoryAccess.WriteU16(m, (c.S5 + 0x586u), (ushort)0u);
+        MemoryAccess.WriteU8(m, (c.S5 + 0x580u), (byte)0u);
+        c.V1 = c.V1 | 0x0001u;
+        c.V1 = c.V1 & c.V0;
+        MemoryAccess.WriteU32(m, (c.S5 + 0x588u), c.V1);
+        c.T4 = MemoryAccess.ReadU32(m, (c.SP + 0xB0u));
+        if (c.T4 == 0u) {
+            goto L80012378;
+        }
+        c.S4 = 0x00000001u;
+        c.T0 = MemoryAccess.ReadU32(m, c.T4);
+        c.T1 = MemoryAccess.ReadU32(m, (c.T4 + 0x4u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.T4 + 0x8u));
+        MemoryAccess.WriteU32(m, (c.SP + 0x18u), c.T0);
+        MemoryAccess.WriteU32(m, (c.SP + 0x1Cu), c.T1);
+        MemoryAccess.WriteU32(m, (c.SP + 0x20u), c.T2);
+        MemoryAccess.WriteU16(m, (c.SP + 0x20u), (ushort)0u);
+        L80012378: ;
+        c.T4 = MemoryAccess.ReadU32(m, (c.SP + 0xB8u));
+        if (c.T4 == 0u) {
+            c.V1 = c.S4 << 1;
+            goto L800123B8;
+        }
+        c.V1 = c.S4 << 1;
+        c.V1 = c.V1 + c.S4;
+        c.S4 = c.S4 + 0x1u;
+        c.V1 = c.V1 << 2;
+        c.V0 = c.SP + 0x18u;
+        c.V0 = c.V0 + c.V1;
+        c.T0 = MemoryAccess.ReadU32(m, c.T4);
+        c.T1 = MemoryAccess.ReadU32(m, (c.T4 + 0x4u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.T4 + 0x8u));
+        MemoryAccess.WriteU32(m, c.V0, c.T0);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x4u), c.T1);
+        MemoryAccess.WriteU32(m, (c.V0 + 0x8u), c.T2);
+        MemoryAccess.WriteU16(m, (c.V0 + 0x8u), (ushort)0u);
+        L800123B8: ;
+        c.A0 = c.FP + 0u;
+        c.RA = 0x800123C0u;
+        GranTurismo2PC.func_80078138(c, m);
+        c.S6 = 0x00000006u;
+        c.S3 = 0u + 0u;
+        c.T4 = c.SP + 0x18u;
+        c.S1 = c.T4 + 0u;
+        c.T0 = 0x0000005Cu;
+        MemoryAccess.WriteU8(m, (c.S5 + 0x5Au), (byte)c.S6);
+        MemoryAccess.WriteU32(m, (c.SP + 0x6Cu), c.T4);
+        MemoryAccess.WriteU32(m, (c.SP + 0x70u), c.T0);
+        c.V0 = (int)c.S3 < (int)c.S6 ? 1u : 0u;
+        L800123E4: ;
+        if (c.V0 == 0u) {
+            c.S7 = 0u + 0u;
+            goto L800125A4;
+        }
+        c.S7 = 0u + 0u;
+        c.T1 = MemoryAccess.ReadU32(m, (c.SP + 0x70u));
+        c.S2 = 0x00000001u;
+        if (c.S3 == 0u) {
+            c.S0 = c.S5 + c.T1;
+            goto L8001240C;
+        }
+        c.S0 = c.S5 + c.T1;
+        if (c.S3 == c.S2) {
+            c.A0 = c.S0 + 0u;
+            goto L80012424;
+        }
+        c.A0 = c.S0 + 0u;
+        c.A1 = 0u + 0u;
+        goto L80012440;
+        L8001240C: ;
+        c.T2 = MemoryAccess.ReadU32(m, (c.SP + 0xB0u));
+        if (c.T2 == 0u) {
+            c.A0 = c.S0 + 0u;
+            goto L8001243C;
+        }
+        c.A0 = c.S0 + 0u;
+        c.S2 = 0x00000003u;
+        goto L8001243C;
+        L80012424: ;
+        c.T3 = MemoryAccess.ReadU32(m, (c.SP + 0xB8u));
+        if (c.T3 == 0u) {
+            c.A1 = 0u + 0u;
+            goto L80012440;
+        }
+        c.A1 = 0u + 0u;
+        c.S2 = 0x00000004u;
+        c.A0 = c.S0 + 0u;
+        L8001243C: ;
+        c.A1 = 0u + 0u;
+        L80012440: ;
+        c.A2 = 0x000000D0u;
+        c.RA = 0x80012448u;
+        GranTurismo2PC.func_8008CE30(c, m);
+        c.V0 = (int)c.S3 < (int)c.S4 ? 1u : 0u;
+        if (c.V0 != 0u) {
+            c.A0 = c.S1 + 0u;
+            goto L8001247C;
+        }
+        c.A0 = c.S1 + 0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x14u), c.S4);
+        c.S4 = c.S4 + 0x1u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.SP + 0x64u));
+        c.A2 = MemoryAccess.ReadU32(m, (c.SP + 0x68u));
+        c.T4 = MemoryAccess.ReadU32(m, (c.SP + 0x6Cu));
+        c.A3 = c.SP + 0x60u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x10u), c.T4);
+        c.RA = 0x80012474u;
+        GranTurismo2PC.func_80011EC0(c, m);
+        c.S7 = c.V0 + 0u;
+        MemoryAccess.WriteU8(m, (c.S1 + 0x4u), (byte)0u);
+        L8001247C: ;
+        c.V0 = MemoryAccess.ReadU32(m, c.S1);
+        MemoryAccess.WriteU32(m, c.S0, c.V0);
+        c.V1 = (uint)(sbyte)MemoryAccess.ReadU8(m, (c.S1 + 0x5u));
+        c.T0 = 0x00000001u;
+        c.V0 = c.S3 + 0x1u;
+        c.A0 = MemoryAccess.ReadU32(m, (c.SP + 0xB4u));
+        c.V0 = c.S6 - c.V0;
+        MemoryAccess.WriteU8(m, (c.S0 + 0x8Du), (byte)c.V0);
+        c.V0 = (int)c.S2 < 2 ? 1u : 0u;
+        MemoryAccess.WriteU8(m, (c.S0 + 0x8Cu), (byte)c.T0);
+        if (c.V0 != 0u) {
+            MemoryAccess.WriteU32(m, (c.S0 + 0x4u), c.V1);
+            goto L800124E0;
+        }
+        MemoryAccess.WriteU32(m, (c.S0 + 0x4u), c.V1);
+        c.V0 = (int)c.S2 < 4 ? 1u : 0u;
+        if (c.V0 != 0u) {
+            c.V0 = 0x00000004u;
+            goto L800124CC;
+        }
+        c.V0 = 0x00000004u;
+        if (c.S2 == c.V0) {
+            goto L800124D0;
+        }
+        goto L800124E0;
+        L800124CC: ;
+        c.A0 = MemoryAccess.ReadU32(m, (c.SP + 0xACu));
+        L800124D0: ;
+        c.A1 = c.S0 + 0x8u;
+        c.RA = 0x800124D8u;
+        GranTurismo2PC.func_80076FC0(c, m);
+        goto L80012538;
+        L800124E0: ;
+        c.A0 = MemoryAccess.ReadU16(m, (c.S1 + 0x8u));
+        c.RA = 0x800124ECu;
+        GranTurismo2PC.func_800768C0(c, m);
+        c.A0 = c.V0 + 0u;
+        c.A1 = c.S0 + 0x8u;
+        c.RA = 0x800124F8u;
+        GranTurismo2PC.func_80076F5C(c, m);
+        c.A1 = MemoryAccess.ReadU16(m, (c.S0 + 0x24u));
+        c.A0 = 0x00000005u;
+        c.RA = 0x80012504u;
+        GranTurismo2PC.func_80076F2C(c, m);
+        c.V1 = c.V0 + 0u;
+        c.V0 = MemoryAccess.ReadU8(m, (c.V1 + 0xEu));
+        if (c.V0 == 0u) {
+            c.A0 = c.S1 + 0u;
+            goto L80012538;
+        }
+        c.A0 = c.S1 + 0u;
+        c.A2 = c.S7 + 0u;
+        c.A1 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        c.A3 = c.SP + 0x60u;
+        MemoryAccess.WriteU32(m, c.S0, c.A1);
+        c.RA = 0x8001252Cu;
+        GranTurismo2PC.func_80012130(c, m);
+        c.V0 = (uint)(sbyte)MemoryAccess.ReadU8(m, (c.S1 + 0x5u));
+        MemoryAccess.WriteU32(m, (c.S0 + 0x4u), c.V0);
+        L80012538: ;
+        c.T1 = MemoryAccess.ReadU32(m, (c.SP + 0xA4u));
+        if (c.T1 == 0u) {
+            c.V1 = c.S0 + 0x8u;
+            goto L80012558;
+        }
+        c.V1 = c.S0 + 0x8u;
+        c.V0 = MemoryAccess.ReadU8(m, (c.V1 + 0x7Au));
+        c.V0 = c.V0 | 0x0040u;
+        MemoryAccess.WriteU8(m, (c.V1 + 0x7Au), (byte)c.V0);
+        L80012558: ;
+        MemoryAccess.WriteU8(m, (c.S0 + 0x8Eu), (byte)c.S2);
+        c.V0 = (uint)(sbyte)MemoryAccess.ReadU8(m, (c.S1 + 0x4u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.SP + 0x70u));
+        c.S1 = c.S1 + 0xCu;
+        c.T2 = c.T2 + 0xD0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x70u), c.T2);
+        c.A0 = MemoryAccess.ReadU32(m, c.S0);
+        c.S3 = c.S3 + 0x1u;
+        MemoryAccess.WriteU8(m, (c.S0 + 0x8Fu), (byte)c.V0);
+        c.RA = 0x80012580u;
+        GranTurismo2PC.func_80060AE8(c, m);
+        c.A0 = c.S0 + 0x90u;
+        c.A1 = c.V0 + 0u;
+        c.RA = 0x8001258Cu;
+        GranTurismo2PC.func_8008CEDC(c, m);
+        c.V0 = (int)c.S3 < (int)c.S6 ? 1u : 0u;
+        goto L800123E4;
+        L80012594: ;
+        c.A0 = MemoryAccess.ReadU32(m, (c.SP + 0x64u));
+        c.A1 = c.S5 + 0x10u;
+        c.RA = 0x800125A0u;
+        GranTurismo2PC.func_8007830C(c, m);
+        c.FP = c.V0 + 0u;
+        L800125A4: ;
+        c.V0 = 0x801D0000u;
+        c.A1 = c.V0 - 0x6760u;
+        c.V1 = c.FP + 0x44u;
+        c.V0 = c.V1 | c.A1;
+        c.V0 = c.V0 & 0x0003u;
+        if (c.V0 == 0u) {
+            c.V0 = c.FP + 0x84u;
+            goto L80012614;
+        }
+        c.V0 = c.FP + 0x84u;
+        L800125C0: ;
+        c.T3 = MemoryAccess.ReadWordLeft(m, c.T3, (c.V1 + 0x3u));
+        c.T3 = MemoryAccess.ReadWordRight(m, c.T3, c.V1);
+        c.T4 = MemoryAccess.ReadWordLeft(m, c.T4, (c.V1 + 0x7u));
+        c.T4 = MemoryAccess.ReadWordRight(m, c.T4, (c.V1 + 0x4u));
+        c.T0 = MemoryAccess.ReadWordLeft(m, c.T0, (c.V1 + 0xBu));
+        c.T0 = MemoryAccess.ReadWordRight(m, c.T0, (c.V1 + 0x8u));
+        c.T1 = MemoryAccess.ReadWordLeft(m, c.T1, (c.V1 + 0xFu));
+        c.T1 = MemoryAccess.ReadWordRight(m, c.T1, (c.V1 + 0xCu));
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0x3u), c.T3);
+        MemoryAccess.WriteWordRight(m, c.A1, c.T3);
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0x7u), c.T4);
+        MemoryAccess.WriteWordRight(m, (c.A1 + 0x4u), c.T4);
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0xBu), c.T0);
+        MemoryAccess.WriteWordRight(m, (c.A1 + 0x8u), c.T0);
+        MemoryAccess.WriteWordLeft(m, (c.A1 + 0xFu), c.T1);
+        MemoryAccess.WriteWordRight(m, (c.A1 + 0xCu), c.T1);
+        c.V1 = c.V1 + 0x10u;
+        if (c.V1 != c.V0) {
+            c.A1 = c.A1 + 0x10u;
+            goto L800125C0;
+        }
+        c.A1 = c.A1 + 0x10u;
+        c.S2 = 0u + 0u;
+        goto L80012644;
+        L80012614: ;
+        c.T2 = MemoryAccess.ReadU32(m, c.V1);
+        c.T3 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T4 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        c.T0 = MemoryAccess.ReadU32(m, (c.V1 + 0xCu));
+        MemoryAccess.WriteU32(m, c.A1, c.T2);
+        MemoryAccess.WriteU32(m, (c.A1 + 0x4u), c.T3);
+        MemoryAccess.WriteU32(m, (c.A1 + 0x8u), c.T4);
+        MemoryAccess.WriteU32(m, (c.A1 + 0xCu), c.T0);
+        c.V1 = c.V1 + 0x10u;
+        if (c.V1 != c.V0) {
+            c.A1 = c.A1 + 0x10u;
+            goto L80012614;
+        }
+        c.A1 = c.A1 + 0x10u;
+        c.S2 = 0u + 0u;
+        L80012644: ;
+        c.V0 = 0x801D0000u;
+        c.S3 = c.V0 - 0x6720u;
+        c.S1 = 0x00010000u;
+        c.S1 = c.S1 | 0x4FDAu;
+        c.S0 = 0x0000005Cu;
+        L80012658: ;
+        c.V0 = MemoryAccess.ReadU8(m, (c.S5 + 0x5Au));
+        c.V0 = (int)c.S2 < (int)c.V0 ? 1u : 0u;
+        if (c.V0 == 0u) {
+            c.A0 = c.S5 + c.S0;
+            goto L80012688;
+        }
+        c.A0 = c.S5 + c.S0;
+        c.A0 = c.A0 + 0x8u;
+        c.A1 = c.S1 + c.S3;
+        c.RA = 0x80012678u;
+        GranTurismo2PC.func_800771AC(c, m);
+        c.S1 = c.S1 + 0x1C0u;
+        c.S0 = c.S0 + 0xD0u;
+        c.S2 = c.S2 + 0x1u;
+        goto L80012658;
+        L80012688: ;
+        c.V0 = c.S5 + 0u;
+        c.RA = MemoryAccess.ReadU32(m, (c.SP + 0x9Cu));
+        c.FP = MemoryAccess.ReadU32(m, (c.SP + 0x98u));
+        c.S7 = MemoryAccess.ReadU32(m, (c.SP + 0x94u));
+        c.S6 = MemoryAccess.ReadU32(m, (c.SP + 0x90u));
+        c.S5 = MemoryAccess.ReadU32(m, (c.SP + 0x8Cu));
+        c.S4 = MemoryAccess.ReadU32(m, (c.SP + 0x88u));
+        c.S3 = MemoryAccess.ReadU32(m, (c.SP + 0x84u));
+        c.S2 = MemoryAccess.ReadU32(m, (c.SP + 0x80u));
+        c.S1 = MemoryAccess.ReadU32(m, (c.SP + 0x7Cu));
+        c.S0 = MemoryAccess.ReadU32(m, (c.SP + 0x78u));
+        c.SP = c.SP + 0xA0u;
+        return;
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void func_800126BC_gt2_overlay_3(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x28u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x18u), c.S2);
+        c.S2 = c.A1 + 0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x10u), c.S0);
+        c.S0 = c.A2 + 0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x1Cu), c.S3);
+        c.S3 = c.A3 + 0u;
+        c.V0 = c.S2 << 1;
+        c.V0 = c.V0 + c.S2;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.V0 + c.S2;
+        c.V0 = c.V0 << 4;
+        c.V0 = c.V0 + 0x5Cu;
+        MemoryAccess.WriteU32(m, (c.SP + 0x14u), c.S1);
+        c.S1 = c.A0 + c.V0;
+        if ((int)c.S0 < 0) {
+            MemoryAccess.WriteU32(m, (c.SP + 0x20u), c.RA);
+            goto L8001271C;
+        }
+        MemoryAccess.WriteU32(m, (c.SP + 0x20u), c.RA);
+        c.A0 = c.S1 + 0u;
+        c.A1 = 0u + 0u;
+        c.A2 = 0x000000D0u;
+        c.RA = 0x80012710u;
+        GranTurismo2PC.func_8008CE30(c, m);
+        c.V0 = 0x00000001u;
+        MemoryAccess.WriteU8(m, (c.S1 + 0x8Cu), (byte)c.V0);
+        MemoryAccess.WriteU8(m, (c.S1 + 0x8Du), (byte)c.S0);
+        L8001271C: ;
+        c.V0 = MemoryAccess.ReadU32(m, (c.SP + 0x3Cu));
+        MemoryAccess.WriteU8(m, (c.S1 + 0x8Eu), (byte)c.S3);
+        MemoryAccess.WriteU32(m, c.S1, c.V0);
+        c.A0 = c.V0 + 0u;
+        c.V0 = MemoryAccess.ReadU32(m, (c.SP + 0x38u));
+        MemoryAccess.WriteU8(m, (c.S1 + 0x8Fu), (byte)c.V0);
+        c.V0 = MemoryAccess.ReadU32(m, (c.SP + 0x40u));
+        MemoryAccess.WriteU32(m, (c.S1 + 0x4u), c.V0);
+        c.RA = 0x80012744u;
+        GranTurismo2PC.func_80060AE8(c, m);
+        c.A0 = c.S1 + 0x90u;
+        c.A1 = c.V0 + 0u;
+        c.RA = 0x80012750u;
+        GranTurismo2PC.func_8008CEDC(c, m);
+        c.S0 = c.S1 + 0x8u;
+        c.A0 = MemoryAccess.ReadU32(m, (c.SP + 0x44u));
+        c.A1 = c.S0 + 0u;
+        c.RA = 0x80012760u;
+        GranTurismo2PC.func_80076FC0(c, m);
+        c.V1 = 0x00010000u;
+        c.V1 = c.V1 | 0x4FDAu;
+        c.A0 = c.S0 + 0u;
+        c.V0 = 0x801D0000u;
+        c.V0 = c.V0 - 0x6720u;
+        c.A1 = c.S2 << 3;
+        c.A1 = c.A1 - c.S2;
+        c.A1 = c.A1 << 6;
+        c.A1 = c.A1 + c.V1;
+        c.A1 = c.A1 + c.V0;
+        c.RA = 0x8001278Cu;
+        GranTurismo2PC.func_800771AC(c, m);
+        c.V0 = c.S1 + 0u;
+        c.RA = MemoryAccess.ReadU32(m, (c.SP + 0x20u));
+        c.S3 = MemoryAccess.ReadU32(m, (c.SP + 0x1Cu));
+        c.S2 = MemoryAccess.ReadU32(m, (c.SP + 0x18u));
+        c.S1 = MemoryAccess.ReadU32(m, (c.SP + 0x14u));
+        c.S0 = MemoryAccess.ReadU32(m, (c.SP + 0x10u));
+        c.SP = c.SP + 0x28u;
+        return;
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void func_800127AC(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x30u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x18u), c.S2);
+        c.S2 = c.A0 + 0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x1Cu), c.S3);
+        c.S3 = c.A2 + 0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x24u), c.S5);
+        c.S5 = c.A3 + 0u;
+        c.A0 = 0x00010000u;
+        c.A0 = c.A0 | 0x4FDAu;
+        c.V0 = c.A1 << 1;
+        c.V0 = c.V0 + c.A1;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.V0 + c.A1;
+        c.V0 = c.V0 << 4;
+        c.V0 = c.V0 + 0x5Cu;
+        MemoryAccess.WriteU32(m, (c.SP + 0x14u), c.S1);
+        c.S1 = c.S2 + c.V0;
+        c.V1 = 0x801D0000u;
+        c.V1 = c.V1 - 0x6720u;
+        c.V0 = c.A1 << 3;
+        c.V0 = c.V0 - c.A1;
+        c.V0 = c.V0 << 6;
+        MemoryAccess.WriteU32(m, (c.SP + 0x10u), c.S0);
+        c.S0 = MemoryAccess.ReadU32(m, (c.SP + 0x44u));
+        c.V0 = c.V0 + c.A0;
+        MemoryAccess.WriteU32(m, (c.SP + 0x20u), c.S4);
+        c.S4 = c.V0 + c.V1;
+        if ((int)c.S3 < 0) {
+            MemoryAccess.WriteU32(m, (c.SP + 0x28u), c.RA);
+            goto L8001283C;
+        }
+        MemoryAccess.WriteU32(m, (c.SP + 0x28u), c.RA);
+        c.A0 = c.S1 + 0u;
+        c.A1 = 0u + 0u;
+        c.A2 = 0x000000D0u;
+        c.RA = 0x80012830u;
+        GranTurismo2PC.func_8008CE30(c, m);
+        c.V0 = 0x00000001u;
+        MemoryAccess.WriteU8(m, (c.S1 + 0x8Cu), (byte)c.V0);
+        MemoryAccess.WriteU8(m, (c.S1 + 0x8Du), (byte)c.S3);
+        L8001283C: ;
+        MemoryAccess.WriteU8(m, (c.S1 + 0x8Eu), (byte)c.S5);
+        c.V0 = MemoryAccess.ReadU32(m, (c.SP + 0x40u));
+        c.A0 = c.S1 + 0x8u;
+        MemoryAccess.WriteU8(m, (c.S1 + 0x8Fu), (byte)c.V0);
+        c.V0 = MemoryAccess.ReadU32(m, (c.S0 + 0x8Cu));
+        c.V1 = c.S0 + 0x8u;
+        MemoryAccess.WriteU32(m, c.S1, c.V0);
+        c.V0 = MemoryAccess.ReadU32(m, (c.S0 + 0x4u));
+        c.A1 = c.S0 + 0x88u;
+        MemoryAccess.WriteU32(m, (c.S1 + 0x4u), c.V0);
+        L80012864: ;
+        c.T0 = MemoryAccess.ReadU32(m, c.V1);
+        c.T1 = MemoryAccess.ReadU32(m, (c.V1 + 0x4u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V1 + 0x8u));
+        c.T3 = MemoryAccess.ReadU32(m, (c.V1 + 0xCu));
+        MemoryAccess.WriteU32(m, c.A0, c.T0);
+        MemoryAccess.WriteU32(m, (c.A0 + 0x4u), c.T1);
+        MemoryAccess.WriteU32(m, (c.A0 + 0x8u), c.T2);
+        MemoryAccess.WriteU32(m, (c.A0 + 0xCu), c.T3);
+        c.V1 = c.V1 + 0x10u;
+        if (c.V1 != c.A1) {
+            c.A0 = c.A0 + 0x10u;
+            goto L80012864;
+        }
+        c.A0 = c.A0 + 0x10u;
+        c.S0 = c.S1 + 0x8u;
+        c.T0 = MemoryAccess.ReadU32(m, c.V1);
+        MemoryAccess.WriteU32(m, c.A0, c.T0);
+        c.V0 = MemoryAccess.ReadU8(m, (c.S0 + 0x7Au));
+        c.V0 = c.V0 | 0x0040u;
+        MemoryAccess.WriteU8(m, (c.S0 + 0x7Au), (byte)c.V0);
+        c.A0 = MemoryAccess.ReadU32(m, c.S1);
+        c.RA = 0x800128BCu;
+        GranTurismo2PC.func_80060AE8(c, m);
+        c.A0 = c.S1 + 0x90u;
+        c.A1 = c.V0 + 0u;
+        c.RA = 0x800128C8u;
+        GranTurismo2PC.func_8008CEDC(c, m);
+        c.V0 = MemoryAccess.ReadU32(m, (c.SP + 0x48u));
+        c.A0 = c.S0 + 0u;
+        MemoryAccess.WriteU16(m, (c.S2 + 0x582u), (ushort)c.V0);
+        c.V0 = MemoryAccess.ReadU32(m, (c.SP + 0x4Cu));
+        c.A1 = c.S4 + 0u;
+        MemoryAccess.WriteU16(m, (c.S2 + 0x584u), (ushort)c.V0);
+        c.RA = 0x800128E4u;
+        GranTurismo2PC.func_800771AC(c, m);
+        c.V0 = c.S1 + 0u;
+        c.RA = MemoryAccess.ReadU32(m, (c.SP + 0x28u));
+        c.S5 = MemoryAccess.ReadU32(m, (c.SP + 0x24u));
+        c.S4 = MemoryAccess.ReadU32(m, (c.SP + 0x20u));
+        c.S3 = MemoryAccess.ReadU32(m, (c.SP + 0x1Cu));
+        c.S2 = MemoryAccess.ReadU32(m, (c.SP + 0x18u));
+        c.S1 = MemoryAccess.ReadU32(m, (c.SP + 0x14u));
+        c.S0 = MemoryAccess.ReadU32(m, (c.SP + 0x10u));
+        c.SP = c.SP + 0x30u;
+        return;
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void func_8001290C(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x48u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x34u), c.S5);
+        c.S5 = c.A0 + 0u;
+        c.V0 = 0x801D0000u;
+        c.A3 = c.V0 - 0x6720u;
+        c.V0 = 0u | 0xBF7Cu;
+        MemoryAccess.WriteU32(m, (c.SP + 0x24u), c.S1);
+        c.S1 = c.A3 + c.V0;
+        MemoryAccess.WriteU32(m, (c.SP + 0x3Cu), c.S7);
+        MemoryAccess.WriteU32(m, (c.SP + 0x44u), c.RA);
+        MemoryAccess.WriteU32(m, (c.SP + 0x40u), c.FP);
+        MemoryAccess.WriteU32(m, (c.SP + 0x38u), c.S6);
+        MemoryAccess.WriteU32(m, (c.SP + 0x30u), c.S4);
+        MemoryAccess.WriteU32(m, (c.SP + 0x2Cu), c.S3);
+        MemoryAccess.WriteU32(m, (c.SP + 0x28u), c.S2);
+        MemoryAccess.WriteU32(m, (c.SP + 0x20u), c.S0);
+        c.V1 = (uint)(sbyte)MemoryAccess.ReadU8(m, (c.S5 + 0x2u));
+        c.V0 = 0x00000004u;
+        if (c.V1 == c.V0) {
+            c.S7 = c.S1 + 0u;
+            goto L80012AB4;
+        }
+        c.S7 = c.S1 + 0u;
+        c.V0 = (int)c.V1 < 5 ? 1u : 0u;
+        if (c.V0 == 0u) {
+            goto L80012978;
+        }
+        if (c.V1 == 0u) {
+            c.S3 = 0u + 0u;
+            goto L8001298C;
+        }
+        c.S3 = 0u + 0u;
+        goto L80012B38;
+        L80012978: ;
+        c.V0 = 0x00000006u;
+        if (c.V1 == c.V0) {
+            goto L80012A34;
+        }
+        goto L80012B38;
+        L8001298C: ;
+        c.FP = c.A3 + 0u;
+        c.S6 = 0xFFFFFFFFu;
+        c.S4 = c.S5 + 0u;
+        L80012998: ;
+        c.V0 = (int)c.S3 < 2 ? 1u : 0u;
+        if (c.V0 == 0u) {
+            goto L80012B38;
+        }
+        c.S2 = (uint)(short)MemoryAccess.ReadU16(m, (c.S4 + 0xA0u));
+        if ((int)c.S2 < 0) {
+            c.A0 = c.S2 + 0u;
+            goto L80012A28;
+        }
+        c.A0 = c.S2 + 0u;
+        c.S0 = c.A0 << 9;
+        c.S0 = c.S0 + c.A0;
+        c.S0 = c.S0 << 2;
+        c.S0 = c.S0 + c.A0;
+        c.S0 = c.S0 << 3;
+        c.S0 = c.S0 + 0x3C74u;
+        c.S0 = c.S0 + c.FP;
+        c.S1 = (uint)(short)MemoryAccess.ReadU16(m, (c.S4 + 0xA4u));
+        c.A2 = MemoryAccess.ReadU32(m, (c.S5 + 0x2CCu));
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x800129E0u;
+        GranTurismo2PC.func_80011BE8(c, m);
+        c.A0 = c.S7 + 0u;
+        c.A1 = c.S3 + 0u;
+        c.A2 = c.S3 + 0u;
+        c.A3 = c.S3 + 0x3u;
+        c.V0 = c.S1 << 2;
+        c.V0 = c.V0 + c.S1;
+        c.V0 = c.V0 << 3;
+        c.V0 = c.V0 + c.S1;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.V0 + 0x4u;
+        c.V1 = c.S5 + c.S3;
+        c.V1 = (uint)(sbyte)MemoryAccess.ReadU8(m, (c.V1 + 0xB6u));
+        c.S0 = c.S0 + c.V0;
+        MemoryAccess.WriteU32(m, (c.SP + 0x14u), c.S0);
+        MemoryAccess.WriteU32(m, (c.SP + 0x18u), c.S6);
+        MemoryAccess.WriteU32(m, (c.SP + 0x1Cu), c.S6);
+        MemoryAccess.WriteU32(m, (c.SP + 0x10u), c.V1);
+        c.RA = 0x80012A28u;
+        GranTurismo2PC.func_800127AC(c, m);
+        L80012A28: ;
+        c.S4 = c.S4 + 0x2u;
+        c.S3 = c.S3 + 0x1u;
+        goto L80012998;
+        L80012A34: ;
+        c.S2 = (uint)(short)MemoryAccess.ReadU16(m, (c.S5 + 0x6u));
+        if ((int)c.S2 < 0) {
+            c.A0 = c.S2 + 0u;
+            goto L80012B38;
+        }
+        c.A0 = c.S2 + 0u;
+        c.V0 = 0x801D0000u;
+        c.V0 = c.V0 - 0x6720u;
+        c.S0 = c.S2 << 9;
+        c.S0 = c.S0 + c.S2;
+        c.S0 = c.S0 << 2;
+        c.S0 = c.S0 + c.S2;
+        c.S0 = c.S0 << 3;
+        c.S0 = c.S0 + 0x3C74u;
+        c.S0 = c.S0 + c.V0;
+        c.S1 = (uint)(short)MemoryAccess.ReadU16(m, (c.S5 + 0x8u));
+        c.A2 = MemoryAccess.ReadU32(m, (c.S5 + 0x2CCu));
+        c.A1 = c.S1 + 0u;
+        c.RA = 0x80012A78u;
+        GranTurismo2PC.func_80011BE8(c, m);
+        c.A0 = c.S7 + 0u;
+        c.A1 = 0u + 0u;
+        c.A2 = c.A1 + 0u;
+        c.V0 = c.S1 << 2;
+        c.V0 = c.V0 + c.S1;
+        c.V0 = c.V0 << 3;
+        c.V0 = c.V0 + c.S1;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.V0 + 0x4u;
+        c.V1 = (uint)(sbyte)MemoryAccess.ReadU8(m, (c.S5 + 0x18u));
+        c.S0 = c.S0 + c.V0;
+        MemoryAccess.WriteU32(m, (c.SP + 0x14u), c.S0);
+        MemoryAccess.WriteU32(m, (c.SP + 0x18u), c.S2);
+        MemoryAccess.WriteU32(m, (c.SP + 0x10u), c.V1);
+        goto L80012B28;
+        L80012AB4: ;
+        c.S2 = (uint)(short)MemoryAccess.ReadU16(m, (c.S5 + 0x6u));
+        if ((int)c.S2 < 0) {
+            c.A0 = c.S2 + 0u;
+            goto L80012B38;
+        }
+        c.A0 = c.S2 + 0u;
+        c.S0 = c.S2 << 9;
+        c.S0 = c.S0 + c.S2;
+        c.S0 = c.S0 << 2;
+        c.S0 = c.S0 + c.S2;
+        c.S0 = c.S0 << 3;
+        c.S0 = c.S0 + 0x3C74u;
+        c.A1 = (uint)(short)MemoryAccess.ReadU16(m, (c.S5 + 0x8u));
+        c.A2 = MemoryAccess.ReadU32(m, (c.S5 + 0x2CCu));
+        c.S0 = c.S0 + c.A3;
+        c.RA = 0x80012AECu;
+        GranTurismo2PC.func_80011BE8(c, m);
+        c.A0 = c.S1 + 0u;
+        c.A1 = 0u + 0u;
+        c.V1 = (uint)(short)MemoryAccess.ReadU16(m, (c.S5 + 0x8u));
+        c.V0 = (uint)(sbyte)MemoryAccess.ReadU8(m, (c.S5 + 0x18u));
+        c.A2 = 0xFFFFFFFFu;
+        MemoryAccess.WriteU32(m, (c.SP + 0x18u), c.S2);
+        MemoryAccess.WriteU32(m, (c.SP + 0x10u), c.V0);
+        c.V0 = c.V1 << 2;
+        c.V0 = c.V0 + c.V1;
+        c.V0 = c.V0 << 3;
+        c.V0 = c.V0 + c.V1;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.V0 + 0x4u;
+        c.S0 = c.S0 + c.V0;
+        MemoryAccess.WriteU32(m, (c.SP + 0x14u), c.S0);
+        L80012B28: ;
+        c.V0 = (uint)(short)MemoryAccess.ReadU16(m, (c.S5 + 0x8u));
+        c.A3 = 0x00000003u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x1Cu), c.V0);
+        c.RA = 0x80012B38u;
+        GranTurismo2PC.func_800127AC(c, m);
+        L80012B38: ;
+        c.RA = MemoryAccess.ReadU32(m, (c.SP + 0x44u));
+        c.FP = MemoryAccess.ReadU32(m, (c.SP + 0x40u));
+        c.S7 = MemoryAccess.ReadU32(m, (c.SP + 0x3Cu));
+        c.S6 = MemoryAccess.ReadU32(m, (c.SP + 0x38u));
+        c.S5 = MemoryAccess.ReadU32(m, (c.SP + 0x34u));
+        c.S4 = MemoryAccess.ReadU32(m, (c.SP + 0x30u));
+        c.S3 = MemoryAccess.ReadU32(m, (c.SP + 0x2Cu));
+        c.S2 = MemoryAccess.ReadU32(m, (c.SP + 0x28u));
+        c.S1 = MemoryAccess.ReadU32(m, (c.SP + 0x24u));
+        c.S0 = MemoryAccess.ReadU32(m, (c.SP + 0x20u));
+        c.SP = c.SP + 0x48u;
+        return;
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void func_80012B68(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x20u;
+        c.A2 = c.A0 + 0u;
+        c.V1 = 0x801D0000u;
+        c.V1 = c.V1 - 0x6720u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x14u), c.S1);
+        c.S1 = 0u | 0xC6C0u;
+        c.S1 = c.V1 + c.S1;
+        c.V0 = 0xFFFFFFFCu;
+        c.S1 = c.S1 & c.V0;
+        c.A0 = c.S1 + 0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x10u), c.S0);
+        c.S0 = c.A2 << 9;
+        c.S0 = c.S0 + c.A2;
+        c.S0 = c.S0 << 2;
+        c.S0 = c.S0 + c.A2;
+        c.S0 = c.S0 << 3;
+        c.S0 = c.S0 + 0x3C74u;
+        c.S0 = c.S0 + c.V1;
+        c.V0 = c.A1 << 2;
+        c.V0 = c.V0 + c.A1;
+        c.V0 = c.V0 << 3;
+        c.V0 = c.V0 + c.A1;
+        c.V0 = c.V0 << 2;
+        c.V0 = c.V0 + 0x4u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x18u), c.RA);
+        c.S0 = c.S0 + c.V0;
+        c.RA = 0x80012BD4u;
+        Dispatcher.Call(c, m, 0x80010000u);
+        c.A1 = MemoryAccess.ReadU32(m, c.S0);
+        c.A0 = c.S1 + 0u;
+        c.RA = 0x80012BE0u;
+        GranTurismo2PC.func_80010024(c, m);
+        c.A0 = c.S1 + 0u;
+        c.A1 = c.S0 + 0x8u;
+        c.RA = 0x80012BECu;
+        GranTurismo2PC.func_80011858(c, m);
+        c.RA = MemoryAccess.ReadU32(m, (c.SP + 0x18u));
+        c.S1 = MemoryAccess.ReadU32(m, (c.SP + 0x14u));
+        c.S0 = MemoryAccess.ReadU32(m, (c.SP + 0x10u));
+        c.SP = c.SP + 0x20u;
+        return;
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void func_80012C00(CpuContext c, IMemory m)
+    {
+        c.SP = c.SP - 0x18u;
+        c.V0 = 0x800B0000u;
+        c.A0 = c.V0 - 0x72A4u;
+        c.V0 = 0x801D0000u;
+        c.V0 = c.V0 - 0x6720u;
+        c.V1 = 0u | 0xC6C0u;
+        c.V0 = c.V0 + c.V1;
+        c.V1 = 0xFFFFFFFCu;
+        MemoryAccess.WriteU32(m, (c.SP + 0x10u), c.S0);
+        c.S0 = c.V0 & c.V1;
+        c.V0 = c.S0 + 0u;
+        c.V1 = c.S0 + 0x2D0u;
+        MemoryAccess.WriteU32(m, (c.SP + 0x14u), c.RA);
+        L80012C34: ;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        c.T0 = MemoryAccess.ReadU32(m, (c.V0 + 0x4u));
+        c.T1 = MemoryAccess.ReadU32(m, (c.V0 + 0x8u));
+        c.T2 = MemoryAccess.ReadU32(m, (c.V0 + 0xCu));
+        MemoryAccess.WriteU32(m, c.A0, c.A3);
+        MemoryAccess.WriteU32(m, (c.A0 + 0x4u), c.T0);
+        MemoryAccess.WriteU32(m, (c.A0 + 0x8u), c.T1);
+        MemoryAccess.WriteU32(m, (c.A0 + 0xCu), c.T2);
+        c.V0 = c.V0 + 0x10u;
+        if (c.V0 != c.V1) {
+            c.A0 = c.A0 + 0x10u;
+            goto L80012C34;
+        }
+        c.A0 = c.A0 + 0x10u;
+        c.A3 = MemoryAccess.ReadU32(m, c.V0);
+        MemoryAccess.WriteU32(m, c.A0, c.A3);
+        c.V0 = MemoryAccess.ReadU32(m, (c.S0 + 0x2C8u));
+        if (c.V0 == 0u) {
+            c.A0 = 0x800B0000u;
+            goto L80012CC8;
+        }
+        c.A0 = 0x800B0000u;
+        c.A0 = c.A0 - 0x6FCCu;
+        c.A1 = 0x000C0000u;
+        c.A1 = c.A1 | 0x8000u;
+        c.RA = 0x80012C8Cu;
+        GranTurismo2PC.func_80076D74(c, m);
+        c.A0 = 0x800B0000u;
+        c.A0 = c.A0 - 0x72A4u;
+        c.V1 = 0x80090000u;
+        MemoryAccess.WriteU32(m, (c.V1 + 0x2E6Cu), c.V0);
+        c.RA = 0x80012CA0u;
+        GranTurismo2PC.func_8001290C(c, m);
+        c.V0 = MemoryAccess.ReadU8(m, (c.S0 + 0x2u));
+        c.V1 = 0x00000006u;
+        c.V0 = c.V0 << 24;
+        c.V0 = (uint)((int)c.V0 >> 24);
+        if (c.V0 != c.V1) {
+            c.A0 = 0u + 0u;
+            goto L80012CCC;
+        }
+        c.A0 = 0u + 0u;
+        c.A0 = (uint)(short)MemoryAccess.ReadU16(m, (c.S0 + 0x6u));
+        c.A1 = (uint)(short)MemoryAccess.ReadU16(m, (c.S0 + 0x8u));
+        c.RA = 0x80012CC8u;
+        GranTurismo2PC.func_80012B68(c, m);
+        L80012CC8: ;
+        c.A0 = 0u + 0u;
+        L80012CCC: ;
+        c.A1 = 0x80010000u;
+        c.A1 = c.A1 + 0x1F64u;
+        c.A2 = c.A0 + 0u;
+        c.RA = 0x80012CDCu;
+        GranTurismo2PC.func_8005DA7C(c, m);
+        c.RA = MemoryAccess.ReadU32(m, (c.SP + 0x14u));
+        c.S0 = MemoryAccess.ReadU32(m, (c.SP + 0x10u));
+        c.SP = c.SP + 0x18u;
+        return;
+    }
+}
+
+public sealed class Gt2_overlay_3DispatchTable : IOverlay
+{
+    public string Name => "gt2_overlay_3";
+    public int LbaStart => 449;
+    public uint Base => 0x80010000u;
+    public uint Size => 0x2CECu;
+    public uint ImageSize => 0x27BDFFE8u;
+    public bool Relocatable => false;
+    public IReadOnlyDictionary<uint, Action<CpuContext, IMemory>> Functions { get; } =
+        new Dictionary<uint, Action<CpuContext, IMemory>>
+        {
+            [0x80010000u] = GranTurismo2PC.func_80010000_gt2_overlay_3,
+            [0x80010024u] = GranTurismo2PC.func_80010024,
+            [0x80011858u] = GranTurismo2PC.func_80011858,
+            [0x80011B0Cu] = GranTurismo2PC.func_80011B0C,
+            [0x80011BE8u] = GranTurismo2PC.func_80011BE8,
+            [0x80011CFCu] = GranTurismo2PC.func_80011CFC,
+            [0x80011D38u] = GranTurismo2PC.func_80011D38,
+            [0x80011D74u] = GranTurismo2PC.func_80011D74_gt2_overlay_3,
+            [0x80011EC0u] = GranTurismo2PC.func_80011EC0,
+            [0x80012130u] = GranTurismo2PC.func_80012130,
+            [0x800121DCu] = GranTurismo2PC.func_800121DC,
+            [0x800126BCu] = GranTurismo2PC.func_800126BC_gt2_overlay_3,
+            [0x800127ACu] = GranTurismo2PC.func_800127AC,
+            [0x8001290Cu] = GranTurismo2PC.func_8001290C,
+            [0x80012B68u] = GranTurismo2PC.func_80012B68,
+            [0x80012C00u] = GranTurismo2PC.func_80012C00,
+        };
+}

@@ -1,0 +1,580 @@
+{
+  "game": {
+    "id": "SCUS-94455",
+    "name": "GranTurismo2ArcadePC",
+    "namespace": "Recompiled.Arcade",
+    "title": "Gran Turismo 2 PC - Arcade bring-up",
+    "output": "arcade-recompiled"
+  },
+  "cue": "../SCUS_944.55.cue",
+  "debug": false,
+  "linearSweep": true,
+  "functions": [
+    {
+      "address": "0x80010000",
+      "size": 192
+    },
+    {
+      "address": "0x80010430"
+    },
+    {
+      "address": "0x80082F18"
+    },
+    {
+      "address": "0x80083A1C"
+    },
+    {
+      "address": "0x80083A4C"
+    },
+    {
+      "address": "0x80083A8C"
+    },
+    {
+      "address": "0x80083AE4"
+    },
+    {
+      "address": "0x80083BBC"
+    },
+    {
+      "address": "0x80083A38"
+    },
+    {
+      "address": "0x80083A64"
+    },
+    {
+      "address": "0x80083AA4"
+    },
+    {
+      "address": "0x80083B70"
+    },
+    {
+      "address": "0x80083BDC"
+    },
+    {
+      "address": "0x8008BD84"
+    },
+    {
+      "address": "0x80080934"
+    },
+    {
+      "address": "0x8008099C"
+    },
+    {
+      "address": "0x800809B4"
+    },
+    {
+      "address": "0x800809D4"
+    },
+    {
+      "address": "0x800809F0"
+    },
+    {
+      "address": "0x80080A08"
+    },
+    {
+      "address": "0x80083318"
+    },
+    {
+      "address": "0x80083328"
+    },
+    {
+      "address": "0x80083348"
+    },
+    {
+      "address": "0x80083350"
+    },
+    {
+      "address": "0x80083368"
+    },
+    {
+      "address": "0x8008339C"
+    },
+    {
+      "address": "0x80084274"
+    },
+    {
+      "address": "0x800842E4"
+    },
+    {
+      "address": "0x800842E8"
+    },
+    {
+      "address": "0x800842EC"
+    },
+    {
+      "address": "0x80084334"
+    },
+    {
+      "address": "0x800843DC"
+    },
+    {
+      "address": "0x800844C8"
+    },
+    {
+      "address": "0x80084470"
+    },
+    {
+      "address": "0x80084510"
+    },
+    {
+      "address": "0x800845C8"
+    },
+    {
+      "address": "0x80084624"
+    },
+    {
+      "address": "0x80084654"
+    },
+    {
+      "address": "0x800846E0"
+    },
+    {
+      "address": "0x80084774"
+    },
+    {
+      "address": "0x800847E0"
+    },
+    {
+      "address": "0x8008484C"
+    },
+    {
+      "address": "0x800848B8"
+    },
+    {
+      "address": "0x80084924"
+    },
+    {
+      "address": "0x80084960"
+    },
+    {
+      "address": "0x8008499C"
+    },
+    {
+      "address": "0x800849EC"
+    },
+    {
+      "address": "0x80084A28"
+    },
+    {
+      "address": "0x80084A6C"
+    },
+    {
+      "address": "0x80084AA8"
+    },
+    {
+      "address": "0x80084B1C"
+    },
+    {
+      "address": "0x80084B80"
+    },
+    {
+      "address": "0x80084BEC"
+    },
+    {
+      "address": "0x80084C64"
+    },
+    {
+      "address": "0x80084CDC"
+    },
+    {
+      "address": "0x80084D20"
+    },
+    {
+      "address": "0x80084D84"
+    },
+    {
+      "address": "0x80084E64"
+    },
+    {
+      "address": "0x80084EC4"
+    },
+    {
+      "address": "0x80084F28"
+    },
+    {
+      "address": "0x80084FD8"
+    },
+    {
+      "address": "0x800850A0"
+    },
+    {
+      "address": "0x80085154"
+    },
+    {
+      "address": "0x80085208"
+    },
+    {
+      "address": "0x800852A4"
+    },
+    {
+      "address": "0x8008535C"
+    },
+    {
+      "address": "0x800853C8"
+    },
+    {
+      "address": "0x8008543C"
+    },
+    {
+      "address": "0x80085484"
+    },
+    {
+      "address": "0x800854B0"
+    },
+    {
+      "address": "0x8008550C"
+    },
+    {
+      "address": "0x8008565C"
+    },
+    {
+      "address": "0x800856A4"
+    },
+    {
+      "address": "0x800856D4"
+    },
+    {
+      "address": "0x80085710"
+    },
+    {
+      "address": "0x80081008"
+    },
+    {
+      "address": "0x80081020"
+    },
+    {
+      "address": "0x80060C84"
+    },
+    {
+      "address": "0x80060CF0"
+    },
+    {
+      "address": "0x8007C23C"
+    },
+    {
+      "address": "0x8007E978"
+    },
+    {
+      "address": "0x8007E998"
+    },
+    {
+      "address": "0x80010AF0",
+      "size": 376
+    },
+    {
+      "address": "0x8006821C"
+    },
+    {
+      "address": "0x80068220"
+    },
+    {
+      "address": "0x8005D77C"
+    },
+    {
+      "address": "0x8005D780"
+    }
+  ],
+  "overlays": [
+    {
+      "name": "gt2_arcade_overlay_0",
+      "base": "0x80010000",
+      "file": "GT2.OVL",
+      "offset": 48,
+      "size": 144681,
+      "gzip": true,
+      "linearSweep": true,
+      "functions": [
+        {
+          "address": "0x80010000"
+        },
+        {
+          "address": "0x80012254"
+        },
+        {
+          "address": "0x80015F9C"
+        },
+        {
+          "address": "0x80015FCC"
+        },
+        {
+          "address": "0x80016014"
+        },
+        {
+          "address": "0x8001605C"
+        },
+        {
+          "address": "0x8001608C"
+        },
+        {
+          "address": "0x800160BC"
+        },
+        {
+          "address": "0x800160EC"
+        },
+        {
+          "address": "0x80016114"
+        },
+        {
+          "address": "0x80016144"
+        },
+        {
+          "address": "0x80016174"
+        },
+        {
+          "address": "0x800161E4"
+        }
+      ]
+    },
+    {
+      "name": "gt2_arcade_overlay_1",
+      "base": "0x80010000",
+      "file": "GT2.OVL",
+      "offset": 144732,
+      "size": 42268,
+      "gzip": true,
+      "linearSweep": true,
+      "functions": [
+        {
+          "address": "0x80010000"
+        },
+        {
+          "address": "0x800112D0"
+        }
+      ]
+    },
+    {
+      "name": "gt2_arcade_overlay_2",
+      "base": "0x80010000",
+      "file": "GT2.OVL",
+      "offset": 187000,
+      "size": 52888,
+      "gzip": true,
+      "linearSweep": true,
+      "functions": [
+        {
+          "address": "0x80010000"
+        },
+        {
+          "address": "0x80011750"
+        },
+        {
+          "address": "0x80019C04"
+        },
+        {
+          "address": "0x80019C5C"
+        },
+        {
+          "address": "0x80019CC4"
+        },
+        {
+          "address": "0x80019CF4"
+        },
+        {
+          "address": "0x80019D70"
+        },
+        {
+          "address": "0x80019D90"
+        },
+        {
+          "address": "0x80011780"
+        },
+        {
+          "address": "0x80011894"
+        },
+        {
+          "address": "0x8001419C"
+        },
+        {
+          "address": "0x80014230"
+        },
+        {
+          "address": "0x80015A98"
+        },
+        {
+          "address": "0x80015B50"
+        },
+        {
+          "address": "0x80015BA0"
+        },
+        {
+          "address": "0x80015BC4"
+        },
+        {
+          "address": "0x80015BF0"
+        },
+        {
+          "address": "0x80015C0C"
+        },
+        {
+          "address": "0x80015C68"
+        },
+        {
+          "address": "0x80015CC0"
+        },
+        {
+          "address": "0x80015D18"
+        },
+        {
+          "address": "0x80015D3C"
+        },
+        {
+          "address": "0x80015D78"
+        },
+        {
+          "address": "0x80015D84"
+        }
+      ]
+    },
+    {
+      "name": "gt2_arcade_overlay_3",
+      "base": "0x80010000",
+      "file": "GT2.OVL",
+      "offset": 239888,
+      "size": 5197,
+      "gzip": true,
+      "linearSweep": true,
+      "functions": [
+        {
+          "address": "0x80010000"
+        },
+        {
+          "address": "0x80012C00"
+        }
+      ]
+    },
+    {
+      "name": "gt2_arcade_overlay_4",
+      "base": "0x80010000",
+      "file": "GT2.OVL",
+      "offset": 245088,
+      "size": 38394,
+      "gzip": true,
+      "linearSweep": true,
+      "functions": [
+        {
+          "address": "0x80010000"
+        },
+        {
+          "address": "0x80013628"
+        }
+      ]
+    },
+    {
+      "name": "gt2_arcade_overlay_5",
+      "base": "0x80010000",
+      "file": "GT2.OVL",
+      "offset": 283484,
+      "size": 3601,
+      "gzip": true,
+      "linearSweep": true,
+      "functions": [
+        {
+          "address": "0x80010000"
+        },
+        {
+          "address": "0x800114B8"
+        }
+      ]
+    }
+  ],
+  "stubs": [],
+  "ignored": [],
+  "patches": [
+    {
+      "overlay": "main",
+      "address": "80010954",
+      "target": "RecompOne.Runtime.Sdk.GT2Compat.WaitForInitialVBlanks",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "8007D14C",
+      "target": "RecompOne.Runtime.Sdk.GT2Compat.VSync",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "80080A20",
+      "target": "RecompOne.Runtime.Sdk.GT2Compat.TraceRenderSchedulerEntry",
+      "mode": "pre"
+    },
+    {
+      "overlay": "main",
+      "address": "8007C460",
+      "target": "RecompOne.Runtime.Sdk.GT2Compat.WaitForCdCommand",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "80081F64",
+      "target": "RecompOne.Runtime.Sdk.GT2Compat.WaitForCdBuffer",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "80089F98",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdSyncCallback",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "80089FB8",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdReadyCallback",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "80089FD8",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdControl",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "8008A114",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdControlF",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "8008A248",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdControlB",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "80089E28",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdGetSector",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "8008A9FC",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdSync",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "8008AC7C",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdReady",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "8005DA48",
+      "target": "RecompOne.Runtime.Sdk.GT2Compat.TraceOverlayLoad",
+      "mode": "pre"
+    },
+    {
+      "overlay": "main",
+      "address": "8007ACA0",
+      "target": "RecompOne.Runtime.Sdk.GT2Compat.Longjmp",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "80087058",
+      "target": "RecompOne.Runtime.Sdk.LibPad.PadInitDirect",
+      "mode": "pre"
+    }
+  ]
+}

@@ -1,0 +1,304 @@
+{
+  "game": {
+    "id": "SCUS-94488",
+    "name": "GranTurismo2PC",
+    "namespace": "Recompiled.Simulation",
+    "title": "Gran Turismo 2 PC",
+    "output": "recompiled"
+  },
+  "cue": "../Gran Turismo 2 [Simulation Disc] [U] [SCUS-94488].cue",
+  "debug": false,
+  "linearSweep": true,
+  "functions": [
+    {
+      "address": "0x80010000",
+      "size": 192
+    },
+    {
+      "address": "0x80010430"
+    },
+    {
+      "address": "0x80083008"
+    },
+    {
+      "address": "0x800810F8"
+    },
+    {
+      "address": "0x80081110"
+    },
+    {
+      "address": "0x80060D74"
+    },
+    {
+      "address": "0x80060DE0"
+    },
+    {
+      "address": "0x8007C32C"
+    },
+    {
+      "address": "0x8007EA68"
+    },
+    {
+      "address": "0x8007EA88"
+    },
+    {
+      "address": "0x80010AF0",
+      "size": 376
+    },
+    {
+      "address": "0x8006830C"
+    },
+    {
+      "address": "0x80068310"
+    },
+    {
+      "address": "0x8005D80C"
+    },
+    {
+      "address": "0x8005D810"
+    }
+  ],
+  "overlays": [
+    {
+      "name": "gt2_overlay_0",
+      "base": "0x80010000",
+      "file": "GT2.OVL",
+      "offset": 48,
+      "size": 144709,
+      "gzip": true,
+      "linearSweep": true,
+      "functions": [
+        {
+          "address": "0x80010000"
+        },
+        {
+          "address": "0x80012254"
+        },
+        {
+          "address": "0x80016010"
+        },
+        {
+          "address": "0x80016040"
+        },
+        {
+          "address": "0x80016088"
+        },
+        {
+          "address": "0x800160D0"
+        },
+        {
+          "address": "0x80016100"
+        },
+        {
+          "address": "0x80016130"
+        },
+        {
+          "address": "0x80016160"
+        },
+        {
+          "address": "0x80016188"
+        },
+        {
+          "address": "0x800161B8"
+        },
+        {
+          "address": "0x800161E8"
+        },
+        {
+          "address": "0x80016258"
+        }
+      ]
+    },
+    {
+      "name": "gt2_overlay_1",
+      "base": "0x80010000",
+      "file": "GT2.OVL",
+      "offset": 144760,
+      "size": 44333,
+      "gzip": true,
+      "linearSweep": true,
+      "functions": [
+        {
+          "address": "0x80010000"
+        },
+        {
+          "address": "0x80011384"
+        },
+        {
+          "address": "0x80018574"
+        },
+        {
+          "address": "0x800186D0"
+        }
+      ]
+    },
+    {
+      "name": "gt2_overlay_2",
+      "base": "0x80010000",
+      "file": "GT2.OVL",
+      "offset": 189096,
+      "size": 53389,
+      "gzip": true,
+      "linearSweep": true,
+      "functions": [
+        {
+          "address": "0x80010000"
+        },
+        {
+          "address": "0x80011750"
+        }
+      ]
+    },
+    {
+      "name": "gt2_overlay_3",
+      "base": "0x80010000",
+      "file": "GT2.OVL",
+      "offset": 242488,
+      "size": 5195,
+      "gzip": true,
+      "linearSweep": true,
+      "functions": [
+        {
+          "address": "0x80010000"
+        },
+        {
+          "address": "0x80012C00"
+        }
+      ]
+    },
+    {
+      "name": "gt2_overlay_4",
+      "base": "0x80010000",
+      "file": "GT2.OVL",
+      "offset": 247684,
+      "size": 38461,
+      "gzip": true,
+      "linearSweep": true,
+      "functions": [
+        {
+          "address": "0x80010000"
+        },
+        {
+          "address": "0x80013628"
+        }
+      ]
+    },
+    {
+      "name": "gt2_overlay_5",
+      "base": "0x80010000",
+      "file": "GT2.OVL",
+      "offset": 286148,
+      "size": 3602,
+      "gzip": true,
+      "linearSweep": true,
+      "functions": [
+        {
+          "address": "0x80010000"
+        },
+        {
+          "address": "0x800114B8"
+        }
+      ]
+    }
+  ],
+  "stubs": [],
+  "ignored": [],
+  "patches": [
+    {
+      "overlay": "main",
+      "address": "80010954",
+      "target": "RecompOne.Runtime.Sdk.GT2Compat.WaitForInitialVBlanks",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "8007D23C",
+      "target": "RecompOne.Runtime.Sdk.GT2Compat.VSync",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "80080B10",
+      "target": "RecompOne.Runtime.Sdk.GT2Compat.TraceRenderSchedulerEntry",
+      "mode": "pre"
+    },
+    {
+      "overlay": "main",
+      "address": "8007C550",
+      "target": "RecompOne.Runtime.Sdk.GT2Compat.WaitForCdCommand",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "80082054",
+      "target": "RecompOne.Runtime.Sdk.GT2Compat.WaitForCdBuffer",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "8008A088",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdSyncCallback",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "8008A0A8",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdReadyCallback",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "8008A0C8",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdControl",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "8008A204",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdControlF",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "8008A338",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdControlB",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "80089F18",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdGetSector",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "8008AAEC",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdSync",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "8008AD6C",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdReady",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "8005DAD8",
+      "target": "RecompOne.Runtime.Sdk.GT2Compat.TraceOverlayLoad",
+      "mode": "pre"
+    },
+    {
+      "overlay": "main",
+      "address": "8007AD90",
+      "target": "RecompOne.Runtime.Sdk.GT2Compat.Longjmp",
+      "mode": "replace"
+    },
+    {
+      "overlay": "main",
+      "address": "80087148",
+      "target": "RecompOne.Runtime.Sdk.LibPad.PadInitDirect",
+      "mode": "pre"
+    }
+  ]
+}
