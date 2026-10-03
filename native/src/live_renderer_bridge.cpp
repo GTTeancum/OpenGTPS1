@@ -1,8 +1,10 @@
+#include "opengt/lighting.hpp"
+#include "opengt/vehicle_shadow_source.hpp"
 #include "opengt/live_renderer_bridge.h"
 
 #include "opengt/world_capture.hpp"
 #include "opengt/world_draw_list.hpp"
-#include "opengt/world_gpu_renderer.hpp"
+#include "opengt/world_gpu_renderer_native.hpp"
 #if defined(OPENGT_SYNTHETIC_FRAME_DEV_SUPPORT)
 #include "opengt/world_interpolation.hpp"
 #endif
@@ -463,7 +465,16 @@ struct ResidentPrimitive {
 };
 
 struct ResidentMesh {
+    // Definition key may differ for GT2 primary/alternate projection paths.
+    // source_key identifies the physical contiguous guest vertex table and is
+    // therefore stable when the same course mesh changes packet path.
     std::uint64_t key{};
+    std::uint64_t source_key{};
+    // FNV-1a over the complete serialized immutable definition with only the
+    // registry definition-key bytes zeroed. Primary/Alternate copies of the
+    // same source therefore agree, while any geometry/material/source change
+    // produces a different live diagnostic fingerprint.
+    std::uint64_t content_key{};
     std::vector<ResidentVertex> vertices;
     std::vector<ResidentPrimitive> primitives;
     std::uint32_t overlay_pairs{};
@@ -1477,6 +1488,25 @@ bool parse_resident_material(
     return true;
 }
 
+std::uint64_t resident_content_key(
+    const std::uint8_t* bytes,
+    std::size_t size
+) noexcept {
+    if (bytes == nullptr || size < resident_mesh_header_size)
+        return 0;
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (std::size_t index = 0; index < size; ++index) {
+        // bytes 16..23 are the transient resident registry definition key.
+        // Mix zeros in their place so path-specific keys cannot perturb the
+        // immutable source-content fingerprint.
+        const std::uint8_t value =
+            index >= 16 && index < 24 ? 0U : bytes[index];
+        hash ^= value;
+        hash *= 1099511628211ULL;
+    }
+    return hash == 0 ? 1 : hash;
+}
+
 bool parse_resident_mesh(
     const std::uint8_t* bytes,
     std::size_t size,
@@ -1507,8 +1537,12 @@ bool parse_resident_mesh(
     parsed.key = resident_u64(bytes + 16);
     if (parsed.key == 0)
         return false;
+    parsed.content_key = resident_content_key(bytes, size);
+    if (parsed.content_key == 0)
+        return false;
     parsed.vertices.resize(vertex_count);
     const std::uint8_t* cursor = bytes + resident_mesh_header_size;
+    std::uint32_t source_vertex_base = 0;
     for (std::uint32_t index = 0; index < vertex_count; ++index) {
         auto& vertex = parsed.vertices[index];
         vertex.x = resident_i16(cursor);
@@ -1517,8 +1551,28 @@ bool parse_resident_mesh(
         vertex.source_identity = resident_u32(cursor + 8);
         if (vertex.source_identity == 0)
             return false;
+        if (index == 0) {
+            source_vertex_base = vertex.source_identity;
+        } else {
+            // Managed residency writes exact addresses from one contiguous
+            // eight-byte source vertex table. Enforce that contract here so
+            // the destructive-lighting identity below is collision-free and
+            // does not depend on the primary/alternate packet path.
+            const std::uint64_t expected =
+                static_cast<std::uint64_t>(source_vertex_base) +
+                static_cast<std::uint64_t>(index) * 8ULL;
+            if (expected > 0xffffffffULL ||
+                vertex.source_identity != static_cast<std::uint32_t>(expected))
+                return false;
+        }
         cursor += resident_vertex_stride;
     }
+    // This is an exact packed (vertex-table address, vertex count), not a
+    // hash. The original primitive address is carried separately. Together
+    // with track + primitiveKey they remain stable across packet-path changes
+    // while still rejecting a different resident source table.
+    parsed.source_key =
+        (static_cast<std::uint64_t>(source_vertex_base) << 32) | vertex_count;
     parsed.primitives.resize(primitive_count);
     for (std::uint32_t index = 0; index < primitive_count; ++index) {
         auto& primitive = parsed.primitives[index];
@@ -1601,6 +1655,12 @@ struct BuiltFrame {
 };
 
 struct LiveContext {
+    std::vector<opengt::render::VehicleShadowSource> vehicle_shadow_sources;
+    std::uint32_t vehicle_shadow_generation{};
+    std::vector<opengt::render::WorldCaptureTriangle> lighting_rejected_casters;
+    std::vector<opengt::render::WorldCaptureTriangle> lighting_track_source_casters;
+    opengt::render::WorldDrawList lighting_track_source_list;
+    opengt::render::WorldDrawList lighting_caster_list{};
     std::vector<opengt::render::WorldCaptureTriangle> triangles;
     // Reusable merge storage retains authored capture/resident insertion
     // order without allocating another multi-megabyte triangle buffer on
@@ -1608,7 +1668,7 @@ struct LiveContext {
     std::vector<opengt::render::WorldCaptureTriangle>
         resident_interleaved_triangles;
     std::vector<std::uint16_t> vram;
-    opengt::render::WorldDrawList draw_list;
+    opengt::render::WorldDrawList draw_list{};
     std::unordered_map<std::uint64_t, ResidentMesh> resident_meshes;
     std::vector<ResidentInstance> resident_instances;
     std::vector<std::size_t> resident_instance_triangle_counts;
@@ -1620,7 +1680,7 @@ struct LiveContext {
 #if defined(OPENGT_SYNTHETIC_FRAME_DEV_SUPPORT)
     std::vector<std::uint16_t> previous_vram;
 #endif
-    opengt::render::WorldDrawList previous_draw_list;
+    opengt::render::WorldDrawList previous_draw_list{};
 #if defined(OPENGT_SYNTHETIC_FRAME_DEV_SUPPORT)
     opengt::render::WorldInterpolationCache previous_interpolation_cache;
 #endif
@@ -1690,7 +1750,7 @@ int32_t try_read_pending_authored(
 ) {
     if (context->pending_authored_count == 0)
         return 0;
-    const auto result = opengt::render::try_read_world_d3d11_image(
+    const auto result = opengt::render::try_read_world_native_image(
         context->readback_software_adapter,
         output,
         output_capacity,
@@ -1760,7 +1820,7 @@ int32_t try_read_pending_pair(
 ) {
     if (context->pending_output_pair_count == 0)
         return 0;
-    const auto result = opengt::render::try_read_world_d3d11_pair(
+    const auto result = opengt::render::try_read_world_native_pair(
         context->readback_software_adapter,
         first_output,
         second_output,
@@ -2077,6 +2137,8 @@ void resident_emit_capture_triangle(
     const ResidentPrimitive& primitive,
     const ResidentMaterial& material,
     const ResidentInstance& instance,
+    std::uint64_t source_mesh_key,
+    std::uint64_t resident_content_key_value,
     const opengt::render::WorldCaptureVertex& a,
     const opengt::render::WorldCaptureVertex& b,
     const opengt::render::WorldCaptureVertex& c,
@@ -2118,6 +2180,9 @@ void resident_emit_capture_triangle(
     triangle.object_kind = 1;
     triangle.object_id = instance.object_id;
     triangle.model_pointer = instance.model_pointer;
+    triangle.source_mesh_key = source_mesh_key;
+    triangle.source_primitive_address = primitive.source_address;
+    triangle.resident_content_key = resident_content_key_value;
     triangle.draw_offset_x = instance.draw_offset_x;
     triangle.draw_offset_y = instance.draw_offset_y;
     triangle.transform_id = instance.transform_id;
@@ -2158,6 +2223,8 @@ std::size_t resident_emit_triangle(
     const ResidentPrimitive& primitive,
     const ResidentMaterial& material,
     const ResidentInstance& instance,
+    std::uint64_t source_mesh_key,
+    std::uint64_t resident_content_key_value,
     const ResidentViewVertex& a,
     const ResidentViewVertex& b,
     const ResidentViewVertex& c,
@@ -2179,6 +2246,8 @@ std::size_t resident_emit_triangle(
         primitive,
         material,
         instance,
+        source_mesh_key,
+        resident_content_key_value,
         emission_a.capture,
         emission_b.capture,
         emission_c.capture,
@@ -2190,6 +2259,9 @@ std::uint32_t append_resident_course(
     LiveContext* context,
     const opengt::render::WorldCaptureHeader& header
 ) {
+    context->lighting_rejected_casters.clear();
+    context->lighting_track_source_casters.clear();
+    const bool collect_lighting_casters = opengt::render::lighting::requested();
     std::uint32_t traced_model = 0;
     if (const char* configured = std::getenv(
             "OPENGT_TRACE_RESIDENT_MODEL")) {
@@ -2242,6 +2314,7 @@ std::uint32_t append_resident_course(
     for (const auto& instance : context->resident_instances) {
         const std::size_t instance_triangle_start =
             context->triangles.size();
+        const std::size_t instance_rejected_start=context->lighting_rejected_casters.size();
         const ResidentMesh& mesh = context->resident_meshes.at(instance.mesh_key);
         if (
             traced_model != 0 && instance.model_pointer == traced_model &&
@@ -2250,7 +2323,7 @@ std::uint32_t append_resident_course(
             std::fprintf(
                 stderr,
                 "[Native-Resident-Model] frame=%llu poll=%u object=%08x "
-                "model=%08x mesh=%016llx primitives=%zu overlays=%u "
+                "model=%08x mesh=%016llx source=%016llx primitives=%zu overlays=%u "
                 "untexturedOverlays=%u replacements=%u clip=%d,%d..%d,%d "
                 "t=%d,%d,%d depthScale=%d/%u r=%d,%d,%d/%d,%d,%d/%d,%d,%d\n",
                 static_cast<unsigned long long>(header.frame_index),
@@ -2258,6 +2331,7 @@ std::uint32_t append_resident_course(
                 instance.object_id,
                 instance.model_pointer,
                 static_cast<unsigned long long>(instance.mesh_key),
+                static_cast<unsigned long long>(mesh.source_key),
                 mesh.primitives.size(),
                 mesh.overlay_primitives,
                 mesh.untextured_overlay_primitives,
@@ -2379,7 +2453,7 @@ std::uint32_t append_resident_course(
                 std::fprintf(
                     stderr,
                     "[Native-Resident-Primitive] frame=%llu poll=%d "
-                    "object=%u model=%08x primitive=%08x stream=%u "
+                    "object=%u model=%08x source=%016llx primitive=%08x stream=%u "
                     "flags=%08x indices=%u/%u/%u/%u "
                     "overlay=%u/%u threshold=%u coverage=%u "
                     "authored=%s "
@@ -2394,6 +2468,7 @@ std::uint32_t append_resident_course(
                     header.input_poll,
                     instance.object_id,
                     instance.model_pointer,
+                    static_cast<unsigned long long>(mesh.source_key),
                     primitive.source_address,
                     static_cast<unsigned>(primitive.stream),
                     primitive.flags,
@@ -2435,13 +2510,39 @@ std::uint32_t append_resident_course(
             }
             if ((primitive.flags & resident_primitive_textured) == 0)
                 material.texture_page = instance.default_texture_page;
+            // Eye-distance LOD belongs to the color pass. The sun must not
+            // acquire different cutout holes merely because the camera moved.
+            // Decode the original near material once for BOTH faces, including
+            // eye-rejected geometry. This is the selected resident mesh, not an
+            // all-course visibility union or a replacement for authored LOD.
+            if (collect_lighting_casters &&
+                !(primitive.flags & resident_primitive_semi_transparent)) {
+                auto sunMaterial=primitive.near_material;
+                if(!textured)sunMaterial.texture_page=instance.default_texture_page;
+                const bool quad=(primitive.flags&resident_primitive_quad)!=0;
+                const bool primary=(primitive.flags&resident_primitive_primary_path)!=0;
+                for(unsigned face=0;face<(quad?2U:1U);++face){
+                    const auto corners=quad?resident_quad_packet_corners(primary,face):std::array<int,3>{0,1,2};
+                    resident_emit_triangle(header,primitive,sunMaterial,instance,mesh.source_key,mesh.content_key,
+                        view[i[corners[0]]],view[i[corners[1]]],view[i[corners[2]]],
+                        corners[0],corners[1],corners[2],corners[0],corners[1],corners[2],
+                        &context->lighting_track_source_casters);
+                }
+            }
             if ((primitive.flags & resident_primitive_quad) == 0) {
                 if (!resident_facing_accepted(
                         view[i[0]], view[i[1]], view[i[2]],
-                        one_sided, false))
+                        one_sided, false)) {
+                    // Backfacing to the eye does not mean backfacing to the
+                    // sun. Keep it OUT of the ordinary road/order/depth list.
+                    if (collect_lighting_casters)
+                        resident_emit_triangle(header, primitive, material, instance, mesh.source_key, mesh.content_key,
+                            view[i[0]], view[i[1]], view[i[2]], 0,1,2, 0,1,2,
+                            &context->lighting_rejected_casters);
                     continue;
+                }
                 resident_emit_triangle(
-                    header, primitive, material, instance,
+                    header, primitive, material, instance, mesh.source_key, mesh.content_key,
                     view[i[0]], view[i[1]], view[i[2]],
                     0, 1, 2,
                     0, 1, 2,
@@ -2473,28 +2574,34 @@ std::uint32_t append_resident_course(
             // clipping and perspective interpolation already solve the affine
             // and near-plane artifacts that motivated that older workaround.
             const bool quad_accepted = first_accepted || second_accepted;
-            if (quad_accepted) {
+            if (quad_accepted || collect_lighting_casters) {
                 resident_emit_triangle(
-                    header, primitive, material, instance,
+                    header, primitive, material, instance, mesh.source_key, mesh.content_key,
                     view[i[first_corners[0]]],
                     view[i[first_corners[1]]],
                     view[i[first_corners[2]]],
                     first_corners[0], first_corners[1], first_corners[2],
                     first_corners[0], first_corners[1], first_corners[2],
-                    &context->triangles);
-                traced_flare_triangles += traced_flare ? 1U : 0U;
+                    quad_accepted ? &context->triangles : &context->lighting_rejected_casters);
+                traced_flare_triangles += traced_flare && quad_accepted ? 1U : 0U;
             }
-            if (quad_accepted) {
+            if (quad_accepted || collect_lighting_casters) {
                 resident_emit_triangle(
-                    header, primitive, material, instance,
+                    header, primitive, material, instance, mesh.source_key, mesh.content_key,
                     view[i[second_corners[0]]],
                     view[i[second_corners[1]]],
                     view[i[second_corners[2]]],
                     second_corners[0], second_corners[1], second_corners[2],
                     second_corners[0], second_corners[1], second_corners[2],
-                    &context->triangles);
-                traced_flare_triangles += traced_flare ? 1U : 0U;
+                    quad_accepted ? &context->triangles : &context->lighting_rejected_casters);
+                traced_flare_triangles += traced_flare && quad_accepted ? 1U : 0U;
             }
+        }
+        if(collect_lighting_casters){
+            for(std::size_t j=instance_triangle_start;j<context->triangles.size();++j)
+                context->triangles[j].primitive_flags|=opengt::render::world_primitive_sun_caster_replaced_flag;
+            for(std::size_t j=instance_rejected_start;j<context->lighting_rejected_casters.size();++j)
+                context->lighting_rejected_casters[j].primitive_flags|=opengt::render::world_primitive_sun_caster_replaced_flag;
         }
         if (trace_this_instance) {
             std::fprintf(
@@ -2564,6 +2671,35 @@ bool interleave_resident_course(
         return false;
     context->triangles.swap(merged);
     return true;
+}
+
+void commit_resident_track_shadow_sources(LiveContext* context,const opengt::render::WorldCaptureHeader& header) {
+    using namespace opengt::render;
+    // Commit source-material shadow replacement only after every triangle
+    // converts successfully. Failure restores legacy casters, never the color
+    // geometry or the game's visibility decisions.
+    bool trackSourceReady=false;
+    if(!context->lighting_track_source_casters.empty()){
+        const auto result=build_world_draw_list(header,
+            context->lighting_track_source_casters.data(),context->lighting_track_source_casters.size(),
+            WorldDrawListOptions{false,false,true,true},&context->lighting_track_source_list);
+        trackSourceReady=result==WorldDrawListResult::success &&
+            context->lighting_track_source_list.commands.size()==context->lighting_track_source_casters.size();
+        if(trackSourceReady){auto& extra=context->draw_list.lighting_extra_casters;
+            for(const auto& command:context->lighting_track_source_list.commands){
+                auto material=context->lighting_track_source_list.materials[command.material_index];
+                material.primitive_flags|=world_primitive_shadow_only_flag;
+                extra.push_back({command,material});
+            }
+        }
+    }
+    if(!trackSourceReady){
+        for(auto& m:context->draw_list.materials)m.primitive_flags&=~world_primitive_sun_caster_replaced_flag;
+        for(auto& x:context->draw_list.lighting_extra_casters)x.material.primitive_flags&=~world_primitive_sun_caster_replaced_flag;
+    }
+    if(std::getenv("OPENGT_SHADOW_AUDIT")&&header.input_poll%60==1)
+        std::fprintf(stderr,"[Track-Shadow-Source] poll=%d ready=%u triangles=%zu\n",header.input_poll,trackSourceReady?1U:0U,context->lighting_track_source_casters.size());
+
 }
 
 std::uint32_t build_frame(
@@ -2848,6 +2984,30 @@ std::uint32_t build_frame(
         &context->draw_list);
     if (list_result != WorldDrawListResult::success)
         return 200U + static_cast<std::uint32_t>(list_result);
+    context->draw_list.lighting_extra_casters.clear();
+    if (!context->lighting_rejected_casters.empty()) {
+        const auto result = build_world_draw_list(built->header,
+            context->lighting_rejected_casters.data(), context->lighting_rejected_casters.size(),
+            WorldDrawListOptions{false, false, true, true}, &context->lighting_caster_list);
+        if (result == WorldDrawListResult::success) {
+            auto& extra = context->draw_list.lighting_extra_casters;
+            extra.reserve(context->lighting_caster_list.commands.size());
+            for (const auto& command : context->lighting_caster_list.commands)
+                extra.push_back({command, context->lighting_caster_list.materials[command.material_index]});
+        } else {
+            // Do not let an auxiliary lighting failure change original game geometry.
+            std::fprintf(stderr, "[Lighting-L01] rejected-caster decode failed: %s\n",
+                world_draw_list_result_name(result));
+        }
+    }
+
+    commit_resident_track_shadow_sources(context,built->header);
+
+    const auto shadow_source_stats = append_vehicle_shadow_sources(context->draw_list, context->vehicle_shadow_sources);
+    if (std::getenv("OPENGT_VEHICLE_SHADOW_AUDIT") && built->header.input_poll % 60 == 1)
+        std::fprintf(stderr,"[Vehicle-Shadow-Source] poll=%d definitions=%u matched=%u missing=%u hidden=%u\n",built->header.input_poll,shadow_source_stats.definitions,shadow_source_stats.matched,shadow_source_stats.missing,shadow_source_stats.added);
+    auto& pending_sources=context->vehicle_shadow_sources;
+    pending_sources.erase(std::remove_if(pending_sources.begin(),pending_sources.end(),[&](const auto& source){return std::int64_t(source.poll)+4<built->header.input_poll;}),pending_sources.end());
     const auto draw_list_built = Clock::now();
 
     if (apply_topology && (options.flags & OPENGT_LIVE_TOPOLOGY) != 0) {
@@ -2970,7 +3130,7 @@ std::uint32_t render_frame(
     render_options.synthetic_midpoint = synthetic_midpoint;
     render_options.defer_initial_readback = defer_initial_readback;
     render_options.asynchronous_readback = asynchronous_readback;
-    const auto result = opengt::render::render_world_d3d11(
+    const auto result = opengt::render::render_world_native(
         draw_list,
         vram,
         vram_size,
@@ -3110,6 +3270,9 @@ const char* temporal_stream_reset_reason(
         return "options_flags";
     if (options.output_scale != context.previous_options.output_scale)
         return "output_scale";
+    if (options.target_aspect_width != context.previous_options.target_aspect_width ||
+        options.target_aspect_height != context.previous_options.target_aspect_height)
+        return "output_aspect";
     if (
         options.clear_color_rgba8 !=
         context.previous_options.clear_color_rgba8)
@@ -3249,8 +3412,9 @@ void* opengt_live_create(void) {
 }
 
 void opengt_live_destroy(void* handle) {
+    opengt::render::select_world_native_context(handle);
     auto* context = static_cast<LiveContext*>(handle);
-    opengt::render::drain_world_d3d11_direct_output();
+    opengt::render::drain_world_native_direct_output();
     if (context != nullptr) {
         std::fprintf(
             stderr,
@@ -3307,6 +3471,7 @@ void opengt_live_destroy(void* handle) {
                     context->resident_lod_authored_distant));
         }
     }
+    opengt::render::release_world_native_context(handle);
     delete context;
 }
 
@@ -3314,9 +3479,10 @@ int32_t opengt_live_set_presentation_device(
     void* handle,
     void* d3d11_device
 ) {
+    opengt::render::select_world_native_context(handle);
     if (handle == nullptr || d3d11_device == nullptr)
         return -1;
-    return opengt::render::set_world_d3d11_presentation_device(
+    return opengt::render::set_world_native_presentation_device(
         d3d11_device) ? 0 : -2;
 }
 
@@ -3329,6 +3495,7 @@ int32_t opengt_live_render(
     const opengt_live_options* options,
     opengt_live_stats* stats
 ) {
+    opengt::render::select_world_native_context(handle);
     clear_struct(stats);
     if (
         handle == nullptr || capture_bytes == nullptr ||
@@ -3398,7 +3565,7 @@ int32_t opengt_live_render(
             (options->flags & OPENGT_LIVE_WARP) != 0;
         if (reset_reason != nullptr) {
             log_temporal_reset(*context, built, *options, reset_reason);
-            opengt::render::reset_world_d3d11_readback(software_adapter);
+            opengt::render::reset_world_native_readback(software_adapter);
             context->pending_authored_read = 0;
             context->pending_authored_write = 0;
             context->pending_authored_count = 0;
@@ -3483,6 +3650,7 @@ int32_t opengt_live_render_pair(
     opengt_live_stats* second_stats,
     opengt_live_interpolation_stats* interpolation_stats
 ) {
+    opengt::render::select_world_native_context(handle);
     clear_struct(first_stats);
     clear_struct(second_stats);
     clear_struct(interpolation_stats);
@@ -3535,7 +3703,7 @@ int32_t opengt_live_render_pair(
         if (reset_reason != nullptr) {
             log_temporal_reset(*context, current, *options, reset_reason);
             interpolation_stats->temporal_reset = 1;
-            opengt::render::reset_world_d3d11_readback(
+            opengt::render::reset_world_native_readback(
                 (options->flags & OPENGT_LIVE_WARP) != 0);
             context->readback_software_adapter =
                 (options->flags & OPENGT_LIVE_WARP) != 0;
@@ -3794,6 +3962,7 @@ int32_t opengt_live_try_read_pair(
     opengt_live_stats* first_stats,
     opengt_live_stats* second_stats
 ) {
+    opengt::render::select_world_native_context(handle);
     clear_struct(first_stats);
     clear_struct(second_stats);
     if (
@@ -3836,6 +4005,7 @@ int32_t opengt_live_set_texture_uploads(
     const opengt_live_texture_upload* uploads,
     size_t upload_count
 ) {
+    opengt::render::select_world_native_context(handle);
     if (
         handle == nullptr ||
         (upload_count != 0 && uploads == nullptr) ||
@@ -3845,7 +4015,7 @@ int32_t opengt_live_set_texture_uploads(
     static_assert(
         sizeof(opengt_live_texture_upload) ==
         sizeof(opengt::render::WorldTextureUpload));
-    return opengt::render::set_world_d3d11_texture_uploads(
+    return opengt::render::set_world_native_texture_uploads(
         software_adapter != 0,
         reinterpret_cast<const opengt::render::WorldTextureUpload*>(uploads),
         upload_count) ? 0 : -2;
@@ -3859,6 +4029,15 @@ int32_t opengt_live_register_resident_mesh(
     if (handle == nullptr || definition_bytes == nullptr)
         return -1;
     try {
+        if (definition_size >= 8 && resident_u64(definition_bytes) == opengt::render::vehicle_shadow_magic) {
+            opengt::render::VehicleShadowSource source;
+            if (!opengt::render::parse_vehicle_shadow_source(definition_bytes,definition_size,&source)) return -2;
+            auto* context=static_cast<LiveContext*>(handle);
+            auto& pending=context->vehicle_shadow_sources;
+            if(context->vehicle_shadow_generation != source.generation) {pending.clear();context->vehicle_shadow_generation=source.generation;}
+            if(pending.size()>=512) return -3;
+            pending.push_back(std::move(source));return 0;
+        }
         ResidentMesh mesh{};
         if (!parse_resident_mesh(definition_bytes, definition_size, &mesh))
             return -2;

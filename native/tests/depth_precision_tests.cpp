@@ -1,0 +1,8 @@
+#include "opengt/world_gpu_renderer_native.hpp"
+#include <vector>
+#include <iostream>
+#include <algorithm>
+using namespace opengt::render;
+WorldDrawCommand tri(float z,int ix,bool front){WorldDrawCommand c{};c.object_kind=1;c.channel=WorldViewChannel::main_view;c.lighting_depth_scale=1;c.clip_x1=c.clip_y1=63;float xy[6][2]={{-.8f,-.8f},{.8f,-.8f},{.8f,.8f},{-.8f,-.8f},{.8f,.8f},{-.8f,.8f}};for(int j=0;j<3;++j){auto&v=c.vertices[j];v.view_x=z*xy[ix*3+j][0];v.view_y=z*xy[ix*3+j][1];v.view_z=z;v.clip_x=v.view_x;v.clip_y=v.view_y;v.clip_w=z;v.clip_z=16;v.r=front?200:30;v.g=front?30:200;v.b=30;}return c;}
+int main(){unsigned fail=0;for(float z:{100000.f,300000.f,1000000.f,3000000.f})for(float dz:{1.f,10.f,100.f}){std::vector<unsigned char>out[2];for(int rev=0;rev<2;rev++){WorldDrawList l{};l.display_width=l.display_height=64;l.materials.push_back({});for(int i=0;i<2;++i){bool front=(i==rev);for(int t=0;t<2;t++)l.commands.push_back(tri(front?z-dz:z,t,front));}l.track_commands=4;std::vector<uint16_t>vram(1024*512);out[rev].resize(64*64*4);WorldGpuRenderStats stats{};WorldGpuRenderOptions o{};o.depth_buffer=true;o.output_scale=1;o.use_software_adapter=true;auto r=render_world_native(l,vram.data(),vram.size(),out[rev].data(),out[rev].size(),o,&stats);if(r!=WorldGpuRenderResult::success){std::cout<<"render fail "<<int(r)<<"\n";return 2;}}
+ unsigned bad=0;for(int y=10;y<54;y++)for(int x=10;x<54;x++)if(out[0][(y*64+x)*4]!=200||out[1][(y*64+x)*4]!=200)bad++;std::cout<<"z="<<z<<" delta="<<dz<<" wrong="<<bad<<" order_equal="<<(out[0]==out[1])<<"\n";fail+=bad;}release_world_native_context(nullptr);return fail?1:0;}

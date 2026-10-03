@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import ctypes
-import hashlib
 import json
 import os
 import queue
@@ -23,6 +22,7 @@ from typing import Callable, Iterable
 import gt1_convert
 from gt2_patch import apply_patches
 from gt2_vol import read_entries
+from disc_validation import identify_disc
 
 
 @dataclass(frozen=True)
@@ -30,36 +30,13 @@ class Disc:
     key: str
     label: str
     serial: str
-    size: int
-    sha256: str
 
 
 DISCS = {
-    "simulation": Disc(
-        "simulation",
-        "Gran Turismo 2 Simulation Disc (NTSC-U revision 2)",
-        "SCUS-94488",
-        691_850_208,
-        "D0AB6E70539601057590A36299543C0ADAD219254D712F7D4273219094ED5031",
-    ),
-    "arcade": Disc(
-        "arcade",
-        "Gran Turismo 2 Arcade Disc (NTSC-U)",
-        "SCUS-94455",
-        729_423_408,
-        "C2E97D6B0C847CA4336D9D84D8D98C349D1240ED075E81AB3FD5C977E9A45075",
-    ),
-    "gt1": Disc(
-        "gt1",
-        "Gran Turismo (NTSC-U)",
-        "SCUS-94194",
-        693_668_304,
-        "765A748C4F2975A063A47BA9E42708A4882954D765F9E352C5AF3C0950EAEFB6",
-    ),
+    "simulation": Disc("simulation", "Gran Turismo 2 Simulation Disc (USA)", "SCUS-94488"),
+    "arcade": Disc("arcade", "Gran Turismo 2 Arcade Disc (USA)", "SCUS-94455"),
+    "gt1": Disc("gt1", "Gran Turismo (any region)", "GT1"),
 }
-
-SIMULATION_VOLUME_SIZE = 488_241_152
-ARCADE_VOLUME_SIZE = 213_596_160
 
 
 class InstallerLog:
@@ -114,32 +91,15 @@ def executable_root() -> Path:
     return Path(__file__).resolve().parents[1] / "release"
 
 
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest().upper()
-
-
 def validate_disc(path: Path, disc: Disc, log: InstallerLog) -> Path:
     resolved = path.expanduser().resolve()
     if not resolved.is_file():
         raise FileNotFoundError(f"{disc.label} image was not found: {resolved}")
-    actual_size = resolved.stat().st_size
-    if actual_size != disc.size:
-        raise ValueError(
-            f"{disc.label} has the wrong size. Expected {disc.size:,} bytes; "
-            f"found {actual_size:,}."
-        )
-    log.write(f"Validating {disc.label} ({disc.serial})...")
-    actual_hash = sha256(resolved)
-    if actual_hash != disc.sha256:
-        raise ValueError(
-            f"{disc.label} SHA-256 mismatch. This installer accepts only the "
-            f"supported NTSC-U image. Expected {disc.sha256}; found {actual_hash}."
-        )
-    log.write(f"Validated {disc.serial}: {resolved}")
+    log.write(f"Checking {disc.label} data files...")
+    actual = identify_disc(resolved)
+    if actual != disc.key:
+        raise ValueError(f"Expected {disc.label}; selected {DISCS[actual].label}.")
+    log.write(f"Validated {disc.label}: {resolved}")
     return resolved
 
 
@@ -184,7 +144,6 @@ def search_roots(install_root: Path) -> list[tuple[Path, int]]:
 
 
 def discover_discs(install_root: Path, log: InstallerLog) -> dict[str, Path]:
-    expected_sizes = {disc.size: disc for disc in DISCS.values()}
     found: dict[str, Path] = {}
     skipped = {
         "$recycle.bin",
@@ -210,14 +169,12 @@ def discover_discs(install_root: Path, log: InstallerLog) -> dict[str, Path]:
                     continue
                 candidate = Path(current) / name
                 try:
-                    disc = expected_sizes.get(candidate.stat().st_size)
-                except OSError:
+                    key = identify_disc(candidate)
+                except (OSError, ValueError):
                     continue
-                if disc is None or disc.key in found:
-                    continue
-                if sha256(candidate) == disc.sha256:
-                    found[disc.key] = candidate.resolve()
-                    log.write(f"Found {disc.serial}: {candidate}")
+                if key not in found:
+                    found[key] = candidate.resolve()
+                    log.write(f"Found {DISCS[key].label}: {candidate}")
             if len(found) == len(DISCS):
                 return found
     log.write(
@@ -319,7 +276,7 @@ def update_manifest(
     volume_size: int,
     overlay_size: int,
 ) -> None:
-    data = json.loads(source.read_text(encoding="utf-8"))
+    data = json.loads(source.read_text(encoding="utf-8-sig"))
     volumes = [item for item in data["files"] if item["path"] == "GT2.VOL"]
     overlays = [item for item in data["files"] if item["path"] == "GT2.OVL"]
     if len(volumes) != 1 or len(overlays) != 1:
@@ -333,7 +290,11 @@ def update_manifest(
 
 def merge_gt1_content(gt1_image: Path, install_root: Path, log: InstallerLog) -> None:
     unified = install_root / "GT2.VOL"
-    if unified.stat().st_size != SIMULATION_VOLUME_SIZE + ARCADE_VOLUME_SIZE:
+    simulation_manifest = json.loads((install_root / "manifests" / "simulation.json").read_text(encoding="utf-8-sig"))
+    arcade_manifest = json.loads((install_root / "manifests" / "arcade.json").read_text(encoding="utf-8-sig"))
+    simulation_volume_size = next(item["sourceLength"] for item in simulation_manifest["files"] if item["path"] == "GT2.VOL")
+    arcade_volume_size = next(item["sourceLength"] for item in arcade_manifest["files"] if item["path"] == "GT2.VOL")
+    if unified.stat().st_size != simulation_volume_size + arcade_volume_size:
         raise ValueError("The base two-disc GT2.VOL is missing or has the wrong size")
     with tempfile.TemporaryDirectory(
         prefix=".opengt-setup-", dir=install_root
@@ -346,12 +307,12 @@ def merge_gt1_content(gt1_image: Path, install_root: Path, log: InstallerLog) ->
         runtime_repo.mkdir(parents=True)
         simulation_base = temporary / "simulation-base.vol"
         arcade_base = temporary / "arcade-base.vol"
-        copy_range(unified, simulation_base, 0, SIMULATION_VOLUME_SIZE)
+        copy_range(unified, simulation_base, 0, simulation_volume_size)
         copy_range(
             unified,
             arcade_base,
-            SIMULATION_VOLUME_SIZE,
-            ARCADE_VOLUME_SIZE,
+            simulation_volume_size,
+            arcade_volume_size,
         )
 
         log.write("Converting supported Gran Turismo 1 content locally...")
@@ -566,7 +527,7 @@ def run_gui(args: argparse.Namespace) -> int:
     ttk.Label(
         outer,
         text=(
-            "Choose your own supported US disc images. Setup validates them, "
+            "Choose your USA GT2 discs and optional GT1 disc from any region. Setup checks the data, "
             "builds the playable installation, and never copies or modifies "
             "the source images. Gran Turismo 1 content is optional."
         ),

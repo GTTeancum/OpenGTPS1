@@ -110,6 +110,9 @@ internal static class HostWindow
         .ToHashSet();
     static int _presentationFrame;
     static int _wrapperFrame;
+    static readonly bool _captureWrapperOnDisplayCapture =
+        Environment.GetEnvironmentVariable("RECOMPONE_D3D_WRAPPER_CAPTURE") == "1";
+    static string? _pendingWrapperCapture;
     static readonly bool _capturePresentation =
         Environment.GetEnvironmentVariable("RECOMPONE_PRESENTATION_CAPTURE") == "1";
     static readonly string? _nativeWorldStageDumpDirectory =
@@ -589,6 +592,14 @@ internal static class HostWindow
             ? Stopwatch.GetTimestamp()
             : 0;
         _imgui.Render();
+        if (_pendingWrapperCapture is { } wrapperLabel)
+        {
+            _pendingWrapperCapture = null;
+            string path = $"recompone_wrapper_{wrapperLabel}_" +
+                $"{d3d.BackBufferWidth}x{d3d.BackBufferHeight}.ppm";
+            d3d.CaptureBackBufferPpm(path);
+            Console.WriteLine($"[Host] captured D3D11 wrapper stage '{wrapperLabel}' to {path}");
+        }
         if (++_wrapperFrame == _wrapperCaptureFrame)
         {
             string path = $"recompone_wrapper_frame_{_wrapperFrame:000000}_" +
@@ -1348,6 +1359,8 @@ internal static class HostWindow
                 (_presentationFrame == _presentationCaptureFrame ||
                  _presentationCaptureFrames.Contains(_presentationFrame)))
                 capture = $"frame_{_presentationFrame:000000}";
+            if (_captureWrapperOnDisplayCapture && !string.IsNullOrEmpty(capture))
+                _pendingWrapperCapture = capture;
             texture = _presentationRenderer.Render(sourceTexture, sourceWidth, sourceHeight,
                 output.w, output.h, fxaa, capture);
             if (!string.IsNullOrEmpty(capture) && sourceTexture == _nativeWorldTex)
@@ -1425,6 +1438,8 @@ internal static class HostWindow
 
         if (!string.IsNullOrEmpty(captureLabel))
         {
+            if (_captureWrapperOnDisplayCapture)
+                _pendingWrapperCapture = captureLabel;
             string path = $"recompone_capture_{captureLabel}.ppm";
             WriteDisplayPpm(path, w, h, pixels);
             Console.WriteLine($"[GPU] captured stage '{captureLabel}' to {path}");

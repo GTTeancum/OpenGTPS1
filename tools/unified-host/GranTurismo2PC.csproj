@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>WinExe</OutputType>
+    <OutputType Condition="'$(OpenGTLinuxHost)' != 'true'">WinExe</OutputType>
+    <OutputType Condition="'$(OpenGTLinuxHost)' == 'true'">Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -13,7 +14,8 @@
     <AppHostDotNetSearch>AppLocal;Global</AppHostDotNetSearch>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <PublishReadyToRun Condition="'$(Configuration)' == 'Release' and '$(RuntimeIdentifier)' != ''">true</PublishReadyToRun>
-    <OpenGTNativeLibraryPath Condition="'$(OpenGTNativeLibraryPath)' == ''">..\..\build\native\Release\opengt_live_renderer.dll</OpenGTNativeLibraryPath>
+    <OpenGTNativeLibraryPath Condition="'$(OpenGTNativeLibraryPath)' == '' and '$(OpenGTLinuxHost)' == 'true'">../../build/native-linux/libopengt_live_renderer.so</OpenGTNativeLibraryPath>
+    <OpenGTNativeLibraryPath Condition="'$(OpenGTNativeLibraryPath)' == '' and '$(OpenGTLinuxHost)' != 'true'">..\..\build\native\Release\opengt_live_renderer.dll</OpenGTNativeLibraryPath>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
@@ -32,7 +34,7 @@
                       LogicalName="OpenGTPS1.SeattleArcadePreloadMethods.txt" />
     <None Include="$(OpenGTNativeLibraryPath)"
           Condition="Exists('$(OpenGTNativeLibraryPath)')"
-          Link="opengt_live_renderer.dll"
+          Link="%(Filename)%(Extension)"
           CopyToOutputDirectory="PreserveNewest"
           CopyToPublishDirectory="PreserveNewest"
           ExcludeFromSingleFile="false" />

@@ -41,6 +41,38 @@ internal sealed class PresentationRenderer : IDisposable
         if (!string.IsNullOrWhiteSpace(_videoCapturePath))
             _video = _renderer.CreateTexture(_videoOutputWidth, _videoOutputHeight, renderTarget: true);
         Ready = true;
+        if (Environment.GetEnvironmentVariable("RECOMPONE_D3D_PRESENTATION_SELF_TEST") == "1")
+            RunSelfTest();
+    }
+
+    void RunSelfTest()
+    {
+        var source = _renderer.CreateTexture(4, 4, renderTarget: true);
+        try
+        {
+            byte[] pixels = new byte[4 * 4 * 4];
+            for (int i = 0; i < pixels.Length; i += 4)
+            {
+                pixels[i] = 90; pixels[i + 1] = 140; pixels[i + 2] = 210;
+                pixels[i + 3] = (byte)((i / 4 % 3) * 127);
+            }
+            _renderer.UploadRegion(source, 0, 0, 4, 4, pixels);
+            foreach (var size in new[] { (32, 18), (42, 18) })
+            foreach (bool fxaa in new[] { false, true })
+            {
+                var result = Render(source, 4, 4, size.Item1, size.Item2, fxaa);
+                byte[] output = new byte[size.Item1 * size.Item2 * 4];
+                _renderer.Readback(result, output);
+                for (int i = 0; i < output.Length; i += 4)
+                    if (output[i] != 90 || output[i + 1] != 140 ||
+                        output[i + 2] != 210 || output[i + 3] != 255)
+                        throw new InvalidOperationException(
+                            $"Presentation opacity self-test failed: size={size} fxaa={fxaa} pixel={i / 4} " +
+                            $"rgba={output[i]},{output[i + 1]},{output[i + 2]},{output[i + 3]}");
+            }
+            Console.WriteLine("[Host] presentation opacity self-test=passed (FXAA off/on; 16:9/21:9)");
+        }
+        finally { _renderer.DisposeTexture(source); }
     }
 
     public D3D11Renderer.Texture Render(D3D11Renderer.Texture source,
@@ -61,7 +93,8 @@ internal sealed class PresentationRenderer : IDisposable
             _lastFxaa = fxaa;
         }
 
-        _renderer.DrawFullscreen(source, _upscale!.Target!, outputWidth, outputHeight, linear: false);
+        _renderer.DrawFullscreen(source, _upscale!.Target!, outputWidth, outputHeight,
+            linear: false, displayOpaque: true);
         D3D11Renderer.Texture final = _upscale;
         if (fxaa)
         {

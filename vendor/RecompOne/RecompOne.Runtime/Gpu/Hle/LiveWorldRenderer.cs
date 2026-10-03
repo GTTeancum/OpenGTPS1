@@ -196,6 +196,7 @@ internal sealed class LiveWorldRenderer : IDisposable
             ? Math.Clamp(dumpOutputCount, 1, 16)
             : 1;
     static readonly bool DirectGpuOutputAllowed =
+        OperatingSystem.IsWindows() &&
         !string.Equals(
             Environment.GetEnvironmentVariable(
                 "RECOMPONE_DISABLE_DIRECT_GPU_OUTPUT"),
@@ -273,7 +274,7 @@ internal sealed class LiveWorldRenderer : IDisposable
         LiveRenderSettings Settings,
         LiveTextureUpload[] TextureUploads);
 
-    public static bool Requested => OperatingSystem.IsWindows();
+    public static bool Requested => OperatingSystem.IsWindows() || OperatingSystem.IsLinux();
 
     public bool Enabled => Requested && !_failed && !_stopping;
 
@@ -281,7 +282,7 @@ internal sealed class LiveWorldRenderer : IDisposable
 
     internal void ThrowIfFailed()
     {
-#if OPENGT_RELEASE_PACKAGE
+#if OPENGT_RELEASE_PACKAGE || OPENGT_LINUX_HOST
         Exception? failure = Volatile.Read(ref _failure);
         if (failure is not null)
         {
@@ -428,16 +429,25 @@ internal sealed class LiveWorldRenderer : IDisposable
         upload.X < x + width && x < upload.X + upload.WordWidth &&
         upload.Y < y + height && y < upload.Y + upload.Height;
 
+    // GP0 destinations wrap at VRAM edges. A wrapped overwrite must invalidate
+    // both pieces, not leave the source identity at the opposite edge alive.
+    static bool WrappedAxisOverlap(int start, int length, int limit, int other, int otherLength)
+    {
+        if (length >= limit) return true;
+        start = ((start % limit) + limit) % limit;
+        int end = start + length;
+        return (start < other + otherLength && other < Math.Min(end, limit)) ||
+            (end > limit && other < end - limit);
+    }
     public void InvalidateTextureUploads(int x, int y, int width, int height)
     {
-        if (width <= 0 || height <= 0)
-            return;
+        if (width <= 0 || height <= 0) return;
         lock (_textureUploadGate)
         {
             LiveTextureUpload[] current = _textureUploads;
-            LiveTextureUpload[] retained = current
-                .Where(upload => !Overlaps(upload, x, y, width, height))
-                .ToArray();
+            LiveTextureUpload[] retained = current.Where(upload =>
+                !(WrappedAxisOverlap(x, width, 1024, upload.X, upload.WordWidth) &&
+                  WrappedAxisOverlap(y, height, 512, upload.Y, upload.Height))).ToArray();
             if (retained.Length != current.Length)
                 Volatile.Write(ref _textureUploads, retained);
         }
@@ -1313,6 +1323,12 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
     const int InitialDeferredStaticTriangles = 4096;
     internal const int TriangleReservationRecords = 64;
 
+    // Explicit development resolution control: changes render pixels only,
+    // never guest timing, physics, camera transforms or instruction dispatch.
+    static readonly int LinuxOutputScale =
+        int.TryParse(Environment.GetEnvironmentVariable("OPENGT_LINUX_RENDER_SCALE"), out int scale)
+            && scale >= 1 && scale <= 4 ? scale : 4;
+
     static (int Width, int Height) ParseTargetAspect()
     {
         var aspect = Host.HostWindow.GetWorldTargetAspect();
@@ -1830,6 +1846,8 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         if (flags.ResidentCourse) primitiveFlags |= 1U << 4;
         if (flags.AuthoredTrackBillboardDepth)
             primitiveFlags |= 1U << 8;
+        if (flags.TrackBillboard)
+            primitiveFlags |= 1U << 9;
         if (identity.Object.ScenePass == WorldScenePass.Auxiliary)
             primitiveFlags |= 1U << 5;
         uint environmentFlags = 0;
@@ -2174,9 +2192,10 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
                 ConfigManager.View.PerspectiveCorrectTextures,
             TextureSmoothing: ConfigManager.View.TextureSmoothing,
             HighResolutionTextures:
-                ConfigManager.View.HighResolutionTextures,
+                OperatingSystem.IsWindows() && ConfigManager.View.HighResolutionTextures,
             OutputScale:
-                ConfigManager.View.HighResolution3D ? 4 : 1,
+                OperatingSystem.IsLinux() ? LinuxOutputScale :
+                    (ConfigManager.View.HighResolution3D ? 4 : 1),
             TargetAspectWidth: targetAspect.Width,
             TargetAspectHeight: targetAspect.Height);
         int outputWidth =
@@ -2711,7 +2730,11 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
                 maximum = entry.Count;
                 selected = entry.Origin;
             }
-            return selected;
+            var verified = PrimaryShadowCamera.SelectVerified(in selected, _trackCameras.Values);
+            if (Environment.GetEnvironmentVariable("OPENGT_WORLD_CAMERA_AUDIT") == "1" &&
+                Host.InputManager.CurrentPoll % 120 == 0)
+                Console.Error.WriteLine($"[OpenGT-L08-camera] poll={Host.InputManager.CurrentPoll} dominant={selected.TransformId:X16}/model={selected.Object.ModelPointer:X8} selected={verified.TransformId:X16}/model={verified.Object.ModelPointer:X8} verified={PrimaryShadowCamera.TryGet(in verified,out _,out _,out _)} generation={verified.Object.SceneGeneration}");
+            return verified;
         }
         if (_allTransforms.Count == 0)
             return default;
@@ -2926,6 +2949,14 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         _writer.Write((ulong)vramOffset);
         _writer.Write((ulong)vramSize);
         uint flags = 1U << 2;
+        // The selected track camera maps original primary mesh coordinates:
+        // X/Y horizontal, Z up (not the canonical inspection Y-down basis).
+        // Carry that provenance explicitly. A reflected GTE basis is valid.
+        if (camera.Object.Kind == WorldObjectKind.Track)
+            flags |= 1U << 3;
+        bool worldAnchor = PrimaryShadowCamera.TryGet(in camera,
+            out int worldX, out int worldY, out int worldZ);
+        if (worldAnchor) flags |= 1U << 4;
         if (display.Rgb24) flags |= 1U << 1;
         _writer.Write(flags);
         _writer.Write(camera.TransformId);
@@ -2938,7 +2969,7 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         _writer.Write(camera.R20);
         _writer.Write(camera.R21);
         _writer.Write(camera.R22);
-        _writer.Write((short)0);
+        _writer.Write(worldAnchor ? (short)camera.Object.DepthScaleExponent : (short)0);
         _writer.Write(camera.TranslateX);
         _writer.Write(camera.TranslateY);
         _writer.Write(camera.TranslateZ);
@@ -2947,9 +2978,9 @@ internal sealed class LiveWorldFrameRecorder : IDisposable
         _writer.Write((uint)camera.ProjectionPlane);
         _writer.Write(_drawOffsetX);
         _writer.Write(_drawOffsetY);
-        _writer.Write(0U);
-        _writer.Write(0U);
-        _writer.Write(0U);
+        _writer.Write(worldX);
+        _writer.Write(worldY);
+        _writer.Write(worldZ);
         _stream.Position = vramOffset + vramSize;
     }
 

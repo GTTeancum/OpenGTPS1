@@ -456,7 +456,8 @@ remains the deterministic capture oracle and diagnostic surface.
 ## External 4x texture assets
 
 The fixed 4x scene rasterization and the optional texture pack are separate
-operations. A normal 320x240 GT2 race is rasterized directly into a 1280x960
+operations. For hand-edited artwork and menu replacements, see
+[Texture replacements](TEXTURE_PACKS.md). A normal 320x240 GT2 race is rasterized directly into a 1280x960
 3D target. That adds geometry, edge, depth, and sampling precision but does
 not add authored texture detail. When installed, the external pack instead
 replaces decoded PS1 texture regions with 4x Real-ESRGAN assets before those
@@ -477,6 +478,16 @@ into DDS files. The native D3D11 backend loads a format-7 loose-DDS
 compatibility, but rejects the old page-dump formats.
 
 Missing identities fall back per primitive to the exact live PS1 VRAM texture.
+
+The authored 2D compositor samples menu sprites without texture filtering,
+including sprites drawn with color modulation or fading. GT2 assembles menus
+from small, independently packed atlas tiles; filtering each tile reads
+unrelated neighbours and produces a visible grid. Presentation filtering
+operates on the assembled image, while world textures retain their smoothing.
+`RECOMPONE_D3D_COMPOSITOR_SELF_TEST=1` includes an 8-bit atlas regression with
+contrasting neighbouring tiles, checking every scaled pixel at neutral and
+faded brightness.
+
 Visibility, transparent word-zero discard, and STP blending continue to come
 from the original BGR555 word; neural output supplies RGB detail only.
 
@@ -509,9 +520,9 @@ and one padding-free `cropped_neural_png` preview per bitmap, and validates that
 no identities share a file. Generated GT2 assets remain under ignored `work`,
 `bin`, or `artifacts` paths and are never committed. Runtime logs report the
 pack path, GPU cache size, hit coverage, and matched palette-native car
-bitmaps. Upload tracing also sees UI and font-sheet uploads, but screen-space
-replacement stays disabled until the final UI-specific sweep validates those
-assets separately.
+bitmaps. The authored 2D compositor also accepts explicit `screenSpace` RGB
+entries for individual menu textures, with palette matching and upload
+invalidation. Its GPU tests cover adjacent replacement tiles and fades.
 
 ## Live PC integration
 
@@ -1731,6 +1742,18 @@ it. Re-enabling fringe depth writes fails the sparse-coverage assertion.
 Midfield native race captures provide the corresponding visual audit.
 
 ## Milestones
+
+The final display resolve writes opaque alpha with FXAA either enabled or
+disabled. PS1 mask/STP alpha remains available to internal VRAM operations;
+it must not become ImGui display opacity. Set
+`RECOMPONE_D3D_PRESENTATION_SELF_TEST=1` to check varying source alpha at
+16:9 and 21:9 on the GPU. `RECOMPONE_D3D_WRAPPER_CAPTURE=1` captures the
+post-ImGui backbuffer when a display/presentation capture is requested.
+
+Main-view background meshes use the same full horizontal-plus scissor as
+track and vehicle meshes. Secondary views retain their authored viewport.
+The native GPU suite checks left and right background margins at both
+16:9 and 21:9, as well as the secondary-view boundary.
 
 0. Capture and independently rasterize the live projected draw stream and VRAM
    as a bounded migration fixture.

@@ -56,7 +56,7 @@ typedef struct opengt_live_stats {
     uint32_t topology_ownership_reorders;
     uint32_t output_width;
     uint32_t output_height;
-    // CPU elapsed time inside render_world_d3d11. The synchronous API waits
+    // CPU elapsed time inside the selected native GPU backend. The synchronous API waits
     // through completion/readback; live asynchronous submissions do not.
     uint64_t render_microseconds;
     uint64_t frame_index;

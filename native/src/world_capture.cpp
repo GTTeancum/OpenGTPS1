@@ -104,6 +104,13 @@ WorldCaptureReadResult parse_header(
         header->draw_offset_y = i32(bytes + 144);
     }
 
+    header->camera_depth_scale_exponent = 0;
+    for (auto& value : header->camera_world_offset) value = 0;
+    if (version >= 6 && (header->flags & world_capture_world_anchor_flag) != 0) {
+        header->camera_depth_scale_exponent = i16(bytes + 114);
+        for (unsigned j=0;j<3;++j) header->camera_world_offset[j] = i32(bytes + 148 + j*4);
+    }
+
     const std::uint64_t triangle_end =
         header->header_size +
         static_cast<std::uint64_t>(header->triangle_count) *
@@ -314,6 +321,13 @@ void parse_triangle(
                 vertex.world_valid && triangle->exact_transform_valid;
         }
     }
+    // Exact resident mesh/primitive provenance exists only on the live
+    // in-process path; no historical file stride serializes it. Always clear
+    // these fields so loading into reused caller storage cannot fabricate a
+    // destructive unbake identity.
+    triangle->source_mesh_key = 0;
+    triangle->source_primitive_address = 0;
+    triangle->resident_content_key = 0;
     triangle->depth_scale_exponent = 0;
     triangle->depth_scale_valid = false;
     if (header.version >= 6) {

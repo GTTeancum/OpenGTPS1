@@ -1,3 +1,4 @@
+#include "opengt/lighting.hpp"
 #include "opengt/world_gpu_renderer.hpp"
 
 #if defined(_WIN32)
@@ -858,6 +859,12 @@ std::optional<WorldDrawList> conform_vehicle_reflection_quads(
     result.input_poll = source.input_poll;
     result.camera_transform_id = source.camera_transform_id;
     result.continuous_projection = source.continuous_projection;
+    result.lighting_camera_rotation = source.lighting_camera_rotation;
+    result.lighting_camera_primary_axes = source.lighting_camera_primary_axes;
+    result.lighting_world_anchor_valid = source.lighting_world_anchor_valid;
+    result.lighting_camera_depth_exponent = source.lighting_camera_depth_exponent;
+    result.lighting_camera_world_offset = source.lighting_camera_world_offset;
+    result.lighting_extra_casters = source.lighting_extra_casters;
     result.materials = source.materials;
     result.rejected_incomplete = source.rejected_incomplete;
     result.rejected_incomplete_track = source.rejected_incomplete_track;
@@ -4199,6 +4206,8 @@ struct GpuVertex {
     float uv[2];
     float color[4];
     std::uint32_t command_index;
+    float lighting_position[3]{};
+    float lighting_normal[3]{};
 };
 
 constexpr std::uint32_t replacement_mode_rgb = 0;
@@ -4849,7 +4858,18 @@ struct GpuMaterial {
     float replacement_bias_g;
     float replacement_bias_b;
     std::array<float, 4> depth_plane;
+    std::array<float, 4> lighting_surface{};
+    std::array<float, 4> lighting_coat{};
+    std::array<float, 4> lighting_gain{1,1,1,0};
 };
+
+static_assert(sizeof(GpuVertex)==68, "Lighting vertex layout must match D3D input offsets");
+static_assert(offsetof(GpuVertex, lighting_position)==44);
+static_assert(offsetof(GpuVertex, lighting_normal)==56);
+static_assert(sizeof(GpuMaterial)==160, "HLSL MaterialData stride mismatch");
+static_assert(offsetof(GpuMaterial, lighting_surface)==112);
+static_assert(offsetof(GpuMaterial, lighting_coat)==128);
+static_assert(offsetof(GpuMaterial, lighting_gain)==144);
 
 struct DrawConstants {
     std::uint32_t base_command;
@@ -4913,6 +4933,9 @@ struct MaterialData {
     float replacementBiasG;
     float replacementBiasB;
     float4 depthPlane;
+    float4 lightingSurface;
+    float4 lightingCoat;
+    float4 lightingGain;
 };
 
 StructuredBuffer<MaterialData> Materials : register(t1);
@@ -4928,11 +4951,16 @@ cbuffer DrawConstants : register(b0) {
     uint ReplacementAtlasHeight;
 };
 
+)"
+#include "../shaders/lighting.hlsl.inc"
+R"(
 struct VsInput {
     float4 position : POSITION;
     float2 uv : TEXCOORD0;
     float4 color : COLOR0;
     uint commandIndex : TEXCOORD2;
+    float3 lightingPosition : TEXCOORD4;
+    float3 lightingNormal : NORMAL0;
 };
 
 struct VsOutput {
@@ -4942,6 +4970,8 @@ struct VsOutput {
     noperspective float4 color : COLOR0;
     float4 perspectiveColor : TEXCOORD3;
     nointerpolation uint commandIndex : TEXCOORD2;
+    float3 lightingPosition : TEXCOORD4;
+    float3 lightingNormal : NORMAL0;
 };
 
 struct PsOutput {
@@ -4958,6 +4988,8 @@ VsOutput VSMain(VsInput input) {
     output.color = input.color;
     output.perspectiveColor = input.color;
     output.commandIndex = input.commandIndex;
+    output.lightingPosition = input.lightingPosition;
+    output.lightingNormal = input.lightingNormal;
     return output;
 }
 
@@ -5339,6 +5371,10 @@ PsOutput ShadePixel(VsOutput input, bool preserveCutoutCoverage) {
             ? texel
             : saturate(texel * modulation * 2.0);
     }
+    if (material.lightingGain.w > 0.5 && LightGround.w != 0.0)
+        discard;
+    color = ApplyMaterialLighting(color, input.lightingPosition, input.lightingNormal,
+        material.lightingSurface, material.lightingCoat, material.lightingGain);
     if (
         Dithering != 0 &&
         (material.environmentFlags & 4) != 0 &&
@@ -5348,10 +5384,9 @@ PsOutput ShadePixel(VsOutput input, bool preserveCutoutCoverage) {
     // GT2's car shadow is an untextured reverse-subtract polygon. Directly
     // scaling the PS1 5-bit subtraction to modern color space clamps dark
     // asphalt to opaque black, making the polygon look like a wheel texture.
-    // Marked shadows instead supply a low-opacity black contact layer. The
-    // source mesh is too coarse and irregular to feather without exposing its
-    // individual triangles, so keep the whole footprint subtle enough that
-    // its boundary cannot read as wheel or underbody geometry.
+    // Marked shadows use bounded alpha instead of color-clamping subtraction.
+    // The default remains .06; an active course profile can explicitly choose
+    // stronger source-footprint opacity for the main view (L05).
     bool vehicleShadow = (material.coverageFlags & 2) != 0;
     bool vehicleWheelTread = (material.coverageFlags & 4) != 0;
     if (vehicleShadow)
@@ -5444,6 +5479,9 @@ float4 PSMainScreenGridMask(VsOutput input) : SV_Target0 {
     return 1.0;
 }
 
+)"
+#include "../shaders/shadow.hlsl.inc"
+R"(
 )";
 
 const char screen_grid_shader_source[] = R"(
@@ -6216,7 +6254,10 @@ std::vector<AuthoredScreenArc> detect_authored_screen_arcs(
     return arcs;
 }
 
+#include "lighting_d3d11_resources.inc"
+
 struct FrameInputResources {
+    LightingFrameGpu lighting;
     ComPtr<ID3D11Buffer> vertex_buffer;
     UINT vertex_buffer_bytes{};
     ComPtr<ID3D11Buffer> index_buffer;
@@ -6231,6 +6272,8 @@ struct FrameInputResources {
 };
 
 struct BaseResources {
+    LightingBaseGpu lighting;
+    lighting::ShadowGridState shadow_grid;
     bool ready;
     bool software_adapter;
     bool deferred_submission;
@@ -8722,6 +8765,8 @@ ReplacementResolution resolve_texture_replacement(
     return result;
 }
 
+#include "lighting_d3d11_pass.inc"
+
 bool initialize_base(
     BaseResources* resources,
     bool software_adapter
@@ -8869,6 +8914,8 @@ bool initialize_base(
             "TEXCOORD", 2, DXGI_FORMAT_R32_UINT,
             0, 40, D3D11_INPUT_PER_VERTEX_DATA, 0,
         },
+        {"TEXCOORD", 4, DXGI_FORMAT_R32G32B32_FLOAT, 0, 44, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 56, D3D11_INPUT_PER_VERTEX_DATA, 0},
     };
     if (FAILED(resources->device->CreateInputLayout(
             elements,
@@ -8971,6 +9018,7 @@ void release_readback_resources(BaseResources* resources) {
 }
 
 void release_mutable_frame_resources(FrameInputResources* frame) {
+    frame->lighting = {};
     frame->vertex_buffer.Reset();
     frame->vertex_buffer_bytes = 0;
     frame->index_buffer.Reset();
@@ -9917,6 +9965,54 @@ WorldGpuRenderResult render_world_d3d11(
         D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     frame_setup_finished = PhaseClock::now();
 
+    lighting::Frame lighting_frame;
+    const auto* lighting_database = lighting::runtime_database();
+    if(!lighting_database || !lighting_database->settings.enabled)base.shadow_grid={};
+    if (lighting_database && lighting_database->settings.enabled) {
+        try {
+            std::vector<std::uint64_t> upload_keys;
+            for (const auto& upload : base.replacement_uploads) upload_keys.push_back(upload.key);
+            const auto* track = lighting::select_track(*lighting_database, upload_keys);
+            std::vector<lighting::Surface> roles(draw_list.commands.size(), lighting::Surface::legacy);
+            for (std::size_t i=0;i<draw_list.commands.size();++i) {
+                const auto& command=draw_list.commands[i];
+                if(command.material_index>=draw_list.materials.size())continue;
+                const auto& material=draw_list.materials[command.material_index];
+                if ((material.primitive_flags & (semi_transparent_flag | world_primitive_screen_space_flag)) != 0)
+                    continue;
+                if (command.object_kind == 2)
+                    roles[i]=vehicle_wheel_tread(command,material) ? lighting::Surface::rubber : lighting::Surface::car;
+                else if (command.object_kind == 1)
+                    roles[i]=(material.primitive_flags & world_primitive_track_overlay_support_flag) != 0
+                        ? lighting::Surface::road : lighting::Surface::track;
+            }
+            lighting_frame=lighting::prepare(draw_list,*lighting_database,track,roles,&base.shadow_grid);
+            static thread_local std::string last_lighting_state;
+            const std::string state=std::string(track?track->name:"unmatched")+
+                (lighting_frame.solar?":solar":lighting_frame.enabled?":environment":":stock");
+            if(state!=last_lighting_state) {
+                std::fprintf(stderr,"[Lighting-L01] scene=%s matchedUploads=%zu casterTriangles=%zu; original baked shading retained unless exact rules exist\n",
+                    state.c_str(),upload_keys.size(),lighting_frame.casters.size()/3);
+                last_lighting_state=state;
+            }
+        } catch (const std::exception& error) {
+            std::fprintf(stderr,"[Lighting-L01] stock frame fallback: %s\n",error.what());
+            lighting_frame={};
+        }
+    }
+    // Failure is atomic: no unbaking or shadow deletion without a completed
+    // shadow pass; lighting constants are reset before the normal draw.
+    if (!submit_lighting_pass(base,frame,lighting_frame,
+            lighting_database ? lighting_database->settings.shadow_resolution : 1024)) {
+        lighting_frame={};
+    }
+    // The shadow pass has its own layout, viewport, depth and blend state.
+    context->OMSetRenderTargets(1, &render_target, base.depth_view.Get());
+    context->RSSetViewports(1, &viewport);
+    context->RSSetState(base.rasterizer.Get());
+    context->IASetInputLayout(base.input_layout.Get());
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
     D3D11_MAPPED_SUBRESOURCE mapped_vertices{};
     if (FAILED(context->Map(
             frame.vertex_buffer.Get(),
@@ -9953,7 +10049,11 @@ WorldGpuRenderResult render_world_d3d11(
             soft_vehicle_shadow(command, material);
         for (int index = 0; index < 3; ++index) {
             const auto& source = command.vertices[index];
-            const float alpha = vehicle_shadow ? 0.06F : 1.0F;
+            const bool main_contact = vehicle_shadow && !screen_space &&
+                command.channel == WorldViewChannel::main_view;
+            const float alpha = vehicle_shadow
+                ? (main_contact ? lighting_frame.contact_shadow_opacity : 0.06F)
+                : 1.0F;
             gpu_vertices[command_index * 3 + index] = GpuVertex{
                 {
                     source.clip_x,
@@ -10125,6 +10225,17 @@ WorldGpuRenderResult render_world_d3d11(
                 draw_list.display_y + draw_list.display_height);
         }
     }
+    if (lighting_frame.enabled) {
+        for (std::size_t i=0;i<lighting_frame.vertices.size();++i) {
+            const auto& v=lighting_frame.vertices[i];
+            gpu_vertices[i].lighting_position[0]=v.position.x;
+            gpu_vertices[i].lighting_position[1]=v.position.y;
+            gpu_vertices[i].lighting_position[2]=v.position.z;
+            gpu_vertices[i].lighting_normal[0]=v.normal.x;
+            gpu_vertices[i].lighting_normal[1]=v.normal.y;
+            gpu_vertices[i].lighting_normal[2]=v.normal.z;
+        }
+    }
     context->Unmap(frame.vertex_buffer.Get(), 0);
     vertex_upload_finished = PhaseClock::now();
 
@@ -10216,6 +10327,12 @@ WorldGpuRenderResult render_world_d3d11(
                 replacement.color_bias[2],
                 surface_depth_planes[command_index],
             };
+            if (lighting_frame.enabled && command_index < lighting_frame.materials.size()) {
+                const auto& light = lighting_frame.materials[command_index];
+                gpu_materials[command_index].lighting_surface = light.surface;
+                gpu_materials[command_index].lighting_coat = light.coat;
+                gpu_materials[command_index].lighting_gain = light.gain;
+            }
         }
         for (std::size_t wheel_index = 0;
              wheel_index < smooth_wheels.size();
@@ -10253,6 +10370,13 @@ WorldGpuRenderResult render_world_d3d11(
     ID3D11SamplerState* replacement_sampler =
         base.replacement_sampler.Get();
     context->PSSetSamplers(0, 1, &replacement_sampler);
+    ID3D11ShaderResourceView* sunlight_view = lighting_frame.shadows ? base.lighting.view.Get() : nullptr;
+    context->PSSetShaderResources(4, 1, &sunlight_view);
+    ID3D11SamplerState* sunlight_sampler = base.lighting.sampler.Get();
+    context->PSSetSamplers(1, 1, &sunlight_sampler);
+    ID3D11Buffer* sunlight_constants = lighting_frame.enabled ? frame.lighting.constants.Get() : nullptr;
+    context->VSSetConstantBuffers(2, 1, &sunlight_constants);
+    context->PSSetConstantBuffers(2, 1, &sunlight_constants);
 
     for (std::uint32_t pass = 0; pass < 3; ++pass) {
         const DrawConstants constants{
@@ -10970,7 +11094,10 @@ WorldGpuRenderResult render_world_d3d11(
         const bool full_main_world_scissor =
             !screen_space &&
             command.channel == WorldViewChannel::main_view &&
-            (command.object_kind == 1U || command.object_kind == 2U);
+            // Background meshes share the world's horizontal-plus projection.
+            // Keeping their guest-width scissor exposes clear-color sidebars.
+            (command.object_kind == 1U || command.object_kind == 2U ||
+                command.object_kind == 3U);
         const std::int32_t command_horizontal_offset = screen_space
             ? static_cast<std::int32_t>(std::lround(
                 hud_output_offset(
@@ -11735,6 +11862,7 @@ void reset_world_d3d11_readback(bool use_software_adapter) noexcept {
     // submitted retain their own COM references, while the next render creates
     // an independent generation that cannot alias the abandoned work.
     release_frame_generation(&base);
+    base.shadow_grid={};
 }
 
 void drain_world_d3d11_direct_output() noexcept {
@@ -11811,6 +11939,12 @@ WorldGpuRenderResult render_world_d3d11(
     return WorldGpuRenderResult::unsupported_platform;
 }
 
+WorldGpuReadbackResult try_read_world_d3d11_image(bool, std::uint8_t*, std::size_t, bool) noexcept {
+    return WorldGpuReadbackResult::device_failed;
+}
+WorldGpuReadbackResult try_read_world_d3d11_pair(bool, std::uint8_t*, std::uint8_t*, std::size_t, bool) noexcept {
+    return WorldGpuReadbackResult::device_failed;
+}
 void reset_world_d3d11_readback(bool) noexcept {}
 
 void drain_world_d3d11_direct_output() noexcept {}

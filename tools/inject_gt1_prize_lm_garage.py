@@ -21,6 +21,7 @@ from gt1_convert import (
     _find_gt2_gtdt_car,
     _parse_gt2_used_car_database,
     _parse_gtdt_blocks,
+    _parse_gt2_carinfo,
     encode_gt2_car_id,
     read_gt2_member,
 )
@@ -456,7 +457,9 @@ def build_direct_record(
     refs.extend(car_refs[index] for index in (
         7, 8, 9, 10, 11, 12, 14, 15, 16, 21, 20, 24, 25,
     ))
-    refs.extend((0, 0))  # stock wheels, stock power multiplier
+    # The stock wheel preset is car-specific (including front/rear width).
+    # Zero is a real preset, not a request to infer the stock wheels.
+    refs.extend((car_refs[26], 0))
     if len(refs) != 28:
         raise AssertionError(f"unexpected garage reference count: {len(refs)}")
 
@@ -522,7 +525,7 @@ def build_direct_record(
     record[131] = gear[33]
     struct.pack_into("<H", record, 132, final_drive)
 
-    body_id = struct.unpack_from("<I", racing_modify, 8)[0]
+    body_id = encode_gt2_car_id(choice.body_stem)
     struct.pack_into("<I", record, 140, body_id)
     price = struct.unpack_from("<I", car, 0x44)[0]
     if choice.category == "Racing Modification":
@@ -551,6 +554,7 @@ def build_direct_card(
         read_gt2_member(simulation_volume, GTMODE_DATA_MEMBER)
     )
     blocks = _parse_gtdt_blocks(gtmode_data, GT2_GTMODE_BLOCK_COUNT)
+    validate_choice_data(simulation_volume, choices)
     garage = bytearray(CAR_SIZE * MAX_CARS)
     for index, choice in enumerate(choices):
         record = build_direct_record(blocks, choice)
@@ -595,6 +599,7 @@ def assemble_card(
     for index, choice in enumerate(choices):
         record = bytearray(records_by_stem[choice.target_stem])
         record[4] = choice.color_id
+        struct.pack_into("<I", record, 140, encode_gt2_car_id(choice.body_stem))
         garage[index * CAR_SIZE : (index + 1) * CAR_SIZE] = record
     struct.pack_into("<I", save, CAR_COUNT_OFFSET, len(choices))
     save[FIRST_CAR_OFFSET : FIRST_CAR_OFFSET + len(garage)] = garage
@@ -611,6 +616,23 @@ def assemble_card(
     )
 
 
+def validate_choice_data(volume: Path, choices: list[GarageChoice]) -> None:
+    """Reject stale manifests and palettes that native color-ID lookup aliases."""
+    info = {
+        str(item["stem"]): item
+        for item in _parse_gt2_carinfo(read_gt2_member(volume, ".carinfoa"))
+    }
+    for choice in choices:
+        for stem, palette in ((choice.target_stem, choice.color_index),
+                              (choice.body_stem, choice.body_palette_index)):
+            ids = list(info[stem]["colorIds"])
+            if palette >= len(ids) or ids[palette] != choice.color_id:
+                raise ValueError(f"{stem}: manifest paint does not match installed carinfo")
+        body_ids = list(info[choice.body_stem]["colorIds"])
+        if body_ids.index(choice.color_id) != choice.body_palette_index:
+            raise ValueError(f"{choice.body_stem}: native color lookup selects a different paint")
+
+
 def validate_card(path: Path, choices: list[GarageChoice]) -> None:
     _, game_id, chain, save = load_card(path)
     records = garage_records(save)
@@ -624,6 +646,11 @@ def validate_card(path: Path, choices: list[GarageChoice]) -> None:
     ]
     if actual != expected:
         raise ValueError("GT1 prize/LM garage records do not match the manifest")
+    if len(set(actual)) != len(actual):
+        raise ValueError("duplicate car/paint identities cannot survive save and race loading; regenerate the livery conversion")
+    for record, choice in zip(records, choices):
+        if struct.unpack_from("<I", record, 140)[0] != encode_gt2_car_id(choice.body_stem):
+            raise ValueError(f"{choice.target_stem}: saved body does not preserve the selected livery")
     current = struct.unpack_from("<h", save, CURRENT_CAR_OFFSET)[0]
     if current != 0:
         raise ValueError(f"current garage car is {current}; expected 0")

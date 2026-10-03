@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+<PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+<ItemGroup><ProjectReference Include="../../vendor/RecompOne/RecompOne.Runtime/RecompOne.Runtime.csproj" /></ItemGroup>
+<ItemGroup><None Include="../../build/native-linux/libopengt_live_renderer.so" Link="libopengt_live_renderer.so" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+</Project>

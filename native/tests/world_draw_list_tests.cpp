@@ -2,6 +2,9 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <new>
+#include <utility>
 
 namespace {
 
@@ -39,6 +42,22 @@ opengt::render::WorldCaptureVertex vertex(
 
 int main() {
     using namespace opengt::render;
+    // Regression for first-frame double-buffering: a user-provided LiveContext
+    // constructor previously left its "previous" scalar fields uninitialized.
+    alignas(WorldDrawList) unsigned char storage[sizeof(WorldDrawList)];
+    std::memset(storage,0xbe,sizeof(storage));
+    auto* fresh = new(storage) WorldDrawList; // deliberately default, not value initialization
+    bool initialized = !fresh->continuous_projection && fresh->display_x == 0 &&
+        fresh->display_y == 0 && fresh->display_width == 0 && fresh->display_height == 0 &&
+        fresh->frame_index == 0 && fresh->input_poll == 0 && fresh->camera_transform_id == 0 &&
+        fresh->rejected_incomplete == 0 && fresh->rejected_incomplete_track == 0 &&
+        fresh->rejected_incomplete_vehicle == 0 && fresh->rejected_screen_target == 0 &&
+        fresh->rejected_screen_target_track == 0 && fresh->rejected_oversized_screen_commands == 0 &&
+        fresh->secondary_commands == 0 && fresh->track_commands == 0 && fresh->vehicle_commands == 0 &&
+        fresh->background_commands == 0 && fresh->unclassified_commands == 0 && fresh->unclassified_world_commands == 0;
+    WorldDrawList previous{};std::swap(previous,*fresh);fresh->~WorldDrawList();
+    if (!expect(initialized && !previous.continuous_projection && previous.commands.empty(),
+        "default-constructed draw list has defined first-frame state")) return 1;
     WorldCaptureHeader header{};
     header.frame_index = 123;
     header.input_poll = 456;
@@ -54,6 +73,9 @@ int main() {
     triangles[0].texture_page = 7;
     triangles[0].clut = 12;
     triangles[0].object_kind = 1;
+    triangles[0].source_mesh_key = 0x1122334455667788ULL;
+    triangles[0].source_primitive_address = 0x80123456U;
+    triangles[0].resident_content_key = 0x99aabbccddeeff11ULL;
     triangles[0].vertices[0] = vertex(0, 0, 256, 0, 0);
     triangles[0].vertices[1] = vertex(100, 0, 256, 100, 0);
     triangles[0].vertices[2] = vertex(0, 100, 256, 0, 100);
@@ -114,6 +136,11 @@ int main() {
     okay &= expect(list.secondary_commands == 1, "count secondary view");
     okay &= expect(list.materials.size() == 1, "deduplicate material");
     okay &= expect(list.track_commands == 1, "count track commands");
+    okay &= expect(
+        list.commands[0].source_mesh_key == 0x1122334455667788ULL &&
+        list.commands[0].source_primitive_address == 0x80123456U &&
+        list.commands[0].resident_content_key == 0x99aabbccddeeff11ULL,
+        "retain exact resident source primitive/content provenance");
     okay &= expect(
         std::fabs(list.commands[0].vertices[0].clip_x) < 0.001F &&
         std::fabs(list.commands[0].vertices[0].clip_y) < 0.001F,
@@ -400,7 +427,8 @@ int main() {
         "keep ordinary track geometry on normalized camera depth");
     WorldCaptureTriangle resident_billboard = ordinary_track;
     resident_billboard.primitive_flags |=
-        world_primitive_track_billboard_depth_flag;
+        world_primitive_track_billboard_depth_flag |
+        world_primitive_track_billboard_flag;
     WorldDrawList resident_billboard_list{};
     okay &= expect(
         build_world_draw_list(
@@ -411,8 +439,11 @@ int main() {
             &resident_billboard_list) == WorldDrawListResult::success &&
         resident_billboard_list.commands.size() == 1 &&
         resident_billboard_list.commands[0].vertices[0].clip_w ==
-            14030.0F * 512.0F,
-        "legacy resident billboard tag must not turn DMA ordinal into depth");
+            14030.0F * 512.0F &&
+        (resident_billboard_list.materials[
+            resident_billboard_list.commands[0].material_index].primitive_flags &
+            world_primitive_track_billboard_flag) != 0,
+        "resident billboard tags survive without turning DMA ordinal into depth");
     // Measured Midfield wall/tree overlap at poll 2859. The farther tree's
     // reverse traversal ordinal 168 previously became common Z 1,376,256,
     // incorrectly beating the wall at common Z approximately 4,049,442.

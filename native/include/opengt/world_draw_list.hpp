@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 
 #include "opengt/world_capture.hpp"
 
@@ -16,6 +17,12 @@ constexpr std::uint32_t world_primitive_screen_space_flag = 1U << 31;
 // must not merge otherwise independent authored topology groups; they still
 // use the fixed perspective-correct 3D projection contract.
 constexpr std::uint32_t world_primitive_temporal_seam_flag = 1U << 30;
+// Source-selected body faces omitted by eye culling. Shadow only, never color/probes.
+constexpr std::uint32_t world_primitive_shadow_only_flag = 1U << 29;
+// Native resident mesh has a separately decoded source-material sun caster.
+// Color/reflection passes retain the authored eye LOD; only sun submission is
+// replaced. Cleared transactionally when auxiliary source conversion fails.
+constexpr std::uint32_t world_primitive_sun_caster_replaced_flag = 1U << 23;
 // GT2 resolves coplanar course artwork by authored submission order because
 // the PS1 GPU has no depth buffer. The resident-course decoder assigns this
 // bounded layer to positive-area detail surfaces which are materially smaller
@@ -44,6 +51,10 @@ constexpr std::uint32_t world_primitive_track_replacement_flag = 1U << 7;
 // override: their DMA traversal ordinal is not a metric distance. Keep the bit
 // readable for existing captures, but use normalized model-space corner depth.
 constexpr std::uint32_t world_primitive_track_billboard_depth_flag = 1U << 8;
+// Explicitly identifies GT2's camera-facing course billboard stream. Unlike
+// the depth tag above, this bit is present for every raw billboard quad,
+// including near-plane cases where authored flat OT depth cannot be used.
+constexpr std::uint32_t world_primitive_track_billboard_flag = 1U << 9;
 // Captured directly from GT2's authored pre-projection course data. Its
 // shared model vertices are already continuous; topology inference intended
 // for guest-projected packets must not rebuild or split it.
@@ -142,44 +153,68 @@ struct WorldDrawCommand {
     std::uint32_t object_kind;
     std::uint32_t object_id;
     std::uint32_t model_pointer;
+    // Exact resident-course provenance when available. source_mesh_key is a
+    // packed (authored vertex-table address, vertex count), deliberately
+    // independent of GT2's primary/alternate projection-path definition key.
+    // File/historical captures and non-resident packets leave these zero.
+    // Material lighting may use a geometry-derived primitiveKey without them,
+    // but destructive unbake rules require both source values.
+    std::uint64_t source_mesh_key{};
+    std::uint32_t source_primitive_address{};
+    // Exact live resident-definition content fingerprint. Unlike the registry
+    // definition key, this excludes the Primary/Alternate path key itself.
+    std::uint64_t resident_content_key{};
     std::uint64_t transform_id;
     std::int16_t transform_rotation[9];
     std::int32_t transform_translation[3];
     bool exact_transform_valid;
     std::uint32_t source_command_index;
     WorldViewChannel channel;
+    // Positive only when source depth normalization is known.
+    float lighting_depth_scale{};
+};
+
+struct WorldShadowCaster {
+    WorldDrawCommand command;
+    WorldMaterial material;
 };
 
 struct WorldDrawList {
-    std::int32_t display_x;
-    std::int32_t display_y;
-    std::int32_t display_width;
-    std::int32_t display_height;
-    std::uint64_t frame_index;
-    std::int32_t input_poll;
-    std::uint64_t camera_transform_id;
-    bool continuous_projection;
+    std::int32_t display_x{};
+    std::int32_t display_y{};
+    std::int32_t display_width{};
+    std::int32_t display_height{};
+    std::uint64_t frame_index{};
+    std::int32_t input_poll{};
+    std::uint64_t camera_transform_id{};
+    bool continuous_projection{};
+    std::array<std::int16_t, 9> lighting_camera_rotation{};
+    bool lighting_camera_primary_axes{};
+    bool lighting_world_anchor_valid{};
+    std::int16_t lighting_camera_depth_exponent{};
+    std::array<std::int32_t,3> lighting_camera_world_offset{};
+    std::vector<WorldShadowCaster> lighting_extra_casters;
     std::vector<WorldMaterial> materials;
     std::vector<WorldDrawCommand> commands;
-    std::uint32_t rejected_incomplete;
+    std::uint32_t rejected_incomplete{};
     // Breakdown of what the capture could not carry as 3D world
     // geometry, and what the screen-space fallback then dropped.
-    std::uint32_t rejected_incomplete_track;
-    std::uint32_t rejected_incomplete_vehicle;
-    std::uint32_t rejected_screen_target;
-    std::uint32_t rejected_screen_target_track;
-    std::uint32_t rejected_oversized_screen_commands;
-    std::uint32_t secondary_commands;
-    std::uint32_t track_commands;
-    std::uint32_t vehicle_commands;
-    std::uint32_t background_commands;
+    std::uint32_t rejected_incomplete_track{};
+    std::uint32_t rejected_incomplete_vehicle{};
+    std::uint32_t rejected_screen_target{};
+    std::uint32_t rejected_screen_target_track{};
+    std::uint32_t rejected_oversized_screen_commands{};
+    std::uint32_t secondary_commands{};
+    std::uint32_t track_commands{};
+    std::uint32_t vehicle_commands{};
+    std::uint32_t background_commands{};
     // object_kind 0 includes both explicit 2D screen packets and world
     // packets whose authored owner has not been reconstructed. Keep the
     // historical aggregate above/below for HUD sizing, but count the latter
     // separately so a complete live run can prove that no 3D packet remained
     // outside the modern layer contract.
-    std::uint32_t unclassified_commands;
-    std::uint32_t unclassified_world_commands;
+    std::uint32_t unclassified_commands{};
+    std::uint32_t unclassified_world_commands{};
 };
 
 struct WorldDrawListOptions {

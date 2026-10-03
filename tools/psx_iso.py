@@ -26,7 +26,7 @@ class PsxIso:
             for candidate in (MODE1_DATA_OFFSET, MODE2_FORM1_DATA_OFFSET):
                 stream.seek(16 * RAW_SECTOR_SIZE + candidate)
                 descriptor = stream.read(DATA_SECTOR_SIZE)
-                if descriptor[1:6] == b"CD001":
+                if len(descriptor) == DATA_SECTOR_SIZE and descriptor[:7] == b"\x01CD001\x01":
                     return candidate
         raise ValueError(f"ISO9660 primary volume descriptor is missing: {self.image}")
 
@@ -65,6 +65,8 @@ class PsxIso:
     def root_record(self) -> tuple[int, int]:
         descriptor = self.read_sector(16)
         record = descriptor[156 : 156 + descriptor[156]]
+        if len(record) < 34 or not record[25] & 2:
+            raise ValueError("Malformed ISO9660 root directory record")
         return (
             struct.unpack_from("<I", record, 2)[0],
             struct.unpack_from("<I", record, 10)[0],
@@ -83,6 +85,8 @@ def directory_records(data: bytes):
         if length < 34 or position + length > len(data):
             raise ValueError("malformed ISO9660 directory record")
         record = data[position : position + length]
+        if record[32] > length - 33:
+            raise ValueError("Malformed ISO9660 file name")
         extent = struct.unpack_from("<I", record, 2)[0]
         size = struct.unpack_from("<I", record, 10)[0]
         flags = record[25]

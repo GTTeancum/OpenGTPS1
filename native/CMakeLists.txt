@@ -12,7 +12,27 @@ add_library(opengt_renderer_core STATIC
     src/world_gpu_renderer_d3d11.cpp
     src/world_topology.cpp
     src/background_seams.cpp
+    src/vehicle_shadow_source.cpp
+    src/shadow_grid.cpp
+    src/lighting.cpp
+    src/world_gpu_renderer_native.cpp
 )
+
+set_target_properties(opengt_renderer_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # One shader source, embedded offline without a driver SDK or a Python build dependency.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/world.glsl")
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shaders/world.glsl" OPENGT_GLSL)
+    string(FIND "${OPENGT_GLSL}" ")OGTGL\"" OPENGT_GLSL_DELIMITER)
+    if(NOT OPENGT_GLSL_DELIMITER EQUAL -1)
+        message(FATAL_ERROR "GLSL contains reserved C++ raw-string delimiter")
+    endif()
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/opengt_world_glsl.inc" "R\"OGTGL(${OPENGT_GLSL})OGTGL\"\n")
+    target_include_directories(opengt_renderer_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_sources(opengt_renderer_core PRIVATE src/gl/api.cpp src/world_gpu_renderer_egl.cpp)
+    target_link_libraries(opengt_renderer_core PUBLIC ${CMAKE_DL_LIBS})
+endif()
 
 # Synthetic midpoint reconstruction remains available only to explicitly
 # requested development tests/tools. A shipping build has no interpolation
@@ -87,6 +107,18 @@ endif()
 
 if(OPENGT_BUILD_TESTS)
     enable_testing()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(opengt_shadow_grid_tests tests/shadow_grid_tests.cpp)
+        target_link_libraries(opengt_shadow_grid_tests PRIVATE opengt_renderer_core)
+        add_test(NAME opengt_shadow_grid_tests COMMAND opengt_shadow_grid_tests)
+    endif()
+    add_executable(opengt_shadow_anchor_capture_tests tests/shadow_anchor_capture_tests.cpp)
+    target_link_libraries(opengt_shadow_anchor_capture_tests PRIVATE opengt_renderer_core)
+    add_test(NAME opengt_shadow_anchor_capture_tests COMMAND opengt_shadow_anchor_capture_tests)
+
+    add_executable(opengt_lighting_tests tests/lighting_tests.cpp)
+    target_link_libraries(opengt_lighting_tests PRIVATE opengt_renderer_core)
+    add_test(NAME opengt_lighting_tests COMMAND opengt_lighting_tests)
 
     # Exercise the bridge's private resident classifier without exporting
     # diagnostic APIs from the live DLL.
@@ -183,6 +215,10 @@ if(OPENGT_BUILD_TESTS)
     )
 
     if(WIN32)
+        add_executable(opengt_lighting_gpu_tests tests/lighting_gpu_tests.cpp)
+        target_link_libraries(opengt_lighting_gpu_tests PRIVATE opengt_renderer_core)
+        add_test(NAME opengt_lighting_gpu_tests COMMAND opengt_lighting_gpu_tests)
+        set_tests_properties(opengt_lighting_gpu_tests PROPERTIES TIMEOUT 180)
         add_executable(opengt_world_gpu_renderer_tests
             tests/world_gpu_renderer_tests.cpp
         )
@@ -202,6 +238,10 @@ if(OPENGT_BUILD_TESTS)
 endif()
 
 if(OPENGT_BUILD_DEV_TOOLS)
+    add_executable(opengt_lighting_inspect tools/lighting_inspect.cpp)
+    target_link_libraries(opengt_lighting_inspect PRIVATE opengt_renderer_core)
+    add_executable(opengt_solar_fit tools/solar_fit.cpp)
+    target_compile_features(opengt_solar_fit PRIVATE cxx_std_17)
     add_executable(opengt_capture_render
         tools/capture_render.cpp
     )
@@ -247,4 +287,50 @@ if(OPENGT_BUILD_DEV_TOOLS)
             opengt_renderer_dev_support
     )
     target_compile_features(opengt_live_pair_inspect PRIVATE cxx_std_17)
+endif()
+
+if(OPENGT_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(opengt_lighting_egl_tests tests/lighting_egl_tests.cpp)
+    target_link_libraries(opengt_lighting_egl_tests PRIVATE opengt_renderer_core)
+    add_test(NAME opengt_lighting_egl_tests COMMAND opengt_lighting_egl_tests)
+    set_tests_properties(opengt_lighting_egl_tests PROPERTIES TIMEOUT 180)
+endif()
+
+if(OPENGT_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(opengt_lighting_live_tests tests/lighting_live_tests.cpp)
+    target_link_libraries(opengt_lighting_live_tests PRIVATE opengt_live_renderer)
+    target_compile_features(opengt_lighting_live_tests PRIVATE cxx_std_17)
+    add_test(NAME opengt_lighting_live_tests COMMAND opengt_lighting_live_tests)
+    set_tests_properties(opengt_lighting_live_tests PROPERTIES TIMEOUT 180)
+endif()
+
+if(OPENGT_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(opengt_shadow_visibility_tests tests/shadow_visibility_tests.cpp)
+    target_link_libraries(opengt_shadow_visibility_tests PRIVATE opengt_renderer_core)
+    add_test(NAME opengt_shadow_visibility_tests COMMAND opengt_shadow_visibility_tests)
+    set_tests_properties(opengt_shadow_visibility_tests PROPERTIES TIMEOUT 180)
+endif()
+
+if(OPENGT_BUILD_TESTS)
+  add_executable(opengt_vehicle_shadow_source_tests tests/vehicle_shadow_source_tests.cpp)
+  target_link_libraries(opengt_vehicle_shadow_source_tests PRIVATE opengt_renderer_core)
+  add_test(NAME opengt_vehicle_shadow_source_tests COMMAND opengt_vehicle_shadow_source_tests)
+endif()
+if(OPENGT_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(opengt_depth_precision_tests tests/depth_precision_tests.cpp)
+  target_link_libraries(opengt_depth_precision_tests PRIVATE opengt_renderer_core)
+  add_test(NAME opengt_depth_precision_tests COMMAND opengt_depth_precision_tests)
+  add_test(NAME opengt_depth_precision_fallback_tests COMMAND opengt_depth_precision_tests)
+  set_tests_properties(opengt_depth_precision_fallback_tests PROPERTIES ENVIRONMENT "OPENGT_GL_DEPTH_FALLBACK=1")
+endif()
+
+if(OPENGT_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(opengt_shadow_projection_tests tests/shadow_projection_tests.cpp)
+  target_link_libraries(opengt_shadow_projection_tests PRIVATE opengt_renderer_core)
+  add_test(NAME opengt_shadow_projection_tests COMMAND opengt_shadow_projection_tests)
+endif()
+if(OPENGT_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(opengt_track_shadow_material_tests tests/track_shadow_material_tests.cpp)
+  target_link_libraries(opengt_track_shadow_material_tests PRIVATE opengt_renderer_core)
+  add_test(NAME opengt_track_shadow_material_tests COMMAND opengt_track_shadow_material_tests)
 endif()

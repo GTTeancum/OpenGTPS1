@@ -541,6 +541,15 @@ WorldDrawListResult build_world_draw_list(
         result.input_poll = header.input_poll;
         result.camera_transform_id = header.camera_transform_id;
         result.continuous_projection = options.continuous_projection;
+        result.lighting_camera_primary_axes =
+            (header.flags & world_capture_primary_camera_axes_flag) != 0;
+        std::copy(std::begin(header.camera_rotation), std::end(header.camera_rotation),
+            result.lighting_camera_rotation.begin());
+        result.lighting_world_anchor_valid = header.version >= 6 &&
+            (header.flags & world_capture_world_anchor_flag) != 0;
+        result.lighting_camera_depth_exponent = header.camera_depth_scale_exponent;
+        std::copy(std::begin(header.camera_world_offset), std::end(header.camera_world_offset),
+            result.lighting_camera_world_offset.begin());
         result.materials.reserve(256);
         result.commands.reserve(triangle_count);
         WorldMaterialIndices material_indices;
@@ -642,6 +651,12 @@ WorldDrawListResult build_world_draw_list(
             command.model_pointer = screen_space_track
                 ? triangle.model_pointer
                 : screen_space ? 0U : triangle.model_pointer;
+            command.source_mesh_key = screen_space
+                ? 0U : triangle.source_mesh_key;
+            command.source_primitive_address = screen_space
+                ? 0U : triangle.source_primitive_address;
+            command.resident_content_key = screen_space
+                ? 0U : triangle.resident_content_key;
             command.transform_id = triangle.transform_id;
             for (int component = 0; component < 9; ++component)
                 command.transform_rotation[component] =
@@ -719,6 +734,8 @@ WorldDrawListResult build_world_draw_list(
                             1.0F,
                             triangle.depth_scale_exponent)
                         : 1.0F;
+                command.lighting_depth_scale = !screen_space && triangle.depth_scale_valid
+                    ? depth_scale : 0.0F;
                 const float raw_clip_w = screen_space
                     ? 1.0F
                     : static_cast<float>(view.z);

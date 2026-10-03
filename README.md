@@ -1,7 +1,7 @@
 # OpenGTPS1
 
 OpenGTPS1 0.9b is an experimental static-recompilation port of the US
-Gran Turismo 2 **Simulation Disc** (`SCUS-94488`, NTSC-U revision 2) and
+Gran Turismo 2 **Simulation Disc** (`SCUS-94488`, USA) and
 **Arcade Disc** (`SCUS-94455`, NTSC-U), built with
 [RecompOne](vendor/RecompOne/UPSTREAM.md).
 
@@ -73,15 +73,16 @@ reports are especially valuable while work is paused.
 
 The current known defects are tracked in [`TO-DO.MD`](TO-DO.MD):
 
-- The generated prize/LM development smoke-test save gives some cars incorrect
-  wheel widths.
-- At least the black JGTC Castrol Supra can revert to white when a race begins.
 - The planned original-Xbox port has not been implemented.
+
+Prize/LM development saves generated before the wheel/paint correction must
+be regenerated with current GT1 livery data. Existing memory cards are not
+rewritten automatically.
 
 The 0.9b Windows release needs user testing across more hardware and ordinary
 play patterns. The highest-value reports cover:
 
-- fresh setup with the exact supported two-disc set;
+- fresh setup with USA discs;
 - Xbox-compatible controllers and keyboard input from the first title-menu
   press through full races;
 - creating, loading, updating, and backing up memory cards, including Arcade
@@ -107,19 +108,19 @@ and original-Xbox direction.
 
 The 0.9b release includes a self-contained graphical first-run installer.
 Launching `GranTurismo2PC.exe` without prepared data opens it automatically.
-It searches nearby folders and removable drives for the exact supported disc
-images, provides ordinary Browse buttons when they are elsewhere, validates
-the complete images, and builds the unified installation locally. No command
+It searches nearby folders and removable drives for USA GT2 disc
+images, provides ordinary Browse buttons when they are elsewhere, checks
+the required data files, and builds the unified installation locally. No command
 line, PowerShell window, Python installation, or PlayStation BIOS is needed.
 
 **Gran Turismo 1 merging is an optional installer feature.** Select your own
-supported US Gran Turismo image (`SCUS-94194`) to add Special Stage Route 11,
+Gran Turismo image from any region to add Special Stage Route 11,
 the completed native GT1 car imports, GT1-only paints and liveries, and the
 converted Racing Modification body/paint families to both applicable GT2
 modes. Conversion happens locally from the user's image; the source image is
 never copied, modified, or retained, and the release contains no GT1 data.
 
-The development conversion pipeline now validates the US Gran Turismo image
+The development conversion pipeline now checks the Gran Turismo data archives
 and imports Special Stage Route 11, all three GT1-exclusive EUNOS ROADSTER
 Arcade families, and the GT1 Civic Racer as native GT2 data. It converts all
 six Route 11 variants and
@@ -166,27 +167,15 @@ and livery families are the next content milestone.
 The prebuilt release requires:
 
 - Windows 10 or 11, x64
-- Your own supported US Gran Turismo 2 **Simulation Disc**, revision 2
+- Your own supported US Gran Turismo 2 **Simulation Disc**
 - Your own supported US Gran Turismo 2 **Arcade Disc**
-- Optionally, your own US **Gran Turismo** disc to merge supported GT1 content
+- Optionally, your own **Gran Turismo** disc from any region to merge supported GT1 content
 
-Other regions and revisions are not supported. The required raw Mode 2/2352
-images are:
-
-```text
-Serial:  SCUS-94488
-Size:    691,850,208 bytes
-SHA-256: D0AB6E70539601057590A36299543C0ADAD219254D712F7D4273219094ED5031
-
-Serial:  SCUS-94455
-Size:    729,423,408 bytes
-SHA-256: C2E97D6B0C847CA4336D9D84D8D98C349D1240ED075E81AB3FD5C977E9A45075
-
-Optional Gran Turismo content source
-Serial:  SCUS-94194
-Size:    693,668,304 bytes
-SHA-256: 765A748C4F2975A063A47BA9E42708A4882954D765F9E352C5AF3C0950EAEFB6
-```
+Use raw Mode 2/2352 `.img` or `.bin` images. GT2 discs must be USA
+Simulation (`SCUS-94488`) and Arcade (`SCUS-94455`) releases. Setup checks
+the boot executable and readable ISO data files, without checksum or exact
+image-size requirements. Optional GT1 import accepts any region with the
+required data archives; its regional executable is not used.
 
 The release contains no game data. To install:
 
@@ -200,7 +189,7 @@ The release contains no game data. To install:
 5. Choose whether to merge GT1 content, select **Install and play**, and wait
    for the completion message. Later launches go straight to the game.
 
-Setup validates both complete disc hashes before writing anything, extracts
+Setup checks disc identity and readable data files before extraction, extracts
 only the required runtime files beside the executable, and does not copy or
 retain any source IMG. When selected, GT1 conversion and merging are performed
 by the same setup window. The game creates blank `carda.sav` and `cardb.sav`

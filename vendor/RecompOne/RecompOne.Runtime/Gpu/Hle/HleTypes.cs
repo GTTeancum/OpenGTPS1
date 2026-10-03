@@ -13,6 +13,7 @@ public struct PrimFlags
 {
     public bool Textured, SemiTrans, RawTexture, Gouraud;
     public bool ResidentCourse;
+    public bool TrackBillboard;
     public bool AuthoredTrackBillboardDepth;
     public ushort TPage; 
     public ushort Clut; 

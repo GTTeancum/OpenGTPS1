@@ -1163,6 +1163,18 @@ def main() -> int:
         "Arcade pre-finalize race configuration trace",
     )
 
+    replace_in_function_once(
+        OVERLAY0,
+        "func_8001584C",
+        """        c.FP = c.V0 + c.V1;
+""",
+        """        c.FP = c.V0 + c.V1;
+        RecompOne.Runtime.Sdk.GT2Compat.PrepareTrue60HzRaceInitialization(
+            c.FP, c.S4, m);
+""",
+        "Restore authored physics constants before race/replay/retry initialization",
+    )
+
     replace_once(
         OVERLAY0,
         """        c.V1 = m.ReadU8((c.FP + 0x8u));

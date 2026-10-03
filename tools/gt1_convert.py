@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert supported US Gran Turismo content into a GT2 patch volume."""
+"""Convert Gran Turismo content into a GT2 patch volume."""
 
 from __future__ import annotations
 
@@ -16,24 +16,13 @@ from pathlib import Path
 
 from gt2_vol import members_from_directory, read_entries, write_volume
 from psx_iso import extract_image
+from disc_validation import GT1_DATA_FILES, identify_disc
 
 
 REPO = Path(__file__).resolve().parents[1]
 GT1_IMAGE_NAME = "Gran Turismo [U] [SCUS-94194].img"
-GT1_IMAGE_SIZE = 693_668_304
-GT1_IMAGE_SHA256 = "765a748c4f2975a063a47ba9e42708a4882954d765f9e352c5af3c0950eaefb6"
-REQUIRED_DISC_FILES = {
-    "SYSTEM.CNF": 68,
-    "SCUS_941.94": 141_312,
-    "ARCADE.DAT": 241_272,
-    "BG.DAT": 204_800,
-    "CAR.DAT": 16_379_904,
-    "CARINF.DAT": 135_301,
-    "COURSE.DAT": 23_969_792,
-    "MENU_IMG.ARC": 121_235_456,
-    "MENU_RAW.ARC": 294_076,
-    "SYSTEM.DAT": 14_768,
-}
+REQUIRED_DISC_FILES = GT1_DATA_FILES
+
 
 GT1_ARCADE_SSR11_ENTRY = 81
 GT1_SSR11_SKY_INDEX = 5
@@ -794,46 +783,17 @@ class TextureRelocation:
     images: tuple[TextureImageRelocation, ...]
 
 
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def validate_gt1_image(path: Path) -> str:
-    path = path.resolve()
-    if not path.is_file():
-        raise FileNotFoundError(f"US Gran Turismo disc image is missing: {path}")
-    if path.stat().st_size != GT1_IMAGE_SIZE:
-        raise ValueError(
-            f"unsupported Gran Turismo image size: "
-            f"{path.stat().st_size} != {GT1_IMAGE_SIZE}"
-        )
-    digest = sha256(path)
-    if digest != GT1_IMAGE_SHA256:
-        raise ValueError(
-            f"unsupported Gran Turismo image hash: {digest}; "
-            f"expected {GT1_IMAGE_SHA256}"
-        )
-    print(f"validated US Gran Turismo image: {path} sha256={digest}")
-    return digest
+def validate_gt1_image(path: Path) -> None:
+    if identify_disc(path) != "gt1":
+        raise ValueError("Select a Gran Turismo 1 disc containing the conversion data archives")
+    print(f"validated Gran Turismo data archives: {path}")
 
 
 def validate_disc_root(path: Path) -> None:
-    for name, size in REQUIRED_DISC_FILES.items():
+    for name in REQUIRED_DISC_FILES:
         candidate = path / name
-        if not candidate.is_file() or candidate.stat().st_size != size:
-            raise ValueError(
-                f"extracted GT1 file is missing or wrong-sized: "
-                f"{candidate} expected={size}"
-            )
-    system_cnf = (path / "SYSTEM.CNF").read_text(
-        encoding="ascii", errors="replace"
-    )
-    if "SCUS_941.94" not in system_cnf:
-        raise ValueError("GT1 SYSTEM.CNF does not boot SCUS_941.94")
+        if not candidate.is_file() or candidate.stat().st_size == 0:
+            raise ValueError(f"extracted GT1 data archive is missing or empty: {candidate}")
 
 
 def gt1_lzss_decompress(data: bytes, expected_size: int | None = None) -> bytes:
@@ -1881,6 +1841,7 @@ def extend_gt2_carinfo(
     paint_sources: tuple[tuple[int, str], ...],
     *,
     allow_duplicate_color_ids: bool = False,
+    target_color_ids: tuple[int, ...] | None = None,
 ) -> tuple[bytes, bytes, dict[str, object]]:
     """Append visual choices to one existing car identity.
 
@@ -1902,8 +1863,13 @@ def extend_gt2_carinfo(
     new_color_ids = list(target["colorIds"])
     new_color_names = list(colors[target_index])
     appended: list[dict[str, object]] = []
-    for color_id, source_stem in paint_sources:
-        if color_id in new_color_ids and not allow_duplicate_color_ids:
+    if target_color_ids is not None and len(target_color_ids) != len(paint_sources):
+        raise ValueError("target color IDs must match the appended paint count")
+    for paint_index, (color_id, source_stem) in enumerate(paint_sources):
+        saved_color_id = color_id if target_color_ids is None else target_color_ids[paint_index]
+        if not 0 <= saved_color_id <= 255:
+            raise ValueError("saved color ID must fit in one byte")
+        if saved_color_id in new_color_ids and not allow_duplicate_color_ids:
             raise ValueError(
                 f"GT2 {stem} already exposes color ID {color_id}"
             )
@@ -1919,12 +1885,12 @@ def extend_gt2_carinfo(
             ) from exc
         main_color = source["mainColors"][source_color]
         color_name = colors[source_index][source_color]
-        new_color_ids.append(color_id)
+        new_color_ids.append(saved_color_id)
         new_main_colors.append(main_color)
         new_color_names.append(color_name)
         appended.append(
             {
-                "colorId": color_id,
+                "colorId": saved_color_id,
                 "sourceStem": source_stem,
                 "mainColor": main_color,
                 "colorNameIndex": color_name,
@@ -2178,6 +2144,9 @@ def _gt2_livery_table_records(
     # otherwise-unmapped occurrence so the runtime can detect that ID-only
     # lookup is unsafe. Palette-index lookup remains exact.
     final_ids_by_target: dict[str, list[int]] = {}
+    native_palette_targets = {
+        str(fold["targetStem"]) for fold in folds if fold.get("nativePaletteFold")
+    }
     mapped_indices_by_target: dict[str, set[int]] = {}
     for fold in folds:
         target_stem = str(fold["targetStem"])
@@ -2195,7 +2164,7 @@ def _gt2_livery_table_records(
         }
         mapped_indices = mapped_indices_by_target.get(target_stem, set())
         for palette_index, color_id in enumerate(final_ids):
-            if counts[color_id] <= 1 or palette_index in mapped_indices:
+            if (counts[color_id] <= 1 and target_stem not in native_palette_targets) or palette_index in mapped_indices:
                 continue
             records.append(
                 {
@@ -4859,7 +4828,13 @@ def stage_gt1_castrol_supra_palette_fold(
     merged_night = merge_gt2_car_texture_palettes(
         white_night, ((black_night, 0), (black_night, 1))
     )
-    expected_ids = [108, 113, 108, 113]
+    # Saves store a color ID, not a palette slot. The black package reused
+    # the white package's IDs, making both black paints reload as white.
+    # Keep retail IDs stable and give the added black paints distinct IDs
+    # in this body's texture headers, carinfo and resolver table together.
+    expected_ids = [108, 113, 114, 115]
+    merged_day = merged_day[:2] + bytes(expected_ids) + merged_day[6:]
+    merged_night = merged_night[:2] + bytes(expected_ids) + merged_night[6:]
     if (
         list(merged_day[2:6]) != expected_ids
         or list(merged_night[2:6]) != expected_ids
@@ -4902,7 +4877,7 @@ def stage_gt1_castrol_supra_palette_fold(
             carcolor,
             "tsplr",
             paint_sources,
-            allow_duplicate_color_ids=True,
+            target_color_ids=(113, 114, 115),
         ),
     )
     first_index = int(localized_metadata["firstColorIndex"])
@@ -4912,7 +4887,7 @@ def stage_gt1_castrol_supra_palette_fold(
             "targetColorIndex": first_index + index,
             "bodyPaletteIndex": first_index + index,
         }
-        for index, color_id in enumerate((113, 108, 113))
+        for index, color_id in enumerate((113, 114, 115))
     ]
     return {
         "targetStem": "tsplr",
@@ -5393,7 +5368,7 @@ def validate_gt2_livery_layer(
         supra = supra_folds[0]
         if (
             not supra.get("nativePaletteFold")
-            or list(supra["finalColorIds"]) != [108, 113, 108, 113]
+            or list(supra["finalColorIds"]) != [108, 113, 114, 115]
             or str(supra["bodyStem"]) != "tsplr"
         ):
             raise ValueError("Castrol Supra four-palette body changed")
@@ -5410,8 +5385,8 @@ def validate_gt2_livery_layer(
         required_records = {
             ("tsplr", "tsplr", 0, 0, 108),
             ("tsplr", "tsplr", 1, 1, 113),
-            ("tsplr", "tsplr", 2, 2, 108),
-            ("tsplr", "tsplr", 3, 3, 113),
+            ("tsplr", "tsplr", 2, 2, 114),
+            ("tsplr", "tsplr", 3, 3, 115),
         }
         if not required_records.issubset(actual_records):
             raise ValueError(
@@ -7663,7 +7638,7 @@ def main() -> int:
     parser.add_argument("--extract-clean", action="store_true")
     args = parser.parse_args()
 
-    image_digest = validate_gt1_image(args.image)
+    validate_gt1_image(args.image)
     required_present = all(
         (args.disc_root / name).is_file() for name in REQUIRED_DISC_FILES
     )
@@ -7842,10 +7817,7 @@ def main() -> int:
     manifest = {
         "formatVersion": 1,
         "source": {
-            "serial": "SCUS-94194",
-            "region": "NTSC-U",
-            "imageSize": GT1_IMAGE_SIZE,
-            "imageSha256": image_digest,
+            "imageSize": args.image.stat().st_size,
         },
         "ssr11": converted,
         "ssr11ArcadeSelectionEntry": GT1_ARCADE_SSR11_ENTRY,

@@ -87,6 +87,7 @@ public sealed partial class Gpu
         int y = (int)((_fifo[1] >> 16) & 0x1FF);
         int w = (int)(((_fifo[2] & 0x3FF) + 0xF) & ~0xF);
         int h = (int)((_fifo[2] >> 16) & 0x1FF);
+        _liveWorldRenderer.InvalidateTextureUploads(x, y, w, h);
         if (HleOn) { HleFill(x, y, w, h, color); return; }
 
         for (int dy = 0; dy < h; dy++)
@@ -104,6 +105,7 @@ public sealed partial class Gpu
         int dx = (int)(_fifo[2] & 0x3FF), dy = (int)((_fifo[2] >> 16) & 0x1FF);
         int w = (int)(_fifo[3] & 0x3FF); if (w == 0) w = 0x400;
         int h = (int)((_fifo[3] >> 16) & 0x1FF); if (h == 0) h = 0x200;
+        _liveWorldRenderer.InvalidateTextureUploads(dx, dy, w, h);
         if (HleOn) { HleCopy(sx, sy, dx, dy, w, h); return; }
         for (int row = 0; row < h; row++)
             for (int col = 0; col < w; col++)
@@ -123,6 +125,8 @@ public sealed partial class Gpu
         _loadY = (int)((_fifo[1] >> 16) & 0x1FF);
         _loadW = (int)(_fifo[2] & 0xFFFF); if (_loadW == 0) _loadW = 0x400; else _loadW &= 0x3FF; if (_loadW == 0) _loadW = 0x400;
         _loadH = (int)((_fifo[2] >> 16) & 0xFFFF); if (_loadH == 0) _loadH = 0x200; else _loadH &= 0x1FF; if (_loadH == 0) _loadH = 0x200;
+        // Do not retain a previous source-bank identity during a partial overwrite.
+        _liveWorldRenderer.InvalidateTextureUploads(_loadX, _loadY, _loadW, _loadH);
         _loadPx = 0;
         _loadImage = true;
         Log.Gpu($"image load begin xy={_loadX},{_loadY} size={_loadW}x{_loadH}");

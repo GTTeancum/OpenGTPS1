@@ -470,7 +470,10 @@ std::array<std::uint8_t, 4> render_connected_terrain_zero_texel(
     };
 }
 
-bool horizontal_plus_reveals_world_outside_guest_edge() {
+bool horizontal_plus_reveals_world_outside_guest_edge(
+    std::uint32_t kind = 1U, std::uint32_t aspect_width = 16U,
+    bool left = false,
+    opengt::render::WorldViewChannel channel = opengt::render::WorldViewChannel::main_view) {
     using namespace opengt::render;
     WorldDrawList list{};
     list.display_width = 16;
@@ -483,11 +486,14 @@ bool horizontal_plus_reveals_world_outside_guest_edge() {
     command.material_index = 0;
     command.clip_x0 = command.clip_y0 = 0;
     command.clip_x1 = command.clip_y1 = 15;
-    command.object_kind = 1;
+    command.object_kind = kind;
     command.object_id = 1;
-    command.channel = WorldViewChannel::main_view;
+    command.channel = channel;
+    if (left)
+        for (auto& point : command.vertices) point.clip_x = -point.clip_x;
     list.commands.push_back(command);
-    list.track_commands = 1;
+    list.track_commands = kind == 1U ? 1U : 0U;
+    list.background_commands = kind == 3U ? 1U : 0U;
 
     WorldGpuRenderOptions options{
         false,
@@ -499,7 +505,7 @@ bool horizontal_plus_reveals_world_outside_guest_edge() {
         1,
         clear_rgba,
     };
-    options.target_aspect_width = 16;
+    options.target_aspect_width = aspect_width;
     options.target_aspect_height = 9;
     const std::uint32_t width = world_gpu_target_display_width(list, options);
     std::vector<std::uint16_t> vram(1024U * 512U);
@@ -518,10 +524,11 @@ bool horizontal_plus_reveals_world_outside_guest_edge() {
         !stats.output_valid)
         return false;
 
-    // The original 16-pixel view is centred in the 29-pixel Hor+ target and
-    // ends before x=23. This triangle begins beyond the original right plane.
+    // Check only pixels beyond the original guest viewport, on either side.
+    const std::uint32_t margin = (width - 16U) / 2U;
     for (std::uint32_t y = 0; y < 16; ++y) {
-        for (std::uint32_t x = 23; x < width; ++x) {
+        for (std::uint32_t x = 0; x < width; ++x) {
+            if (x >= margin && x < margin + 16U) continue;
             const std::size_t offset =
                 (static_cast<std::size_t>(y) * width + x) * 4U;
             if (output[offset] < 240U || output[offset + 1] > 16U ||
@@ -2502,6 +2509,14 @@ int main() {
     okay &= expect(
         horizontal_plus_reveals_world_outside_guest_edge(),
         "reveal main-world geometry beyond the original horizontal plane");
+    for (std::uint32_t aspect : {16U, 21U})
+    for (bool left : {false, true}) {
+        okay &= expect(horizontal_plus_reveals_world_outside_guest_edge(3U, aspect, left),
+            "background covers both widescreen margins at 16:9 and 21:9");
+        okay &= expect(!horizontal_plus_reveals_world_outside_guest_edge(
+                3U, aspect, left, opengt::render::WorldViewChannel::secondary_view),
+            "secondary background retains its guest viewport scissor");
+    }
     okay &= expect(
         horizontal_plus_anchors_hud_groups_to_margins(16, 9),
         "anchor connected HUD groups to 16:9 margins without stretching");

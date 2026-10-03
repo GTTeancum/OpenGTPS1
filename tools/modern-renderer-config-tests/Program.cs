@@ -616,6 +616,31 @@ static void VerifyTrue60ReplaySegmentReset(PSMemory memory)
 
 VerifyTrue60ReplaySegmentReset(testMemory);
 
+static void VerifyTrue60Initialization(PSMemory memory)
+{
+    const uint configuration = 0x80010000u;
+    // Zero is an authored 30 Hz mode, two is a new race, and one is left
+    // behind by a preceding race/replay. All must initialize the same solver.
+    foreach (byte initial in new byte[] { 0, 2, 1, 1, 1 })
+    {
+        memory.WriteU8(configuration + 8, initial);
+        memory.WriteU8(configuration + 10, 6);
+        memory.WriteU32(configuration + 0x118, initial);
+        RecompOne.Runtime.Sdk.GT2Compat.PrepareTrue60HzRaceInitialization(configuration, configuration + 0x100, memory);
+        Require(memory.ReadU32(configuration + 0x118) == 2,
+            "retry/replay retained the half-duration force multiplier");
+        Require(memory.ReadU8(configuration + 8) == 2,
+            "retry/replay did not restore the authored solver initialization step");
+        RecompOne.Runtime.Sdk.GT2Compat.ConfigureTrue60HzRaceTimeStep(configuration, memory);
+        Require(memory.ReadU8(configuration + 8) == 1,
+            "race presentation did not return to a one-field step");
+        Require(memory.ReadU8(configuration + 10) == 6,
+            "race time-step initialization changed the event mode");
+    }
+}
+
+VerifyTrue60Initialization(testMemory);
+
 string unifiedHostProject = ReadRepoFile(
     @"tools\unified-host\GranTurismo2PC.csproj");
 string unifiedHostProgram = ReadRepoFile(
@@ -769,18 +794,8 @@ Require(
     !releasePackager.Contains(
         "Setup-From-Simulation-Disc.ps1",
         StringComparison.Ordinal) &&
-    releaseSetup.Contains(
-        "D0AB6E70539601057590A36299543C0ADAD219254D712F7D4273219094ED5031",
-        StringComparison.Ordinal) &&
-    releaseSetup.Contains(
-        "C2E97D6B0C847CA4336D9D84D8D98C349D1240ED075E81AB3FD5C977E9A45075",
-        StringComparison.Ordinal) &&
-    releaseSetup.Contains(
-        "7C3BF68061E5867DE5AF831121C50091128DDBDE4F13026A050D3C71EF0EEE53",
-        StringComparison.Ordinal) &&
-    releaseSetup.Contains(
-        "735D838C3A0F12E2917593648790F9FD1CB6ADA13D402E19022D7C814737321C",
-        StringComparison.Ordinal) &&
+    releaseSetup.Contains("ReadDisc", StringComparison.Ordinal) &&
+    !releaseSetup.Contains("SHA256", StringComparison.OrdinalIgnoreCase) &&
     releaseReadme.Contains("SCUS-94488", StringComparison.Ordinal) &&
     releaseReadme.Contains("SCUS-94455", StringComparison.Ordinal) &&
     releasePackageTest.Contains(
@@ -810,21 +825,16 @@ Require(
         "GTPATCH.LIVERY.ARCADE.VOL",
         StringComparison.Ordinal) &&
     releaseInstaller.Contains(
-        "765A748C4F2975A063A47BA9E42708A4882954D765F9E352C5AF3C0950EAEFB6",
+        "identify_disc",
         StringComparison.Ordinal) &&
     releasePackageTest.Contains(
         "GT1_CONTENT.json",
         StringComparison.Ordinal),
     "release first-run GUI or optional GT1 merge is missing");
 Require(
-    releaseSetup.Contains(
-        "BEF591A382F4DCEC1990F5DB01B43CD42ED9CBDFE504BCB47E3FDB4013495A0E",
-        StringComparison.Ordinal) &&
-    Regex.IsMatch(
-        releaseSetup,
-        @"Join-Path \$arcade 'DISC_META\.DAT'\),\s*" +
-        @"'GT2\.VOL;1',\s*473,\s*213596160\)"),
-    "release setup no longer aligns Arcade unified metadata to LBA 473");
+    releaseSetup.Contains("$volumeLba = 473L", StringComparison.Ordinal) &&
+    releaseSetup.Contains("::PatchIsoRecord", StringComparison.Ordinal),
+    "release setup no longer relocates ISO metadata to the runtime disc layout");
 Require(
     unifiedHostProgram.Contains(
         "ResolveUnifiedGameRoot(AppContext.BaseDirectory, launchDirectory)",
@@ -876,10 +886,22 @@ string rawTrackSource = ReadRepoFile(
     @"vendor\RecompOne\RecompOne.Runtime\Gpu\GpuRawTrack.cs");
 string nativeRendererSource = ReadRepoFile(
     @"native\src\world_gpu_renderer_d3d11.cpp");
+string worldSceneCaptureSource = ReadRepoFile(
+    @"vendor\RecompOne\RecompOne.Runtime\Gpu\Hle\WorldSceneCapture.cs");
+string lightingSource = ReadRepoFile(
+    @"native\src\lighting.cpp");
 string worldDrawListHeader = ReadRepoFile(
     @"native\include\opengt\world_draw_list.hpp");
 string liveBridgeSource = ReadRepoFile(
     @"native\src\live_renderer_bridge.cpp");
+Require(
+    rawTrackSource.Contains("TrackBillboard = true,", StringComparison.Ordinal) &&
+    liveRendererSource.Contains("if (flags.TrackBillboard)", StringComparison.Ordinal) &&
+    liveRendererSource.Contains("primitiveFlags |= 1U << 9;", StringComparison.Ordinal) &&
+    worldSceneCaptureSource.Contains("if (flags.TrackBillboard)", StringComparison.Ordinal) &&
+    worldDrawListHeader.Contains("world_primitive_track_billboard_flag = 1U << 9", StringComparison.Ordinal) &&
+    lightingSource.Contains("world_primitive_track_billboard_flag", StringComparison.Ordinal),
+    "camera-facing course billboards are no longer explicitly tagged through the sun-caster boundary");
 string seattleDirectHarness = ReadRepoFile(
     @"tools\test_seattle_direct_replay.ps1");
 string simulationEnhancements = ReadRepoFile(
@@ -1319,6 +1341,20 @@ Require(
     liveBridgeSource.Contains("resident_mesh_version = 2", StringComparison.Ordinal) &&
     liveBridgeSource.Contains("resident_primitive_local_coordinates = 1U << 7", StringComparison.Ordinal),
     "managed/native resident mesh coordinate-space contract is inconsistent");
+Require(
+    rawTrackSource.Contains(
+        "RawTrackResidentContentKey(destination)",
+        StringComparison.Ordinal) &&
+    rawTrackSource.Contains(
+        "index is >= 16 and < 24",
+        StringComparison.Ordinal) &&
+    rawTrackSource.Contains(
+        "destination.Slice(16, 8).Clear()",
+        StringComparison.Ordinal) &&
+    !rawTrackSource.Contains(
+        "RawTrackResidentKey(in RawTrackResidentMeshKey key)",
+        StringComparison.Ordinal),
+    "resident mesh lookup identity is no longer content-bound across GPU resets");
 Require(
     worldDrawListHeader.Contains(
         "world_primitive_track_overlay_layer_mask",

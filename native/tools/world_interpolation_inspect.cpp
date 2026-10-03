@@ -1,7 +1,7 @@
 #include "opengt/image_writer.hpp"
 #include "opengt/world_capture.hpp"
 #include "opengt/world_draw_list.hpp"
-#include "opengt/world_gpu_renderer.hpp"
+#include "opengt/world_gpu_renderer_native.hpp"
 #include "opengt/world_interpolation.hpp"
 #include "opengt/world_topology.hpp"
 
@@ -1028,7 +1028,7 @@ int main(int argc, char** argv) {
         std::vector<std::uint8_t> output(
             static_cast<std::size_t>(width) * height * 4U);
         opengt::render::WorldGpuRenderStats render_stats{};
-        const auto render_result = opengt::render::render_world_d3d11(
+        const auto render_result = opengt::render::render_world_native(
             midpoint,
             previous.vram.data(),
             previous.vram.size(),

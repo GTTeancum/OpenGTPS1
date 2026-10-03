@@ -5,6 +5,11 @@
 
 namespace opengt::render {
 
+// Version-6 optional flag: header camera consumes GT2 primary-mesh X/Y/Z-up
+// coordinates, rather than canonical X/-Z/Y. No struct or C ABI layout change.
+constexpr std::uint32_t world_capture_primary_camera_axes_flag = 1U << 3;
+// L08: reserved v6 bytes carry an independently verified primary-world anchor.
+constexpr std::uint32_t world_capture_world_anchor_flag = 1U << 4;
 constexpr std::uint32_t world_capture_version = 6;
 constexpr std::uint32_t world_capture_header_size = 160;
 constexpr std::uint32_t world_capture_v1_header_size = 128;
@@ -40,6 +45,8 @@ struct WorldCaptureHeader {
     std::uint32_t projection_plane;
     std::int32_t draw_offset_x;
     std::int32_t draw_offset_y;
+    std::int16_t camera_depth_scale_exponent{};
+    std::int32_t camera_world_offset[3]{}; // negative source camera; primary axes, raw common units
 };
 
 struct WorldCaptureVertex {
@@ -98,6 +105,14 @@ struct WorldCaptureTriangle {
     std::int32_t depth_scale_exponent;
     bool depth_scale_valid;
     WorldCaptureVertex vertices[3];
+    // Live resident-course provenance. These fields are intentionally outside
+    // the serialized v6 triangle contract: file captures decode them as zero,
+    // while the in-process resident path can carry an exact source primitive.
+    std::uint64_t source_mesh_key{};
+    std::uint32_t source_primitive_address{};
+    // Path-neutral fingerprint of the complete immutable resident definition.
+    // This is live-only diagnostic provenance; serialized captures decode zero.
+    std::uint64_t resident_content_key{};
 };
 
 enum class WorldCaptureReadResult {

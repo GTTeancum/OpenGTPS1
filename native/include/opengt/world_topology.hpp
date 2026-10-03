@@ -26,6 +26,7 @@ struct WorldTopologyStats {
     std::uint32_t output_commands;
     std::uint32_t eligible_track_commands;
     std::uint32_t skipped_without_provenance;
+    std::uint32_t skipped_unprojectable_commands;
     std::uint32_t unique_source_vertices;
     std::uint32_t exact_position_groups;
     std::uint32_t authored_boundary_groups;

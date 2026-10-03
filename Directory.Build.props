@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <OpenGTLinuxHost Condition="'$(OpenGTLinuxHost)' == '' and ('$(RuntimeIdentifier)' == 'linux-x64' or ('$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Linux'))))">true</OpenGTLinuxHost>
+    <DefineConstants Condition="'$(OpenGTLinuxHost)' == 'true'">$(DefineConstants);OPENGT_LINUX_HOST</DefineConstants>
+  </PropertyGroup>
+</Project>

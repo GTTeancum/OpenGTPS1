@@ -51,6 +51,7 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
         public Vector4 OpaqueBlend;
         public float SetMask;
         public int CheckMask, Scale, TextureSmoothing;
+        public Vector4 ReplacementSource;
     }
 
     const int Scale = 4;
@@ -77,9 +78,11 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
             int CheckMask;
             int Scale;
             int TextureSmoothing;
+            float4 ReplacementSource;
         };
         Texture2D<float4> Vram : register(t0);
         Texture2D<float4> Destination : register(t1);
+        Texture2D<float4> Replacement : register(t2);
 
         struct VSIn {
             float2 position : POSITION;
@@ -215,6 +218,13 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
                 float4 texel = TextureSmoothing != 0 && input.smooth != 0
                     ? SmoothedTexture(input, input.uv, nearestTexel)
                     : nearestTexel;
+                if (ReplacementSource.z > 0.0) {
+                    uint rw, rh;
+                    Replacement.GetDimensions(rw, rh);
+                    float2 uv = (input.uv - ReplacementSource.xy) / ReplacementSource.zw;
+                    int2 coordinate = clamp((int2)floor(uv * float2(rw, rh)), int2(0, 0), int2(rw - 1, rh - 1));
+                    texel.rgb = Replacement.Load(int3(coordinate, 0)).rgb;
+                }
                 int3 texture8 = ((int3)(texel.rgb * 31.0 + 0.5)) << 3;
                 int3 color8 = (texture8 * (int3)(input.color.rgb * 255.0 + 0.5)) >> 7;
                 output = float4(Quantize5(color8, input.dither, input.position.xy),
@@ -230,6 +240,10 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
         }
         """;
 
+    readonly MenuTexturePack _menuPack = new();
+    readonly Dictionary<MenuTexturePack.Entry, D3D11Renderer.Texture> _menuTextures = [];
+    MenuTexturePack.Entry? _replacement;
+    Vector4 _replacementSource;
     readonly D3D11Renderer _renderer;
     readonly D3D11Renderer.Texture _vram;
     readonly D3D11Renderer.Texture _textureVram;
@@ -325,6 +339,7 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
         if (Environment.GetEnvironmentVariable(
                 "RECOMPONE_D3D_COMPOSITOR_SELF_TEST") == "1")
             RunSelfTest();
+        _menuPack.Load();
         Console.WriteLine($"[Host] authored 2D compositor=D3D11 internal={Width}x{Height}");
     }
 
@@ -369,6 +384,8 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
         }, new PrimFlags());
         Span<ushort> result = stackalloc ushort[1];
         ReadVram(0, 0, 1, 1, result);
+        RunAtlasTileSelfTest();
+        RunMenuReplacementSelfTest();
         _renderer.Clear(_vram, new Color4(0, 0, 0, 0));
         _renderer.Clear(_textureVram, new Color4(0, 0, 0, 0));
         _batchX0 = VramShadow.Width;
@@ -381,6 +398,75 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
                 $"D3D11 authored compositor self-test failed: " +
                 $"expected=0x001F actual=0x{result[0]:X4}");
         Console.WriteLine("[Host] authored 2D compositor self-test=passed");
+    }
+
+    void RunAtlasTileSelfTest()
+    {
+        // GT2 menus assemble 16x8 sprites from nonadjacent 8-bit atlas tiles.
+        // Surround a red tile with opaque blue texels: filtering outside the
+        // sprite produces a visible blue grid, even with neutral modulation.
+        var atlas = new ushort[16 * 16];
+        Array.Fill(atlas, (ushort)0x0202);
+        for (int y = 4; y < 12; y++)
+        for (int x = 4; x < 12; x++) atlas[y * 16 + x] = 0x0101;
+        WriteVram(640, 0, 16, 16, atlas);
+        ushort[] palette = new ushort[256];
+        palette[1] = 0x001F;
+        palette[2] = 0x7C00;
+        WriteVram(0, 400, 256, 1, palette);
+        foreach (byte modulation in new byte[] { 128, 96 })
+        {
+            var flags = new PrimFlags { Textured = true, TPage = 0x008A, Clut = 400 << 6 };
+            for (int tile = 0; tile < 2; tile++)
+                DrawRect(new HleRect { X = tile * 16, Y = 32, W = 16, H = 8,
+                    U = 8, V = 4, R = modulation, G = modulation, B = modulation }, flags);
+            Flush();
+            var pixels = new byte[32 * Scale * 8 * Scale * 4];
+            _renderer.ReadbackRegion(_vram, 0, 32 * Scale, 32 * Scale, 8 * Scale, pixels);
+            byte expectedRed = Expand5(((248 * modulation) >> 7) >> 3);
+            for (int i = 0; i < pixels.Length; i += 4)
+                if (pixels[i] != expectedRed || pixels[i + 1] != 0 || pixels[i + 2] != 0)
+                    throw new InvalidOperationException(
+                        $"D3D11 atlas tile self-test failed: modulation={modulation} pixel={i / 4} " +
+                        $"expected={expectedRed},0,0 actual={pixels[i]},{pixels[i + 1]},{pixels[i + 2]}");
+        }
+        Console.WriteLine("[Host] authored 2D atlas tiles self-test=passed (neutral/faded; all subpixels)");
+    }
+
+    void RunMenuReplacementSelfTest()
+    {
+        ushort[] bitmap = Enumerable.Repeat((ushort)0x1111, 8 * 8).ToArray();
+        ushort[] palette = new ushort[16];
+        palette[1] = 0x001F;
+        byte[] replacement = new byte[128 * 32 * 4];
+        for (int i = 0; i < replacement.Length; i += 4) { replacement[i + 1] = 255; replacement[i + 3] = 255; }
+        _menuPack.AddForTest(new(MenuTexturePack.Hash(8, 8, bitmap),
+            MenuTexturePack.Hash(16, 1, palette), 0, 32, 8, 128, 32, replacement));
+        WriteVram(640, 0, 8, 8, bitmap);
+        WriteVram(0, 400, 16, 1, palette);
+        var flags = new PrimFlags { Textured = true, TPage = 10, Clut = 400 << 6 };
+        foreach (byte modulation in new byte[] { 128, 96 })
+        {
+            for (int tile = 0; tile < 2; tile++)
+                DrawRect(new HleRect { X = tile * 16, Y = 48, W = 16, H = 8,
+                    U = (short)(tile * 16), V = 0, R = modulation, G = modulation, B = modulation }, flags);
+            Flush();
+            byte[] pixels = new byte[128 * 32 * 4];
+            _renderer.ReadbackRegion(_vram, 0, 48 * Scale, 128, 32, pixels);
+            byte expected = Expand5(((248 * modulation) >> 7) >> 3);
+            for (int i = 0; i < pixels.Length; i += 4)
+                if (pixels[i] != 0 || pixels[i + 1] != expected || pixels[i + 2] != 0 || pixels[i + 3] != 0)
+                    throw new InvalidOperationException($"Menu replacement failed at pixel {i / 4}");
+        }
+        // An overlapping write must remove the replacement, even at the same address.
+        WriteVram(640, 0, 1, 1, new ushort[] { 0x2222 });
+        if (_menuPack.Resolve(10, 400 << 6, 0, 0, 16, 8).Entry != null)
+            throw new InvalidOperationException("Stale menu replacement survived overwrite");
+        SetReplacement(null, 0, 0);
+        _menuPack.Clear();
+        foreach (var texture in _menuTextures.Values) _renderer.DisposeTexture(texture);
+        _menuTextures.Clear();
+        Console.WriteLine("[Host] authored menu replacements self-test=passed (4x; adjacent tiles; fades; overwrite)");
     }
 
     public void SetDrawEnv(in HleDrawEnv environment) => _environment = environment;
@@ -561,8 +647,10 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
             : (uint)(vertex.R | vertex.G << 8 | vertex.B << 16 | 0xFF << 24);
         int texpage = flags.Textured ? flags.TPage & 0x1FF : 0x8000;
         if (dither) texpage |= 0x400;
-        if (ConfigManager.View.TextureSmoothing && flags.Textured &&
-            (!flags.RawTexture || !ui))
+        // Sprite neighbours in VRAM are unrelated atlas entries. Modulation
+        // (including neutral 128) does not make a UI tile safe to filter.
+        // Smooth the assembled presentation; retain texture filtering for 3D.
+        if (ConfigManager.View.TextureSmoothing && flags.Textured && !ui)
             texpage |= 0x800;
         return new Vertex
         {
@@ -581,6 +669,14 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
         bool coherentDepth = flags.Textured && a.HasGteZ && b.HasGteZ && c.HasGteZ &&
             MathF.Min(a.Z, MathF.Min(b.Z, c.Z)) > 0;
         bool perspective = ConfigManager.View.PerspectiveCorrectTextures && coherentDepth;
+        int minU = (int)MathF.Floor(MathF.Min(a.U, MathF.Min(b.U, c.U)));
+        int minV = (int)MathF.Floor(MathF.Min(a.V, MathF.Min(b.V, c.V)));
+        int maxU = (int)MathF.Ceiling(MathF.Max(a.U, MathF.Max(b.U, c.U)));
+        int maxV = (int)MathF.Ceiling(MathF.Max(a.V, MathF.Max(b.V, c.V)));
+        var resolved = _menuPack.Active && flags.Textured && !coherentDepth && _environment.TwMaskX == 0 && _environment.TwMaskY == 0
+            ? _menuPack.Resolve(flags.TPage, flags.Clut, minU, minV, Math.Max(1, maxU - minU), Math.Max(1, maxV - minV))
+            : default;
+        SetReplacement(resolved.Entry, resolved.U, resolved.V);
         Begin(flags, 3);
         _vertices[_vertexCount++] = MakeVertex(a, flags, dither, perspective);
         _vertices[_vertexCount++] = MakeVertex(b, flags, dither, perspective);
@@ -593,6 +689,10 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
 
     public void DrawRect(in HleRect rectangle, in PrimFlags flags)
     {
+        var resolved = _menuPack.Active && flags.Textured && _environment.TwMaskX == 0 && _environment.TwMaskY == 0
+            ? _menuPack.Resolve(flags.TPage, flags.Clut, rectangle.U, rectangle.V, rectangle.W, rectangle.H)
+            : default;
+        SetReplacement(resolved.Entry, resolved.U, resolved.V);
         Begin(flags, 6);
         var a = new HleVertex { X = rectangle.X, Y = rectangle.Y, R = rectangle.R, G = rectangle.G, B = rectangle.B, U = rectangle.U, V = rectangle.V };
         var b = a; b.X += rectangle.W; b.U += (short)rectangle.W;
@@ -610,6 +710,7 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
 
     public void DrawLine(in HleVertex a, in HleVertex b, in PrimFlags flags)
     {
+        SetReplacement(null, 0, 0);
         Begin(flags, 6);
         float x1 = a.X, y1 = a.Y, x2 = b.X, y2 = b.Y;
         float dx = x2 - x1, dy = y2 - y1;
@@ -629,6 +730,21 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
     {
         var vertex = source; vertex.X = x; vertex.Y = y;
         _vertices[_vertexCount++] = MakeVertex(vertex, flags, _environment.Dither, false);
+    }
+
+    void SetReplacement(MenuTexturePack.Entry? entry, int u, int v)
+    {
+        Vector4 source = entry == null ? default : new(u, v, entry.SourceWidth, entry.SourceHeight);
+        if (ReferenceEquals(entry, _replacement) && source == _replacementSource) return;
+        Flush();
+        _replacement = entry;
+        _replacementSource = source;
+        if (entry != null && !_menuTextures.ContainsKey(entry))
+        {
+            var texture = _renderer.CreateTexture(entry.Width, entry.Height);
+            _renderer.Upload(texture, entry.Width, entry.Height, entry.Pixels);
+            _menuTextures.Add(entry, texture);
+        }
     }
 
     public unsafe void Flush()
@@ -727,6 +843,7 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
             CheckMask = _checkMask,
             Scale = Scale,
             TextureSmoothing = ConfigManager.View.TextureSmoothing ? 1 : 0,
+            ReplacementSource = _replacementSource,
         };
         UploadConstants(context, in constants);
         long afterConstants = TracePerformance ? Stopwatch.GetTimestamp() : 0;
@@ -739,6 +856,7 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
         context.PSSetShader(_pixelShader);
         context.PSSetConstantBuffer(0, _constantBuffer);
         context.PSSetShaderResource(0, _textureVram.View);
+        context.PSSetShaderResource(2, _replacement == null ? null! : _menuTextures[_replacement].View);
         if (_checkMask != 0)
             context.PSSetShaderResource(1, _destinationSnapshot.View);
         context.Draw(_vertexCount, 0);
@@ -753,11 +871,13 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
         long afterDraw = TracePerformance ? Stopwatch.GetTimestamp() : 0;
         context.PSSetShaderResource(0, null!);
         context.PSSetShaderResource(1, null!);
+        context.PSSetShaderResource(2, null!);
         context.UnsetRenderTargets();
         int dirtyX0 = Math.Max(_batchX0, _clipX0);
         int dirtyY0 = Math.Max(_batchY0, _clipY0);
         int dirtyX1 = Math.Min(_batchX1, _clipX1);
         int dirtyY1 = Math.Min(_batchY1, _clipY1);
+        _menuPack.Invalidate(dirtyX0, dirtyY0, dirtyX1 - dirtyX0 + 1, dirtyY1 - dirtyY0 + 1);
         if (target != null)
         {
             target.Dirty = true;
@@ -870,6 +990,7 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
 
     void UploadSolid(int x, int y, int width, int height, ushort color15)
     {
+        _menuPack.Invalidate(x, y, width, height);
         int sw = Math.Max(0, width * Scale), sh = Math.Max(0, height * Scale);
         if (sw == 0 || sh == 0) return;
         int bytes = sw * sh * 4;
@@ -899,6 +1020,7 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
     public void WriteVram(int x, int y, int width, int height, ReadOnlySpan<ushort> pixels)
     {
         Flush();
+        _menuPack.Record(x, y, width, height, pixels);
         int sw = width * Scale, sh = height * Scale, bytes = sw * sh * 4;
         if (_upload.Length < bytes) _upload = new byte[bytes];
         for (int py = 0; py < height; py++)
@@ -925,6 +1047,7 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
     public void CopyVram(int sx, int sy, int dx, int dy, int width, int height)
     {
         Flush();
+        _menuPack.Invalidate(dx, dy, width, height);
         WritebackDirtyIntersecting(sx, sy, width, height);
         int sw = width * Scale, sh = height * Scale;
         _renderer.CopyRegion(_vram, _snapshot, sx * Scale, sy * Scale, 0, 0, sw, sh);
@@ -1050,6 +1173,7 @@ internal sealed class D3D11GpuBackend : IGpuBackend, IDisposable
         Ready = false;
         foreach (DisplayTarget? target in _displayTargets)
             if (target != null) _renderer.DisposeTexture(target.Texture);
+        foreach (var texture in _menuTextures.Values) _renderer.DisposeTexture(texture);
         _depthStencil?.Dispose();
         _dualSourceReverseSubtractBlend?.Dispose();
         _dualSourceAddBlend?.Dispose();

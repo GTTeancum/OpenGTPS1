@@ -2416,8 +2416,13 @@ public sealed partial class Gpu
         BinaryPrimitives.WriteUInt32LittleEndian(
             destination[12..],
             RawTrackResidentMeshHeaderSize);
-        ulong residentKey = RawTrackResidentKey(in key);
-        BinaryPrimitives.WriteUInt64LittleEndian(destination[16..], residentKey);
+        // The resident lookup key is finalized only after the complete
+        // immutable renderer definition has been serialized.  Address-only
+        // keys can alias after a GPU reset when GT2 repopulates the same RAM
+        // locations with a different course.  Keep the key field zero while
+        // hashing so old in-flight frames and a newly loaded definition can
+        // coexist in the native registry without rebinding one another.
+        destination.Slice(16, 8).Clear();
         BinaryPrimitives.WriteUInt32LittleEndian(
             destination[24..],
             key.VertexCount);
@@ -2634,6 +2639,8 @@ public sealed partial class Gpu
         if (offset != bytes.Length)
             throw new InvalidDataException(
                 "Resident raw-track definition size did not close exactly.");
+        ulong residentKey = RawTrackResidentContentKey(destination);
+        BinaryPrimitives.WriteUInt64LittleEndian(destination[16..], residentKey);
         return new RawTrackResidentMeshDefinition(
             residentKey,
             bytes,
@@ -2664,27 +2671,27 @@ public sealed partial class Gpu
         }
     }
 
-    static ulong RawTrackResidentKey(in RawTrackResidentMeshKey key)
+    static ulong RawTrackResidentContentKey(ReadOnlySpan<byte> definition)
     {
+        if (definition.Length < RawTrackResidentMeshHeaderSize)
+            throw new ArgumentException(
+                "Resident raw-track definition is truncated.",
+                nameof(definition));
+
         const ulong Offset = 14695981039346656037UL;
         const ulong Prime = 1099511628211UL;
         ulong hash = Offset;
-        static void Add(ref ulong value, uint item)
+        for (int index = 0; index < definition.Length; index++)
         {
-            for (int shift = 0; shift < 32; shift += 8)
-            {
-                value ^= (byte)(item >> shift);
-                value *= Prime;
-            }
+            // Bytes 16..23 store this very key.  Treat them as zero whether
+            // the caller supplies a pre-key or finalized definition so the
+            // content identity is idempotent and cannot depend on itself.
+            byte item = index is >= 16 and < 24
+                ? (byte)0
+                : definition[index];
+            hash ^= item;
+            hash *= Prime;
         }
-        Add(ref hash, key.ModelPointer);
-        Add(ref hash, key.MeshPointer);
-        Add(ref hash, key.VertexPointer);
-        Add(ref hash, key.VertexCount);
-        Add(ref hash, key.TextureTableBase);
-        Add(ref hash, checked((uint)key.IndexBits));
-        Add(ref hash, key.AuxiliaryFormat ? 1u : 0u);
-        Add(ref hash, checked((uint)key.ProjectionPath));
         return hash == 0 ? 1UL : hash;
     }
 
@@ -2862,6 +2869,7 @@ public sealed partial class Gpu
                 RawTexture = (command & 0x01) != 0,
                 Gouraud = false,
                 ResidentCourse = true,
+                TrackBillboard = true,
                 AuthoredTrackBillboardDepth =
                     RawTrackBillboardUsesAuthoredDepth(
                         billboardOt,

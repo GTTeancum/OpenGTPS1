@@ -2561,6 +2561,7 @@ public static class GT2Compat
         ushort commonShift = m.ReadU16(0x1F800098u);
         ushort normalizationAdjustment = m.ReadU16(0x1F80009Au);
         WorldCaptureContext.SetCurrentDepthScaleExponent(commonShift);
+        Runtime.Gpu?.CaptureVehicleShadowSource(modelPointer, m);
         int poll = Host.InputManager.CurrentPoll;
         if (poll != TraceDepthNormalizationPoll)
             return;
@@ -3154,6 +3155,11 @@ public static class GT2Compat
 
     public static void TraceTrackTransformSetup(IMemory m, uint model, uint camera)
     {
+        // This existing pre-transform hook also carries read-only source camera
+        // provenance. It does not change the guest matrix or geometry. The
+        // selected captured GTE transform validates it before serialization.
+        WorldCaptureContext.CapturePrimaryShadowCamera(m, model, camera);
+
 #if !OPENGT_RELEASE_PACKAGE
         int poll = Host.InputManager.CurrentPoll;
         if (!TraceTrackRendering || TraceTrackVisibilityStartPoll < 0 ||
@@ -3913,6 +3919,30 @@ public static class GT2Compat
         if (requested > 0)
             m.WriteU32(intervalCounterAddress, 0u);
         c.V0 = m.ReadU32(totalCounterAddress);
+    }
+
+    /// <summary>
+    /// Restore the authored solver step before rebuilding vehicles. The host
+    /// halves its deltas during integration; initializing the solver with the
+    /// previous race's one-field presentation step would halve them twice.
+    /// GT2's initialization routine treats both zero and two as 30 Hz.
+    /// </summary>
+    public static void PrepareTrue60HzRaceInitialization(
+        uint raceConfiguration, uint raceScheduler, IMemory m)
+    {
+        if (!True60HzEnabled)
+            return;
+        if (!IsGuestRam(raceConfiguration) || !IsGuestRam(raceScheduler))
+            throw new InvalidOperationException(
+                $"GT2 race initialization received invalid configuration 0x{raceConfiguration:X8}");
+        byte step = m.ReadU8(raceConfiguration + 0x8u);
+        if (step > 2)
+            throw new InvalidOperationException(
+                $"GT2 expected authored race time step 0, 1 or 2, found {step}");
+        m.WriteU8(raceConfiguration + 0x8u, 2);
+        // The initializer also derives its force multiplier from scheduler
+        // +0x18 before replacing that wait value for presentation below.
+        m.WriteU32(raceScheduler + 0x18u, 2);
     }
 
     /// <summary>

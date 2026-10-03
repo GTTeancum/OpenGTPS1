@@ -223,6 +223,11 @@ int main() {
     okay &= expect(header.input_poll == 1234, "input poll");
     okay &= expect(header.triangle_count == 1, "triangle count");
     std::array<opengt::render::WorldCaptureTriangle, 1> triangles{};
+    // Reused caller storage must not leak live-only resident provenance into a
+    // file capture, because v6 does not serialize these fields.
+    triangles[0].source_mesh_key = 0x1122334455667788ULL;
+    triangles[0].source_primitive_address = 0x80123456U;
+    triangles[0].resident_content_key = 0x99aabbccddeeff11ULL;
     std::vector<std::uint16_t> vram(1024U * 512U);
     okay &= expect(
         opengt::render::load_world_capture(
@@ -239,6 +244,11 @@ int main() {
             opengt::render::WorldCaptureReadResult::success,
         "load capture");
     const auto& vertex = triangles[0].vertices[0];
+    okay &= expect(
+        triangles[0].source_mesh_key == 0 &&
+        triangles[0].source_primitive_address == 0 &&
+        triangles[0].resident_content_key == 0,
+        "file capture cannot fabricate live-only resident primitive/content provenance");
     okay &= expect(triangles[0].object_id == 42, "stable object identity");
     okay &= expect(
         triangles[0].draw_offset_x == 3 &&

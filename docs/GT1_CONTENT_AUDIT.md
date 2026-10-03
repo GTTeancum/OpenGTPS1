@@ -323,8 +323,12 @@ this cross-stem alternate-body case.
 
 That representation is now implemented as one native four-palette body. GT2
 `tsplr` remains the sole visible, purchasable, upgradeable identity. Its
-converted day and night textures contain, in order, GT1 `tsplr` IDs 108 and
-113 followed by GT1 `t-plr` IDs 108 and 113. The two GT1 source packages have
+converted day and night textures contain, in order, white/green, white/blue,
+black/green and black/blue. The white paints retain IDs 108 and 113; the
+black paints use IDs 114 and 115 in the converted texture headers, all three
+localized carinfo databases, and the livery table. GT1's original black
+package reused IDs 108 and 113, which made native save/race color-ID lookup
+select a white palette. The two GT1 source packages have
 byte-identical indexed bitmaps, so their authored palette blocks can be
 combined without resampling or synthesizing pixels. The GT1 `tsplr` ID 108
 white/green presentation is visually identical to retail GT2 and replaces
@@ -336,8 +340,8 @@ upgrades, saves, and races never changes.
 The rebuilt native Arcade host completed the deterministic five-capture
 selector smoke: all four choices rendered distinctly, and a fifth Down input
 wrapped to white/green without an exception. The generated table retains four
-identity/disambiguation records for the repeated IDs, so palette-index lookup
-is exact while ambiguous ID-only lookup cannot select the wrong presentation.
+palette records, with unique saved IDs, so palette-index and color-ID lookup
+select the same presentation.
 The two patch layers regenerate byte-for-byte deterministically.
 
 A transient, non-shipping GT Mode used-car alias then exercised the same

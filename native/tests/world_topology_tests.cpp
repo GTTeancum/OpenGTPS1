@@ -172,6 +172,36 @@ bool background_midpoint_tests() {
     return okay;
 }
 
+
+bool near_plane_projection_tests() {
+    using namespace opengt::render;
+    bool okay=true;
+    for (float depth : {-500.0F, 0.0F, 8.0F, 16.0F}) {
+        WorldDrawList list{};list.display_width=320;list.display_height=240;
+        list.continuous_projection=true;list.materials.resize(1);
+        auto a=vertex(0,0,0,1),b=vertex(100,0,0,2),c=vertex(0,100,100,3),d=vertex(100,-100,100,4);
+        a.clip_w=b.clip_w=depth;a.clip_z=b.clip_z=16;
+        a.clip_x=-240;b.clip_x=240;a.clip_y=b.clip_y=100;
+        // These clamped authored SXY cannot reconstruct clip coordinates.
+        a.screen_x=-1024;b.screen_x=1023;a.screen_y=b.screen_y=1023;
+        c.clip_z=d.clip_z=16;
+        auto left=triangle(a,b,c,0x80001000,0);
+        auto right=triangle(b,a,d,0x80002000,1);
+        for(auto& v:right.vertices)v.model_x+=4096;
+        list.commands={left,right};list.track_commands=2;
+        const auto original=list.commands;
+        WorldTopologyStats stats{};
+        okay &= expect(apply_world_topology(&list,{true,true,true,true,true},&stats)==WorldTopologyResult::success,"near-plane topology call succeeds");
+        okay &= expect(stats.eligible_track_commands==0&&stats.skipped_unprojectable_commands==2,"near/camera-crossing primitives are not eligible for projected repair");
+        okay &= expect(list.commands.size()==2,"near-plane primitives are retained, not removed");
+        for(unsigned i=0;i<2;i++)for(unsigned j=0;j<3;j++){
+            auto& v=list.commands[i].vertices[j];auto& old=original[i].vertices[j];
+            okay &= expect(v.clip_x==old.clip_x&&v.clip_y==old.clip_y&&v.clip_z==old.clip_z&&v.clip_w==old.clip_w,"near-plane homogeneous geometry is unchanged");
+        }
+    }
+    return okay;
+}
+
 } // namespace
 
 int main() {
@@ -963,8 +993,9 @@ int main() {
         resident_lod_inside_stats.resident_lod_edge_groups == 0,
         "leave the authored 4:3 resident image unchanged");
 
+    okay &= near_plane_projection_tests();
     if (!okay)
         return 1;
-    std::puts("world topology tests passed");
+    std::puts("world topology tests passed (including homogeneous near-plane preservation)");
     return 0;
 }

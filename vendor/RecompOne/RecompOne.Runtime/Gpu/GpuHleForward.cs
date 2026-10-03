@@ -1036,14 +1036,12 @@ public sealed partial class Gpu
 
     void HleFill(int x, int y, int w, int h, ushort color)
     {
-        _liveWorldRenderer.InvalidateTextureUploads(x, y, w, h);
         MirrorFill(x, y, w, h, color);
         GpuHle.Backend!.FillRect(x, y, w, h, color);
     }
 
     void HleCopy(int sx, int sy, int dx, int dy, int w, int h)
     {
-        _liveWorldRenderer.InvalidateTextureUploads(dx, dy, w, h);
         MirrorCopy(sx, sy, dx, dy, w, h);
         GpuHle.Backend!.CopyVram(sx, sy, dx, dy, w, h);
     }
@@ -1105,7 +1103,9 @@ public sealed partial class Gpu
 
     void HleLoadBegin()
     {
-        _hleLoadActive = HleOn;
+        // Completed original uploads identify materials even with the Linux CPU
+        // screen compositor. This is source-upload tracking, not VRAM matching.
+        _hleLoadActive = HleOn || LiveWorldRenderer.Requested;
         if (!_hleLoadActive) return;
         int n = _loadW * _loadH;
         if (_hleLoad.Length < n) _hleLoad = new ushort[n];
@@ -1121,25 +1121,33 @@ public sealed partial class Gpu
     {
         if (!_hleLoadActive) return;
         int count = _loadW * _loadH;
-        _mirroredUploadWords += count;
-        for (int index = 0; index < count; ++index)
+        if (HleOn)
         {
-            int x = (_loadX + index % _loadW) &
-                (VramWidth - 1);
-            int y = (_loadY + index / _loadW) &
-                (VramHeight - 1);
-            ushort previous = Shadow[x, y];
-            if (_checkMask && (previous & 0x8000) != 0)
-                continue;
-            Shadow[x, y] = _hleLoad[index];
+            _mirroredUploadWords += count;
+            for (int index = 0; index < count; ++index)
+            {
+                int x = (_loadX + index % _loadW) &
+                    (VramWidth - 1);
+                int y = (_loadY + index / _loadW) &
+                    (VramHeight - 1);
+                ushort previous = Shadow[x, y];
+                if (_checkMask && (previous & 0x8000) != 0)
+                    continue;
+                Shadow[x, y] = _hleLoad[index];
+            }
+            GpuHle.Backend!.WriteVram(_loadX, _loadY, _loadW, _loadH, _hleLoad.AsSpan(0, _loadW * _loadH));
         }
-        GpuHle.Backend!.WriteVram(_loadX, _loadY, _loadW, _loadH, _hleLoad.AsSpan(0, _loadW * _loadH));
-        _liveWorldRenderer.RecordTextureUpload(
-            _loadX,
-            _loadY,
-            _loadW,
-            _loadH,
-            _hleLoad.AsSpan(0, count));
+        // Mask-dependent uploads are not a clean identity for the original TIM.
+        // BeginImageLoad already invalidated any overwritten registry entries.
+        if (!_checkMask && !_setMask)
+        {
+            _liveWorldRenderer.RecordTextureUpload(
+                _loadX,
+                _loadY,
+                _loadW,
+                _loadH,
+                _hleLoad.AsSpan(0, count));
+        }
         _hleLoadActive = false;
     }
 }

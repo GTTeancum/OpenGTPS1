@@ -64,6 +64,11 @@ internal sealed class D3D11Renderer : IDisposable
         {
             return Source.Sample(SourceSampler, input.uv);
         }
+        float4 PSDisplay(VsOut input) : SV_Target
+        {
+            // Authored VRAM alpha is a PS1 mask/STP bit, not display opacity.
+            return float4(Source.Sample(SourceSampler, input.uv).rgb, 1.0);
+        }
         float Luma(float3 color)
         {
             return dot(color, float3(0.299, 0.587, 0.114));
@@ -101,6 +106,7 @@ internal sealed class D3D11Renderer : IDisposable
     ID3D11RenderTargetView? _backBufferView;
     ID3D11VertexShader? _fullscreenVertexShader;
     ID3D11PixelShader? _copyPixelShader;
+    ID3D11PixelShader? _displayPixelShader;
     ID3D11PixelShader? _fxaaPixelShader;
     ID3D11SamplerState? _linearSampler;
     ID3D11SamplerState? _pointSampler;
@@ -181,6 +187,10 @@ internal sealed class D3D11Renderer : IDisposable
             ShaderFlags.EnableStrictness | ShaderFlags.OptimizationLevel3);
         _fullscreenVertexShader = Device.CreateVertexShader(vs.Span);
         _copyPixelShader = Device.CreatePixelShader(ps.Span);
+        ReadOnlyMemory<byte> display = Compiler.Compile(
+            FullscreenShader, "PSDisplay", "fullscreen.hlsl", "ps_5_0",
+            ShaderFlags.EnableStrictness | ShaderFlags.OptimizationLevel3);
+        _displayPixelShader = Device.CreatePixelShader(display.Span);
         ReadOnlyMemory<byte> fxaa = Compiler.Compile(
             FullscreenShader, "PSFxaa", "fullscreen.hlsl", "ps_5_0",
             ShaderFlags.EnableStrictness | ShaderFlags.OptimizationLevel3);
@@ -370,7 +380,8 @@ internal sealed class D3D11Renderer : IDisposable
     public void DrawFullscreen(Texture source,
         ID3D11RenderTargetView target, int width, int height,
         bool linear, bool fxaa = false,
-        int x = 0, int y = 0, int? drawWidth = null, int? drawHeight = null)
+        int x = 0, int y = 0, int? drawWidth = null, int? drawHeight = null,
+        bool displayOpaque = false)
     {
         Context.OMSetRenderTargets(target);
         Context.OMSetBlendState(_opaqueBlend);
@@ -380,7 +391,8 @@ internal sealed class D3D11Renderer : IDisposable
         Context.IASetInputLayout(null);
         Context.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
         Context.VSSetShader(_fullscreenVertexShader);
-        Context.PSSetShader(fxaa ? _fxaaPixelShader : _copyPixelShader);
+        Context.PSSetShader(fxaa ? _fxaaPixelShader :
+            displayOpaque ? _displayPixelShader : _copyPixelShader);
         Context.PSSetSampler(0, linear ? _linearSampler : _pointSampler);
         Context.PSSetShaderResource(0, source.View);
         Context.Draw(4, 0);
@@ -501,6 +513,7 @@ internal sealed class D3D11Renderer : IDisposable
         _pointSampler?.Dispose();
         _linearSampler?.Dispose();
         _copyPixelShader?.Dispose();
+        _displayPixelShader?.Dispose();
         _fxaaPixelShader?.Dispose();
         _fullscreenVertexShader?.Dispose();
         _backBufferView?.Dispose();

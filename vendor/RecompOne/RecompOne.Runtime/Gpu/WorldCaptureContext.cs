@@ -29,7 +29,8 @@ public readonly record struct WorldObjectContext(
     int DepthScaleExponent = 0,
     bool DepthScaleValid = false,
     WorldScenePass ScenePass = WorldScenePass.Main,
-    uint SceneGeneration = 0);
+    uint SceneGeneration = 0,
+    PrimaryCameraAnchor ShadowCamera = default);
 
 /// <summary>
 /// GT2-specific generated-code hooks identify the object whose model is about
@@ -356,6 +357,35 @@ public static class WorldCaptureContext
     {
         if (_trackFaceDecisionConsumer == consumer)
             _trackFaceDecisionConsumer = null;
+    }
+
+    /// <summary>
+    /// Source for func_80026BB4 (Simulation) / the matching Arcade primary
+    /// sector transform. Retain its exact world offset before normalization.
+    /// Do not derive a camera position from a selected sector's GTE translation.
+    /// </summary>
+    internal static void CapturePrimaryShadowCamera(
+        IMemory memory, uint model, uint camera)
+    {
+        if (!CaptureEnabled || _current.Kind != WorldObjectKind.Track ||
+            _current.ScenePass != WorldScenePass.Main ||
+            _current.ModelPointer != model || _currentAuxiliaryTrack)
+            return;
+        // Clear first: invalid input cannot preserve a previous sector/frame.
+        _current = _current with { ShadowCamera = default };
+        static bool Ram(uint p, uint bytes) =>
+            (ulong)(p & 0x1FFFFFFFu) + bytes <= 0x200000UL;
+        bool cameraRange = Ram(camera, 0x2Cu) ||
+            (camera >= 0x1F800000u && (ulong)camera + 0x2Cu <= 0x1F800400UL);
+        if (model == 0 || camera == 0 || !Ram(model, 0x3Cu) || !cameraRange) return;
+        // Primary vertices and MVMVA use (source X, source Z, source Y).
+        _current = _current with { ShadowCamera = new PrimaryCameraAnchor(
+            unchecked((int)memory.ReadU32(camera + 0x20u)),
+            unchecked((int)memory.ReadU32(camera + 0x28u)),
+            unchecked((int)memory.ReadU32(camera + 0x24u)),
+            unchecked((int)(memory.ReadU32(model + 0x30u) & 0xFFC00000u)),
+            unchecked((int)(memory.ReadU32(model + 0x38u) & 0xFFC00000u)),
+            unchecked((int)(memory.ReadU32(model + 0x34u) & 0xFFC00000u)), true) };
     }
 
     public static void RegisterTrackObject(

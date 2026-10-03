@@ -2,7 +2,7 @@
 #include "opengt/projected_reference_renderer.hpp"
 #include "opengt/world_capture.hpp"
 #include "opengt/world_draw_list.hpp"
-#include "opengt/world_gpu_renderer.hpp"
+#include "opengt/world_gpu_renderer_native.hpp"
 #include "opengt/world_topology.hpp"
 
 #include <algorithm>
@@ -380,7 +380,8 @@ int main(int argc, char** argv) {
             if (triangle.object_kind != 1U)
                 continue;
             const bool billboard =
-                (triangle.primitive_flags & world_primitive_track_billboard_depth_flag) != 0 ||
+                (triangle.primitive_flags & (world_primitive_track_billboard_depth_flag |
+                    world_primitive_track_billboard_flag)) != 0 ||
                 std::all_of(std::begin(triangle.vertices), std::end(triangle.vertices),
                     [](const auto& vertex) { return vertex.screen_offset_anchor; });
             if (billboard && triangle.ordering_table_index > 0) {
@@ -833,7 +834,7 @@ int main(int argc, char** argv) {
         output_height * 4;
     std::vector<std::uint8_t> gpu(output_size);
     WorldGpuRenderStats gpu_stats{};
-    const auto gpu_result = render_world_d3d11(
+    const auto gpu_result = render_world_native(
         draw_list,
         vram.data(),
         vram.size(),
@@ -908,7 +909,7 @@ int main(int argc, char** argv) {
 
     std::vector<std::uint8_t> comparison_gpu(reference_size);
     WorldGpuRenderStats comparison_stats{};
-    const auto comparison_result = render_world_d3d11(
+    const auto comparison_result = render_world_native(
         compatibility_draw_list,
         vram.data(),
         vram.size(),

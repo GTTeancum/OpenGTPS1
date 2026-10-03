@@ -62,30 +62,173 @@ int main() {
     write(24, mesh.vertices.size(), 4);
     write(28, mesh.primitives.size(), 4);
     std::size_t cursor = resident_mesh_header_size;
-    for (const auto& vertex : mesh.vertices) {
+    const std::uint32_t source_vertex_base = 0x80001000U;
+    for (std::size_t index = 0; index < mesh.vertices.size(); ++index) {
+        const auto& vertex = mesh.vertices[index];
         write(cursor, static_cast<std::uint16_t>(vertex.x), 2);
         write(cursor + 2, static_cast<std::uint16_t>(vertex.y), 2);
         write(cursor + 4, static_cast<std::uint16_t>(vertex.z), 2);
-        write(cursor + 8, vertex.source_identity, 4);
+        write(cursor + 8, source_vertex_base + static_cast<std::uint32_t>(index * 8), 4);
         cursor += resident_vertex_stride;
     }
+    std::uint32_t source_primitive = 0x80002000U;
     for (const auto& primitive : mesh.primitives) {
-        write(cursor, 1, 4);
+        write(cursor, source_primitive, 4);
+        source_primitive += 0x20U;
         write(cursor + 4, primitive.flags, 4);
         for (int corner = 0; corner < 4; ++corner)
             write(cursor + 12 + corner * 2, primitive.indices[corner], 2);
         cursor += resident_primitive_stride;
     }
     ResidentMesh parsed{};
+    const std::uint64_t expected_source_key =
+        (static_cast<std::uint64_t>(source_vertex_base) << 32) |
+        static_cast<std::uint64_t>(mesh.vertices.size());
     if (!parse_resident_mesh(wire.data(), wire.size(), &parsed) ||
         parsed.overlay_pairs != 0 ||
+        parsed.source_key != expected_source_key ||
         (parsed.primitives[0].flags & resident_primitive_local_coordinates) == 0) {
-        std::fprintf(stderr, "v2 coordinate-space flag failed to round-trip\n");
+        std::fprintf(stderr, "v2 coordinate-space/source identity failed to round-trip\n");
+        return 1;
+    }
+    // Primary and alternate definitions intentionally have different lookup
+    // keys, but destructive lighting must bind the physical source table.
+    auto alternate_wire = wire;
+    for (int byte = 0; byte < 8; ++byte)
+        alternate_wire[16 + byte] = static_cast<std::uint8_t>(0x88U + byte);
+    ResidentMesh alternate{};
+    if (!parse_resident_mesh(alternate_wire.data(), alternate_wire.size(), &alternate) ||
+        alternate.key == parsed.key || alternate.source_key != parsed.source_key ||
+        alternate.content_key != parsed.content_key) {
+        std::fprintf(stderr, "projection-path definition key leaked into source identity\n");
+        return 1;
+    }
+    // A GPU reset can repopulate the same source RAM addresses while an old
+    // authored frame is still queued.  Managed L13 assigns a content-bound
+    // resident lookup key, so both immutable definitions must be able to live
+    // in the native registry at once even though their destructive-lighting
+    // source identity (address + count) is intentionally the same.
+    auto generation_a_wire = wire;
+    auto generation_b_wire = wire;
+    const auto write_buffer = [](
+        std::vector<std::uint8_t>* target,
+        std::size_t offset,
+        std::uint64_t value,
+        int size) {
+        for (int byte = 0; byte < size; ++byte)
+            (*target)[offset + byte] = static_cast<std::uint8_t>(
+                value >> (byte * 8));
+    };
+    constexpr std::uint64_t generation_a_key = 0x1111222233334444ULL;
+    constexpr std::uint64_t generation_b_key = 0x5555666677778888ULL;
+    write_buffer(&generation_a_wire, 16, generation_a_key, 8);
+    write_buffer(&generation_b_wire, 16, generation_b_key, 8);
+    const std::int16_t generation_b_x = static_cast<std::int16_t>(
+        mesh.vertices[0].x + 123);
+    write_buffer(
+        &generation_b_wire,
+        resident_mesh_header_size,
+        static_cast<std::uint16_t>(generation_b_x),
+        2);
+    LiveContext lifecycle_context{};
+    if (opengt_live_register_resident_mesh(
+            &lifecycle_context,
+            generation_a_wire.data(),
+            generation_a_wire.size()) != 0 ||
+        opengt_live_register_resident_mesh(
+            &lifecycle_context,
+            generation_b_wire.data(),
+            generation_b_wire.size()) != 0 ||
+        lifecycle_context.resident_meshes.size() != 2) {
+        std::fprintf(stderr,
+            "reset-separated resident definitions did not coexist\n");
+        return 1;
+    }
+    const auto& generation_a = lifecycle_context.resident_meshes.at(
+        generation_a_key);
+    const auto& generation_b = lifecycle_context.resident_meshes.at(
+        generation_b_key);
+    if (generation_a.source_key != generation_b.source_key ||
+        generation_a.content_key == generation_b.content_key ||
+        generation_a.vertices[0].x == generation_b.vertices[0].x ||
+        generation_b.vertices[0].x != generation_b_x) {
+        std::fprintf(stderr,
+            "resident generation key failed to isolate changed immutable bytes\n");
+        return 1;
+    }
+    if (opengt_live_register_resident_mesh(
+            &lifecycle_context,
+            generation_a_wire.data(),
+            generation_a_wire.size()) != 0 ||
+        lifecycle_context.resident_meshes.size() != 2 ||
+        lifecycle_context.resident_meshes.at(
+            generation_b_key).vertices[0].x != generation_b_x) {
+        std::fprintf(stderr,
+            "resident re-registration disturbed another generation\n");
+        return 1;
+    }
+
+    // The exact packed identity requires one contiguous eight-byte authored
+    // vertex table. A malformed/non-source definition cannot fabricate it.
+    auto malformed_wire = wire;
+    const std::size_t second_identity = resident_mesh_header_size + resident_vertex_stride + 8;
+    malformed_wire[second_identity] ^= 1U;
+    ResidentMesh malformed{};
+    if (parse_resident_mesh(malformed_wire.data(), malformed_wire.size(), &malformed)) {
+        std::fprintf(stderr, "non-contiguous source vertex table was accepted\n");
         return 1;
     }
     write(8, 1, 4);
     if (parse_resident_mesh(wire.data(), wire.size(), &parsed)) {
         std::fprintf(stderr, "obsolete resident mesh format was accepted\n");
+        return 1;
+    }
+
+
+    // The live resident path must carry exact mesh/primitive provenance into
+    // the in-memory capture triangle. It is deliberately not part of the v6
+    // file stride; historical captures decode these fields as zero.
+    ResidentPrimitive provenance_primitive{};
+    provenance_primitive.source_address = 0x80123456U;
+    ResidentInstance provenance_instance{};
+    provenance_instance.mesh_key = 0x1122334455667788ULL;
+    const std::uint64_t provenance_source_key = 0x8000100000000008ULL;
+    opengt::render::WorldCaptureVertex provenance_vertices[3]{};
+    std::vector<opengt::render::WorldCaptureTriangle> provenance_triangles;
+    resident_emit_capture_triangle(
+        provenance_primitive,
+        provenance_primitive.near_material,
+        provenance_instance,
+        provenance_source_key,
+        0x123456789abcdef0ULL,
+        provenance_vertices[0], provenance_vertices[1], provenance_vertices[2],
+        &provenance_triangles);
+    if (provenance_triangles.size() != 1 ||
+        provenance_triangles[0].source_mesh_key != provenance_source_key ||
+        provenance_triangles[0].source_mesh_key == provenance_instance.mesh_key ||
+        provenance_triangles[0].source_primitive_address != provenance_primitive.source_address ||
+        provenance_triangles[0].resident_content_key != 0x123456789abcdef0ULL) {
+        std::fprintf(stderr, "resident source primitive provenance was lost\n");
+        return 1;
+    }
+    // Simulate the same physical course primitive moving to GT2's companion
+    // projection-path definition. The lookup key changes, but the destructive
+    // lighting identity must not.
+    ResidentInstance alternate_instance = provenance_instance;
+    alternate_instance.mesh_key ^= 0x00FF00FF00FF00FFULL;
+    resident_emit_capture_triangle(
+        provenance_primitive,
+        provenance_primitive.near_material,
+        alternate_instance,
+        provenance_source_key,
+        0x123456789abcdef0ULL,
+        provenance_vertices[0], provenance_vertices[1], provenance_vertices[2],
+        &provenance_triangles);
+    if (provenance_triangles.size() != 2 ||
+        provenance_triangles[1].source_mesh_key != provenance_triangles[0].source_mesh_key ||
+        provenance_triangles[1].source_primitive_address != provenance_triangles[0].source_primitive_address ||
+        provenance_triangles[1].resident_content_key != provenance_triangles[0].resident_content_key) {
+        std::fprintf(stderr, "projection-path switch changed destructive source identity\n");
         return 1;
     }
 

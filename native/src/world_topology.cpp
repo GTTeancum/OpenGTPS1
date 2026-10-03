@@ -494,6 +494,22 @@ bool identical_material(
         left.environment_flags == right.environment_flags;
 }
 
+// Projected seam repair is undefined at/behind the homogeneous near plane.
+// There, captured screen coordinates are the clamped PS1 oracle, not a
+// reversible projection. Rebuilding clip XY from them changes the geometry
+// and lets camera-crossing road triangles cover the entire view. Leave those
+// commands to the GPU's original homogeneous clipping instead.
+bool stable_projection(const WorldDrawVertex& vertex) noexcept {
+    return std::isfinite(vertex.clip_w) && std::isfinite(vertex.clip_z) &&
+        vertex.clip_w > (std::max)(0.0F, vertex.clip_z) &&
+        std::isfinite(vertex.screen_x) && std::isfinite(vertex.screen_y);
+}
+bool stable_projection(const WorldDrawCommand& command) noexcept {
+    for (const auto& vertex : command.vertices)
+        if (!stable_projection(vertex)) return false;
+    return true;
+}
+
 bool eligible(
     const WorldDrawList& list,
     const WorldDrawCommand& command
@@ -502,7 +518,8 @@ bool eligible(
         command.object_kind != 1 ||
         command.channel != WorldViewChannel::main_view ||
         screen_space_command(list, command) ||
-        resident_course_command(list, command)
+        resident_course_command(list, command) ||
+        !stable_projection(command)
     )
         return false;
     for (const auto& vertex : command.vertices) {
@@ -591,6 +608,7 @@ void copy_projected_position(
     const WorldDrawVertex& source,
     const WorldDrawList& list
 ) {
+    if (!stable_projection(*destination) || !stable_projection(source)) return;
     destination->screen_x = source.screen_x;
     destination->screen_y = source.screen_y;
     const float ndc_x =
@@ -612,6 +630,7 @@ void set_projected_position(
     float screen_y,
     const WorldDrawList& list
 ) {
+    if (!stable_projection(*destination) || !std::isfinite(screen_x) || !std::isfinite(screen_y)) return;
     destination->screen_x = screen_x;
     destination->screen_y = screen_y;
     const float ndc_x =
@@ -1196,7 +1215,8 @@ WorldTopologyResult apply_world_topology(
                 command.channel == WorldViewChannel::main_view &&
                 !resident_course_command(*draw_list, command)
             ) {
-                ++stats.skipped_without_provenance;
+                if (!stable_projection(command)) ++stats.skipped_unprojectable_commands;
+                else ++stats.skipped_without_provenance;
             }
         }
         const std::size_t eligible_vertex_capacity =
