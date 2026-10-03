@@ -34,6 +34,9 @@ jobs:
           SRC=$(find /tmp/opengt-l18 -type d -path '*/recovery/source' | head -1)
           test -n "$SRC"
           rsync -a "$SRC"/ ./
+          rm -rf recovery/archive
+          mkdir -p recovery/archive
+          rsync -a /tmp/opengt-recovery/bundle/ recovery/archive/
 
       - name: Commit recovered exact L18 source
         shell: bash
