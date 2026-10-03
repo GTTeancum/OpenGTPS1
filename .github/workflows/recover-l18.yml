@@ -1,0 +1,50 @@
+name: Recover exact L18 source
+
+on:
+  push:
+    branches:
+      - recovery/l18-chatgpt-2026-10-03
+    paths:
+      - 'recovery/bundle.parts/**'
+      - '.github/workflows/recover-l18.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  recover:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: recovery/l18-chatgpt-2026-10-03
+
+      - name: Reassemble and verify recovery bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat recovery/bundle.parts/part-*.bin > /tmp/opengt-recovery.zip
+          echo '70f4bb6a8ccf2b032aa19815b0d069ed732e8c38bea04cb5de66bab79aa8f121  /tmp/opengt-recovery.zip' | sha256sum -c -
+          rm -rf /tmp/opengt-recovery /tmp/opengt-l18
+          mkdir -p /tmp/opengt-recovery /tmp/opengt-l18
+          unzip -q /tmp/opengt-recovery.zip -d /tmp/opengt-recovery
+          unzip -q /tmp/opengt-recovery/bundle/L18-source/OpenGT_Lighting_L18_World_Geometry_Unbake_Audit_Candidate.zip -d /tmp/opengt-l18
+          SRC=$(find /tmp/opengt-l18 -type d -path '*/recovery/source' | head -1)
+          test -n "$SRC"
+          rsync -a "$SRC"/ ./
+
+      - name: Commit recovered exact L18 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'No source changes to commit.'
+            exit 0
+          fi
+          git commit -m 'Recover exact L18 source checkpoint [skip ci]'
+          git push origin HEAD:recovery/l18-chatgpt-2026-10-03
