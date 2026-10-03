@@ -1,0 +1,56 @@
+--- /mnt/data/MemoryCard.cs.orig	2026-09-24 16:14:18.655184227 +0000
++++ /mnt/data/l18_exact/OpenGT_Lighting_L18_World_Geometry_Unbake_Audit_Candidate/recovery/source/vendor/RecompOne/RecompOne.Runtime/Hardware/MemoryCard.cs	2026-09-24 16:14:37.247704689 +0000
+@@ -9,6 +9,8 @@
+ 
+     readonly byte[] _d = new byte[CardSize];
+     readonly string _path;
++    static readonly bool TraceWrites =
++        Environment.GetEnvironmentVariable("RECOMPONE_TRACE_CARD_WRITES") == "1";
+     public bool Enabled = true;
+     public string Path => _path;
+ 
+@@ -69,6 +71,9 @@
+ 
+     public int Create(string name, int blocks)
+     {
++        if (TraceWrites)
++            Console.Error.WriteLine(
++                $"[MemoryCard] create-request path={_path} name={name} blocks={blocks}");
+         if (blocks < 1) blocks = 1;
+         if (Find(name) != 0) return 0;
+         var free = new List<int>();
+@@ -92,6 +97,9 @@
+             Array.Clear(_d, b * Blk, Blk);
+         }
+         Flush();
++        if (TraceWrites)
++            Console.Error.WriteLine(
++                $"[MemoryCard] create-complete path={_path} name={name} firstBlock={free[0]} blocks={blocks}");
+         return free[0];
+     }
+ 
+@@ -105,6 +113,9 @@
+         if ((uint)frame >= CardSize / Fr) return;
+         src.CopyTo(_d.AsSpan(frame * Fr, Fr));
+         Flush();
++        if (TraceWrites)
++            Console.Error.WriteLine(
++                $"[MemoryCard] frame-write path={_path} frame={frame} bytes={src.Length}");
+     }
+ 
+     public byte ReadByte(int[] chain, int pos)
+--- /mnt/data/BiosA.cs.orig	2026-09-24 16:14:18.659174371 +0000
++++ /mnt/data/l18_exact/OpenGT_Lighting_L18_World_Geometry_Unbake_Audit_Candidate/recovery/source/vendor/RecompOne/RecompOne.Runtime/Bios/BiosA.cs	2026-09-24 16:14:37.248127401 +0000
+@@ -207,6 +207,12 @@
+                 if (_cardFiles.TryGetValue(fd, out var cwe))
+                 {
+                     int n = (int)Math.Min(c.A2, (uint)(cwe.size - cwe.pos));
++                    if (Environment.GetEnvironmentVariable(
++                            "RECOMPONE_TRACE_CARD_WRITES") == "1")
++                    {
++                        Console.Error.WriteLine(
++                            $"[MemoryCard] file-write path={cwe.card.Path} fd={fd} pos={cwe.pos} bytes={n}");
++                    }
+                     for (int i = 0; i < n; i++) cwe.card.WriteByte(cwe.chain, cwe.pos + i, m.ReadU8(c.A1 + (uint)i));
+                     cwe.card.Flush();
+                     _cardFiles[fd] = (cwe.card, cwe.chain, cwe.size, cwe.pos + n);

@@ -1,0 +1,128 @@
+{
+  "source_parts": [
+    {
+      "name": "OpenGTPS1.7z.001",
+      "bytes": 94371840,
+      "sha256": "b81c9f643bd6a57019a3ea563f3378ecf20137f9fdf03a000b5c210967f96874"
+    },
+    {
+      "name": "OpenGTPS1.7z.002",
+      "bytes": 94371840,
+      "sha256": "f249e74ef4d6eb1d7aec439f78b2c3a70f4ebf466f913b784767016110c4bcdb"
+    },
+    {
+      "name": "OpenGTPS1.7z.003",
+      "bytes": 94371840,
+      "sha256": "4e044952ff16d2fd34575d61f8bf5ad8c14ea0ed7f677ad018dbb243f36e483c"
+    },
+    {
+      "name": "OpenGTPS1.7z.004",
+      "bytes": 94371840,
+      "sha256": "e19234929b9cd65a0e5f69c380e0a32badab6e8f350def0e9c11630c8889418c"
+    },
+    {
+      "name": "OpenGTPS1.7z.005",
+      "bytes": 94371840,
+      "sha256": "7a1efdd65a22fa363f04a832c41a2e06b53ce73b4ac6c9b97692db622f80d5a9"
+    },
+    {
+      "name": "OpenGTPS1.7z.006",
+      "bytes": 94371840,
+      "sha256": "dfd2e7ea8ebd97cfbd57266df42de9da9773d9b932503b767f477ae5f610d96e"
+    },
+    {
+      "name": "OpenGTPS1.7z.007",
+      "bytes": 94371840,
+      "sha256": "a084f5d6ef407f9c8bd28f648e2746937fe62a526384169bfe42bbe385443d82"
+    },
+    {
+      "name": "OpenGTPS1.7z.008",
+      "bytes": 94371840,
+      "sha256": "02fed612bae963f775617177580b4d5f82090371a6b34d7a50add7ce49085beb"
+    },
+    {
+      "name": "OpenGTPS1.7z.009",
+      "bytes": 94371840,
+      "sha256": "e7be3b6df5c45d14502587a8220df109d7d5d16d1bbdb950d8d521292abe86d1"
+    },
+    {
+      "name": "OpenGTPS1.7z.010",
+      "bytes": 94371840,
+      "sha256": "1f329b2ec06da0bc62b9f55229a25b1e40a825e11a014273ed43bbc1414e4b75"
+    },
+    {
+      "name": "OpenGTPS1.7z.011",
+      "bytes": 94371840,
+      "sha256": "29c1bb24845ad04e9745b2eeac2f94e5459c4b10e8276231b7aa1a25c6c19223"
+    },
+    {
+      "name": "OpenGTPS1.7z.012",
+      "bytes": 94371840,
+      "sha256": "b97e7906ff264568f1cb170a2c3f34d3a5aa9287d63d77f81db62c74144f4dce"
+    },
+    {
+      "name": "OpenGTPS1.7z.013",
+      "bytes": 75750793,
+      "sha256": "52704ce684dc44aec2f4c91407f3a8c6b94829fbc94fcf50a77bfda1d9acc792"
+    }
+  ],
+  "files": [
+    {
+      "path": "Gran Turismo 2 [Simulation Disc] [U] [SCUS-94488].ccd",
+      "bytes": 788,
+      "sha256": "2f8693ce4f731d4e72cce607ef0a8305e14264048ecfb2d2f4c1046d810894ac"
+    },
+    {
+      "path": "Gran Turismo 2 [Simulation Disc] [U] [SCUS-94488].cue",
+      "bytes": 112,
+      "sha256": "b22cfee7ef177930c42cd1da0df7a9eb3057edb4f6c22c3f9fbee92a4ac0df90"
+    },
+    {
+      "path": "Gran Turismo 2 [Simulation Disc] [U] [SCUS-94488].img",
+      "bytes": 691850208,
+      "sha256": "d0ab6e70539601057590a36299543c0adad219254d712f7d4273219094ed5031"
+    },
+    {
+      "path": "Gran Turismo 2 [Simulation Disc] [U] [SCUS-94488].sub",
+      "bytes": 28238784,
+      "sha256": "d4ffc37bf13897fed52c03385b139735bb253a97dd8ccf755c4dd8d1f5d4347b"
+    },
+    {
+      "path": "Gran Turismo [U] [SCUS-94194].ccd",
+      "bytes": 789,
+      "sha256": "39994467f7e3442f456fda51541f2e6199395011cc917ef9ff5133a1149b389f"
+    },
+    {
+      "path": "Gran Turismo [U] [SCUS-94194].img",
+      "bytes": 693668304,
+      "sha256": "765a748c4f2975a063a47ba9e42708a4882954d765f9e352c5af3c0950eaefb6"
+    },
+    {
+      "path": "Gran Turismo [U] [SCUS-94194].sub",
+      "bytes": 28312992,
+      "sha256": "a089893e7ab2ab56209cddc88e4fe8efad0cc80e60eebeaf5c7269889b68d719"
+    },
+    {
+      "path": "SCUS_944.55.ccd",
+      "bytes": 772,
+      "sha256": "48b95a9d432216ccada43fd2df298e3c916081c857bd1cda9fdce3af2f645770"
+    },
+    {
+      "path": "SCUS_944.55.cue",
+      "bytes": 75,
+      "sha256": "7c6f3c76aaa016264629a34f3786bdb72924345ebc4128786dd0ee109c1282dd"
+    },
+    {
+      "path": "SCUS_944.55.img",
+      "bytes": 729423408,
+      "sha256": "c2e97d6b0c847ca4336d9d84d8d98c349d1240ed075e81ab3fd5c977e9a45075"
+    },
+    {
+      "path": "SCUS_944.55.sub",
+      "bytes": 29772384,
+      "sha256": "8ca0624c9cbf084f821c095b795522ee938248c0be9b3f74f92e0507ae4965b3"
+    }
+  ],
+  "file_count": 11,
+  "total_bytes": 2201268616
+}

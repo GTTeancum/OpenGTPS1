@@ -1,0 +1,113 @@
+{
+  "format": "OpenGT-prepared-unified-clean-v1",
+  "source": "fresh rebuild from persisted raw discs on 2026-09-25",
+  "GT2.VOL": {
+    "bytes": 701837312,
+    "sha256": "7c3bf68061e5867de5af831121c50091128ddbde4f13026a050d3c71ef0eee53",
+    "parts": [
+      {
+        "path": "gt2vol-split/GT2.VOL.000.part",
+        "bytes": 268435456,
+        "sha256": "48d43a1213b2c83a01d7f8414c30996d9de7e260fb7d9b3f92eb60a3099d94af"
+      },
+      {
+        "path": "gt2vol-split/GT2.VOL.001.part",
+        "bytes": 268435456,
+        "sha256": "5070d3c8144ac4164dc5d2f51eabbc3f7fe39e41abfb6adfe0826044056f9414"
+      },
+      {
+        "path": "gt2vol-split/GT2.VOL.002.part",
+        "bytes": 164966400,
+        "sha256": "30abf94bbbd816a9cafe5e1071acf88d49b1848199a0ef45ae88ca58bc4ecb63"
+      }
+    ]
+  },
+  "files": [
+    {
+      "path": "MUSIC.DAT",
+      "bytes": 97252352,
+      "sha256": "2d1b7a30f656900213fa1f4aff9371c22db9d7f41ae8a9e5c5d51de8ffc9e102"
+    },
+    {
+      "path": "TITLE_EXACT.DAT",
+      "bytes": 1966100,
+      "sha256": "735d838c3a0f12e2917593648790f9fd1cb6ada13d402e19022d7c814737321c"
+    },
+    {
+      "path": "arcade/DISC_META.DAT",
+      "bytes": 18688,
+      "sha256": "bef591a382f4dcec1990f5db01b43cd42ed9cbdfe504bcb47e3fdb4013495a0e"
+    },
+    {
+      "path": "arcade/GT2.OVL",
+      "bytes": 287088,
+      "sha256": "97cec9c847923ee1843bcf422a1dc50547cd2878884735dae1c9e32b2a866556"
+    },
+    {
+      "path": "arcade/SCUS_944.55",
+      "bytes": 628736,
+      "sha256": "67782ae7520105b39bd1716d910332240d0f11171dabfd04518f8aa04e1ca519"
+    },
+    {
+      "path": "arcade/STREAM.DAT",
+      "bytes": 382122880,
+      "sha256": "b99ca3f8fced81507c341f2d189283ffb62ccd754597e3641f45172c21e6f717"
+    },
+    {
+      "path": "arcade/SYSTEM.CNF",
+      "bytes": 68,
+      "sha256": "679d41c5b44c08a1bcf7d7705fe7a64831502269163c11b83fe37e0511475bcc"
+    },
+    {
+      "path": "gt2vol-split/GT2.VOL.000.part",
+      "bytes": 268435456,
+      "sha256": "48d43a1213b2c83a01d7f8414c30996d9de7e260fb7d9b3f92eb60a3099d94af"
+    },
+    {
+      "path": "gt2vol-split/GT2.VOL.001.part",
+      "bytes": 268435456,
+      "sha256": "5070d3c8144ac4164dc5d2f51eabbc3f7fe39e41abfb6adfe0826044056f9414"
+    },
+    {
+      "path": "gt2vol-split/GT2.VOL.002.part",
+      "bytes": 164966400,
+      "sha256": "30abf94bbbd816a9cafe5e1071acf88d49b1848199a0ef45ae88ca58bc4ecb63"
+    },
+    {
+      "path": "manifests/arcade.json",
+      "bytes": 1106,
+      "sha256": "74ae1827166224add4202b57c2d21edf2c366338e8ed59a20fd95240cb1df837"
+    },
+    {
+      "path": "manifests/simulation.json",
+      "bytes": 1117,
+      "sha256": "16b541927b93cb94a8acb51a64dd988dde0618355e4786d1461ca1d312c980ee"
+    },
+    {
+      "path": "simulation/DISC_META.DAT",
+      "bytes": 18688,
+      "sha256": "79c869a7b66685b1ec4618b3b0a83dfd3ae59b994741be74179d092e4a4370d6"
+    },
+    {
+      "path": "simulation/FAULTY.PSX",
+      "bytes": 31536000,
+      "sha256": "4d2c78c7430db9a6329a454e8c736d488634e921b203a0ea889fcaf2bac0ff6e"
+    },
+    {
+      "path": "simulation/GT2.OVL",
+      "bytes": 289752,
+      "sha256": "f8c6b8d94b5a5744e97b626cef1db247d49a1fc195a7615031f8468b6a86b074"
+    },
+    {
+      "path": "simulation/SCUS_944.88",
+      "bytes": 628736,
+      "sha256": "4dd40d01a3e83967e2d4301106890eb314d72027802bee077bbbc246f152e331"
+    },
+    {
+      "path": "simulation/SYSTEM.CNF",
+      "bytes": 68,
+      "sha256": "667aa36661aaa5f514c851dfb3d7ecd847d7cf4b6911ec0523a63c515779ef7f"
+    }
+  ],
+  "reconstruct_GT2_VOL": "concatenate gt2vol-split/GT2.VOL.000.part, .001.part, .002.part in order"
+}
